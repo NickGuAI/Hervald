@@ -146,7 +146,7 @@ describe('runQuestsCli', () => {
         'content-type': 'application/json',
       }),
     })
-    expect(JSON.parse((call?.[1]?.body as string) ?? '{}')).toEqual({ text: 'Progress made' })
+    expect(JSON.parse((call?.[1]?.body as string) ?? '{}')).toEqual({ note: 'Progress made' })
   })
 
   it('sends PATCH for done with status done', async () => {
@@ -454,19 +454,81 @@ describe('runQuestsCli', () => {
     })
   })
 
-  it('requires --instruction, --cwd, --mode, --agent for create', async () => {
-    const fetchImpl = vi.fn<typeof fetch>()
+  it('supports issue-only create without explicit contract flags', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({ id: 'quest-new-2', status: 'pending' }),
+        {
+          status: 201,
+          headers: { 'content-type': 'application/json' },
+        },
+      ),
+    )
     const stdout = createBufferWriter()
+    const stderr = createBufferWriter()
 
     const exitCode = await runQuestsCli(
-      ['create', '--instruction', 'Do something', '--cwd', '/tmp'],
+      ['create', '--issue', 'https://github.com/org/repo/issues/544'],
       {
         fetchImpl,
         readConfig: async () => config,
         commanderId: 'cmdr-1',
         stdout: stdout.writer,
+        stderr: stderr.writer,
       },
     )
+
+    expect(exitCode).toBe(0)
+    expect(stderr.read()).toBe('')
+    expect(stdout.read()).toContain('Quest created: quest-new-2')
+
+    const call = fetchImpl.mock.calls[0]
+    expect(JSON.parse((call?.[1]?.body as string) ?? '{}')).toEqual({
+      githubIssueUrl: 'https://github.com/org/repo/issues/544',
+    })
+  })
+
+  it('supports instruction-only create without explicit contract flags', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({ id: 'quest-new-3', status: 'pending' }),
+        {
+          status: 201,
+          headers: { 'content-type': 'application/json' },
+        },
+      ),
+    )
+    const stdout = createBufferWriter()
+    const stderr = createBufferWriter()
+
+    const exitCode = await runQuestsCli(['create', '--instruction', 'Do something'], {
+      fetchImpl,
+      readConfig: async () => config,
+      commanderId: 'cmdr-1',
+      stdout: stdout.writer,
+      stderr: stderr.writer,
+    })
+
+    expect(exitCode).toBe(0)
+    expect(stderr.read()).toBe('')
+    expect(stdout.read()).toContain('Quest created: quest-new-3')
+
+    const call = fetchImpl.mock.calls[0]
+    expect(JSON.parse((call?.[1]?.body as string) ?? '{}')).toEqual({
+      instruction: 'Do something',
+    })
+  })
+
+  it('requires --instruction or --issue for create', async () => {
+    const fetchImpl = vi.fn<typeof fetch>()
+    const stdout = createBufferWriter()
+
+    const exitCode = await runQuestsCli(['create', '--source', 'manual'], {
+      fetchImpl,
+      readConfig: async () => config,
+      commanderId: 'cmdr-1',
+      stdout: stdout.writer,
+    })
 
     expect(exitCode).toBe(1)
     expect(fetchImpl).not.toHaveBeenCalled()

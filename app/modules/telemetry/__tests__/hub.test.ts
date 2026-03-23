@@ -70,3 +70,132 @@ describe('TelemetryHub summary token aggregates', () => {
     expect(summary.totalTokensMonth).toBe(450)
   })
 })
+
+describe('TelemetryHub topModels and topAgents period filtering', () => {
+  it('filters topModels by period range', async () => {
+    const now = new Date('2026-03-15T12:00:00.000Z')
+    const hub = await createHub(() => now)
+
+    // January call — outside March period
+    await hub.ingest({
+      sessionId: 's-jan',
+      agentName: 'claude',
+      model: 'claude-sonnet-4-5',
+      provider: 'anthropic',
+      inputTokens: 1000,
+      outputTokens: 500,
+      cost: 5,
+      durationMs: 1000,
+      currentTask: 'january work',
+      timestamp: new Date('2026-01-15T10:00:00.000Z'),
+    })
+
+    // March call — inside March period
+    await hub.ingest({
+      sessionId: 's-mar',
+      agentName: 'codex',
+      model: 'gpt-5.turbo',
+      provider: 'openai',
+      inputTokens: 200,
+      outputTokens: 100,
+      cost: 2,
+      durationMs: 1000,
+      currentTask: 'march work',
+      timestamp: new Date('2026-03-10T10:00:00.000Z'),
+    })
+
+    // Default period is current month (March 2026)
+    const summary = await hub.getSummary(now)
+
+    // topModels should only include March calls
+    expect(summary.topModels).toHaveLength(1)
+    expect(summary.topModels[0].model).toBe('gpt-5.turbo')
+    expect(summary.topModels[0].cost).toBe(2)
+
+    // topAgents should only include the March agent
+    expect(summary.topAgents).toHaveLength(1)
+    expect(summary.topAgents[0].agent).toBe('codex')
+    expect(summary.topAgents[0].cost).toBe(2)
+    expect(summary.topAgents[0].sessions).toBe(1)
+  })
+
+  it('includes all data when period spans entire range', async () => {
+    const now = new Date('2026-03-15T12:00:00.000Z')
+    const hub = await createHub(() => now)
+
+    await hub.ingest({
+      sessionId: 's-jan',
+      agentName: 'claude',
+      model: 'claude-sonnet-4-5',
+      provider: 'anthropic',
+      inputTokens: 1000,
+      outputTokens: 500,
+      cost: 5,
+      durationMs: 1000,
+      currentTask: 'january work',
+      timestamp: new Date('2026-01-15T10:00:00.000Z'),
+    })
+
+    await hub.ingest({
+      sessionId: 's-mar',
+      agentName: 'codex',
+      model: 'gpt-5.turbo',
+      provider: 'openai',
+      inputTokens: 200,
+      outputTokens: 100,
+      cost: 2,
+      durationMs: 1000,
+      currentTask: 'march work',
+      timestamp: new Date('2026-03-10T10:00:00.000Z'),
+    })
+
+    // 90-day period should include both
+    const summary = await hub.getSummary(
+      { period: '90d', startKey: '2025-12-16', endKey: '2026-03-15' },
+      now,
+    )
+
+    expect(summary.topModels).toHaveLength(2)
+    expect(summary.topAgents).toHaveLength(2)
+    const totalModelCost = summary.topModels.reduce((sum, m) => sum + m.cost, 0)
+    expect(totalModelCost).toBe(7)
+  })
+
+  it('counts sessions per agent correctly in period', async () => {
+    const now = new Date('2026-03-15T12:00:00.000Z')
+    const hub = await createHub(() => now)
+
+    // Two sessions for same agent in March
+    await hub.ingest({
+      sessionId: 's-mar-1',
+      agentName: 'claude',
+      model: 'claude-sonnet-4-5',
+      provider: 'anthropic',
+      inputTokens: 100,
+      outputTokens: 50,
+      cost: 1,
+      durationMs: 500,
+      currentTask: 'task 1',
+      timestamp: new Date('2026-03-05T10:00:00.000Z'),
+    })
+
+    await hub.ingest({
+      sessionId: 's-mar-2',
+      agentName: 'claude',
+      model: 'claude-sonnet-4-5',
+      provider: 'anthropic',
+      inputTokens: 100,
+      outputTokens: 50,
+      cost: 1,
+      durationMs: 500,
+      currentTask: 'task 2',
+      timestamp: new Date('2026-03-06T10:00:00.000Z'),
+    })
+
+    const summary = await hub.getSummary(now)
+    expect(summary.topAgents).toHaveLength(1)
+    expect(summary.topAgents[0].agent).toBe('claude')
+    expect(summary.topAgents[0].cost).toBe(2)
+    expect(summary.topAgents[0].sessions).toBe(2)
+  })
+})

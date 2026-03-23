@@ -8,9 +8,9 @@ const CREATURES_COLS = 10
 // tile_0019 = col 9, row 1 — red creature sprite
 const PLAYER_TILE = 19
 
-// Player enters from door at bottom-center (row 9, cols 5-6)
-const SPAWN_X = ROOM_WIDTH / 2      // 96
-const SPAWN_Y = ROOM_HEIGHT - 28    // 148
+// Player spawns in the open floor area south of corridor (30x20 map)
+const SPAWN_X = ROOM_WIDTH / 2      // 240
+const SPAWN_Y = ROOM_HEIGHT - 28    // 292
 
 const PLAYER_SPEED = 1.5
 const PLAYER_RADIUS = 6

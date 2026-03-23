@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import express from 'express'
 import { createServer, type Server } from 'node:http'
 import { EventEmitter } from 'node:events'
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { WebSocket, WebSocketServer } from 'ws'
@@ -26,6 +26,7 @@ import {
   type PtySpawner,
 } from '../routes'
 import { CommanderSessionStore, type CommanderSession } from '../../commanders/store'
+import { extractMessages, readCommanderTranscript } from '../session-messages'
 import { spawn as spawnFn } from 'node:child_process'
 
 // Typed reference to the mocked spawn function
@@ -251,8 +252,8 @@ function connectWs(
   })
 }
 
-function installMockProcess() {
-  const mock = createMockChildProcess()
+function installMockProcess(options?: { pid?: number }) {
+  const mock = createMockChildProcess(options?.pid)
   mockedSpawn.mockReturnValue(mock.cp as never)
   return mock
 }
@@ -684,6 +685,201 @@ describe('agents routes', () => {
         const completedPayload = await completedResponse.json() as Array<{ status: string; phase: string }>
         expect(completedPayload[0].status).toBe('completed')
         expect(completedPayload[0].phase).toBe('completed')
+      } finally {
+        await server.close()
+      }
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('commander sessions never show completed status after result event', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    try {
+      const baseTime = new Date('2026-03-05T00:00:00.000Z')
+      vi.setSystemTime(baseTime)
+
+      const streamMock = createMockChildProcess()
+      mockedSpawn.mockReturnValueOnce(streamMock.cp as never)
+      const server = await startServer()
+
+      try {
+        // Create a commander stream session
+        const createResponse = await fetch(`${server.baseUrl}/api/agents/sessions`, {
+          method: 'POST',
+          headers: {
+            ...AUTH_HEADERS,
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify({
+            name: 'commander-athena',
+            mode: 'default',
+            sessionType: 'stream',
+          }),
+        })
+        expect(createResponse.status).toBe(201)
+
+        // Simulate a turn completing with a result event
+        streamMock.emitStdout('{"type":"message_start","message":{"id":"m1","role":"assistant"}}\n')
+        streamMock.emitStdout('{"type":"result","result":"quest completed"}\n')
+
+        // Commander should NOT be classified as 'completed'
+        const worldResponse = await fetch(`${server.baseUrl}/api/agents/world`, {
+          headers: AUTH_HEADERS,
+        })
+        expect(worldResponse.status).toBe(200)
+        const payload = await worldResponse.json() as Array<{
+          id: string
+          status: string
+          phase: string
+        }>
+
+        const commander = payload.find((agent) => agent.id === 'commander-athena')
+        expect(commander).toBeDefined()
+        expect(commander!.status).not.toBe('completed')
+        expect(commander!.phase).not.toBe('completed')
+      } finally {
+        await server.close()
+      }
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('done workers auto-evict from worker list after TTL expires', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    try {
+      const baseTime = new Date('2026-03-05T00:00:00.000Z')
+      vi.setSystemTime(baseTime)
+
+      // Create mock processes for parent + worker
+      const parentMock = createMockChildProcess()
+      const workerMock = createMockChildProcess()
+      mockedSpawn.mockReturnValueOnce(parentMock.cp as never)
+      mockedSpawn.mockReturnValueOnce(workerMock.cp as never)
+      const server = await startServer()
+
+      try {
+        // Create parent session
+        const parentResponse = await fetch(`${server.baseUrl}/api/agents/sessions`, {
+          method: 'POST',
+          headers: { ...AUTH_HEADERS, 'content-type': 'application/json' },
+          body: JSON.stringify({
+            name: 'commander-parent',
+            mode: 'default',
+            sessionType: 'stream',
+          }),
+        })
+        expect(parentResponse.status).toBe(201)
+
+        // Create worker session
+        const workerResponse = await fetch(`${server.baseUrl}/api/agents/sessions`, {
+          method: 'POST',
+          headers: { ...AUTH_HEADERS, 'content-type': 'application/json' },
+          body: JSON.stringify({
+            name: 'factory-worker-01',
+            mode: 'default',
+            sessionType: 'stream',
+            parentSession: 'commander-parent',
+          }),
+        })
+        expect(workerResponse.status).toBe(201)
+
+        // Worker completes with result, then exits
+        workerMock.emitStdout('{"type":"result","result":"done"}\n')
+        workerMock.emitExit(0)
+
+        // Immediately after exit: worker should appear as 'done'
+        const workersBeforeTTL = await fetch(
+          `${server.baseUrl}/api/agents/sessions/commander-parent/workers`,
+          { headers: AUTH_HEADERS },
+        )
+        const beforeList = await workersBeforeTTL.json() as Array<{ name: string; status: string }>
+        expect(beforeList.some((w) => w.name === 'factory-worker-01' && w.status === 'done')).toBe(true)
+
+        // Advance past 30-minute TTL
+        vi.setSystemTime(new Date('2026-03-05T00:31:00.000Z'))
+
+        // After TTL: worker should be evicted from list (filtered as 'down')
+        const workersAfterTTL = await fetch(
+          `${server.baseUrl}/api/agents/sessions/commander-parent/workers`,
+          { headers: AUTH_HEADERS },
+        )
+        const afterList = await workersAfterTTL.json() as Array<{ name: string; status: string }>
+        expect(afterList.some((w) => w.name === 'factory-worker-01')).toBe(false)
+      } finally {
+        await server.close()
+      }
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('DELETE /sessions/:name/workers/done clears done workers', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    try {
+      const baseTime = new Date('2026-03-05T00:00:00.000Z')
+      vi.setSystemTime(baseTime)
+
+      const parentMock = createMockChildProcess()
+      const workerMock = createMockChildProcess()
+      mockedSpawn.mockReturnValueOnce(parentMock.cp as never)
+      mockedSpawn.mockReturnValueOnce(workerMock.cp as never)
+      const server = await startServer()
+
+      try {
+        // Create parent session
+        await fetch(`${server.baseUrl}/api/agents/sessions`, {
+          method: 'POST',
+          headers: { ...AUTH_HEADERS, 'content-type': 'application/json' },
+          body: JSON.stringify({
+            name: 'commander-clear-test',
+            mode: 'default',
+            sessionType: 'stream',
+          }),
+        })
+
+        // Create worker
+        await fetch(`${server.baseUrl}/api/agents/sessions`, {
+          method: 'POST',
+          headers: { ...AUTH_HEADERS, 'content-type': 'application/json' },
+          body: JSON.stringify({
+            name: 'factory-worker-clear',
+            mode: 'default',
+            sessionType: 'stream',
+            parentSession: 'commander-clear-test',
+          }),
+        })
+
+        // Worker exits with result
+        workerMock.emitStdout('{"type":"result","result":"done"}\n')
+        workerMock.emitExit(0)
+
+        // Verify worker is visible as 'done'
+        const beforeClear = await fetch(
+          `${server.baseUrl}/api/agents/sessions/commander-clear-test/workers`,
+          { headers: AUTH_HEADERS },
+        )
+        const beforeList = await beforeClear.json() as Array<{ name: string; status: string }>
+        expect(beforeList.some((w) => w.name === 'factory-worker-clear' && w.status === 'done')).toBe(true)
+
+        // Clear done workers
+        const clearResponse = await fetch(
+          `${server.baseUrl}/api/agents/sessions/commander-clear-test/workers/done`,
+          { method: 'DELETE', headers: AUTH_HEADERS },
+        )
+        expect(clearResponse.status).toBe(200)
+        const clearPayload = await clearResponse.json() as { cleared: number; workers: Array<{ name: string }> }
+        expect(clearPayload.cleared).toBe(1)
+        expect(clearPayload.workers.some((w) => w.name === 'factory-worker-clear')).toBe(false)
+
+        // Verify workers endpoint also shows cleared state
+        const afterClear = await fetch(
+          `${server.baseUrl}/api/agents/sessions/commander-clear-test/workers`,
+          { headers: AUTH_HEADERS },
+        )
+        const afterList = await afterClear.json() as Array<{ name: string }>
+        expect(afterList.some((w) => w.name === 'factory-worker-clear')).toBe(false)
       } finally {
         await server.close()
       }
@@ -1938,7 +2134,7 @@ describe('agents directories endpoint', () => {
  * Creates a mock ChildProcess-like object with controllable stdin/stdout
  * for testing stream session behavior without spawning a real process.
  */
-function createMockChildProcess() {
+function createMockChildProcess(pid: number = process.pid) {
   const emitter = new EventEmitter()
   const stdoutEmitter = new EventEmitter()
   const stdinChunks: string[] = []
@@ -1962,7 +2158,7 @@ function createMockChildProcess() {
 
   // Build a mock ChildProcess with the EventEmitter cast pattern used by routes.ts
   const cp = Object.assign(emitter, {
-    pid: 99999,
+    pid,
     stdout,
     stdin,
     stderr: new EventEmitter(),
@@ -2001,7 +2197,7 @@ describe('stream sessions', () => {
     }> = []
     const sidecarEmitter = new EventEmitter()
     const sidecarProcess = Object.assign(sidecarEmitter, {
-      pid: 77777,
+      pid: process.pid,
       stdin: null,
       stdout: null,
       stderr: null,
@@ -3049,7 +3245,179 @@ describe('stream sessions', () => {
     expect(sessions).toHaveLength(1)
     expect(sessions[0].name).toBe('stream-list-01')
     expect(sessions[0].sessionType).toBe('stream')
-    expect(sessions[0].pid).toBe(99999)
+    expect(sessions[0].pid).toBe(process.pid)
+
+    await server.close()
+  })
+
+  it('includes processAlive=true for live stream sessions in /sessions list', async () => {
+    installMockProcess()
+    const server = await startServer()
+
+    await fetch(`${server.baseUrl}/api/agents/sessions`, {
+      method: 'POST',
+      headers: {
+        ...AUTH_HEADERS,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        name: 'stream-process-alive',
+        mode: 'default',
+        sessionType: 'stream',
+      }),
+    })
+
+    const response = await fetch(`${server.baseUrl}/api/agents/sessions`, {
+      headers: AUTH_HEADERS,
+    })
+    const sessions = (await response.json()) as Array<{ name: string; processAlive?: boolean }>
+    const listed = sessions.find((session) => session.name === 'stream-process-alive')
+
+    expect(listed).toBeDefined()
+    expect(listed?.processAlive).toBe(true)
+
+    await server.close()
+  })
+
+  it('keeps dead non-one-shot stream sessions in /sessions list with processAlive=false', async () => {
+    installMockProcess({ pid: 99999 })
+    const server = await startServer()
+
+    await fetch(`${server.baseUrl}/api/agents/sessions`, {
+      method: 'POST',
+      headers: {
+        ...AUTH_HEADERS,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        name: 'stream-dead-prune',
+        mode: 'default',
+        sessionType: 'stream',
+      }),
+    })
+
+    const listResponse = await fetch(`${server.baseUrl}/api/agents/sessions`, {
+      headers: AUTH_HEADERS,
+    })
+    const listed = await listResponse.json() as Array<{ name: string; processAlive?: boolean }>
+    const deadStream = listed.find((session) => session.name === 'stream-dead-prune')
+    expect(deadStream).toBeDefined()
+    expect(deadStream?.processAlive).toBe(false)
+
+    const statusResponse = await fetch(`${server.baseUrl}/api/agents/sessions/stream-dead-prune`, {
+      headers: AUTH_HEADERS,
+    })
+    expect(statusResponse.status).toBe(200)
+
+    await server.close()
+  })
+
+  it('keeps alive parent sessions with all workers done and reports done summary', async () => {
+    installMockProcess()
+    const server = await startServer()
+    const parentSessionName = 'commander-parent-workers-done'
+    const workerSessionName = 'factory-parent-done-worker'
+
+    await fetch(`${server.baseUrl}/api/agents/sessions`, {
+      method: 'POST',
+      headers: {
+        ...AUTH_HEADERS,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        name: parentSessionName,
+        mode: 'default',
+        sessionType: 'stream',
+      }),
+    })
+
+    const parentSession = server.sessionsInterface.getSession(parentSessionName)
+    expect(parentSession).toBeDefined()
+    parentSession?.spawnedWorkers.push(workerSessionName)
+
+    const completeResponse = await fetch(
+      `${server.baseUrl}/api/agents/sessions/${encodeURIComponent(workerSessionName)}/complete`,
+      {
+        method: 'POST',
+        headers: {
+          ...AUTH_HEADERS,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({ status: 'success', comment: 'done' }),
+      },
+    )
+    expect(completeResponse.status).toBe(200)
+
+    const listResponse = await fetch(`${server.baseUrl}/api/agents/sessions`, {
+      headers: AUTH_HEADERS,
+    })
+    const listed = await listResponse.json() as Array<{
+      name: string
+      processAlive?: boolean
+      workerSummary?: {
+        total: number
+        running: number
+        starting: number
+        down: number
+        done: number
+      }
+    }>
+    const parent = listed.find((session) => session.name === parentSessionName)
+
+    expect(parent).toBeDefined()
+    expect(parent?.processAlive).toBe(true)
+    expect(parent?.workerSummary).toEqual({
+      total: 1,
+      running: 0,
+      starting: 0,
+      down: 0,
+      done: 1,
+    })
+
+    await server.close()
+  })
+
+  it('filters dead parent sessions whose spawned workers are all done', async () => {
+    installMockProcess({ pid: 99999 })
+    const server = await startServer()
+    const parentSessionName = 'commander-parent-workers-done-dead'
+    const workerSessionName = 'factory-parent-dead-worker'
+
+    await fetch(`${server.baseUrl}/api/agents/sessions`, {
+      method: 'POST',
+      headers: {
+        ...AUTH_HEADERS,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        name: parentSessionName,
+        mode: 'default',
+        sessionType: 'stream',
+      }),
+    })
+
+    const parentSession = server.sessionsInterface.getSession(parentSessionName)
+    expect(parentSession).toBeDefined()
+    parentSession?.spawnedWorkers.push(workerSessionName)
+
+    const completeResponse = await fetch(
+      `${server.baseUrl}/api/agents/sessions/${encodeURIComponent(workerSessionName)}/complete`,
+      {
+        method: 'POST',
+        headers: {
+          ...AUTH_HEADERS,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({ status: 'success', comment: 'done' }),
+      },
+    )
+    expect(completeResponse.status).toBe(200)
+
+    const listResponse = await fetch(`${server.baseUrl}/api/agents/sessions`, {
+      headers: AUTH_HEADERS,
+    })
+    const listed = await listResponse.json() as Array<{ name: string }>
+    expect(listed.some((session) => session.name === parentSessionName)).toBe(false)
 
     await server.close()
   })
@@ -5361,9 +5729,7 @@ describe('stream sessions', () => {
     expect(completePayload.completed).toBe(true)
     expect(completePayload.status).toBe('success')
 
-    // The mock PID (99999) is not actually alive, so isPidAlive returns false
-    // and the kill is skipped — this is correct behavior.
-    void mock
+    expect(mock.cp.kill).toHaveBeenCalledWith('SIGTERM')
 
     // GET should return completed.
     const getResponse = await fetch(
@@ -5650,6 +6016,619 @@ describe('stream sessions', () => {
 
     ws.close()
     server.sessionsInterface.deleteSession('commander-respawn-test')
+    await server.close()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Unit tests for session-messages.ts
+// ---------------------------------------------------------------------------
+
+describe('extractMessages', () => {
+  it('extracts user and assistant messages from Claude envelope events', () => {
+    const events = [
+      { type: 'system', subtype: 'init', session_id: 'abc' },
+      { type: 'user', message: { role: 'user', content: [{ type: 'text', text: 'Hello' }] } },
+      { type: 'message_start', message: { id: 'm1', role: 'assistant' } },
+      { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'Hi there!' }] } },
+      { type: 'message_delta', usage: { input_tokens: 10, output_tokens: 20 } },
+      { type: 'result', subtype: 'success', result: 'done' },
+    ]
+
+    const messages = extractMessages(events)
+    expect(messages).toHaveLength(2)
+    expect(messages[0]).toEqual({ role: 'user', content: 'Hello' })
+    expect(messages[1]).toEqual({ role: 'assistant', content: 'Hi there!' })
+  })
+
+  it('filters by role=assistant', () => {
+    const events = [
+      { type: 'user', message: { role: 'user', content: [{ type: 'text', text: 'Q1' }] } },
+      { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'A1' }] } },
+      { type: 'user', message: { role: 'user', content: [{ type: 'text', text: 'Q2' }] } },
+      { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'A2' }] } },
+    ]
+
+    const messages = extractMessages(events, 'assistant')
+    expect(messages).toHaveLength(2)
+    expect(messages[0].content).toBe('A1')
+    expect(messages[1].content).toBe('A2')
+  })
+
+  it('filters by role=user', () => {
+    const events = [
+      { type: 'user', message: { role: 'user', content: [{ type: 'text', text: 'Q1' }] } },
+      { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'A1' }] } },
+    ]
+
+    const messages = extractMessages(events, 'user')
+    expect(messages).toHaveLength(1)
+    expect(messages[0].content).toBe('Q1')
+  })
+
+  it('applies last=N to return only the last N messages', () => {
+    const events = [
+      { type: 'user', message: { role: 'user', content: [{ type: 'text', text: 'Q1' }] } },
+      { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'A1' }] } },
+      { type: 'user', message: { role: 'user', content: [{ type: 'text', text: 'Q2' }] } },
+      { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'A2' }] } },
+    ]
+
+    const messages = extractMessages(events, 'all', 2)
+    expect(messages).toHaveLength(2)
+    expect(messages[0].content).toBe('Q2')
+    expect(messages[1].content).toBe('A2')
+  })
+
+  it('marks assistant messages with tool_use content', () => {
+    const events = [
+      {
+        type: 'assistant',
+        message: {
+          role: 'assistant',
+          content: [
+            { type: 'text', text: 'Let me check' },
+            { type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'ls' } },
+          ],
+        },
+      },
+    ]
+
+    const messages = extractMessages(events)
+    expect(messages).toHaveLength(1)
+    expect(messages[0].toolUse).toBe(true)
+  })
+
+  it('returns empty array for events with no messages', () => {
+    const events = [
+      { type: 'system', subtype: 'init' },
+      { type: 'message_start', message: { id: 'm1', role: 'assistant' } },
+      { type: 'message_delta', usage: { input_tokens: 10 } },
+      { type: 'result', subtype: 'success' },
+    ]
+
+    const messages = extractMessages(events)
+    expect(messages).toEqual([])
+  })
+
+  it('preserves timestamp from events', () => {
+    const events = [
+      {
+        type: 'user',
+        timestamp: '2026-03-20T10:00:00Z',
+        message: { role: 'user', content: [{ type: 'text', text: 'Hello' }] },
+      },
+    ]
+
+    const messages = extractMessages(events)
+    expect(messages[0].timestamp).toBe('2026-03-20T10:00:00Z')
+  })
+
+  it('handles string content in message', () => {
+    const events = [
+      { type: 'user', message: { role: 'user', content: 'plain string content' } },
+    ]
+
+    const messages = extractMessages(events)
+    expect(messages).toHaveLength(1)
+    expect(messages[0].content).toBe('plain string content')
+  })
+
+  it('preserves tool-only assistant envelopes (P2-4)', () => {
+    const events = [
+      {
+        type: 'assistant',
+        message: {
+          role: 'assistant',
+          content: [
+            { type: 'tool_use', id: 't1', name: 'AskUserQuestion', input: { question: 'Continue?' } },
+          ],
+        },
+      },
+    ]
+
+    const messages = extractMessages(events)
+    expect(messages).toHaveLength(1)
+    expect(messages[0].role).toBe('assistant')
+    expect(messages[0].content).toBe('')
+    expect(messages[0].toolUse).toBe(true)
+  })
+})
+
+describe('readCommanderTranscript', () => {
+  let tmpDir: string
+
+  beforeEach(async () => {
+    tmpDir = await mkdtemp(join(tmpdir(), 'commander-transcript-'))
+  })
+
+  afterEach(async () => {
+    await rm(tmpDir, { recursive: true, force: true })
+  })
+
+  it('reads JSONL transcript file and returns events', async () => {
+    const commanderId = 'test-commander'
+    const transcriptId = 'session-abc'
+    const sessionsDir = join(tmpDir, commanderId, 'sessions')
+    await mkdir(sessionsDir, { recursive: true })
+
+    const events = [
+      { type: 'user', message: { role: 'user', content: [{ type: 'text', text: 'Hello' }] } },
+      { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'Hi' }] } },
+    ]
+    await writeFile(
+      join(sessionsDir, `${transcriptId}.jsonl`),
+      events.map((e) => JSON.stringify(e)).join('\n') + '\n',
+    )
+
+    const result = await readCommanderTranscript(commanderId, transcriptId, tmpDir)
+    expect(result).not.toBeNull()
+    expect(result).toHaveLength(2)
+    expect(result![0].type).toBe('user')
+    expect(result![1].type).toBe('assistant')
+  })
+
+  it('returns null for nonexistent transcript', async () => {
+    const result = await readCommanderTranscript('no-commander', 'no-session', tmpDir)
+    expect(result).toBeNull()
+  })
+
+  it('rejects path traversal in commanderId', async () => {
+    const result = await readCommanderTranscript('../etc', 'passwd', tmpDir)
+    expect(result).toBeNull()
+  })
+
+  it('rejects path traversal in transcriptId', async () => {
+    const result = await readCommanderTranscript('valid-id', '../../etc/passwd', tmpDir)
+    expect(result).toBeNull()
+  })
+
+  it('skips malformed JSONL lines gracefully', async () => {
+    const commanderId = 'test-commander'
+    const transcriptId = 'session-bad'
+    const sessionsDir = join(tmpDir, commanderId, 'sessions')
+    await mkdir(sessionsDir, { recursive: true })
+
+    const content = [
+      '{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Good"}]}}',
+      'this is not json',
+      '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"OK"}]}}',
+    ].join('\n')
+    await writeFile(join(sessionsDir, `${transcriptId}.jsonl`), content)
+
+    const result = await readCommanderTranscript(commanderId, transcriptId, tmpDir)
+    expect(result).not.toBeNull()
+    expect(result).toHaveLength(2)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Integration tests for GET /sessions/:name/messages endpoint
+// ---------------------------------------------------------------------------
+
+describe('session messages endpoint', () => {
+  function installMockProcess() {
+    const mock = createMockChildProcess()
+    mockedSpawn.mockReturnValue(mock.cp as never)
+    return mock
+  }
+
+  afterEach(() => {
+    mockedSpawn.mockRestore()
+  })
+
+  it('returns messages from an active stream session', async () => {
+    const mock = installMockProcess()
+    const server = await startServer()
+
+    // Create a stream session with an initial task — the server synthesizes
+    // a user event for the task at creation time. Stdout user events are
+    // skipped as echoes, so we rely on the synthesized user event.
+    await fetch(`${server.baseUrl}/api/agents/sessions`, {
+      method: 'POST',
+      headers: { ...AUTH_HEADERS, 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'peek-test', mode: 'default', sessionType: 'stream', task: 'What is 2+2?' }),
+    })
+
+    // Emit assistant response via stdout
+    mock.emitStdout('{"type":"system","subtype":"init","session_id":"s1"}\n')
+    mock.emitStdout('{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"4"}]}}\n')
+
+    // Allow events to be processed
+    await new Promise((r) => setTimeout(r, 50))
+
+    const res = await fetch(`${server.baseUrl}/api/agents/sessions/peek-test/messages`, {
+      headers: AUTH_HEADERS,
+    })
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.session).toBe('peek-test')
+    expect(body.source).toBe('live')
+    expect(body.messages).toHaveLength(2)
+    expect(body.messages[0]).toEqual({ role: 'user', content: 'What is 2+2?' })
+    expect(body.messages[1]).toEqual({ role: 'assistant', content: '4' })
+
+    await server.close()
+  })
+
+  it('filters messages by role', async () => {
+    const mock = installMockProcess()
+    const server = await startServer()
+
+    await fetch(`${server.baseUrl}/api/agents/sessions`, {
+      method: 'POST',
+      headers: { ...AUTH_HEADERS, 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'peek-role', mode: 'default', sessionType: 'stream' }),
+    })
+
+    mock.emitStdout('{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Q1"}]}}\n')
+    mock.emitStdout('{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"A1"}]}}\n')
+    mock.emitStdout('{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Q2"}]}}\n')
+    await new Promise((r) => setTimeout(r, 50))
+
+    const res = await fetch(
+      `${server.baseUrl}/api/agents/sessions/peek-role/messages?role=assistant`,
+      { headers: AUTH_HEADERS },
+    )
+    const body = await res.json()
+    expect(body.messages).toHaveLength(1)
+    expect(body.messages[0].content).toBe('A1')
+
+    await server.close()
+  })
+
+  it('respects the last query parameter', async () => {
+    const mock = installMockProcess()
+    const server = await startServer()
+
+    await fetch(`${server.baseUrl}/api/agents/sessions`, {
+      method: 'POST',
+      headers: { ...AUTH_HEADERS, 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'peek-last', mode: 'default', sessionType: 'stream' }),
+    })
+
+    mock.emitStdout('{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Q1"}]}}\n')
+    mock.emitStdout('{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"A1"}]}}\n')
+    mock.emitStdout('{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Q2"}]}}\n')
+    mock.emitStdout('{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"A2"}]}}\n')
+    await new Promise((r) => setTimeout(r, 50))
+
+    const res = await fetch(
+      `${server.baseUrl}/api/agents/sessions/peek-last/messages?last=1`,
+      { headers: AUTH_HEADERS },
+    )
+    const body = await res.json()
+    expect(body.messages).toHaveLength(1)
+    expect(body.messages[0].content).toBe('A2')
+
+    await server.close()
+  })
+
+  it('returns 404 for nonexistent session', async () => {
+    const server = await startServer()
+
+    const res = await fetch(
+      `${server.baseUrl}/api/agents/sessions/does-not-exist/messages`,
+      { headers: AUTH_HEADERS },
+    )
+    expect(res.status).toBe(404)
+    expect(await res.json()).toEqual({ error: 'Session not found' })
+
+    await server.close()
+  })
+
+  it('returns 400 for invalid session name', async () => {
+    const server = await startServer()
+
+    const res = await fetch(
+      `${server.baseUrl}/api/agents/sessions/${encodeURIComponent('bad name!@#')}/messages`,
+      { headers: AUTH_HEADERS },
+    )
+    expect(res.status).toBe(400)
+
+    await server.close()
+  })
+
+  it('returns 400 for invalid last parameter', async () => {
+    const mock = installMockProcess()
+    const server = await startServer()
+
+    await fetch(`${server.baseUrl}/api/agents/sessions`, {
+      method: 'POST',
+      headers: { ...AUTH_HEADERS, 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'peek-bad-last', mode: 'default', sessionType: 'stream' }),
+    })
+
+    const res = await fetch(
+      `${server.baseUrl}/api/agents/sessions/peek-bad-last/messages?last=-1`,
+      { headers: AUTH_HEADERS },
+    )
+    expect(res.status).toBe(400)
+    expect(await res.json()).toEqual({ error: 'Invalid last parameter: expected positive integer' })
+
+    await server.close()
+  })
+
+  it('returns 400 for invalid role parameter', async () => {
+    const mock = installMockProcess()
+    const server = await startServer()
+
+    await fetch(`${server.baseUrl}/api/agents/sessions`, {
+      method: 'POST',
+      headers: { ...AUTH_HEADERS, 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'peek-bad-role', mode: 'default', sessionType: 'stream' }),
+    })
+
+    const res = await fetch(
+      `${server.baseUrl}/api/agents/sessions/peek-bad-role/messages?role=admin`,
+      { headers: AUTH_HEADERS },
+    )
+    expect(res.status).toBe(400)
+    expect(await res.json()).toEqual({ error: 'Invalid role parameter: expected user, assistant, or all' })
+
+    await server.close()
+  })
+
+  it('returns messages from commander transcript', async () => {
+    const tmpDir = await mkdtemp(join(tmpdir(), 'commander-peek-'))
+    const commanderId = 'cmdr-abc'
+    const sessionsDir = join(tmpDir, commanderId, 'sessions')
+    await mkdir(sessionsDir, { recursive: true })
+
+    // Write transcript JSONL
+    const events = [
+      { type: 'user', message: { role: 'user', content: [{ type: 'text', text: 'Build the feature' }] } },
+      { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'On it' }] } },
+    ]
+    const transcriptId = 'claude-session-123'
+    await writeFile(
+      join(sessionsDir, `${transcriptId}.jsonl`),
+      events.map((e) => JSON.stringify(e)).join('\n') + '\n',
+    )
+
+    // Mock commander session store to return this commander
+    const commanderSession: CommanderSession = {
+      id: commanderId,
+      host: 'test-host',
+      pid: 123,
+      state: 'running',
+      created: '2026-03-20T00:00:00Z',
+      claudeSessionId: transcriptId,
+      heartbeat: { lastSentAt: null, lastPayload: null },
+      lastHeartbeat: null,
+      taskSource: null,
+      currentTask: null,
+      completedTasks: 0,
+      totalCostUsd: 0,
+    }
+
+    vi.spyOn(CommanderSessionStore.prototype, 'get').mockResolvedValue(commanderSession)
+
+    try {
+      // Point commanderSessionStorePath inside tmpDir so commanderDataDir resolves correctly
+      const server = await startServer({
+        commanderSessionStorePath: join(tmpDir, 'sessions.json'),
+      })
+
+      const res = await fetch(
+        `${server.baseUrl}/api/agents/sessions/commander-${commanderId}/messages`,
+        { headers: AUTH_HEADERS },
+      )
+      expect(res.status).toBe(200)
+      const body = await res.json()
+      expect(body.session).toBe(`commander-${commanderId}`)
+      expect(body.source).toBe('transcript')
+      expect(body.messages).toHaveLength(2)
+      expect(body.messages[0].content).toBe('Build the feature')
+      expect(body.messages[1].content).toBe('On it')
+
+      await server.close()
+    } finally {
+      await rm(tmpDir, { recursive: true, force: true })
+    }
+  })
+
+  it('returns messages from Codex commander transcript via codexThreadId (P2-1)', async () => {
+    const tmpDir = await mkdtemp(join(tmpdir(), 'commander-codex-'))
+    const commanderId = 'cmdr-codex'
+    const sessionsDir = join(tmpDir, commanderId, 'sessions')
+    await mkdir(sessionsDir, { recursive: true })
+
+    const codexThreadId = 'codex-thread-xyz'
+    const events = [
+      { type: 'user', message: { role: 'user', content: [{ type: 'text', text: 'Run tests' }] } },
+      { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'Tests passed' }] } },
+    ]
+    await writeFile(
+      join(sessionsDir, `${codexThreadId}.jsonl`),
+      events.map((e) => JSON.stringify(e)).join('\n') + '\n',
+    )
+
+    const commanderSession: CommanderSession = {
+      id: commanderId,
+      host: 'test-host',
+      pid: 123,
+      state: 'running',
+      created: '2026-03-20T00:00:00Z',
+      agentType: 'codex',
+      codexThreadId,
+      heartbeat: { lastSentAt: null, lastPayload: null },
+      lastHeartbeat: null,
+      taskSource: null,
+      currentTask: null,
+      completedTasks: 0,
+      totalCostUsd: 0,
+    }
+
+    vi.spyOn(CommanderSessionStore.prototype, 'get').mockResolvedValue(commanderSession)
+
+    try {
+      const server = await startServer({
+        commanderSessionStorePath: join(tmpDir, 'sessions.json'),
+      })
+
+      const res = await fetch(
+        `${server.baseUrl}/api/agents/sessions/commander-${commanderId}/messages`,
+        { headers: AUTH_HEADERS },
+      )
+      expect(res.status).toBe(200)
+      const body = await res.json()
+      expect(body.source).toBe('transcript')
+      expect(body.messages).toHaveLength(2)
+      expect(body.messages[0].content).toBe('Run tests')
+
+      await server.close()
+    } finally {
+      await rm(tmpDir, { recursive: true, force: true })
+    }
+  })
+
+  it('merges pre-init and post-init commander transcript files (P2-3)', async () => {
+    const tmpDir = await mkdtemp(join(tmpdir(), 'commander-merge-'))
+    const commanderId = 'cmdr-merge'
+    const sessionsDir = join(tmpDir, commanderId, 'sessions')
+    await mkdir(sessionsDir, { recursive: true })
+
+    const sessionName = `commander-${commanderId}`
+    const claudeSessionId = 'claude-session-456'
+
+    // Pre-init file: written under session name before init event
+    const preInitEvents = [
+      { type: 'user', message: { role: 'user', content: [{ type: 'text', text: 'Initial task' }] } },
+    ]
+    await writeFile(
+      join(sessionsDir, `${sessionName}.jsonl`),
+      preInitEvents.map((e) => JSON.stringify(e)).join('\n') + '\n',
+    )
+
+    // Post-init file: written under claudeSessionId after init event
+    const postInitEvents = [
+      { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'Working on it' }] } },
+    ]
+    await writeFile(
+      join(sessionsDir, `${claudeSessionId}.jsonl`),
+      postInitEvents.map((e) => JSON.stringify(e)).join('\n') + '\n',
+    )
+
+    const commanderSession: CommanderSession = {
+      id: commanderId,
+      host: 'test-host',
+      pid: 123,
+      state: 'running',
+      created: '2026-03-20T00:00:00Z',
+      claudeSessionId,
+      heartbeat: { lastSentAt: null, lastPayload: null },
+      lastHeartbeat: null,
+      taskSource: null,
+      currentTask: null,
+      completedTasks: 0,
+      totalCostUsd: 0,
+    }
+
+    vi.spyOn(CommanderSessionStore.prototype, 'get').mockResolvedValue(commanderSession)
+
+    try {
+      const server = await startServer({
+        commanderSessionStorePath: join(tmpDir, 'sessions.json'),
+      })
+
+      const res = await fetch(
+        `${server.baseUrl}/api/agents/sessions/${sessionName}/messages`,
+        { headers: AUTH_HEADERS },
+      )
+      expect(res.status).toBe(200)
+      const body = await res.json()
+      expect(body.source).toBe('transcript')
+      // Both pre-init and post-init events should be merged
+      expect(body.messages).toHaveLength(2)
+      expect(body.messages[0].content).toBe('Initial task')
+      expect(body.messages[1].content).toBe('Working on it')
+
+      await server.close()
+    } finally {
+      await rm(tmpDir, { recursive: true, force: true })
+    }
+  })
+
+  it('serves messages for completed one-shot sessions (P2-5)', async () => {
+    const mock = installMockProcess()
+    const server = await startServer()
+
+    // Create a command-room session (one-shot)
+    await fetch(`${server.baseUrl}/api/agents/sessions`, {
+      method: 'POST',
+      headers: { ...AUTH_HEADERS, 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'command-room-p2-5', mode: 'default', sessionType: 'stream', task: 'Do something' }),
+    })
+
+    // Emit assistant response
+    mock.emitStdout('{"type":"system","subtype":"init","session_id":"s1"}\n')
+    mock.emitStdout('{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Done"}]}}\n')
+    mock.emitStdout('{"type":"result","subtype":"success","result":"complete"}\n')
+    await new Promise((r) => setTimeout(r, 50))
+
+    // Simulate process exit so the session moves to completedSessions
+    mock.emitExit(0)
+    await new Promise((r) => setTimeout(r, 50))
+
+    // Session should now be completed but messages should still be available
+    const res = await fetch(
+      `${server.baseUrl}/api/agents/sessions/command-room-p2-5/messages`,
+      { headers: AUTH_HEADERS },
+    )
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.messages.length).toBeGreaterThan(0)
+    // Should contain the user task and assistant response
+    const userMsg = body.messages.find((m: { role: string }) => m.role === 'user')
+    const assistantMsg = body.messages.find((m: { role: string }) => m.role === 'assistant')
+    expect(userMsg?.content).toBe('Do something')
+    expect(assistantMsg?.content).toBe('Done')
+
+    await server.close()
+  })
+
+  it('requires authentication', async () => {
+    const server = await startServer()
+
+    const res = await fetch(
+      `${server.baseUrl}/api/agents/sessions/any-session/messages`,
+    )
+    expect(res.status).toBe(401)
+
+    await server.close()
+  })
+
+  it('allows read-only access', async () => {
+    const server = await startServer()
+
+    const res = await fetch(
+      `${server.baseUrl}/api/agents/sessions/no-session/messages`,
+      { headers: READ_ONLY_AUTH_HEADERS },
+    )
+    // 404 means auth passed, session just doesn't exist
+    expect(res.status).toBe(404)
+
     await server.close()
   })
 })

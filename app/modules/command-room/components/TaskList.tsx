@@ -1,5 +1,5 @@
 import { type FormEvent, useState } from 'react'
-import { Clock3, Pencil, Play, Plus, Power, Trash2, X } from 'lucide-react'
+import { Clock3, Pencil, Play, Plus, Power, Trash2 } from 'lucide-react'
 import { fetchJson } from '@/lib/api'
 import { cn } from '@/lib/utils'
 import { useMachines } from '@/hooks/use-agents'
@@ -12,6 +12,7 @@ import type {
   WorkflowRunStatus,
 } from '../hooks/useCommandRoom'
 import { CLAUDE_MODE_OPTIONS, CODEX_MODE_OPTIONS, NewSessionForm } from '../../agents/components/NewSessionForm'
+import { ModalFormContainer } from '../../components/ModalFormContainer'
 
 interface TaskListProps {
   tasks: CronTask[]
@@ -324,141 +325,133 @@ export function TaskList({
 
   return (
     <div className="h-full flex flex-col gap-4 min-h-0">
-      {showForm && (
-        <section className="card-sumi p-4">
-          <div className="flex items-center justify-between mb-4">
-            <h3 className="font-display text-sm text-sumi-black uppercase tracking-wider">New Cron Task</h3>
-            <button
-              type="button"
-              onClick={() => setShowForm(false)}
-              className="p-1 rounded hover:bg-ink-wash transition-colors"
-              aria-label="Close"
-            >
-              <X size={14} className="text-sumi-diluted" />
-            </button>
-          </div>
-          <NewSessionForm
-            name={name}
-            setName={setName}
-            cwd={cwd}
-            setCwd={setCwd}
-            mode={mode}
-            setMode={setMode}
-            task={task}
-            setTask={setTask}
-            agentType={agentType}
-            setAgentType={setAgentType}
-            sessionType={sessionType}
-            setSessionType={setSessionType}
-            machines={machineList}
-            selectedHost={selectedHost}
-            setSelectedHost={setSelectedHost}
-            isCreating={createPending}
-            createError={createError}
-            onSubmit={(e) => void handleSubmit(e)}
-            schedule={schedule}
-            setSchedule={setSchedule}
-            submitLabel="Create Task"
-            nameLabel="Task Name"
-            namePlaceholder="nightly-deploy"
-            namePattern=""
-            taskLabel="Instruction"
-            taskPlaceholder="Run the nightly test suite and report results"
-            taskRequired
-            beforeTaskField={
-              <div className="space-y-3">
-                <div>
-                  <label className="section-title block mb-2">Description (Optional)</label>
-                  <textarea
-                    value={description}
-                    onChange={(event) => setDescription(event.target.value)}
-                    className="w-full min-h-20 px-3 py-2 rounded-lg border border-ink-border bg-washi-aged text-[16px] md:text-sm focus:outline-none focus:border-ink-border-hover"
-                    placeholder="Explain what this cron task is for"
-                  />
-                </div>
-                {agentType === 'claude' ? (
-                  <div>
-                    <label className="section-title block mb-2">Skill (Optional)</label>
-                    <select
-                      value={selectedSkill}
-                      onChange={(event) => {
-                        const skillName = event.target.value
-                        setSelectedSkill(skillName)
-                        if (!skillName) {
-                          return
-                        }
-                        setTask((current) => prependSkillInvocation(current, skillName))
-                        setSelectedSkill('')
-                      }}
-                      className="w-full px-3 py-2 rounded-lg border border-ink-border bg-washi-aged text-[16px] md:text-sm focus:outline-none focus:border-ink-border-hover"
-                    >
-                      <option value="">
-                        {skillsLoading
-                          ? 'Loading skills...'
-                          : skillList.length > 0
-                            ? 'Select a skill to prepend'
-                            : 'No user-invocable skills installed'}
-                      </option>
-                      {skillList.map((skill) => (
-                        <option key={skill.name} value={skill.name}>
-                          /{skill.name}
-                        </option>
-                      ))}
-                    </select>
-                    <p className="mt-1 text-whisper text-sumi-mist">
-                      Selecting a skill prepends <span className="font-mono">/skill-name</span> to instruction.
-                    </p>
-                  </div>
-                ) : null}
+      <ModalFormContainer
+        open={showForm}
+        title="New Cron Task"
+        onClose={() => setShowForm(false)}
+      >
+        <NewSessionForm
+          name={name}
+          setName={setName}
+          cwd={cwd}
+          setCwd={setCwd}
+          mode={mode}
+          setMode={setMode}
+          task={task}
+          setTask={setTask}
+          agentType={agentType}
+          setAgentType={setAgentType}
+          sessionType={sessionType}
+          setSessionType={setSessionType}
+          machines={machineList}
+          selectedHost={selectedHost}
+          setSelectedHost={setSelectedHost}
+          isCreating={createPending}
+          createError={createError}
+          onSubmit={(e) => void handleSubmit(e)}
+          schedule={schedule}
+          setSchedule={setSchedule}
+          afterScheduleField={
+            <div>
+              <label className="section-title block mb-2">Timezone</label>
+              {TIMEZONE_OPTIONS.length > 0 ? (
+                <select
+                  value={timezone}
+                  onChange={(event) => setTimezone(event.target.value)}
+                  className="w-full px-3 py-2 rounded-lg border border-ink-border bg-washi-aged text-[16px] md:text-sm focus:outline-none focus:border-ink-border-hover"
+                >
+                  {!TIMEZONE_OPTIONS.includes(timezone) && timezone ? (
+                    <option value={timezone}>{timezone}</option>
+                  ) : null}
+                  <option value="">Server default</option>
+                  {TIMEZONE_OPTIONS.map((zone) => (
+                    <option key={zone} value={zone}>
+                      {zone}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <input
+                  value={timezone}
+                  onChange={(event) => setTimezone(event.target.value)}
+                  className="w-full px-3 py-2 rounded-lg border border-ink-border bg-washi-aged font-mono text-[16px] md:text-sm focus:outline-none focus:border-ink-border-hover"
+                  placeholder="America/Los_Angeles"
+                />
+              )}
+              <p className="mt-1 text-whisper text-sumi-mist">Defaults to your browser timezone</p>
+            </div>
+          }
+          submitLabel="Create Task"
+          nameLabel="Task Name"
+          namePlaceholder="nightly-deploy"
+          namePattern=""
+          taskLabel="Instruction"
+          taskPlaceholder="Run the nightly test suite and report results"
+          taskRequired
+          agentOptions={['claude', 'codex']}
+          beforeTaskField={
+            <div className="space-y-3">
+              <div>
+                <label className="section-title block mb-2">Description (Optional)</label>
+                <textarea
+                  value={description}
+                  onChange={(event) => setDescription(event.target.value)}
+                  className="w-full min-h-20 px-3 py-2 rounded-lg border border-ink-border bg-washi-aged text-[16px] md:text-sm focus:outline-none focus:border-ink-border-hover"
+                  placeholder="Explain what this cron task is for"
+                />
               </div>
-            }
-          />
-          <div className="mt-3">
-            <label className="section-title block mb-2">Timezone</label>
-            {TIMEZONE_OPTIONS.length > 0 ? (
-              <select
-                value={timezone}
-                onChange={(event) => setTimezone(event.target.value)}
-                className="w-full px-3 py-2 rounded-lg border border-ink-border bg-washi-aged text-[16px] md:text-sm focus:outline-none focus:border-ink-border-hover"
-              >
-                {!TIMEZONE_OPTIONS.includes(timezone) && timezone ? (
-                  <option value={timezone}>{timezone}</option>
-                ) : null}
-                <option value="">Server default</option>
-                {TIMEZONE_OPTIONS.map((zone) => (
-                  <option key={zone} value={zone}>
-                    {zone}
-                  </option>
-                ))}
-              </select>
-            ) : (
-              <input
-                value={timezone}
-                onChange={(event) => setTimezone(event.target.value)}
-                className="w-full px-3 py-2 rounded-lg border border-ink-border bg-washi-aged font-mono text-[16px] md:text-sm focus:outline-none focus:border-ink-border-hover"
-                placeholder="America/Los_Angeles"
-              />
-            )}
-            <p className="mt-1 text-whisper text-sumi-mist">Defaults to your browser timezone</p>
-          </div>
-        </section>
-      )}
+              {agentType === 'claude' ? (
+                <div>
+                  <label className="section-title block mb-2">Skill (Optional)</label>
+                  <select
+                    value={selectedSkill}
+                    onChange={(event) => {
+                      const skillName = event.target.value
+                      setSelectedSkill(skillName)
+                      if (!skillName) {
+                        return
+                      }
+                      setTask((current) => prependSkillInvocation(current, skillName))
+                      setSelectedSkill('')
+                    }}
+                    className="w-full px-3 py-2 rounded-lg border border-ink-border bg-washi-aged text-[16px] md:text-sm focus:outline-none focus:border-ink-border-hover"
+                  >
+                    <option value="">
+                      {skillsLoading
+                        ? 'Loading skills...'
+                        : skillList.length > 0
+                          ? 'Select a skill to prepend'
+                          : 'No user-invocable skills installed'}
+                    </option>
+                    {skillList.map((skill) => (
+                      <option key={skill.name} value={skill.name}>
+                        /{skill.name}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="mt-1 text-whisper text-sumi-mist">
+                    Selecting a skill prepends <span className="font-mono">/skill-name</span> to instruction.
+                  </p>
+                </div>
+              ) : null}
+            </div>
+          }
+        />
+      </ModalFormContainer>
 
       <section className="card-sumi flex-1 min-h-0 p-3">
         <div className="flex items-center justify-between px-1">
           <h3 className="font-display text-sm text-sumi-black uppercase tracking-wider">Tasks</h3>
           <div className="flex items-center gap-2">
             {loading && <span className="text-whisper text-sumi-mist">Refreshing...</span>}
-            {!showForm && (
-              <button
-                type="button"
-                onClick={() => setShowForm(true)}
-                className="btn-primary !px-3 !py-1.5 text-xs inline-flex items-center gap-1.5"
-              >
-                <Plus size={12} />
-                New Task
-              </button>
-            )}
+            <button
+              type="button"
+              onClick={() => setShowForm((current) => !current)}
+              className="btn-primary !px-3 !py-1.5 text-xs inline-flex items-center gap-1.5"
+            >
+              <Plus size={12} />
+              {showForm ? 'Close' : 'New Task'}
+            </button>
           </div>
         </div>
         <div className="mt-3 space-y-2 overflow-y-auto h-[calc(100%-1.5rem)] pr-1">

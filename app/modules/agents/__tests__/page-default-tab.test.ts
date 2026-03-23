@@ -102,4 +102,64 @@ describe('AgentsPage default session tab', () => {
     expect(html).toContain('commander-alpha')
     expect(html).not.toContain('worker-beta')
   })
+
+  it('hides Kill button and shows exited badge when process is not alive', () => {
+    const sessions = [
+      {
+        name: 'commander-exited',
+        created: '2026-03-09T00:00:00.000Z',
+        pid: 111,
+        processAlive: false,
+        sessionType: 'stream',
+        agentType: 'claude',
+      },
+    ] as AgentSession[]
+
+    mocks.useAgentSessions.mockReturnValue({
+      data: sessions,
+      isLoading: false,
+    })
+    mocks.useMachines.mockReturnValue({
+      data: [],
+      isLoading: false,
+    })
+
+    const html = renderAgentsPageHtml()
+
+    expect(html).toContain('commander-exited')
+    expect(html).toContain('>exited<')
+    expect(html).not.toContain('>Kill<')
+  })
+
+  it('shows completed indicator and dimmed style for sessions with all workers done', () => {
+    const sessions = [
+      {
+        name: 'commander-completed-workers',
+        created: '2026-03-09T00:00:00.000Z',
+        pid: 222,
+        processAlive: true,
+        sessionType: 'stream',
+        agentType: 'claude',
+        spawnedWorkers: ['factory-a', 'factory-b'],
+        workerSummary: { total: 2, running: 0, starting: 0, down: 0, done: 2 },
+      },
+    ] as AgentSession[]
+
+    mocks.useAgentSessions.mockReturnValue({
+      data: sessions,
+      isLoading: false,
+    })
+    mocks.useMachines.mockReturnValue({
+      data: [],
+      isLoading: false,
+    })
+
+    const html = renderAgentsPageHtml()
+
+    expect(html).toContain('commander-completed-workers')
+    expect(html).toContain('>completed<')
+    expect(html).toContain('✓ 2 done')
+    expect(html).toContain('opacity-75')
+    expect(html).toContain('>Kill<')
+  })
 })

@@ -5,6 +5,7 @@ import type { WorldAgent } from './use-world-state'
 import { isWalkable } from './room-layout'
 
 const DEFAULT_AGENT_RADIUS = 6
+const IDLE_AFTER_COMPLETION_MS = 60 * 60 * 1000 // 60 minutes
 
 interface RuntimeAgentPosition {
   x: number
@@ -26,6 +27,9 @@ interface AgentSpriteProps {
   completedAt?: number
   markedForRemoval?: boolean
   onFadeOutComplete?: (id: string) => void
+  selectFrameTexture?: Texture | null
+  idleIndicatorTexture?: Texture | null
+  isInteractable?: boolean
 }
 
 function hashSeed(value: string): number {
@@ -50,10 +54,15 @@ export function AgentSprite({
   completedAt,
   markedForRemoval = false,
   onFadeOutComplete,
+  selectFrameTexture,
+  idleIndicatorTexture,
+  isInteractable = false,
 }: AgentSpriteProps) {
   const isCommander = role === 'commander' || id.startsWith('commander-')
-  const baseScale = isCommander ? 1.3 : 1
+  const baseScale = 1
   const spriteRef = useRef<any>(null)
+  const selectRef = useRef<any>(null)
+  const indicatorRef = useRef<any>(null)
   const currentRef = useRef({ x, y, alpha: 0, rotation: 0, scale: baseScale })
   const waypointsRef = useRef<Array<{ x: number; y: number }>>(waypoints)
   const removalNotifiedRef = useRef(false)
@@ -141,6 +150,7 @@ export function AgentSprite({
     let targetRotation = 0
     let yOffset = 0
     let targetScale = baseScale
+    let showIdleIndicator = false
 
     if (status === 'active' || isCommander) {
       const phase = ((now + bobSeedRef.current) / 1000) * Math.PI
@@ -152,22 +162,35 @@ export function AgentSprite({
     } else if (status === 'idle') {
       targetAlpha = 0.75
       targetTint = 0x8E8E8E
+      showIdleIndicator = true
     } else if (status === 'stale') {
       targetAlpha = 0.5
       targetTint = 0x7A7A7A
       targetRotation = Math.PI / 2
+      showIdleIndicator = true
     } else if (status === 'completed') {
       const completionStart = completedAt ?? now
       const elapsedMs = Math.max(0, now - completionStart)
-      const fade = Math.max(0, 1 - (elapsedMs / 60000))
-      const pulse = 1 + (Math.sin((elapsedMs / 1000) * Math.PI * 4) * 0.18 * fade)
-      targetAlpha = fade
-      targetTint = 0xFFD34D
-      targetScale *= pulse
+
+      if (elapsedMs >= IDLE_AFTER_COMPLETION_MS) {
+        // Idle after completion — downed state with indicator
+        targetAlpha = 0.4
+        targetTint = 0x7A7A7A
+        targetRotation = Math.PI / 2
+        showIdleIndicator = true
+      } else {
+        // Active completion — golden glow with pulse
+        const fade = Math.max(0, 1 - (elapsedMs / 60000))
+        const pulse = 1 + (Math.sin((elapsedMs / 1000) * Math.PI * 4) * 0.18 * fade)
+        targetAlpha = Math.max(0.6, fade)
+        targetTint = 0xFFD34D
+        targetScale *= pulse
+      }
     }
 
     if (isCommander) {
       targetTint = 0xFFD700
+      targetAlpha = 1
     }
 
     if (phaseChangedAt !== undefined) {
@@ -196,6 +219,30 @@ export function AgentSprite({
     sprite.scale.set(currentRef.current.scale)
     sprite.tint = targetTint
 
+    // Select frame for interactable agents
+    if (selectRef.current) {
+      selectRef.current.x = Math.round(currentRef.current.x)
+      selectRef.current.y = Math.round(currentRef.current.y + yOffset)
+      selectRef.current.visible = isInteractable
+      if (isInteractable) {
+        const selectPulse = 1 + Math.sin(now / 300) * 0.08
+        selectRef.current.scale.set(selectPulse * 1.5)
+        selectRef.current.alpha = 0.8 + Math.sin(now / 400) * 0.2
+      }
+    }
+
+    // Idle indicator above downed agents
+    if (indicatorRef.current) {
+      indicatorRef.current.x = Math.round(currentRef.current.x)
+      indicatorRef.current.y = Math.round(currentRef.current.y - 14)
+      indicatorRef.current.visible = showIdleIndicator
+      if (showIdleIndicator) {
+        const bob = Math.sin(now / 600) * 2
+        indicatorRef.current.y += bob
+        indicatorRef.current.alpha = 0.7 + Math.sin(now / 500) * 0.3
+      }
+    }
+
     if (
       markedForRemoval &&
       sprite.alpha <= 0.02 &&
@@ -207,15 +254,43 @@ export function AgentSprite({
   })
 
   return (
-    <pixiSprite
-      ref={spriteRef}
-      texture={tileTexture}
-      x={x}
-      y={y}
-      width={16}
-      height={16}
-      anchor={0.5}
-      roundPixels
-    />
+    <pixiContainer>
+      {selectFrameTexture ? (
+        <pixiSprite
+          ref={selectRef}
+          texture={selectFrameTexture}
+          x={x}
+          y={y}
+          width={24}
+          height={24}
+          anchor={0.5}
+          roundPixels
+          visible={false}
+        />
+      ) : null}
+      <pixiSprite
+        ref={spriteRef}
+        texture={tileTexture}
+        x={x}
+        y={y}
+        width={16}
+        height={16}
+        anchor={0.5}
+        roundPixels
+      />
+      {idleIndicatorTexture ? (
+        <pixiSprite
+          ref={indicatorRef}
+          texture={idleIndicatorTexture}
+          x={x}
+          y={y - 14}
+          width={12}
+          height={12}
+          anchor={0.5}
+          roundPixels
+          visible={false}
+        />
+      ) : null}
+    </pixiContainer>
   )
 }

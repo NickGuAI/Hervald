@@ -1,11 +1,32 @@
 import { type FormEvent, useState } from 'react'
 import { Crown, Plus, X } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
+import { useMachines } from '@/hooks/use-agents'
 import { cn } from '@/lib/utils'
+import type { AgentType, ClaudePermissionMode, SessionType } from '@/types'
+import { NewSessionForm } from '../agents/components/NewSessionForm'
+import { ModalFormContainer } from '../components/ModalFormContainer'
 import { CommanderList } from './components/CommanderList'
 import { QuestBoard } from './components/QuestBoard'
 import { HeartbeatMonitor } from './components/HeartbeatMonitor'
 import { useCommander } from './hooks/useCommander'
+
+declare module './hooks/useCommander' {
+  interface CommanderSession {
+    channelMeta?: {
+      provider: 'whatsapp' | 'telegram' | 'discord'
+      displayName: string
+      subject?: string
+      space?: string
+    }
+  }
+}
+
+const CHANNEL_PROVIDER_LABELS: Record<'whatsapp' | 'telegram' | 'discord', string> = {
+  whatsapp: 'WhatsApp',
+  telegram: 'Telegram',
+  discord: 'Discord',
+}
 
 function formatDateTime(value: string | null | undefined): string {
   if (!value) {
@@ -23,11 +44,19 @@ function formatDateTime(value: string | null | undefined): string {
 export default function CommandersPage() {
   const navigate = useNavigate()
   const commander = useCommander()
+  const { data: machines } = useMachines()
+  const machineList = machines ?? []
   const selectedCommanderId = commander.selectedCommander?.id ?? null
+  const selectedChannelMeta = commander.selectedCommander?.channelMeta
 
   const [showCronForm, setShowCronForm] = useState(false)
   const [cronSchedule, setCronSchedule] = useState('')
   const [cronInstruction, setCronInstruction] = useState('')
+  const [cronWorkDir, setCronWorkDir] = useState('')
+  const [cronMode, setCronMode] = useState<ClaudePermissionMode>('acceptEdits')
+  const [cronAgentType, setCronAgentType] = useState<AgentType>('claude')
+  const [cronSessionType, setCronSessionType] = useState<SessionType>('stream')
+  const [cronSelectedHost, setCronSelectedHost] = useState('')
   const [cronFormError, setCronFormError] = useState<string | null>(null)
 
   const pageError = commander.actionError ?? commander.commandersError
@@ -54,11 +83,26 @@ export default function CommandersPage() {
       setCronFormError('Schedule and instruction are required.')
       return
     }
+    const workDir = cronWorkDir.trim()
     setCronFormError(null)
     try {
-      await commander.addCron({ commanderId: selectedCommanderId, schedule, instruction })
+      await commander.addCron({
+        commanderId: selectedCommanderId,
+        schedule,
+        instruction,
+        ...(cronAgentType !== 'claude' ? { agentType: cronAgentType as 'claude' | 'codex' } : {}),
+        ...(cronSessionType !== 'stream' ? { sessionType: cronSessionType } : {}),
+        ...(cronMode !== 'acceptEdits' ? { permissionMode: cronMode } : {}),
+        ...(workDir ? { workDir } : {}),
+        ...(cronSelectedHost ? { machine: cronSelectedHost } : {}),
+      })
       setCronSchedule('')
       setCronInstruction('')
+      setCronWorkDir('')
+      setCronMode('acceptEdits')
+      setCronAgentType('claude')
+      setCronSessionType('stream')
+      setCronSelectedHost('')
       setShowCronForm(false)
     } catch (error) {
       setCronFormError(error instanceof Error ? error.message : 'Failed to add cron')
@@ -115,6 +159,19 @@ export default function CommandersPage() {
             isStopPending={commander.stopPending}
           />
           <div className="grid grid-cols-1 gap-4 xl:min-h-0 xl:grid-rows-[minmax(0,1fr)_minmax(12rem,16rem)]">
+            {selectedChannelMeta && (
+              <div className="card-sumi px-4 py-3">
+                <p className="section-title">Channel Commander</p>
+                <p className="mt-1 font-mono text-sm text-sumi-black truncate">
+                  {CHANNEL_PROVIDER_LABELS[selectedChannelMeta.provider]} • {selectedChannelMeta.displayName}
+                </p>
+                {selectedChannelMeta.subject && (
+                  <p className="mt-1 text-whisper text-sumi-diluted truncate">
+                    {selectedChannelMeta.subject}
+                  </p>
+                )}
+              </div>
+            )}
             <QuestBoard commander={commander.selectedCommander} />
 
             <div className="min-h-0 grid grid-cols-1 xl:grid-cols-2 gap-4">
@@ -128,9 +185,42 @@ export default function CommandersPage() {
                     className="btn-ghost !px-3 !py-1.5 text-xs inline-flex items-center gap-1.5 disabled:opacity-60 disabled:cursor-not-allowed"
                   >
                     <Plus size={12} />
-                    {showCronForm ? 'Close' : 'Add'}
+                    {showCronForm ? 'Close' : 'Add Scheduled Run'}
                   </button>
                 </header>
+
+                <ModalFormContainer
+                  open={Boolean(commander.selectedCommander && showCronForm)}
+                  title="Add Scheduled Run"
+                  onClose={() => setShowCronForm(false)}
+                >
+                  <NewSessionForm
+                    cwd={cronWorkDir}
+                    setCwd={setCronWorkDir}
+                    mode={cronMode}
+                    setMode={setCronMode}
+                    task={cronInstruction}
+                    setTask={setCronInstruction}
+                    agentType={cronAgentType}
+                    setAgentType={setCronAgentType}
+                    sessionType={cronSessionType}
+                    setSessionType={setCronSessionType}
+                    machines={machineList}
+                    selectedHost={cronSelectedHost}
+                    setSelectedHost={setCronSelectedHost}
+                    isCreating={commander.addCronPending}
+                    createError={cronFormError}
+                    onSubmit={(e) => void handleAddCron(e)}
+                    schedule={cronSchedule}
+                    setSchedule={setCronSchedule}
+                    submitLabel="Add Scheduled Run"
+                    taskLabel="Instruction"
+                    taskPlaceholder="Check your quest board and pick up pending quests."
+                    taskRequired
+                    showNameField={false}
+                    agentOptions={['claude', 'codex']}
+                  />
+                </ModalFormContainer>
 
                 <div className="flex-1 min-h-0 overflow-y-auto p-3 space-y-2">
                   {!commander.selectedCommander && (
@@ -145,43 +235,6 @@ export default function CommandersPage() {
 
                   {commander.selectedCommander && !commander.cronsLoading && commander.crons.length === 0 && !commander.cronsError && !showCronForm && (
                     <p className="text-sm text-sumi-diluted">No scheduled runs for this commander.</p>
-                  )}
-
-                  {commander.selectedCommander && showCronForm && (
-                    <form
-                      onSubmit={(e) => void handleAddCron(e)}
-                      className="rounded-lg border border-dashed border-ink-border p-3 space-y-2"
-                    >
-                      <div>
-                        <label className="section-title block mb-1">Schedule</label>
-                        <input
-                          value={cronSchedule}
-                          onChange={(e) => setCronSchedule(e.target.value)}
-                          placeholder="*/5 * * * *"
-                          className="w-full px-3 py-2 rounded-lg border border-ink-border bg-washi-aged font-mono text-[16px] md:text-sm focus:outline-none focus:border-ink-border-hover"
-                        />
-                      </div>
-                      <div>
-                        <label className="section-title block mb-1">Instruction</label>
-                        <textarea
-                          value={cronInstruction}
-                          onChange={(e) => setCronInstruction(e.target.value)}
-                          placeholder="Check your quest board and pick up pending quests."
-                          className="w-full min-h-16 px-3 py-2 rounded-lg border border-ink-border bg-washi-aged text-[16px] md:text-sm focus:outline-none focus:border-ink-border-hover"
-                        />
-                      </div>
-                      {cronFormError && (
-                        <p className="text-xs text-accent-vermillion">{cronFormError}</p>
-                      )}
-                      <button
-                        type="submit"
-                        disabled={commander.addCronPending}
-                        className="btn-primary disabled:opacity-60 disabled:cursor-not-allowed inline-flex items-center gap-2"
-                      >
-                        <Plus size={14} />
-                        {commander.addCronPending ? 'Adding...' : 'Add Cron'}
-                      </button>
-                    </form>
                   )}
 
                   {commander.selectedCommander && commander.crons.map((cron) => (

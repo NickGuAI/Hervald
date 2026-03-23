@@ -64,7 +64,7 @@ function getSummaryPeriodLabel(period: string): string {
     const month = period.slice('month:'.length)
     const parsed = new Date(`${month}-01T00:00:00.000Z`)
     if (!Number.isNaN(parsed.getTime())) {
-      return parsed.toLocaleString(undefined, { month: 'short', year: 'numeric' })
+      return parsed.toLocaleString(undefined, { month: 'short', year: 'numeric', timeZone: 'UTC' })
     }
   }
   return 'Selected period'

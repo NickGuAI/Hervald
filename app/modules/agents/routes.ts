@@ -16,6 +16,12 @@ import { createAuth0Verifier } from '../../server/middleware/auth0.js'
 import { bootstrapFactoryWorktree } from '../factory/worktree.js'
 import { resolveCommanderDataDir, resolveCommanderNamesPath } from '../commanders/paths.js'
 import { CommanderSessionStore, type CommanderSession } from '../commanders/store.js'
+import {
+  extractMessages,
+  readCommanderTranscript,
+  type MessageRoleFilter,
+  type SessionMessagesResponse,
+} from './session-messages.js'
 import { JournalWriter, EmergencyFlusher } from '../commanders/memory/index.js'
 import { KeyedAsyncQueue } from './message-queue.js'
 import { QuestStore } from '../commanders/quest-store.js'
@@ -45,6 +51,8 @@ const FACTORY_SESSION_PREFIX = 'factory-'
 const COMMANDER_SESSION_NAME_PREFIX = 'commander-'
 const COMMANDER_PATH_SEGMENT_PATTERN = /^[a-zA-Z0-9._-]+$/
 const COMMAND_ROOM_STALE_SESSION_TTL_MS = 15 * 60 * 1000
+const COMMAND_ROOM_COMPLETED_SESSION_TTL_MS = 24 * 60 * 60 * 1000
+const DONE_WORKER_TTL_MS = 30 * 60 * 1000 // 30 minutes
 const FACTORY_BRANCH_PATTERN = /^[\w-]+$/
 const GITHUB_ISSUE_URL_PATTERN = /^https:\/\/github\.com\/([\w.-]+)\/([\w.-]+?)(?:\.git)?\/issues\/(\d+)(?:[/?#].*)?$/
 const GITHUB_REMOTE_URL_PATTERN = /^(?:https:\/\/github\.com\/|git@github\.com:)([\w.-]+)\/([\w.-]+?)(?:\.git)?$/
@@ -80,6 +88,7 @@ export interface AgentSession {
   label?: string
   created: string
   pid: number
+  processAlive?: boolean
   sessionType?: 'pty' | 'stream'
   agentType?: AgentType
   cwd?: string
@@ -104,6 +113,11 @@ export interface WorldAgent {
   lastToolUse: string | null
   lastUpdatedAt: string
   role: WorldAgentRole
+  channelMeta?: {
+    provider: 'whatsapp' | 'telegram' | 'discord'
+    displayName: string
+    chatType: 'direct' | 'group' | 'channel' | 'forum-topic'
+  }
 }
 
 export interface PtyHandle {
@@ -235,6 +249,7 @@ interface WorkerSummary {
 interface ExitedStreamSessionState {
   phase: 'exited'
   hadResult: boolean
+  exitedAt: number // Date.now() at exit — used for done-worker TTL
 }
 
 interface StreamSessionCreateOptions {
@@ -671,6 +686,16 @@ function summarizeWorkerStates(workers: WorkerState[]): WorkerSummary {
   return summary
 }
 
+function isWorkerOrchestrationComplete(summary: WorkerSummary): boolean {
+  return (
+    summary.total > 0
+    && summary.done === summary.total
+    && summary.running === 0
+    && summary.starting === 0
+    && summary.down === 0
+  )
+}
+
 function parseFrontmatter(content: string): Record<string, string | boolean> {
   const match = content.match(/^---\n([\s\S]*?)\n---/)
   if (!match) return {}
@@ -865,6 +890,15 @@ function toCommanderWorldAgent(session: CommanderSession): WorldAgent {
     lastToolUse: null,
     lastUpdatedAt: session.lastHeartbeat ?? session.created,
     role: 'commander',
+    ...(session.channelMeta
+      ? {
+          channelMeta: {
+            provider: session.channelMeta.provider,
+            displayName: session.channelMeta.displayName,
+            chatType: session.channelMeta.chatType,
+          },
+        }
+      : {}),
   }
 }
 
@@ -968,6 +1002,7 @@ export function createAgentsRouter(options: AgentsRouterOptions = {}): AgentsRou
   const sessionEventHandlers = new Map<string, Set<(event: StreamJsonEvent) => void>>()
   const debriefStateBySessionName = new Map<string, DebriefState>()
   const completedSessions = new Map<string, CompletedSession>()
+  const completedSessionEvents = new Map<string, StreamJsonEvent[]>()
   const exitedStreamSessions = new Map<string, ExitedStreamSessionState>()
   const wss = new WebSocketServer({ noServer: true })
   const maxSessions = parseMaxSessions(options.maxSessions)
@@ -1077,14 +1112,24 @@ export function createAgentsRouter(options: AgentsRouterOptions = {}): AgentsRou
 
     const exited = exitedStreamSessions.get(workerSessionName)
     if (exited) {
+      const status = exited.hadResult ? 'done' : 'down'
+      // Auto-evict done workers after TTL
+      if (status === 'done' && Date.now() - exited.exitedAt > DONE_WORKER_TTL_MS) {
+        return { name: workerSessionName, status: 'down', phase: 'exited' }
+      }
       return {
         name: workerSessionName,
-        status: exited.hadResult ? 'done' : 'down',
+        status,
         phase: exited.phase,
       }
     }
 
     if (completedSessions.has(workerSessionName)) {
+      const completed = completedSessions.get(workerSessionName)!
+      const completedAtMs = Date.parse(completed.completedAt)
+      if (Number.isFinite(completedAtMs) && Date.now() - completedAtMs > DONE_WORKER_TTL_MS) {
+        return { name: workerSessionName, status: 'down', phase: 'exited' }
+      }
       return {
         name: workerSessionName,
         status: 'done',
@@ -1382,7 +1427,10 @@ export function createAgentsRouter(options: AgentsRouterOptions = {}): AgentsRou
 
   function getWorldAgentStatus(session: AnySession, nowMs: number): WorldAgentStatus {
     if (session.kind === 'stream' && session.lastTurnCompleted && session.completedTurnAt) {
-      return 'completed'
+      // Commanders are long-lived; turn completion ≠ session completion
+      if (!session.name.startsWith(COMMANDER_SESSION_NAME_PREFIX)) {
+        return 'completed'
+      }
     }
 
     const lastUpdatedAt = resolveLastUpdatedAt(session)
@@ -1502,7 +1550,10 @@ export function createAgentsRouter(options: AgentsRouterOptions = {}): AgentsRou
     if (session.kind === 'pty') return 'idle'
 
     if (session.kind === 'stream' && session.lastTurnCompleted && session.completedTurnAt) {
-      return 'completed'
+      // Commanders are long-lived; turn completion ≠ session completion
+      if (!session.name.startsWith(COMMANDER_SESSION_NAME_PREFIX)) {
+        return 'completed'
+      }
     }
 
     if (hasPendingAskUserQuestion(session)) {
@@ -2203,7 +2254,7 @@ export function createAgentsRouter(options: AgentsRouterOptions = {}): AgentsRou
       }
       completedSessions.set(name, completed)
       scheduleCompletedSessionsWrite()
-      exitedStreamSessions.set(name, { phase: 'exited', hadResult: true })
+      exitedStreamSessions.set(name, { phase: 'exited', hadResult: true, exitedAt: Date.now() })
 
       // Kill the process if still alive so exit handler fires cleanup.
       const pid = active.process.pid ?? 0
@@ -2225,8 +2276,49 @@ export function createAgentsRouter(options: AgentsRouterOptions = {}): AgentsRou
     }
     completedSessions.set(name, completed)
     scheduleCompletedSessionsWrite()
-    exitedStreamSessions.set(name, { phase: 'exited', hadResult: true })
+    exitedStreamSessions.set(name, { phase: 'exited', hadResult: true, exitedAt: Date.now() })
     res.json({ name, completed: true, status: completed.subtype })
+  })
+
+  router.delete('/sessions/:name/workers/done', requireWriteAccess, (req, res) => {
+    const sessionName = parseSessionName(req.params.name)
+    if (!sessionName) {
+      res.status(400).json({ error: 'Invalid session name' })
+      return
+    }
+
+    const parentSession = sessions.get(sessionName)
+    if (!parentSession || parentSession.kind !== 'stream') {
+      res.status(404).json({ error: `Stream session "${sessionName}" not found` })
+      return
+    }
+
+    // Identify done workers and remove them
+    const doneWorkers: string[] = []
+    for (const workerName of parentSession.spawnedWorkers) {
+      const state = resolveWorkerState(workerName)
+      if (state.status === 'done' || state.status === 'down') {
+        doneWorkers.push(workerName)
+      }
+    }
+
+    parentSession.spawnedWorkers = parentSession.spawnedWorkers.filter(
+      (name) => !doneWorkers.includes(name),
+    )
+    for (const workerName of doneWorkers) {
+      sessions.delete(workerName)
+      completedSessions.delete(workerName)
+      exitedStreamSessions.delete(workerName)
+    }
+
+    if (doneWorkers.length > 0) {
+      schedulePersistedSessionsWrite()
+    }
+
+    res.json({
+      cleared: doneWorkers.length,
+      workers: getWorkerStates(sessionName),
+    })
   })
 
   router.get('/sessions/:name', requireReadAccess, (req, res) => {
@@ -2276,7 +2368,7 @@ export function createAgentsRouter(options: AgentsRouterOptions = {}): AgentsRou
             : toExitBasedCompletedSession(name, exitEvent, active.usage.costUsd)
           completedSessions.set(name, completed)
           scheduleCompletedSessionsWrite()
-          exitedStreamSessions.set(name, { phase: 'exited', hadResult: Boolean(active.finalResultEvent) })
+          exitedStreamSessions.set(name, { phase: 'exited', hadResult: Boolean(active.finalResultEvent), exitedAt: Date.now() })
           sessions.delete(name)
           schedulePersistedSessionsWrite()
           res.json({
@@ -2333,40 +2425,165 @@ export function createAgentsRouter(options: AgentsRouterOptions = {}): AgentsRou
     res.status(404).json({ error: 'Session not found' })
   })
 
-  /** Prune factory sessions whose PID is no longer alive. */
-  function pruneDeadFactorySessions(): void {
-    const toRemove: string[] = []
-    for (const [sessionName, session] of sessions) {
-      if (session.kind !== 'stream') continue
-      if (!isFactorySessionName(sessionName)) continue
-      const pid = session.process.pid ?? 0
-      if (pid > 0 && !isPidAlive(pid)) {
-        toRemove.push(sessionName)
+  // -----------------------------------------------------------------------
+  // GET /sessions/:name/messages — peek at normalized messages
+  // -----------------------------------------------------------------------
+
+  router.get('/sessions/:name/messages', requireReadAccess, async (req, res) => {
+    const name = parseSessionName(req.params.name)
+    if (!name) {
+      res.status(400).json({ error: 'Invalid session name' })
+      return
+    }
+
+    // Parse query params
+    const rawLast = req.query.last
+    let last: number | undefined
+    if (rawLast !== undefined) {
+      const parsed = Number(rawLast)
+      if (!Number.isFinite(parsed) || parsed < 1 || !Number.isInteger(parsed)) {
+        res.status(400).json({ error: 'Invalid last parameter: expected positive integer' })
+        return
+      }
+      last = parsed
+    }
+
+    const rawRole = req.query.role
+    let roleFilter: MessageRoleFilter = 'all'
+    if (rawRole !== undefined) {
+      if (rawRole !== 'user' && rawRole !== 'assistant' && rawRole !== 'all') {
+        res.status(400).json({ error: 'Invalid role parameter: expected user, assistant, or all' })
+        return
+      }
+      roleFilter = rawRole as MessageRoleFilter
+    }
+
+    // 1) Check active in-memory sessions (stream + openclaw have events[])
+    const active = sessions.get(name)
+    if (active) {
+      const events = (active.kind === 'stream' || active.kind === 'openclaw')
+        ? active.events
+        : []
+
+      const messages = extractMessages(events, roleFilter, last)
+      const response: SessionMessagesResponse = {
+        session: name,
+        messages,
+        source: 'live',
+        totalEvents: events.length,
+      }
+      res.json(response)
+      return
+    }
+
+    // 2) Check commander sessions — resolve transcript JSONL
+    if (name.startsWith(COMMANDER_SESSION_NAME_PREFIX)) {
+      const commanderId = name.slice(COMMANDER_SESSION_NAME_PREFIX.length).trim()
+      const dataDir = commanderDataDir
+
+      try {
+        const commanderStore = options.commanderSessionStorePath !== undefined
+          ? new CommanderSessionStore(options.commanderSessionStorePath)
+          : new CommanderSessionStore()
+        const commanderSession = await commanderStore.get(commanderId)
+
+        if (commanderSession) {
+          // Resolve the primary transcript ID — prefer claudeSessionId, then
+          // codexThreadId (P2-1), then fall back to the bare commander ID.
+          const primaryId = sanitizeTranscriptFileKey(
+            commanderSession.claudeSessionId ?? commanderSession.codexThreadId ?? commanderId,
+          )
+
+          // Pre-init events may be written under the session name before the
+          // init event sets claudeSessionId/codexThreadId (P2-3).  Build a
+          // de-duplicated list of transcript IDs to read & merge.
+          const preInitId = sanitizeTranscriptFileKey(name)
+          const transcriptIds = primaryId
+            ? (preInitId && preInitId !== primaryId ? [preInitId, primaryId] : [primaryId])
+            : (preInitId ? [preInitId] : [])
+
+          let allEvents: StreamJsonEvent[] = []
+          for (const tid of transcriptIds) {
+            const events = await readCommanderTranscript(commanderId, tid, dataDir)
+            if (events) {
+              allEvents = allEvents.concat(events)
+            }
+          }
+
+          if (allEvents.length > 0) {
+            const messages = extractMessages(allEvents, roleFilter, last)
+            const response: SessionMessagesResponse = {
+              session: name,
+              messages,
+              source: 'transcript',
+              totalEvents: allEvents.length,
+            }
+            res.json(response)
+            return
+          }
+        }
+      } catch {
+        // Fall through to 404 if commander store is unavailable
       }
     }
 
-    for (const sessionName of toRemove) {
-      const session = sessions.get(sessionName)
-      if (!session || session.kind !== 'stream') continue
-
-      const exitEvent: StreamJsonEvent = { type: 'exit', exitCode: -1, text: 'Process not found (PID liveness check)' }
-      const completed = session.finalResultEvent
-        ? toCompletedSession(sessionName, session.completedTurnAt ?? new Date().toISOString(), session.finalResultEvent, session.usage.costUsd)
-        : toExitBasedCompletedSession(sessionName, exitEvent, session.usage.costUsd)
-      completedSessions.set(sessionName, completed)
-      exitedStreamSessions.set(sessionName, { phase: 'exited', hadResult: Boolean(session.finalResultEvent) })
-      sessions.delete(sessionName)
+    // 3) Check completed sessions — serve snapshotted events when available (P2-5)
+    const completed = completedSessions.get(name)
+    if (completed) {
+      const snapshotEvents = completedSessionEvents.get(name) ?? []
+      const messages = extractMessages(snapshotEvents, roleFilter, last)
+      const response: SessionMessagesResponse = {
+        session: name,
+        messages,
+        source: 'live',
+        totalEvents: snapshotEvents.length,
+      }
+      res.json(response)
+      return
     }
 
-    if (toRemove.length > 0) {
-      scheduleCompletedSessionsWrite()
-      schedulePersistedSessionsWrite()
+    res.status(404).json({ error: 'Session not found' })
+  })
+
+  /** Prune stream sessions whose PID is no longer alive. */
+  function pruneDeadStreamSessions(): void {
+    let removedCount = 0
+    let completedChanged = false
+    for (const [sessionName, session] of sessions) {
+      if (session.kind !== 'stream') continue
+      const pid = session.process.pid ?? 0
+      if (pid <= 0 || isPidAlive(pid)) continue
+
+      const alreadyMarkedExited = exitedStreamSessions.has(sessionName)
+      if (!alreadyMarkedExited) {
+        exitedStreamSessions.set(sessionName, { phase: 'exited', hadResult: Boolean(session.finalResultEvent), exitedAt: Date.now() })
+      }
+      if (isOneShotStreamSessionName(sessionName)) {
+        const exitEvent: StreamJsonEvent = { type: 'exit', exitCode: -1, text: 'Process not found (PID liveness check)' }
+        const completed = session.finalResultEvent
+          ? toCompletedSession(sessionName, session.completedTurnAt ?? new Date().toISOString(), session.finalResultEvent, session.usage.costUsd)
+          : toExitBasedCompletedSession(sessionName, exitEvent, session.usage.costUsd)
+        completedSessions.set(sessionName, completed)
+        if (session.events.length > 0) {
+          completedSessionEvents.set(sessionName, session.events.slice())
+        }
+        completedChanged = true
+        sessions.delete(sessionName)
+        removedCount += 1
+        continue
+      }
+
+      // Keep non-one-shot sessions in the map so resumable session state is not discarded.
+      // We only mark them exited for worker-state resolution and UI processAlive rendering.
     }
+
+    if (completedChanged) scheduleCompletedSessionsWrite()
+    if (removedCount > 0) schedulePersistedSessionsWrite()
   }
 
   router.get('/sessions', requireReadAccess, async (_req, res) => {
     pruneStaleCommandRoomSessions()
-    pruneDeadFactorySessions()
+    pruneDeadStreamSessions()
 
     const result: AgentSession[] = []
     const commanderLabels = await getCommanderLabels(
@@ -2385,6 +2602,12 @@ export function createAgentsRouter(options: AgentsRouterOptions = {}): AgentsRou
         ? session.pty.pid
         : (session.kind === 'stream' ? (session.process.pid ?? 0) : 0)
       const workerStates = session.kind === 'stream' ? getWorkerStates(name) : []
+      const workerSummary = session.kind === 'stream' ? summarizeWorkerStates(workerStates) : undefined
+      const processAlive = isPidAlive(pid)
+
+      if (session.kind === 'stream' && workerSummary && isWorkerOrchestrationComplete(workerSummary) && !processAlive) {
+        continue
+      }
 
       let label: string | undefined
       if (name.startsWith(COMMANDER_SESSION_NAME_PREFIX)) {
@@ -2397,13 +2620,14 @@ export function createAgentsRouter(options: AgentsRouterOptions = {}): AgentsRou
         label,
         created: session.createdAt,
         pid,
+        processAlive,
         sessionType: session.kind === 'pty' ? 'pty' : 'stream',
         agentType: session.agentType,
         cwd: session.cwd,
         host: session.host,
         parentSession: session.kind === 'stream' ? session.parentSession : undefined,
         spawnedWorkers: session.kind === 'stream' ? [...session.spawnedWorkers] : undefined,
-        workerSummary: session.kind === 'stream' ? summarizeWorkerStates(workerStates) : undefined,
+        workerSummary,
       })
     }
     res.json(result)
@@ -3579,7 +3803,15 @@ export function createAgentsRouter(options: AgentsRouterOptions = {}): AgentsRou
       exitedStreamSessions.set(sessionName, {
         phase: 'exited',
         hadResult: Boolean(session.finalResultEvent),
+        exitedAt: Date.now(),
       })
+
+      // Snapshot events before removing the session so the messages endpoint
+      // can still serve conversation history for completed one-shot sessions (P2-5).
+      if (session.events.length > 0 && (isCommandRoomSessionName(sessionName) || isFactorySessionName(sessionName))) {
+        completedSessionEvents.set(sessionName, session.events.slice())
+      }
+
       cleanupStreamMessageQueue(session)
       sessions.delete(sessionName)
 
@@ -3624,6 +3856,7 @@ export function createAgentsRouter(options: AgentsRouterOptions = {}): AgentsRou
       exitedStreamSessions.set(sessionName, {
         phase: 'exited',
         hadResult: Boolean(session.finalResultEvent),
+        exitedAt: Date.now(),
       })
       cleanupStreamMessageQueue(session)
       sessions.delete(sessionName)
@@ -4187,11 +4420,19 @@ export function createAgentsRouter(options: AgentsRouterOptions = {}): AgentsRou
         return
       }
 
+      const parentSessionName = parseSessionName(req.body?.parentSession) || undefined
       try {
         const session = agentType === 'codex'
-          ? await createCodexAppServerSession(sessionName, mode, task ?? '', requestedMachineCwd)
-          : createStreamSession(sessionName, mode, task ?? '', requestedMachineCwd, machine, agentType)
+          ? await createCodexAppServerSession(sessionName, mode, task ?? '', requestedMachineCwd, { parentSession: parentSessionName })
+          : createStreamSession(sessionName, mode, task ?? '', requestedMachineCwd, machine, agentType, { parentSession: parentSessionName })
         sessions.set(sessionName, session)
+        // If a parent session is specified, register this session as a spawned worker
+        if (parentSessionName) {
+          const parent = sessions.get(parentSessionName)
+          if (parent?.kind === 'stream' && !parent.spawnedWorkers.includes(sessionName)) {
+            parent.spawnedWorkers.push(sessionName)
+          }
+        }
         schedulePersistedSessionsWrite()
         res.status(201).json({
           sessionName,

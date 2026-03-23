@@ -7,6 +7,7 @@ import { WorkingMemoryStore } from './working-memory.js'
 import { resolveCommanderPaths } from '../paths.js'
 
 export class JournalWriter {
+  private readonly commanderRoot: string
   private readonly memoryRoot: string
   private readonly skillsRoot: string
   private readonly associations: AssociationStore
@@ -14,6 +15,7 @@ export class JournalWriter {
 
   constructor(commanderId: string, basePath?: string) {
     const resolved = resolveCommanderPaths(commanderId, basePath)
+    this.commanderRoot = resolved.commanderRoot
     this.memoryRoot = resolved.memoryRoot
     this.skillsRoot = resolved.skillsRoot
     this.associations = new AssociationStore(commanderId, basePath)

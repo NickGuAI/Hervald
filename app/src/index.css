@@ -429,13 +429,15 @@
     border-collapse: collapse;
     display: block;
     overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    max-width: 100%;
   }
   .session-view-overlay .msg-agent-md th,
   .session-view-overlay .msg-agent-md td {
     border: 1px solid var(--msg-border);
     padding: 6px 8px;
     text-align: left;
-    white-space: nowrap;
+    white-space: normal;
     font-size: 12px;
   }
   .session-view-overlay .msg-agent-md th {

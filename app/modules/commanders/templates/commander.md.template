@@ -1,0 +1,20 @@
+---
+id: {{id_yaml}}
+host: {{host_yaml}}
+persona: {{persona_yaml}}
+created: {{created_yaml}}
+cwd: {{cwd_yaml}}
+---
+
+# Commander Identity
+
+## Persona
+{{persona}}
+
+## Hostname
+{{host}}
+
+## Metadata
+- Commander ID: `{{id}}`
+- Created: `{{created}}`
+- Workspace CWD: {{cwd_display}}

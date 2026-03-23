@@ -476,6 +476,10 @@ export class TelemetryHub {
 
     const modelTotals = new Map<string, { model: string; cost: number; calls: number }>()
     for (const call of calls) {
+      const dayKey = toUtcDayKey(new Date(call.timestamp))
+      if (dayKey < periodStartKey || dayKey > periodEndKey) {
+        continue
+      }
       const currentModel = modelTotals.get(call.model) ?? {
         model: call.model,
         cost: 0,
@@ -491,15 +495,39 @@ export class TelemetryHub {
       string,
       { agent: string; cost: number; sessions: number }
     >()
-    for (const session of sessions) {
-      const current = topAgentTotals.get(session.agentName) ?? {
-        agent: session.agentName,
+    for (const call of calls) {
+      const dayKey = toUtcDayKey(new Date(call.timestamp))
+      if (dayKey < periodStartKey || dayKey > periodEndKey) {
+        continue
+      }
+      const sessionState = this.sessions.get(call.sessionId)
+      const agentName = sessionState?.agentName ?? 'unknown'
+      const current = topAgentTotals.get(agentName) ?? {
+        agent: agentName,
         cost: 0,
         sessions: 0,
       }
-      current.cost += session.totalCost
-      current.sessions += 1
-      topAgentTotals.set(session.agentName, current)
+      current.cost += call.cost
+      topAgentTotals.set(agentName, current)
+    }
+    // Count sessions per agent (a session counts if it has any call in the period)
+    const agentSessionIds = new Map<string, Set<string>>()
+    for (const call of calls) {
+      const dayKey = toUtcDayKey(new Date(call.timestamp))
+      if (dayKey < periodStartKey || dayKey > periodEndKey) {
+        continue
+      }
+      const sessionState = this.sessions.get(call.sessionId)
+      const agentName = sessionState?.agentName ?? 'unknown'
+      const ids = agentSessionIds.get(agentName) ?? new Set()
+      ids.add(call.sessionId)
+      agentSessionIds.set(agentName, ids)
+    }
+    for (const [agent, ids] of agentSessionIds) {
+      const entry = topAgentTotals.get(agent)
+      if (entry) {
+        entry.sessions = ids.size
+      }
     }
 
     const topAgents = [...topAgentTotals.values()]

@@ -233,7 +233,7 @@ afterEach(async () => {
   vi.clearAllMocks()
   // Small drain to allow any in-flight async heartbeat log writes to complete
   // before deleting temp directories, preventing ENOTEMPTY race conditions.
-  await sleep(20)
+  await sleep(75)
   await Promise.all(
     tempDirs.splice(0).map((directory) =>
       rm(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 }),

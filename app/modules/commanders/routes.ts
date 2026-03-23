@@ -47,11 +47,17 @@ import {
 } from './choose-heartbeat-mode.js'
 import {
   CommanderSessionStore,
+  type CommanderChannelMeta,
   type CommanderCurrentTask,
+  type CommanderLastRoute,
   type CommanderSession,
   type HeartbeatContextConfig,
   type CommanderTaskSource,
 } from './store.js'
+import {
+  readCommanderIdentity,
+  scaffoldCommanderIdentity,
+} from './templates/render.js'
 import {
   QuestStore,
   type QuestArtifact,
@@ -77,11 +83,13 @@ import {
 const SESSION_ID_PATTERN = /^[a-zA-Z0-9_-]+$/
 const HOST_PATTERN = /^[a-zA-Z0-9_-]+$/
 
-// Serialize read-modify-write on names.json to prevent concurrent mutation races
-let namesMutex: Promise<void> = Promise.resolve()
+// Serialize read-modify-write on names.json per file path to prevent
+// concurrent mutation races without cross-directory coupling.
+const namesMutexByPath = new Map<string, Promise<void>>()
 function withNamesLock(dataDir: string, fn: (names: Record<string, string>) => void): Promise<void> {
-  const next = namesMutex.then(async () => {
-    const namesPath = resolveCommanderNamesPath(dataDir)
+  const namesPath = resolveCommanderNamesPath(dataDir)
+  const previous = namesMutexByPath.get(namesPath) ?? Promise.resolve()
+  const next = previous.then(async () => {
     let names: Record<string, string> = {}
     try {
       names = JSON.parse(await readFile(namesPath, 'utf8')) as Record<string, string>
@@ -92,8 +100,13 @@ function withNamesLock(dataDir: string, fn: (names: Record<string, string>) => v
     await mkdir(path.dirname(namesPath), { recursive: true })
     await writeFile(namesPath, JSON.stringify(names, null, 2), 'utf8')
   })
-  namesMutex = next.catch(() => {}) // keep chain alive on failure
-  return next
+  const guarded = next.catch(() => {}) // keep chain alive on failure
+  namesMutexByPath.set(namesPath, guarded)
+  return next.finally(() => {
+    if (namesMutexByPath.get(namesPath) === guarded) {
+      namesMutexByPath.delete(namesPath)
+    }
+  })
 }
 
 const STARTUP_PROMPT = 'Commander runtime started. Acknowledge readiness and await instructions.'
@@ -114,6 +127,12 @@ const QUEST_ARTIFACT_TYPES = new Set<QuestArtifactType>(['github_issue', 'github
 const DEFAULT_CONTEXT_PRESSURE_INPUT_TOKEN_THRESHOLD = 150_000
 const REMOTE_SYNC_SHARED_SECRET_ENV = 'COMMANDER_REMOTE_SYNC_SHARED_SECRET'
 const SALIENCE_LEVELS = new Set<JournalEntry['salience']>(['SPIKE', 'NOTABLE', 'ROUTINE'])
+const MAX_PERSONA_LENGTH = 500
+const CHANNEL_PROVIDER_LABELS: Record<CommanderChannelMeta['provider'], string> = {
+  whatsapp: 'WhatsApp',
+  telegram: 'Telegram',
+  discord: 'Discord',
+}
 
 type StreamEvent = Record<string, unknown>
 type CommanderMessageMode = 'collect' | 'followup'
@@ -155,6 +174,17 @@ type CommanderSessionResponse = Omit<CommanderSession, 'remoteOrigin'> & {
   }
 }
 
+export interface CommanderChannelReplyDispatchInput {
+  commanderId: string
+  message: string
+  channelMeta: CommanderChannelMeta
+  lastRoute: CommanderLastRoute
+}
+
+export type CommanderChannelReplyDispatcher = (
+  input: CommanderChannelReplyDispatchInput,
+) => Promise<void> | void
+
 export interface CommandersRouterOptions {
   sessionStore?: CommanderSessionStore
   sessionStorePath?: string
@@ -180,6 +210,7 @@ export interface CommandersRouterOptions {
   githubToken?: string
   agentsSessionStorePath?: string
   remoteSyncSharedSecret?: string
+  channelReplyDispatchers?: Partial<Record<CommanderChannelMeta['provider'], CommanderChannelReplyDispatcher>>
 }
 
 export interface CommandersRouterResult {
@@ -391,6 +422,206 @@ function parseMessage(raw: unknown): string | null {
 
   const trimmed = raw.trim()
   return trimmed.length > 0 ? trimmed : null
+}
+
+function parseOptionalPersona(raw: unknown): { valid: true; value: string | undefined } | { valid: false } {
+  if (raw === undefined || raw === null) {
+    return { valid: true, value: undefined }
+  }
+  if (typeof raw !== 'string') {
+    return { valid: false }
+  }
+
+  const trimmed = raw.trim()
+  if (trimmed.length === 0) {
+    return { valid: true, value: undefined }
+  }
+  if (trimmed.length > MAX_PERSONA_LENGTH) {
+    return { valid: false }
+  }
+  return { valid: true, value: trimmed }
+}
+
+function parseChannelProvider(raw: unknown): CommanderChannelMeta['provider'] | null {
+  return raw === 'whatsapp' || raw === 'telegram' || raw === 'discord'
+    ? raw
+    : null
+}
+
+function parseChannelChatType(raw: unknown): CommanderChannelMeta['chatType'] | null {
+  return raw === 'direct' || raw === 'group' || raw === 'channel' || raw === 'forum-topic'
+    ? raw
+    : null
+}
+
+function normalizeChannelHostToken(raw: string): string {
+  return raw
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, '-')
+    .replace(/^-+/, '')
+    .replace(/-+$/, '')
+}
+
+function buildChannelCommanderHost(meta: Pick<CommanderChannelMeta, 'provider' | 'chatType' | 'peerId'>): string {
+  const parts = [
+    normalizeChannelHostToken(meta.provider),
+    normalizeChannelHostToken(meta.chatType),
+    normalizeChannelHostToken(meta.peerId),
+  ].filter((part) => part.length > 0)
+
+  return parts.join('-') || `${meta.provider}-channel`
+}
+
+function buildCommanderSessionKeyFromChannelMeta(
+  meta: Pick<CommanderChannelMeta, 'provider' | 'accountId' | 'chatType' | 'peerId' | 'threadId'>,
+): string {
+  const base = `${meta.provider}:${meta.accountId}:${meta.chatType}:${meta.peerId}`
+  if (meta.chatType === 'forum-topic' && meta.threadId) {
+    return `${base}:thread:${meta.threadId}`
+  }
+  return base
+}
+
+interface ParsedChannelMessageInput {
+  message: string
+  mode: CommanderMessageMode
+  channelMeta: CommanderChannelMeta
+  lastRoute: CommanderLastRoute
+  host: string
+}
+
+function parseChannelMessageInput(raw: unknown): { valid: true; value: ParsedChannelMessageInput } | { valid: false; error: string } {
+  if (!isObject(raw)) {
+    return { valid: false, error: 'Payload must be a JSON object' }
+  }
+
+  const provider = parseChannelProvider(raw.provider)
+  if (!provider) {
+    return { valid: false, error: 'provider must be one of: whatsapp, telegram, discord' }
+  }
+
+  const accountId = parseMessage(raw.accountId)
+  if (!accountId) {
+    return { valid: false, error: 'accountId is required' }
+  }
+
+  const parsedChatType = parseChannelChatType(raw.chatType)
+  if (!parsedChatType) {
+    return { valid: false, error: 'chatType must be one of: direct, group, channel, forum-topic' }
+  }
+
+  const parsedPeerId = parseMessage(raw.peerId)
+  if (!parsedPeerId) {
+    return { valid: false, error: 'peerId is required' }
+  }
+
+  const message = parseMessage(raw.message)
+  if (!message) {
+    return { valid: false, error: 'message must be a non-empty string' }
+  }
+
+  const mode = raw.mode === undefined ? 'followup' : parseMessageMode(raw.mode)
+  if (!mode) {
+    return { valid: false, error: 'mode must be either "collect" or "followup"' }
+  }
+
+  const displayName = parseMessage(raw.displayName)
+  const subject = parseMessage(raw.subject)
+  const space = parseMessage(raw.space)
+  const groupId = parseMessage(raw.groupId)
+  const parentPeerId = parseMessage(raw.parentPeerId)
+  const threadId = parseMessage(raw.threadId)
+
+  let chatType = parsedChatType
+  let peerId = parsedPeerId
+  let routeThreadId: string | undefined = undefined
+  let canonicalParentPeerId = parentPeerId ?? undefined
+
+  if (provider === 'whatsapp') {
+    if (chatType !== 'direct' && chatType !== 'group') {
+      return { valid: false, error: 'whatsapp chatType must be direct or group' }
+    }
+    if (threadId) {
+      return { valid: false, error: 'whatsapp does not support threadId routing' }
+    }
+  }
+
+  if (provider === 'telegram') {
+    if (chatType !== 'direct' && chatType !== 'group' && chatType !== 'forum-topic') {
+      return { valid: false, error: 'telegram chatType must be direct, group, or forum-topic' }
+    }
+    if (chatType === 'forum-topic') {
+      if (!threadId) {
+        return { valid: false, error: 'telegram forum-topic requires threadId' }
+      }
+      routeThreadId = threadId
+    } else if (threadId) {
+      return { valid: false, error: 'telegram threadId is only valid for forum-topic chatType' }
+    }
+  }
+
+  if (provider === 'discord') {
+    if (chatType !== 'direct' && chatType !== 'channel') {
+      return { valid: false, error: 'discord chatType must be direct or channel' }
+    }
+    if (threadId) {
+      if (chatType !== 'channel') {
+        return { valid: false, error: 'discord threadId can only be used with channel chatType' }
+      }
+      const parent = parentPeerId ?? parsedPeerId
+      if (!parent) {
+        return { valid: false, error: 'discord thread routing requires parentPeerId or channel peerId' }
+      }
+      chatType = 'channel'
+      peerId = parent
+      routeThreadId = threadId
+      canonicalParentPeerId = parent
+    }
+  }
+
+  const resolvedDisplayName = displayName ?? subject ?? peerId
+  const channelMeta: CommanderChannelMeta = {
+    provider,
+    chatType,
+    accountId,
+    peerId,
+    ...(canonicalParentPeerId ? { parentPeerId: canonicalParentPeerId } : {}),
+    ...(groupId ? { groupId } : {}),
+    ...(routeThreadId ? { threadId: routeThreadId } : {}),
+    sessionKey: buildCommanderSessionKeyFromChannelMeta({
+      provider,
+      accountId,
+      chatType,
+      peerId,
+      threadId: routeThreadId,
+    }),
+    displayName: resolvedDisplayName,
+    ...(subject ? { subject } : {}),
+    ...(space ? { space } : {}),
+  }
+
+  const lastRoute: CommanderLastRoute = {
+    channel: provider,
+    to: peerId,
+    accountId,
+    ...(routeThreadId ? { threadId: routeThreadId } : {}),
+  }
+
+  return {
+    valid: true,
+    value: {
+      message,
+      mode,
+      channelMeta,
+      lastRoute,
+      host: buildChannelCommanderHost(channelMeta),
+    },
+  }
+}
+
+function formatChannelCommanderDisplayName(meta: CommanderChannelMeta): string {
+  const providerLabel = CHANNEL_PROVIDER_LABELS[meta.provider]
+  return `${providerLabel} • ${meta.displayName}`
 }
 
 function parseOptionalCommanderAgentType(
@@ -1404,6 +1635,10 @@ export function createCommandersRouter(
   const commanderDataDir = options.sessionStorePath
     ? path.dirname(path.resolve(options.sessionStorePath))
     : resolveCommanderDataDir()
+  // Prefer explicit memoryBasePath; fall back to commanderDataDir so that
+  // identity scaffolding, reads, and agent instantiation always resolve beside
+  // the configured sessions.json even when memoryBasePath is not set.
+  const commanderBasePath = options.memoryBasePath ?? commanderDataDir
   const now = options.now ?? (() => new Date())
   const contextPressureInputTokenThreshold = parseContextPressureInputTokenThreshold(
     options.contextPressureInputTokenThreshold,
@@ -1433,7 +1668,7 @@ export function createCommandersRouter(
       taskStore: new CommandRoomTaskStore(defaultCommandRoomTaskStorePath()),
       runStore: new CommandRoomRunStore({
         filePath: defaultCommandRoomRunStorePath(),
-        commanderDataDir: options.memoryBasePath,
+        commanderDataDir: commanderBasePath,
       }),
     }
   const commandRoomScheduler = options.commandRoomScheduler
@@ -1449,7 +1684,7 @@ export function createCommandersRouter(
     if (existing) {
       return existing
     }
-    const paths = resolveCommanderCronStorePaths(commanderId, options.memoryBasePath)
+    const paths = resolveCommanderCronStorePaths(commanderId, commanderBasePath)
     const created: CommanderCronStores = {
       taskStore: new CommandRoomTaskStore(paths.tasksPath),
       runStore: new CommandRoomRunStore(paths.runsPath),
@@ -1518,11 +1753,12 @@ export function createCommandersRouter(
 
     return null
   }
-  const heartbeatDataDir = parseMessage(options.heartbeatBasePath) ?? parseMessage(options.memoryBasePath)
+  const heartbeatDataDir = parseMessage(options.heartbeatBasePath) ?? parseMessage(commanderBasePath)
   const heartbeatLog = options.heartbeatLog ?? new HeartbeatLog(
     heartbeatDataDir ? { dataDir: heartbeatDataDir } : undefined,
   )
   const sessionsInterface = options.sessionsInterface
+  const channelReplyDispatchers = options.channelReplyDispatchers ?? {}
   const agentsSessionStorePath = path.resolve(
     options.agentsSessionStorePath ?? DEFAULT_AGENTS_SESSION_STORE_PATH,
   )
@@ -1741,7 +1977,7 @@ export function createCommandersRouter(
           const workflow = await resolveCommanderWorkflow(
             commanderId,
             session.cwd,
-            options.memoryBasePath,
+            commanderBasePath,
           )
           runtime.baseSystemPrompt = resolveEffectiveBasePrompt(workflow.workflow)
           const completedSubAgentEntries = consumeCompletedSubAgentEntries(runtime)
@@ -1753,7 +1989,7 @@ export function createCommandersRouter(
           const enriched = await appendHeartbeatChecklist(
             heartbeatMessage,
             commanderId,
-            options.memoryBasePath,
+            commanderBasePath,
           )
           if (enriched) heartbeatMessage = enriched
         } else {
@@ -1787,15 +2023,15 @@ export function createCommandersRouter(
           const workflow = await resolveCommanderWorkflow(
             commanderId,
             session.cwd,
-            options.memoryBasePath,
+            commanderBasePath,
           )
           const baseSystemPrompt = resolveEffectiveBasePrompt(workflow.workflow)
-          const fallbackAgent = new CommanderAgent(commanderId, options.memoryBasePath)
+          const fallbackAgent = new CommanderAgent(commanderId, commanderBasePath)
           heartbeatMessage = await buildFatHeartbeatMessage(baseSystemPrompt, fallbackAgent, [])
           const enriched = await appendHeartbeatChecklist(
             heartbeatMessage,
             commanderId,
-            options.memoryBasePath,
+            commanderBasePath,
           )
           if (enriched) heartbeatMessage = enriched
         } else {
@@ -1877,7 +2113,7 @@ export function createCommandersRouter(
         const workflow = await resolveCommanderWorkflow(
           commander.id,
           commander.cwd,
-          options.memoryBasePath,
+          commanderBasePath,
         )
         warnInvalidWorkflowHeartbeatInterval(commander.id, workflow)
         const effectiveHeartbeat = resolveEffectiveHeartbeat(commander.heartbeat, workflow.workflow)
@@ -1893,6 +2129,153 @@ export function createCommandersRouter(
         ...current,
         state: 'idle',
       }))
+    }
+  }
+
+  async function dispatchCommanderMessage(input: {
+    commanderId: string
+    message: string
+    mode: CommanderMessageMode
+    pendingSpikeObservations: string[]
+    session?: CommanderSession
+    runtime?: CommanderRuntime
+  }): Promise<{ ok: true } | { ok: false; status: number; error: string }> {
+    const session = input.session ?? await sessionStore.get(input.commanderId)
+    if (!session) {
+      return { ok: false, status: 404, error: `Commander "${input.commanderId}" not found` }
+    }
+
+    const runtime = input.runtime ?? runtimes.get(input.commanderId)
+    if (!runtime || session.state !== 'running') {
+      return { ok: false, status: 409, error: `Commander "${input.commanderId}" is not running` }
+    }
+
+    runtime.lastTaskState = input.message
+    runtime.pendingSpikeObservations = input.pendingSpikeObservations
+
+    if (!sessionsInterface) {
+      return { ok: false, status: 500, error: 'sessionsInterface not configured' }
+    }
+
+    const sessionName = ACTIVE_COMMANDER_SESSIONS.get(input.commanderId)?.sessionName
+      ?? toCommanderSessionName(input.commanderId)
+    if (input.mode === 'followup') {
+      const sent = await sessionsInterface.sendToSession(sessionName, input.message)
+      if (!sent) {
+        return {
+          ok: false,
+          status: 409,
+          error: `Commander "${input.commanderId}" stream session unavailable`,
+        }
+      }
+    } else {
+      runtime.pendingCollect.push(input.message)
+      scheduleCollectSend(input.commanderId, runtime)
+    }
+
+    const issueNumber = session.currentTask?.issueNumber ?? null
+    const repo = toSessionRepo(session)
+    const salience = input.pendingSpikeObservations.length > 0 ? 'SPIKE' : 'NOTABLE'
+    const memoryTags = input.pendingSpikeObservations.length > 0
+      ? ['instruction', 'spike']
+      : ['instruction']
+    try {
+      await Promise.all([
+        runtime.workingMemory.update({
+          source: 'message',
+          summary: input.message,
+          issueNumber,
+          repo,
+          hypothesis: extractHypothesisFromMessage(input.message),
+          files: extractFileMentionsFromMessage(input.message),
+          tags: memoryTags,
+        }),
+        runtime.manager.journalWriter.append({
+          timestamp: now().toISOString(),
+          issueNumber,
+          repo,
+          outcome: 'Commander instruction received',
+          durationMin: null,
+          salience,
+          body: [
+            '### Instruction',
+            input.message,
+            ...(input.pendingSpikeObservations.length > 0
+              ? ['', '### Pending Spike Observations', ...input.pendingSpikeObservations.map((spike) => `- ${spike}`)]
+              : []),
+          ].join('\n'),
+        }),
+      ])
+    } catch (memoryError) {
+      console.error(`[commanders] Failed to persist message memory for "${input.commanderId}":`, memoryError)
+    }
+
+    return { ok: true }
+  }
+
+  async function dispatchCommanderChannelReply(input: {
+    commanderId: string
+    message: string
+  }): Promise<
+    | {
+      ok: true
+      provider: CommanderChannelMeta['provider']
+      sessionKey: string
+      lastRoute: CommanderLastRoute
+    }
+    | { ok: false; status: number; error: string }
+  > {
+    const session = await sessionStore.get(input.commanderId)
+    if (!session) {
+      return { ok: false, status: 404, error: `Commander "${input.commanderId}" not found` }
+    }
+
+    if (!session.channelMeta || !session.lastRoute) {
+      return {
+        ok: false,
+        status: 409,
+        error: `Commander "${input.commanderId}" has no external channel route`,
+      }
+    }
+
+    const provider = session.channelMeta.provider
+    const dispatcher = channelReplyDispatchers[provider]
+    if (!dispatcher) {
+      return {
+        ok: false,
+        status: 501,
+        error: `No outbound dispatcher configured for provider "${provider}"`,
+      }
+    }
+
+    const normalizedLastRoute: CommanderLastRoute = {
+      ...session.lastRoute,
+      channel: provider,
+    }
+
+    try {
+      await dispatcher({
+        commanderId: input.commanderId,
+        message: input.message,
+        channelMeta: {
+          ...session.channelMeta,
+        },
+        lastRoute: normalizedLastRoute,
+      })
+    } catch (error) {
+      const details = error instanceof Error ? parseMessage(error.message) : null
+      return {
+        ok: false,
+        status: 502,
+        error: details ?? `Failed to dispatch outbound ${provider} reply`,
+      }
+    }
+
+    return {
+      ok: true,
+      provider,
+      sessionKey: session.channelMeta.sessionKey,
+      lastRoute: normalizedLastRoute,
     }
   }
 
@@ -1915,9 +2298,11 @@ export function createCommandersRouter(
     }
 
     const runtime = runtimes.get(commanderId)
+    const commanderMd = await readCommanderIdentity(commanderId, commanderBasePath)
     res.json({
       ...toCommanderSessionResponse(session, runtime),
       subAgents: listSubAgentEntries(runtime),
+      commanderMd,
     })
   })
 
@@ -2005,7 +2390,28 @@ export function createCommandersRouter(
 
     try {
       const created = await sessionStore.create(session)
-      await withNamesLock(commanderDataDir, (names) => { names[created.id] = displayName })
+      try {
+        await scaffoldCommanderIdentity(
+          created.id,
+          {
+            id: created.id,
+            host: created.host,
+            created: created.created,
+          },
+          commanderBasePath,
+        )
+      } catch (scaffoldError) {
+        await sessionStore.delete(created.id).catch(() => {})
+        throw scaffoldError
+      }
+      try {
+        await withNamesLock(commanderDataDir, (names) => { names[created.id] = displayName })
+      } catch (error) {
+        console.warn(
+          `[commanders] Failed to persist display name for "${created.id}":`,
+          error,
+        )
+      }
       res.status(201).json({ commanderId: created.id, syncToken })
     } catch (error) {
       res.status(500).json({
@@ -2044,7 +2450,12 @@ export function createCommandersRouter(
     const displayName = parseMessage(req.body?.displayName) ?? host
     const cwd = parseMessage(req.body?.cwd) ?? undefined
     const avatarSeed = parseMessage(req.body?.avatarSeed) ?? undefined
-    const persona = parseMessage(req.body?.persona) ?? undefined
+    const parsedPersona = parseOptionalPersona(req.body?.persona)
+    if (!parsedPersona.valid) {
+      res.status(400).json({ error: `persona must be a string up to ${MAX_PERSONA_LENGTH} characters` })
+      return
+    }
+    const persona = parsedPersona.value
     const defaultHeartbeat = createDefaultHeartbeatState()
     let heartbeat = defaultHeartbeat
 
@@ -2061,6 +2472,7 @@ export function createCommandersRouter(
       id: randomUUID(),
       host,
       avatarSeed,
+      // Keep persona on session for backward compatibility with list/detail consumers.
       persona,
       pid: null,
       state: 'idle',
@@ -2079,13 +2491,147 @@ export function createCommandersRouter(
 
     try {
       const created = await sessionStore.create(session)
-      await withNamesLock(commanderDataDir, (names) => { names[created.id] = displayName })
+      try {
+        await scaffoldCommanderIdentity(
+          created.id,
+          {
+            id: created.id,
+            host: created.host,
+            persona,
+            created: created.created,
+            cwd: created.cwd,
+          },
+          commanderBasePath,
+        )
+      } catch (scaffoldError) {
+        // Rollback the persisted session so retries don't hit the host-conflict check.
+        await sessionStore.delete(created.id).catch(() => {})
+        throw scaffoldError
+      }
+      try {
+        await withNamesLock(commanderDataDir, (names) => { names[created.id] = displayName })
+      } catch (error) {
+        console.warn(
+          `[commanders] Failed to persist display name for "${created.id}":`,
+          error,
+        )
+      }
       res.status(201).json(created)
     } catch (error) {
       res.status(500).json({
         error: error instanceof Error ? error.message : 'Failed to create commander session',
       })
     }
+  })
+
+  router.post('/channel-message', requireWriteAccess, async (req, res) => {
+    const parsed = parseChannelMessageInput(req.body)
+    if (!parsed.valid) {
+      res.status(400).json({ error: parsed.error })
+      return
+    }
+
+    try {
+      const upserted = await sessionStore.findOrCreateBySessionKey(
+        parsed.value.channelMeta.sessionKey,
+        {
+          channelMeta: parsed.value.channelMeta,
+          lastRoute: parsed.value.lastRoute,
+          host: parsed.value.host,
+        },
+      )
+
+      if (upserted.created) {
+        try {
+          await withNamesLock(commanderDataDir, (names) => {
+            names[upserted.commander.id] = formatChannelCommanderDisplayName(parsed.value.channelMeta)
+          })
+        } catch (error) {
+          console.warn(
+            `[commanders] Failed to persist display name for "${upserted.commander.id}":`,
+            error,
+          )
+        }
+      }
+
+      const delivered = await dispatchCommanderMessage({
+        commanderId: upserted.commander.id,
+        message: parsed.value.message,
+        mode: parsed.value.mode,
+        pendingSpikeObservations: [],
+      })
+
+      if (!delivered.ok) {
+        if (delivered.status === 409) {
+          res.status(upserted.created ? 201 : 200).json({
+            accepted: true,
+            delivered: false,
+            created: upserted.created,
+            commanderId: upserted.commander.id,
+            sessionKey: parsed.value.channelMeta.sessionKey,
+            delivery: {
+              status: 'not-delivered',
+              message: delivered.error,
+            },
+          })
+          return
+        }
+
+        res.status(delivered.status).json({
+          accepted: false,
+          delivered: false,
+          created: upserted.created,
+          commanderId: upserted.commander.id,
+          sessionKey: parsed.value.channelMeta.sessionKey,
+          error: delivered.error,
+        })
+        return
+      }
+
+      res.status(upserted.created ? 201 : 200).json({
+        accepted: true,
+        delivered: true,
+        created: upserted.created,
+        commanderId: upserted.commander.id,
+        sessionKey: parsed.value.channelMeta.sessionKey,
+      })
+    } catch (error) {
+      res.status(500).json({
+        error: error instanceof Error ? error.message : 'Failed to route channel message',
+      })
+    }
+  })
+
+  router.post('/:id/channel-reply', requireWriteAccess, async (req, res) => {
+    const commanderId = parseSessionId(req.params.id)
+    if (!commanderId) {
+      res.status(400).json({ error: 'Invalid commander id' })
+      return
+    }
+
+    const message = parseMessage(req.body?.message)
+    if (!message) {
+      res.status(400).json({ error: 'message must be a non-empty string' })
+      return
+    }
+
+    const delivered = await dispatchCommanderChannelReply({
+      commanderId,
+      message,
+    })
+    if (!delivered.ok) {
+      res.status(delivered.status).json({ error: delivered.error })
+      return
+    }
+
+    res.json({
+      accepted: true,
+      delivered: true,
+      commanderId,
+      provider: delivered.provider,
+      sessionKey: delivered.sessionKey,
+      lastRoute: delivered.lastRoute,
+    })
   })
 
   router.post('/:id/start', requireWriteAccess, async (req, res) => {
@@ -2122,18 +2668,18 @@ export function createCommandersRouter(
 
       const manager = new CommanderManager(
         commanderId,
-        options.memoryBasePath,
+        commanderBasePath,
         {
           onSubagentLifecycleEvent: (event) => onSubagentLifecycleEvent(commanderId, event),
         },
       )
       await manager.init()
-      const agent = new CommanderAgent(commanderId, options.memoryBasePath)
+      const agent = new CommanderAgent(commanderId, commanderBasePath)
       const contextPressureBridge = createContextPressureBridge()
       const workflow = await resolveCommanderWorkflow(
         commanderId,
         session.cwd,
-        options.memoryBasePath,
+        commanderBasePath,
       )
       const effectiveBasePrompt = resolveEffectiveBasePrompt(workflow.workflow)
       const flusher = new EmergencyFlusher(
@@ -2164,7 +2710,7 @@ export function createCommandersRouter(
           },
         },
       )
-      const workingMemory = new WorkingMemoryStore(commanderId, options.memoryBasePath)
+      const workingMemory = new WorkingMemoryStore(commanderId, commanderBasePath)
       await workingMemory.ensure()
 
       const started = await sessionStore.update(commanderId, (current) => ({
@@ -2569,7 +3115,14 @@ export function createCommandersRouter(
     sessionsInterface?.deleteSession(toCommanderSessionName(commanderId))
 
     await sessionStore.delete(commanderId)
-    withNamesLock(commanderDataDir, (names) => { delete names[commanderId] }).catch(() => {})
+    try {
+      await withNamesLock(commanderDataDir, (names) => { delete names[commanderId] })
+    } catch (error) {
+      console.warn(
+        `[commanders] Failed to remove display name for "${commanderId}":`,
+        error,
+      )
+    }
     res.status(204).send()
   })
 
@@ -2603,7 +3156,7 @@ export function createCommandersRouter(
       const workflow = await resolveCommanderWorkflow(
         commanderId,
         updated.cwd,
-        options.memoryBasePath,
+        commanderBasePath,
       )
       warnInvalidWorkflowHeartbeatInterval(commanderId, workflow)
       const effectiveHeartbeat = resolveEffectiveHeartbeat(updated.heartbeat, workflow.workflow)
@@ -2637,6 +3190,12 @@ export function createCommandersRouter(
       return
     }
 
+    const spikes = parseOptionalStringArray(req.body?.pendingSpikeObservations)
+    if (spikes === null) {
+      res.status(400).json({ error: 'pendingSpikeObservations must be an array of strings' })
+      return
+    }
+
     const session = await sessionStore.get(commanderId)
     if (!session) {
       res.status(404).json({ error: `Commander "${commanderId}" not found` })
@@ -2649,67 +3208,23 @@ export function createCommandersRouter(
       return
     }
 
-    const spikes = parseOptionalStringArray(req.body?.pendingSpikeObservations)
-    if (spikes === null) {
-      res.status(400).json({ error: 'pendingSpikeObservations must be an array of strings' })
-      return
-    }
-
-    runtime.lastTaskState = message
-    runtime.pendingSpikeObservations = spikes
-
-    if (!sessionsInterface) {
-      res.status(500).json({ error: 'sessionsInterface not configured' })
-      return
-    }
-
-    const sessionName = ACTIVE_COMMANDER_SESSIONS.get(commanderId)?.sessionName
-      ?? toCommanderSessionName(commanderId)
-    if (mode === 'followup') {
-      const sent = await sessionsInterface.sendToSession(sessionName, message)
-      if (!sent) {
-        res.status(409).json({ error: `Commander "${commanderId}" stream session unavailable` })
+    const delivered = await dispatchCommanderMessage({
+      commanderId,
+      message,
+      mode,
+      pendingSpikeObservations: spikes,
+      session,
+      runtime,
+    })
+    if (!delivered.ok) {
+      if (delivered.status === 409) {
+        res.status(409).json({ error: `Commander "${commanderId}" is not running` })
         return
       }
-    } else {
-      runtime.pendingCollect.push(message)
-      scheduleCollectSend(commanderId, runtime)
+      res.status(delivered.status).json({ error: delivered.error })
+      return
     }
 
-    const issueNumber = session.currentTask?.issueNumber ?? null
-    const repo = toSessionRepo(session)
-    const salience = spikes.length > 0 ? 'SPIKE' : 'NOTABLE'
-    const memoryTags = spikes.length > 0 ? ['instruction', 'spike'] : ['instruction']
-    try {
-      await Promise.all([
-        runtime.workingMemory.update({
-          source: 'message',
-          summary: message,
-          issueNumber,
-          repo,
-          hypothesis: extractHypothesisFromMessage(message),
-          files: extractFileMentionsFromMessage(message),
-          tags: memoryTags,
-        }),
-        runtime.manager.journalWriter.append({
-          timestamp: now().toISOString(),
-          issueNumber,
-          repo,
-          outcome: 'Commander instruction received',
-          durationMin: null,
-          salience,
-          body: [
-            '### Instruction',
-            message,
-            ...(spikes.length > 0
-              ? ['', '### Pending Spike Observations', ...spikes.map((spike) => `- ${spike}`)]
-              : []),
-          ].join('\n'),
-        }),
-      ])
-    } catch (memoryError) {
-      console.error(`[commanders] Failed to persist message memory for "${commanderId}":`, memoryError)
-    }
     res.json({ accepted: true })
   })
 
@@ -2769,7 +3284,7 @@ export function createCommandersRouter(
     }
 
     try {
-      const writer = new JournalWriter(commanderId, options.memoryBasePath)
+      const writer = new JournalWriter(commanderId, commanderBasePath)
       await writer.scaffold()
       const result = await writer.appendBatch(date, entries)
       res.json(result)
@@ -2819,7 +3334,7 @@ export function createCommandersRouter(
       return
     }
 
-    const commanderPaths = resolveCommanderPaths(commanderId, options.memoryBasePath)
+    const commanderPaths = resolveCommanderPaths(commanderId, commanderBasePath)
     const memoryRoot = commanderPaths.memoryRoot
     const reposRoot = path.join(memoryRoot, 'repos')
     const skillsRoot = commanderPaths.skillsRoot
@@ -2949,7 +3464,7 @@ export function createCommandersRouter(
     }
 
     try {
-      const commanderPaths = resolveCommanderPaths(commanderId, options.memoryBasePath)
+      const commanderPaths = resolveCommanderPaths(commanderId, commanderBasePath)
       const memoryRoot = commanderPaths.memoryRoot
       const memoryPath = path.join(memoryRoot, 'MEMORY.md')
       const journalRoot = path.join(memoryRoot, 'journal')
@@ -3666,7 +4181,7 @@ export function createCommandersRouter(
 
     try {
       const consolidation = new NightlyConsolidation({
-        basePath: options.memoryBasePath,
+        basePath: commanderBasePath,
         now,
       })
       const report = await consolidation.run(commanderId)
@@ -3700,7 +4215,7 @@ export function createCommandersRouter(
     const topK = typeof body.topK === 'number' && body.topK > 0 ? body.topK : undefined
 
     try {
-      const recollection = new MemoryRecollection(commanderId, options.memoryBasePath)
+      const recollection = new MemoryRecollection(commanderId, commanderBasePath)
       const result = await recollection.recall({ cue, topK })
       res.json(result)
     } catch (error) {
@@ -3732,7 +4247,7 @@ export function createCommandersRouter(
     }
 
     try {
-      const commanderPaths = resolveCommanderPaths(commanderId, options.memoryBasePath)
+      const commanderPaths = resolveCommanderPaths(commanderId, commanderBasePath)
       await mkdir(commanderPaths.memoryRoot, { recursive: true })
       const writer = new MemoryMdWriter(commanderPaths.memoryRoot)
       const result = await writer.updateFacts(facts)

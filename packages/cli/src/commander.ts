@@ -32,11 +32,21 @@ interface RemoteQuest {
   instruction: string
 }
 
-interface RemoteMemoryExportPayload {
+export interface RemoteMemoryExportPayload {
   memoryMd: string
   journal: Record<string, string>
   repos: Record<string, string>
   skills: Record<string, string>
+}
+
+export interface RemoteJournalEntry {
+  timestamp: string
+  issueNumber: number | null
+  repo: string | null
+  outcome: string
+  durationMin: number | null
+  salience: 'SPIKE' | 'NOTABLE' | 'ROUTINE'
+  body: string
 }
 
 export interface CommanderCliDependencies {
@@ -294,7 +304,7 @@ async function readErrorDetail(response: Response): Promise<string | null> {
   }
 }
 
-async function fetchRemoteMemoryExport(
+export async function fetchRemoteMemoryExport(
   fetchImpl: typeof fetch,
   remoteUrl: string,
   commanderId: string,
@@ -367,20 +377,12 @@ async function claimNextRemoteQuest(
   return quest
 }
 
-async function postRemoteJournal(
+export async function postRemoteJournal(
   fetchImpl: typeof fetch,
   remoteUrl: string,
   commanderId: string,
   token: string,
-  entry: {
-    timestamp: string
-    issueNumber: number | null
-    repo: string | null
-    outcome: string
-    durationMin: number | null
-    salience: 'SPIKE' | 'NOTABLE' | 'ROUTINE'
-    body: string
-  },
+  entry: RemoteJournalEntry,
 ): Promise<void> {
   const date = entry.timestamp.slice(0, 10)
   const response = await fetchImpl(

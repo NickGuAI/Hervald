@@ -2,6 +2,7 @@ import { type FormEvent, type ReactNode, useEffect, useState } from 'react'
 import { AlertTriangle, Plus } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { AgentType, ClaudePermissionMode, Machine, SessionType } from '@/types'
+import { ScheduleExpressionField } from '../../components/ScheduleExpressionField'
 import { DirectoryPicker } from './DirectoryPicker'
 
 interface OpenClawGatewayInfo {
@@ -38,9 +39,12 @@ export const CODEX_MODE_OPTIONS: Array<{
   },
 ]
 
+const DEFAULT_AGENT_OPTIONS: AgentType[] = ['claude', 'codex', 'openclaw']
+const NOOP_SET_STRING = (_value: string): undefined => undefined
+
 export function NewSessionForm({
-  name,
-  setName,
+  name = '',
+  setName = NOOP_SET_STRING,
   cwd,
   setCwd,
   mode,
@@ -54,8 +58,8 @@ export function NewSessionForm({
   machines,
   selectedHost,
   setSelectedHost,
-  openclawAgentId,
-  setOpenclawAgentId,
+  openclawAgentId = '',
+  setOpenclawAgentId = NOOP_SET_STRING,
   isCreating,
   createError,
   onSubmit,
@@ -70,9 +74,12 @@ export function NewSessionForm({
   taskPlaceholder = 'Fix the auth bug in login.ts',
   taskRequired = false,
   beforeTaskField,
+  afterScheduleField,
+  showNameField = true,
+  agentOptions = DEFAULT_AGENT_OPTIONS,
 }: {
-  name: string
-  setName: (v: string) => void
+  name?: string
+  setName?: (v: string) => void
   cwd: string
   setCwd: (v: string) => void
   mode: ClaudePermissionMode
@@ -86,8 +93,8 @@ export function NewSessionForm({
   machines: Machine[]
   selectedHost: string
   setSelectedHost: (v: string) => void
-  openclawAgentId: string
-  setOpenclawAgentId: (v: string) => void
+  openclawAgentId?: string
+  setOpenclawAgentId?: (v: string) => void
   isCreating: boolean
   createError: string | null
   onSubmit: (e: FormEvent<HTMLFormElement>) => void
@@ -101,14 +108,28 @@ export function NewSessionForm({
   taskPlaceholder?: string
   taskRequired?: boolean
   beforeTaskField?: ReactNode
+  afterScheduleField?: ReactNode
+  showNameField?: boolean
+  agentOptions?: readonly AgentType[]
 }) {
   const remoteMachines = machines.filter((machine) => machine.host)
   const showMachineSelector = remoteMachines.length > 0
   const [openclawAgents, setOpenclawAgents] = useState<string[]>([])
   const [openclawGatewayInfo, setOpenclawGatewayInfo] = useState<OpenClawGatewayInfo | null>(null)
+  const showOpenClaw = agentOptions.includes('openclaw')
 
   useEffect(() => {
-    if (agentType !== 'openclaw') return
+    if (agentOptions.includes(agentType)) {
+      return
+    }
+    const fallbackAgent = agentOptions[0]
+    if (fallbackAgent) {
+      setAgentType(fallbackAgent)
+    }
+  }, [agentOptions, agentType, setAgentType])
+
+  useEffect(() => {
+    if (!showOpenClaw || agentType !== 'openclaw') return
     let cancelled = false
     fetch('/api/agents/openclaw/agents')
       .then((r) => r.ok ? r.json() as Promise<{ agents: Array<{ id: string }> }> : Promise.resolve({ agents: [] }))
@@ -123,10 +144,10 @@ export function NewSessionForm({
       })
       .catch(() => { if (!cancelled) setOpenclawAgents([]) })
     return () => { cancelled = true }
-  }, [agentType])
+  }, [agentType, openclawAgentId, setOpenclawAgentId, showOpenClaw])
 
   useEffect(() => {
-    if (agentType !== 'openclaw') return
+    if (!showOpenClaw || agentType !== 'openclaw') return
     let cancelled = false
     setOpenclawGatewayInfo(null)
 
@@ -150,14 +171,14 @@ export function NewSessionForm({
     return () => {
       cancelled = true
     }
-  }, [agentType])
+  }, [agentType, showOpenClaw])
 
   return (
     <form onSubmit={onSubmit} className="space-y-3">
       <div>
         <label className="section-title block mb-2">Agent</label>
         <div className="flex gap-2">
-          {(['claude', 'codex', 'openclaw'] as const).map((type) => (
+          {agentOptions.map((type) => (
             <button
               key={type}
               type="button"
@@ -215,7 +236,7 @@ export function NewSessionForm({
         </div>
       )}
 
-      {agentType === 'openclaw' && (
+      {showOpenClaw && agentType === 'openclaw' && (
         <div>
           <label className="section-title block mb-2">Gateway</label>
           <div className="w-full px-3 py-2 rounded-lg border border-ink-border bg-washi-aged text-sm flex items-center gap-2">
@@ -272,32 +293,29 @@ export function NewSessionForm({
         </div>
       )}
 
-      <div>
-        <label className="section-title block mb-2">{nameLabel}</label>
-        <input
-          value={name}
-          onChange={(event) => setName(event.target.value)}
-          className="w-full px-3 py-2 rounded-lg border border-ink-border bg-washi-aged text-[16px] md:text-sm focus:outline-none focus:border-ink-border-hover"
-          placeholder={namePlaceholder}
-          required
-          pattern={namePattern || undefined}
-          title={namePattern ? 'Alphanumeric, underscore, and hyphen only' : undefined}
-        />
-      </div>
-
-      {schedule !== undefined && setSchedule && (
+      {showNameField && (
         <div>
-          <label className="section-title block mb-2">Schedule</label>
+          <label className="section-title block mb-2">{nameLabel}</label>
           <input
-            value={schedule}
-            onChange={(event) => setSchedule(event.target.value)}
-            className="w-full px-3 py-2 rounded-lg border border-ink-border bg-washi-aged font-mono text-[16px] md:text-sm focus:outline-none focus:border-ink-border-hover"
-            placeholder="0 2 * * *"
+            value={name}
+            onChange={(event) => setName(event.target.value)}
+            className="w-full px-3 py-2 rounded-lg border border-ink-border bg-washi-aged text-[16px] md:text-sm focus:outline-none focus:border-ink-border-hover"
+            placeholder={namePlaceholder}
             required
+            pattern={namePattern || undefined}
+            title={namePattern ? 'Alphanumeric, underscore, and hyphen only' : undefined}
           />
-          <p className="mt-1 text-whisper text-sumi-mist">Standard 5-field cron expression</p>
         </div>
       )}
+
+      {schedule !== undefined && setSchedule && (
+        <ScheduleExpressionField
+          schedule={schedule}
+          onScheduleChange={setSchedule}
+        />
+      )}
+
+      {afterScheduleField}
 
       <div>
         <label className="section-title block mb-2">Working Directory</label>

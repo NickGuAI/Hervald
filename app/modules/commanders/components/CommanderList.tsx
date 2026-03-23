@@ -13,6 +13,12 @@ import { CreateCommanderForm } from './CreateCommanderForm'
 declare module '../hooks/useCommander' {
   interface CommanderSession {
     persona?: string
+    channelMeta?: {
+      provider: 'whatsapp' | 'telegram' | 'discord'
+      displayName: string
+      sessionKey?: string
+      subject?: string
+    }
   }
 }
 
@@ -28,6 +34,23 @@ const STATE_BADGE_CLASSES: Record<CommanderSession['state'], string> = {
   running: 'badge-active',
   paused: 'badge-idle',
   stopped: 'badge-stale',
+}
+
+const CHANNEL_PROVIDER_LABELS: Record<'whatsapp' | 'telegram' | 'discord', string> = {
+  whatsapp: 'WhatsApp',
+  telegram: 'Telegram',
+  discord: 'Discord',
+}
+
+function resolveCommanderDisplayName(session: CommanderSessionCard): string {
+  const channelMeta = session.channelMeta
+  if (!channelMeta) {
+    return session.host
+  }
+
+  const providerLabel = CHANNEL_PROVIDER_LABELS[channelMeta.provider]
+  const baseLabel = channelMeta.displayName.trim() || session.host
+  return `${providerLabel} • ${baseLabel}`
 }
 
 function currentTaskLabel(session: CommanderSession): string | null {
@@ -176,6 +199,7 @@ export function CommanderList({
           const selected = selectedCommanderId === session.id
           const taskLabel = currentTaskLabel(session)
           const isRunning = session.state === 'running'
+          const commanderDisplayName = resolveCommanderDisplayName(session)
           const selectedAgentType = agentTypeByCommander[session.id] ?? resolveAgentType(session.agentType)
           const isManualHeartbeatPending = manualHeartbeatMutation.isPending &&
             manualHeartbeatMutation.variables === session.id
@@ -201,7 +225,10 @@ export function CommanderList({
             >
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
-                  <p className="font-mono text-sm text-sumi-black truncate">{session.host}</p>
+                  <p className="font-mono text-sm text-sumi-black truncate">{commanderDisplayName}</p>
+                  {session.channelMeta?.subject && (
+                    <p className="mt-1 text-sumi-diluted text-xs truncate">{session.channelMeta.subject}</p>
+                  )}
                   {session.persona && (
                     <p className="mt-1 text-sumi-diluted text-xs truncate">{session.persona}</p>
                   )}
@@ -213,6 +240,11 @@ export function CommanderList({
                   )}
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
+                  {session.channelMeta && (
+                    <span className="badge-sumi badge-idle">
+                      {CHANNEL_PROVIDER_LABELS[session.channelMeta.provider]}
+                    </span>
+                  )}
                   <span className={cn('badge-sumi', STATE_BADGE_CLASSES[session.state])}>
                     <span
                       className={cn(

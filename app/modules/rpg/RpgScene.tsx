@@ -7,41 +7,49 @@ import { getAvatarTileIndex, getTileFrame } from './avatar-hash'
 import { drawParticleBurst, getParticleStyleForTool } from './particles'
 import { TileMapLayer } from './TileMapLayer'
 import { PlayerSprite } from './PlayerSprite'
-import { ROOM_WIDTH, ROOM_HEIGHT, TABLE_SPOTS, ANVIL_SPOTS, IDLE_SPOTS, TILE_SIZE, findPath, isWalkable } from './room-layout'
+import {
+  ROOM_WIDTH, ROOM_HEIGHT,
+  WORKSTATION_SPOTS, COMMANDER_SPOTS, IDLE_SPOTS,
+  REGULAR_SPAWN, COMMANDER_SPAWN,
+  QUEST_BOARD_POS, AGENT_CONTROL_POS,
+  TILE_SIZE, findPath, isWalkable,
+} from './room-layout'
 
 extend({ Container, Sprite, Text })
 
-// Player spawn matches PlayerSprite internals
+// Player spawn in open floor area (south of corridor)
 const PLAYER_SPAWN = { x: ROOM_WIDTH / 2, y: ROOM_HEIGHT - 28 }
 const INTERACT_RANGE = 20
+const OBJECT_INTERACT_RANGE = 24
 const AGENT_POS_KEY = 'rpg:agentPositions'
 const AGENT_RADIUS = 6
 const AGENT_POS_SAVE_DEBOUNCE_MS = 1000
 
-function isFactoryAgent(agent: WorldAgent): boolean {
-  return agent.agentType === 'codex'
+function isCommanderAgent(agent: WorldAgent): boolean {
+  return agent.role === 'commander' || agent.id.startsWith('commander-')
 }
 
 function buildPositionMap(agents: WorldAgent[]): Map<string, { x: number; y: number }> {
   const map = new Map<string, { x: number; y: number }>()
 
-  const activeRegular = agents
-    .filter((a) => a.status === 'active' && !isFactoryAgent(a))
+  // Commanders always go to COMMANDER_SPOTS regardless of status
+  const allCommanders = agents
+    .filter((a) => isCommanderAgent(a))
     .sort((a, b) => a.id.localeCompare(b.id))
-  const activeFactory = agents
-    .filter((a) => a.status === 'active' && isFactoryAgent(a))
+  const activeWorkers = agents
+    .filter((a) => a.status === 'active' && !isCommanderAgent(a))
     .sort((a, b) => a.id.localeCompare(b.id))
-  const resting = agents
-    .filter((a) => a.status !== 'active')
+  const restingWorkers = agents
+    .filter((a) => a.status !== 'active' && !isCommanderAgent(a))
     .sort((a, b) => a.id.localeCompare(b.id))
 
-  activeRegular.forEach((a, i) => {
-    map.set(a.id, TABLE_SPOTS[i] ?? TABLE_SPOTS[TABLE_SPOTS.length - 1])
+  allCommanders.forEach((a, i) => {
+    map.set(a.id, COMMANDER_SPOTS[i] ?? COMMANDER_SPOTS[COMMANDER_SPOTS.length - 1])
   })
-  activeFactory.forEach((a, i) => {
-    map.set(a.id, ANVIL_SPOTS[i] ?? ANVIL_SPOTS[ANVIL_SPOTS.length - 1])
+  activeWorkers.forEach((a, i) => {
+    map.set(a.id, WORKSTATION_SPOTS[i] ?? WORKSTATION_SPOTS[WORKSTATION_SPOTS.length - 1])
   })
-  resting.forEach((a, i) => {
+  restingWorkers.forEach((a, i) => {
     map.set(a.id, IDLE_SPOTS[i % IDLE_SPOTS.length])
   })
 
@@ -100,6 +108,8 @@ interface RuntimeAgent {
 interface LoadedTextures {
   tiles: Texture
   creatures: Texture
+  selectFrame: Texture | null
+  idleIndicator: Texture | null
 }
 
 // ---------------------------------------------------------------------------
@@ -198,6 +208,50 @@ function NearestStreamAgentProbe({
 }
 
 // ---------------------------------------------------------------------------
+// Object proximity probe — detects player near quest board / agent control
+// ---------------------------------------------------------------------------
+
+export type ObjectInteraction = 'quest-board' | 'agent-control'
+
+function ObjectProximityProbe({
+  playerPosRef,
+  onNearObjectChange,
+}: {
+  playerPosRef: MutableRefObject<{ x: number; y: number }>
+  onNearObjectChange: (obj: ObjectInteraction | null) => void
+}) {
+  const lastRef = useRef<ObjectInteraction | null>(null)
+
+  useTick(() => {
+    const player = playerPosRef.current
+    const rangeSquared = OBJECT_INTERACT_RANGE * OBJECT_INTERACT_RANGE
+    let nearest: ObjectInteraction | null = null
+
+    const dxQ = QUEST_BOARD_POS.x - player.x
+    const dyQ = QUEST_BOARD_POS.y - player.y
+    if (dxQ * dxQ + dyQ * dyQ <= rangeSquared) {
+      nearest = 'quest-board'
+    }
+
+    const dxA = AGENT_CONTROL_POS.x - player.x
+    const dyA = AGENT_CONTROL_POS.y - player.y
+    if (dxA * dxA + dyA * dyA <= rangeSquared) {
+      // Agent control is closer or quest-board wasn't in range
+      if (!nearest || (dxA * dxA + dyA * dyA < dxQ * dxQ + dyQ * dyQ)) {
+        nearest = 'agent-control'
+      }
+    }
+
+    if (lastRef.current !== nearest) {
+      lastRef.current = nearest
+      onNearObjectChange(nearest)
+    }
+  })
+
+  return null
+}
+
+// ---------------------------------------------------------------------------
 // RpgScene
 // ---------------------------------------------------------------------------
 
@@ -211,6 +265,7 @@ interface RpgSceneProps {
   streamAgentIds?: Set<string>
   onNearestStreamAgentChange?: (id: string | null) => void
   onInteract?: () => void
+  onObjectInteract?: (obj: ObjectInteraction) => void
   playerFrozen?: boolean
 }
 
@@ -220,6 +275,7 @@ export const RpgScene = forwardRef<RpgSceneHandle, RpgSceneProps>(function RpgSc
   streamAgentIds,
   onNearestStreamAgentChange,
   onInteract,
+  onObjectInteract,
   playerFrozen = false,
 }, ref) {
   const hostRef = useRef<HTMLDivElement | null>(null)
@@ -227,6 +283,7 @@ export const RpgScene = forwardRef<RpgSceneHandle, RpgSceneProps>(function RpgSc
   const fxLayerRef = useRef<Container | null>(null)
   const playerPosRef = useRef<{ x: number; y: number }>(PLAYER_SPAWN)
   const nearestStreamAgentRef = useRef<string | null>(null)
+  const nearObjectRef = useRef<ObjectInteraction | null>(null)
 
   const textureCacheRef = useRef<Map<number, Texture>>(new Map())
   const runtimeAgentsRef = useRef<Record<string, RuntimeAgent>>({})
@@ -240,6 +297,7 @@ export const RpgScene = forwardRef<RpgSceneHandle, RpgSceneProps>(function RpgSc
   const [textures, setTextures] = useState<LoadedTextures | null>(null)
   const [runtimeAgents, setRuntimeAgents] = useState<Record<string, RuntimeAgent>>({})
   const [nearestStreamAgentId, setNearestStreamAgentId] = useState<string | null>(null)
+  const [nearObject, setNearObject] = useState<ObjectInteraction | null>(null)
   const [fps, setFps] = useState(0)
   const [error, setError] = useState<string | null>(null)
 
@@ -294,9 +352,11 @@ export const RpgScene = forwardRef<RpgSceneHandle, RpgSceneProps>(function RpgSc
     void Promise.all([
       Assets.load('/assets/rpg/workroom-tiles.png') as Promise<Texture>,
       Assets.load('/assets/rpg/creatures.png') as Promise<Texture>,
-    ]).then(([tiles, creatures]) => {
+      Assets.load('/assets/rpg/select-frame.png').catch(() => null) as Promise<Texture | null>,
+      Assets.load('/assets/rpg/idle-indicator.png').catch(() => null) as Promise<Texture | null>,
+    ]).then(([tiles, creatures, selectFrame, idleIndicator]) => {
       if (!active) return
-      setTextures({ tiles, creatures })
+      setTextures({ tiles, creatures, selectFrame, idleIndicator })
     }).catch((caught) => {
       const message = caught instanceof Error ? caught.message : 'Failed to load RPG textures'
       if (active) setError(message)
@@ -351,6 +411,8 @@ export const RpgScene = forwardRef<RpgSceneHandle, RpgSceneProps>(function RpgSc
     const savedPositions = savedAgentPositionsRef.current
 
     for (const agent of agents) {
+      // Commanders always go to COMMANDER_SPOTS — never override with saved positions
+      if (isCommanderAgent(agent)) continue
       const savedPos = savedPositions[agent.id]
       if (!savedPos || !isWalkable(savedPos.x, savedPos.y, AGENT_RADIUS)) continue
       posMap.set(agent.id, savedPos)
@@ -380,10 +442,11 @@ export const RpgScene = forwardRef<RpgSceneHandle, RpgSceneProps>(function RpgSc
         const tileIndex = getAvatarTileIndex(agent.id)
 
         if (!existing) {
-          // New agents walk in from the entry door (bottom-center of map)
+          // Role-based spawn: commanders spawn near right door, others near left door
           const savedPos = savedPositions[agent.id]
-          const spawnX = savedPos?.x ?? PLAYER_SPAWN.x
-          const spawnY = savedPos?.y ?? PLAYER_SPAWN.y
+          const spawnPoint = isCommanderAgent(agent) ? COMMANDER_SPAWN : REGULAR_SPAWN
+          const spawnX = savedPos?.x ?? spawnPoint.x
+          const spawnY = savedPos?.y ?? spawnPoint.y
           next[agent.id] = {
             id: agent.id,
             tileIndex,
@@ -435,6 +498,21 @@ export const RpgScene = forwardRef<RpgSceneHandle, RpgSceneProps>(function RpgSc
     setNearestStreamAgentId(nearestId)
     onNearestStreamAgentChange?.(nearestId)
   }, [onNearestStreamAgentChange])
+
+  const handleNearObjectChange = useCallback((obj: ObjectInteraction | null) => {
+    nearObjectRef.current = obj
+    setNearObject(obj)
+  }, [])
+
+  const handleInteract = useCallback(() => {
+    // Object interactions take priority
+    const obj = nearObjectRef.current
+    if (obj) {
+      onObjectInteract?.(obj)
+      return
+    }
+    onInteract?.()
+  }, [onInteract, onObjectInteract])
 
   // Integer scale — largest pixel-perfect zoom where the full map fits in the viewport
   const worldScale = useMemo(
@@ -500,6 +578,13 @@ export const RpgScene = forwardRef<RpgSceneHandle, RpgSceneProps>(function RpgSc
     },
   }), [])
 
+  // Compute which object tile gets the select indicator
+  const objectSelectPos = useMemo(() => {
+    if (nearObject === 'quest-board') return QUEST_BOARD_POS
+    if (nearObject === 'agent-control') return AGENT_CONTROL_POS
+    return null
+  }, [nearObject])
+
   return (
     <div className={className ?? 'absolute inset-0'} ref={hostRef}>
       {textures ? (
@@ -516,6 +601,10 @@ export const RpgScene = forwardRef<RpgSceneHandle, RpgSceneProps>(function RpgSc
             runtimeAgentsRef={runtimeAgentsRef}
             streamAgentIds={streamAgentIds}
             onNearestChange={handleNearestChange}
+          />
+          <ObjectProximityProbe
+            playerPosRef={playerPosRef}
+            onNearObjectChange={handleNearObjectChange}
           />
           {/* cameraRef container: x/y managed by CameraController each tick */}
           <pixiContainer ref={cameraRef} scale={{ x: worldScale, y: worldScale } as any}>
@@ -537,32 +626,29 @@ export const RpgScene = forwardRef<RpgSceneHandle, RpgSceneProps>(function RpgSc
                   completedAt={agent.completedAt}
                   markedForRemoval={agent.markedForRemoval}
                   onFadeOutComplete={handleFadeOutComplete}
+                  selectFrameTexture={textures.selectFrame}
+                  idleIndicatorTexture={textures.idleIndicator}
+                  isInteractable={nearestStreamAgentId === agent.id}
                 />
               ))}
             </pixiContainer>
-            {nearestStreamAgentId && runtimeAgents[nearestStreamAgentId] ? (
-              <pixiText
-                text="PRESS SPACE"
-                x={runtimeAgents[nearestStreamAgentId].targetX}
-                y={runtimeAgents[nearestStreamAgentId].targetY - TILE_SIZE * 1.25}
+            {/* Select frame on nearby interactable objects */}
+            {objectSelectPos && textures.selectFrame ? (
+              <pixiSprite
+                texture={textures.selectFrame}
+                x={objectSelectPos.x}
+                y={objectSelectPos.y}
+                width={24}
+                height={24}
                 anchor={0.5}
                 roundPixels
-                style={{
-                  fontFamily: 'monospace',
-                  fontSize: 11,
-                  fill: '#fef08a',
-                  fontWeight: '700',
-                  stroke: '#000000',
-                  strokeThickness: 3,
-                  align: 'center',
-                  letterSpacing: 1,
-                }}
+                alpha={0.85}
               />
             ) : null}
             <PlayerSprite
               creaturesTexture={textures.creatures}
               sharedPosRef={playerPosRef}
-              onInteract={onInteract}
+              onInteract={handleInteract}
               frozen={playerFrozen}
             />
             <pixiContainer ref={fxLayerRef} />
@@ -579,6 +665,15 @@ export const RpgScene = forwardRef<RpgSceneHandle, RpgSceneProps>(function RpgSc
       {error ? (
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/35 px-4 text-center text-xs font-mono text-white/90">
           {error}
+        </div>
+      ) : null}
+
+      {/* Near-object interaction hint */}
+      {nearObject ? (
+        <div className="pointer-events-none absolute inset-x-0 bottom-32 z-20 flex justify-center px-3">
+          <div className="rounded-md border border-amber-400/40 bg-black/65 px-3 py-1.5 font-mono text-[11px] uppercase tracking-[0.08em] text-amber-100/95 backdrop-blur-[2px]">
+            press space — {nearObject === 'quest-board' ? 'quest board' : 'agent control'}
+          </div>
         </div>
       ) : null}
 

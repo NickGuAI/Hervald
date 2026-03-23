@@ -10,6 +10,7 @@ import { createCommandRoomRouter } from '../modules/command-room/routes.js'
 import { CommandRoomScheduler } from '../modules/command-room/scheduler.js'
 import { CommandRoomTaskStore } from '../modules/command-room/task-store.js'
 import { registerCommanderCron } from '../modules/commanders/cron.js'
+import { createChannelReplyDispatchers } from '../modules/commanders/channel-dispatchers.js'
 import { QuestStore } from '../modules/commanders/quest-store.js'
 import {
   resolveCommanderDataDir,
@@ -105,6 +106,7 @@ export function createModules(options: ModuleRegistryOptions = {}): ModuleRegist
     commandRoomRunStore,
     commandRoomScheduler,
     commandRoomSchedulerInitialized,
+    channelReplyDispatchers: createChannelReplyDispatchers(),
   })
 
   registerCommanderCron(cron, {

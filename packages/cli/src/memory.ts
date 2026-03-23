@@ -1,4 +1,9 @@
 import { type HammurabiConfig, normalizeEndpoint, readHammurabiConfig } from './config.js'
+import {
+  fetchRemoteMemoryExport,
+  postRemoteJournal,
+  type RemoteJournalEntry,
+} from './commander.js'
 
 interface Writable {
   write(chunk: string): boolean
@@ -20,6 +25,10 @@ function printUsage(stdout: Writable): void {
   stdout.write('  hammurabi memory compact --commander <id>\n')
   stdout.write('  hammurabi memory find --commander <id> "<query>" [--top <k>]\n')
   stdout.write('  hammurabi memory save --commander <id> "<fact>" [--fact "<another>"]\n')
+  stdout.write('  hammurabi memory export --commander <id>\n')
+  stdout.write(
+    '  hammurabi memory journal --commander <id> --body "<text>" [--timestamp <iso>] [--outcome "<text>"] [--salience SPIKE|NOTABLE|ROUTINE] [--issue-number <n>] [--repo <name>] [--duration-min <n>]\n',
+  )
 }
 
 function parseNonEmpty(value: string | undefined): string | null {
@@ -111,6 +120,15 @@ interface FindOptions {
 interface SaveOptions {
   commanderId: string
   facts: string[]
+}
+
+interface ExportOptions {
+  commanderId: string
+}
+
+interface JournalOptions {
+  commanderId: string
+  entry: RemoteJournalEntry
 }
 
 function parseCompactOptions(args: readonly string[]): CompactOptions | null {
@@ -208,6 +226,177 @@ function parseSaveOptions(args: readonly string[]): SaveOptions | null {
   }
 
   return { commanderId, facts }
+}
+
+function parseExportOptions(args: readonly string[]): ExportOptions | null {
+  if (args.length !== 2 || args[0] !== '--commander') {
+    return null
+  }
+
+  const commanderId = parseNonEmpty(args[1])
+  if (!commanderId) {
+    return null
+  }
+
+  return { commanderId }
+}
+
+function parsePositiveInteger(value: string | undefined): number | null {
+  const raw = parseNonEmpty(value)
+  if (!raw || !/^\d+$/.test(raw)) {
+    return null
+  }
+  const parsed = Number.parseInt(raw, 10)
+  if (!Number.isFinite(parsed) || parsed < 1) {
+    return null
+  }
+  return parsed
+}
+
+function parseNonNegativeInteger(value: string | undefined): number | null {
+  const raw = parseNonEmpty(value)
+  if (!raw || !/^\d+$/.test(raw)) {
+    return null
+  }
+  const parsed = Number.parseInt(raw, 10)
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return null
+  }
+  return parsed
+}
+
+function parseIsoTimestamp(value: string | undefined): string | null {
+  const raw = parseNonEmpty(value)
+  if (!raw) {
+    return null
+  }
+  const date = new Date(raw)
+  if (Number.isNaN(date.getTime())) {
+    return null
+  }
+  return date.toISOString()
+}
+
+function parseSalience(value: string | undefined): RemoteJournalEntry['salience'] | null {
+  const normalized = parseNonEmpty(value)?.toUpperCase()
+  if (normalized === 'SPIKE' || normalized === 'NOTABLE' || normalized === 'ROUTINE') {
+    return normalized
+  }
+  return null
+}
+
+function parseJournalOptions(args: readonly string[]): JournalOptions | null {
+  let commanderId: string | undefined
+  let timestamp: string | undefined
+  let issueNumber: number | null = null
+  let repo: string | null = null
+  let outcome = 'Manual journal append'
+  let durationMin: number | null = null
+  let salience: RemoteJournalEntry['salience'] = 'NOTABLE'
+  let body: string | undefined
+
+  for (let index = 0; index < args.length; ) {
+    const flag = args[index]
+    const value = args[index + 1]
+
+    if (!value) {
+      return null
+    }
+
+    if (flag === '--commander') {
+      commanderId = parseNonEmpty(value) ?? undefined
+      if (!commanderId) {
+        return null
+      }
+      index += 2
+      continue
+    }
+
+    if (flag === '--body') {
+      body = parseNonEmpty(value) ?? undefined
+      if (!body) {
+        return null
+      }
+      index += 2
+      continue
+    }
+
+    if (flag === '--timestamp') {
+      timestamp = parseIsoTimestamp(value) ?? undefined
+      if (!timestamp) {
+        return null
+      }
+      index += 2
+      continue
+    }
+
+    if (flag === '--outcome') {
+      outcome = parseNonEmpty(value) ?? ''
+      if (!outcome) {
+        return null
+      }
+      index += 2
+      continue
+    }
+
+    if (flag === '--salience') {
+      const parsed = parseSalience(value)
+      if (!parsed) {
+        return null
+      }
+      salience = parsed
+      index += 2
+      continue
+    }
+
+    if (flag === '--issue-number') {
+      const parsed = parsePositiveInteger(value)
+      if (parsed === null) {
+        return null
+      }
+      issueNumber = parsed
+      index += 2
+      continue
+    }
+
+    if (flag === '--repo') {
+      repo = parseNonEmpty(value)
+      if (!repo) {
+        return null
+      }
+      index += 2
+      continue
+    }
+
+    if (flag === '--duration-min') {
+      const parsed = parseNonNegativeInteger(value)
+      if (parsed === null) {
+        return null
+      }
+      durationMin = parsed
+      index += 2
+      continue
+    }
+
+    return null
+  }
+
+  if (!commanderId || !body) {
+    return null
+  }
+
+  return {
+    commanderId,
+    entry: {
+      timestamp: timestamp ?? new Date().toISOString(),
+      issueNumber,
+      repo,
+      outcome,
+      durationMin,
+      salience,
+      body,
+    },
+  }
 }
 
 async function runCompact(
@@ -368,6 +557,51 @@ async function runSave(
   return 0
 }
 
+async function runExport(
+  config: HammurabiConfig,
+  fetchImpl: typeof fetch,
+  options: ExportOptions,
+  stdout: Writable,
+  stderr: Writable,
+): Promise<number> {
+  try {
+    const payload = await fetchRemoteMemoryExport(
+      fetchImpl,
+      config.endpoint,
+      options.commanderId,
+      config.apiKey,
+    )
+    stdout.write(`${JSON.stringify(payload, null, 2)}\n`)
+    return 0
+  } catch (error) {
+    stderr.write(`${error instanceof Error ? error.message : String(error)}\n`)
+    return 1
+  }
+}
+
+async function runJournal(
+  config: HammurabiConfig,
+  fetchImpl: typeof fetch,
+  options: JournalOptions,
+  stdout: Writable,
+  stderr: Writable,
+): Promise<number> {
+  try {
+    await postRemoteJournal(
+      fetchImpl,
+      config.endpoint,
+      options.commanderId,
+      config.apiKey,
+      options.entry,
+    )
+    stdout.write(`Journal entry appended for ${options.entry.timestamp.slice(0, 10)}.\n`)
+    return 0
+  } catch (error) {
+    stderr.write(`${error instanceof Error ? error.message : String(error)}\n`)
+    return 1
+  }
+}
+
 export async function runMemoryCli(
   args: readonly string[],
   dependencies: MemoryCliDependencies = {},
@@ -378,7 +612,14 @@ export async function runMemoryCli(
   const readConfig = dependencies.readConfig ?? readHammurabiConfig
 
   const command = args[0]
-  if (!command || (command !== 'compact' && command !== 'find' && command !== 'save')) {
+  if (
+    !command ||
+    (command !== 'compact' &&
+      command !== 'find' &&
+      command !== 'save' &&
+      command !== 'export' &&
+      command !== 'journal')
+  ) {
     printUsage(stdout)
     return 1
   }
@@ -405,6 +646,24 @@ export async function runMemoryCli(
       return 1
     }
     return runFind(config, fetchImpl, findOptions, stdout, stderr)
+  }
+
+  if (command === 'export') {
+    const exportOptions = parseExportOptions(args.slice(1))
+    if (!exportOptions) {
+      printUsage(stdout)
+      return 1
+    }
+    return runExport(config, fetchImpl, exportOptions, stdout, stderr)
+  }
+
+  if (command === 'journal') {
+    const journalOptions = parseJournalOptions(args.slice(1))
+    if (!journalOptions) {
+      printUsage(stdout)
+      return 1
+    }
+    return runJournal(config, fetchImpl, journalOptions, stdout, stderr)
   }
 
   const saveOptions = parseSaveOptions(args.slice(1))

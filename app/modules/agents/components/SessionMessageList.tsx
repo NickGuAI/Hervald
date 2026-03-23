@@ -135,7 +135,7 @@ function AgentMessage({ text }: { text: string }) {
         <Bot size={13} />
       </div>
       <div className="min-w-0 flex-1 rounded-r-lg rounded-bl-lg border border-white/[0.12] border-l-[3px] border-l-sky-400/70 bg-[#242424] p-3.5">
-        <div className="prose prose-invert prose-sm max-w-none break-words text-zinc-100 [&_code]:rounded [&_code]:bg-white/10 [&_code]:px-1 [&_code]:py-0.5 [&_code]:font-mono [&_code]:text-xs [&_pre]:overflow-x-auto [&_pre]:rounded [&_pre]:bg-black/40 [&_pre]:p-2 [&_pre_code]:bg-transparent [&_pre_code]:p-0">
+        <div className="msg-agent-md prose prose-invert prose-sm max-w-none break-words text-zinc-100">
           <ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown>
         </div>
       </div>

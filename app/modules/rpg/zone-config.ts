@@ -1,4 +1,4 @@
-export type AgentPhase = 'FORGE' | 'LIBRARY' | 'ARMORY' | 'DUNGEON' | 'THRONE_ROOM' | 'GATE'
+export type AgentPhase = 'WORKSPACE' | 'COMMANDER_ROOM' | 'CORRIDOR' | 'OPEN_FLOOR'
 export type RuntimePhase =
   | 'idle'
   | 'executing'
@@ -32,97 +32,58 @@ export interface ZoneConfig {
   color: number
 }
 
-// Wander area covers the open interior (rows 2–9, cols 1–10 in pixel space)
-export const IDLE_ZONE_BOUNDS = { x: 16, y: 32, width: 160, height: 96 }
+// Zone bounds for the 30x20 hams.tmx two-room layout (TILE_SIZE = 16)
+// Main workspace: cols 1-18, rows 1-10 (pixels 16-304, 16-176)
+// Commander room: cols 20-28, rows 2-10 (pixels 320-464, 32-176)
+// Corridor: cols 0-29, rows 12-14 (pixels 0-480, 192-240)
+// Open floor: cols 0-29, rows 15-19 (pixels 0-480, 240-320)
 
-// deskPos: pixel center where agent stands at their workstation (grid-aligned to 16px tiles)
-//   FORGE      col 2  row 2  → (40, 32)  — forge torches at cols 2-3, row 2
-//   LIBRARY    col 9  row 2  → (152, 32) — bookshelf  cols 9,   rows 1-2
-//   ARMORY     col 2  row 8  → (40, 128) — iron bars  col  2,   rows 7-8
-//   DUNGEON    col 9  row 8  → (152,128) — chest      col  9,   rows 7-8
-//   THRONE_ROOM col 5 row 5  → (88, 88)  — altar      col  5,   row  5
-//   GATE       col 6  row 5  → (96, 88)  — open floor wander start
 export const ZONES: Record<AgentPhase, ZoneConfig> = {
-  FORGE: {
-    name: 'FORGE',
-    label: 'Forge',
-    bounds: { x: 16, y: 16, width: 72, height: 56 },
-    center: { x: 52, y: 44 },
-    deskPos: { x: 40, y: 32 },
+  WORKSPACE: {
+    name: 'WORKSPACE',
+    label: 'Workspace',
+    bounds: { x: 16, y: 16, width: 288, height: 160 },
+    center: { x: 160, y: 96 },
+    deskPos: { x: 160, y: 80 },
     color: 0xFF6B35,
   },
-  LIBRARY: {
-    name: 'LIBRARY',
-    label: 'Library',
-    bounds: { x: 104, y: 16, width: 72, height: 56 },
-    center: { x: 140, y: 44 },
-    deskPos: { x: 152, y: 32 },
-    color: 0x4ECDC4,
-  },
-  ARMORY: {
-    name: 'ARMORY',
-    label: 'Armory',
-    bounds: { x: 16, y: 96, width: 72, height: 48 },
-    center: { x: 52, y: 120 },
-    deskPos: { x: 40, y: 128 },
-    color: 0x45B7D1,
-  },
-  DUNGEON: {
-    name: 'DUNGEON',
-    label: 'Dungeon',
-    bounds: { x: 104, y: 96, width: 72, height: 48 },
-    center: { x: 140, y: 120 },
-    deskPos: { x: 152, y: 128 },
-    color: 0xAB47BC,
-  },
-  THRONE_ROOM: {
-    name: 'THRONE_ROOM',
-    label: 'Throne Room',
-    bounds: { x: 48, y: 64, width: 96, height: 48 },
-    center: { x: 96, y: 88 },
-    deskPos: { x: 88, y: 88 },
+  COMMANDER_ROOM: {
+    name: 'COMMANDER_ROOM',
+    label: 'Commander Room',
+    bounds: { x: 320, y: 32, width: 144, height: 144 },
+    center: { x: 392, y: 104 },
+    deskPos: { x: 376, y: 88 },
     color: 0xFFD700,
   },
-  GATE: {
-    name: 'GATE',
-    label: 'Gate',
-    bounds: { x: 16, y: 16, width: 160, height: 144 },
-    center: { x: 96, y: 88 },
-    deskPos: { x: 96, y: 88 },
+  CORRIDOR: {
+    name: 'CORRIDOR',
+    label: 'Corridor',
+    bounds: { x: 0, y: 192, width: 480, height: 48 },
+    center: { x: 240, y: 216 },
+    deskPos: { x: 240, y: 216 },
+    color: 0x4ECDC4,
+  },
+  OPEN_FLOOR: {
+    name: 'OPEN_FLOOR',
+    label: 'Open Floor',
+    bounds: { x: 0, y: 240, width: 480, height: 80 },
+    center: { x: 240, y: 280 },
+    deskPos: { x: 240, y: 280 },
     color: 0x9E9E9E,
   },
 }
 
 export const ZONE_LIST: ZoneConfig[] = [
-  ZONES.FORGE,
-  ZONES.LIBRARY,
-  ZONES.ARMORY,
-  ZONES.DUNGEON,
-  ZONES.THRONE_ROOM,
-  ZONES.GATE,
+  ZONES.WORKSPACE,
+  ZONES.COMMANDER_ROOM,
+  ZONES.CORRIDOR,
+  ZONES.OPEN_FLOOR,
 ]
 
-export function resolveZoneForAgent(status: RuntimeStatus, phase: RuntimePhase): AgentPhase {
-  if (status === 'completed') return 'THRONE_ROOM'
-  if (status === 'stale') return 'GATE'
-
-  switch (phase) {
-    case 'tool_use':
-    case 'executing':
-      return 'FORGE'
-    case 'thinking':
-    case 'researching':
-      return 'LIBRARY'
-    case 'editing':
-      return 'ARMORY'
-    case 'delegating':
-      return 'DUNGEON'
-    case 'blocked':
-    case 'idle':
-      return 'GATE'
-    case 'completed':
-      return 'THRONE_ROOM'
-    default:
-      return 'GATE'
-  }
+export function resolveZoneForAgent(status: RuntimeStatus, _phase: RuntimePhase, isCommander = false): AgentPhase {
+  if (isCommander) return 'COMMANDER_ROOM'
+  if (status === 'active') return 'WORKSPACE'
+  if (status === 'completed') return 'WORKSPACE'
+  if (status === 'stale' || status === 'idle') return 'OPEN_FLOOR'
+  return 'OPEN_FLOOR'
 }

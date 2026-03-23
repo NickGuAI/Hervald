@@ -1,88 +1,127 @@
-// room-layout.ts — 25×25 tile grid from fun_map.tmx
-// Source: app-assets/game/kenney_tiny-dungeon/pre-mad-maps/fun_map.tmx
-// Tileset: kenney_tiny-dungeon/Tiled/sampleSheet.tsx (firstgid=1, spacing=1px)
+// room-layout.ts — 30x20 tile grid from hams.tmx
+// Source: app-assets/game/hams.tmx
+// Tileset: kenney_tiny-dungeon/Tiled/sampleSheet.tsx (firstgid=140)
 // Packed tileset: workroom-tiles.png (tilemap_packed.png, no spacing, 12 cols)
 // Frame formula for workroom-tiles.png: x = (index % 12) * 16, y = floor(index / 12) * 16
 //
-// TMX uses GIDs (1-based). FLOOR_LAYER stores tile indices = GID - 1.
+// TMX uses GIDs (140-based for sampleSheet). Both layers store tile indices = GID - 140.
+// Dungeon layer = floors/walls/doors. Objects layer = agent spots + decorations.
 //
-// Key tiles (verified visually):
-//   tile 0  (GID  1) = brownish dungeon floor — open area top room ✓
-//   tile 12 (GID 13) = rest room floor — left walled room (cols 1-4, rows 6-21) ✓
-//   tile 20 (GID 21) = door gap — passage between top and bottom room ✓
-//   tile 49 (GID 50) = orange/dungeon floor — lower room + open area ✓
-//   tile 72 (GID 73) = table  — regular agent workstation ✓
-//   tile 74 (GID 75) = anvil  — factory agent workstation ✓
+// Key tiles (by packed index):
+//   Dungeon layer:
+//     tile 48 (GID 188) = walkable floor
+//     tile 50 (GID 190) = walkable transition floor
+//     tile 40 (GID 180) = corridor floor
+//     tile 10 (GID 150) = left door
+//     tile 11 (GID 151) = right door
+//     tile 30 (GID 170) = column gap (walkable)
+//   Objects layer:
+//     tile 60 (GID 200) = workstation (regular/factory/command-room agents)
+//     tile 62 (GID 202) = commander station
 
 export const TILE_SIZE = 16
-export const ROOM_COLS = 25
-export const ROOM_ROWS = 25
-export const ROOM_WIDTH  = ROOM_COLS * TILE_SIZE  // 400
-export const ROOM_HEIGHT = ROOM_ROWS * TILE_SIZE  // 400
+export const ROOM_COLS = 30
+export const ROOM_ROWS = 20
+export const ROOM_WIDTH  = ROOM_COLS * TILE_SIZE  // 480
+export const ROOM_HEIGHT = ROOM_ROWS * TILE_SIZE  // 320
 
-// Tile indices derived from fun_map.tmx CSV (each value = GID − 1)
+// Dungeon layer tile indices derived from hams.tmx CSV (each value = GID - 140)
 // prettier-ignore
-export const FLOOR_LAYER: number[][] = [
-  // row 0 — top room: tables (72) + anvils (74), floor (0), border walls (57/59)
-  [57,72, 0, 0,72, 0, 0,72, 0, 0,72, 0, 0,72, 0, 0,74, 0, 0,74, 0, 0,74, 0,59],
-  // row 1 — all floor
-  [57, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,59],
-  // row 2 — tables + anvils
-  [57,72, 0, 0,72, 0, 0,72, 0, 0,72, 0, 0,72, 0, 0,74, 0, 0,74, 0, 0,74, 0,59],
-  // row 3 — all floor
-  [57, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,59],
-  // row 4 — tables + anvils
-  [57,72, 0, 0,72, 0, 0,72, 0, 0,72, 0, 0,72, 0, 0,74, 0, 0,74, 0, 0,74, 0,59],
-  // row 5 — horizontal wall; door gaps (tile 20) at cols 10–13, floor gap (tile 0) at cols 2–3
-  [36,37, 0, 0,37,37,37,37,37,37,20, 0, 0,20,37,37,37,37,37,37,37,37,37,37,38],
-  // row 6 — rest room left (tile 12), dungeon corridor right (all orange floor); right desks (72) at col 19
-  [36,12,12,12,12,59,49,49,49,49,49,49,49,49,49,49,49,49,36,72, 0, 0,72,59,52],
-  // row 7
-  [36,12,12,12,12,59,49,49,49,49,49,49,49,49,49,49,49,49,36, 0, 0, 0, 0,59,48],
-  // row 8
-  [36,12,12,12,12,59,49,49,49,49,49,49,49,49,49,49,49,49,36,72, 0, 0,72,59,49],
-  // row 9
-  [36,12,12,12,12,59,49,49,49,49,49,49,49,49,49,49,49,49,36, 0, 0, 0, 0,59,49],
-  // row 10 — dual pool border
-  [36,12,12,12,12,59,69,70,54,70,71,49,49,69,70,54,70,71,36,72, 0, 0,72,59,49],
-  // row 11
-  [36,12,12,12,12,59,81,49,49,49,81,49,49,81,49,49,49,83,36, 0, 0, 0, 0,59,49],
-  // row 12
-  [36,12,12,12,12,59,81,49,49,49,81,49,49,81,49,49,49,83,36,72, 0, 0,72,59,49],
-  // row 13
-  [36,12,12,12,12,59,81,49,49,49,81,49,49,81,49,49,49,83,36, 0, 0, 0, 0,59,52],
-  // row 14
-  [36,12,12,12,12,59,81,49,49,49,81,49,49,81,49,49,49,83,36,72, 0, 0,72,59,49],
-  // row 15
-  [36,12,12,12,12,59,81,49,49,49,81,49,49,81,49,49,49,83,36,38, 0, 0,36,59,49],
-  // row 16 — rest room continues full height; pool sides open into lower area
-  [36,12,12,12,12,59,81,49,49,49,81,49,49,81,49,49,49,83,49,49,49,49,49,49,49],
-  [36,12,12,12,12,59,81,49,49,49,81,49,49,81,49,49,49,83,49,49,49,49,49,49,49],
-  [36,12,12,12,12,59,81,49,49,49,81,49,49,81,49,49,49,83,49,49,49,49,49,49,49],
-  [36,12,12,12,12,59,81,49,49,49,81,49,49,81,49,49,49,83,49,49,49,49,49,49,49],
-  [36,12,12,12,12,59,81,49,49,49,81,49,49,81,49,49,49,83,49,49,49,49,49,49,49],
-  // row 21 — bottom wall of rest room; pool bottom (93-95)
-  [36,37,37,37,37,38,93,94,94,94,95,49,49,93,94,94,94,95,49,49,49,49,49,49,49],
-  // rows 22-24 — open lower area
-  [49,49,49,49,49,49,49,49,49,49,49,49,49,49,49,49,49,49,49,49,49,49,49,49,49],
-  [49,49,49,49,49,49,49,49,49,49,49,49,49,49,49,49,49,49,49,49,49,49,49,49,49],
-  [49,49,49,49,49,49,49,49,49,49,49,49,49,49,49,49,49,49,49,49,49,49,49,49,49],
+export const DUNGEON_LAYER: number[][] = [
+  // row 0 — top wall
+  [ 4,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26, 5],
+  // row 1 — inner ceiling main room + commander room entrance
+  [15, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 2, 2, 2, 2, 2, 2, 2, 2, 3,13],
+  // row 2 — inner ceiling continued + commander room upper
+  [15, 1, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 3,13,50,50,50,50,50,50,50,50,15,13],
+  // row 3 — main floor (agent spots moved to Objects layer)
+  [15,13,50,50,50,50,50,50,50,50,50,50,50,50,50,50,50,50,15,13,48,48,48,48,48,48,48,48,15,13],
+  // row 4 — floor (workstations in Objects layer)
+  [15,13,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,15,13,48,48,48,48,48,48,48,48,15,13],
+  // row 5 — floor
+  [15,13,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,15,13,48,48,48,48,48,48,48,48,15,13],
+  // row 6 — floor (commander stations in Objects layer)
+  [15,13,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,15,13,48,48,48,48,48,48,48,48,15,13],
+  // row 7 — floor (workstations in Objects layer)
+  [15,13,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,15,13,48,48,48,48,48,48,48,48,15,13],
+  // row 8 — floor
+  [15,13,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,15,13,48,48,48,48,48,48,48,48,15,13],
+  // row 9 — floor (sparse workstations + commander stations in Objects layer)
+  [15,13,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,15,13,48,48,48,48,48,48,48,48,15,13],
+  // row 10 — floor (sparse workstations in Objects layer)
+  [15,13,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,15,13,48,48,48,48,48,48,48,48,15,13],
+  // row 11 — bottom wall divider
+  [15,25,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,27,25,26,26,26,26,26,26,26,26,27,13],
+  // row 12 — corridor ceiling
+  [16, 2, 2, 6, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 6, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,17],
+  // row 13 — corridor + doors (10=left door, 11=right door at cols 9-10 and 23-24)
+  [57,40,40,18,28,40,40,40,40,10,11,40,40,40,40,28,18,40,40,40,40,40,40,10,11,40,40,40,40,40],
+  // row 14 — transition zone
+  [50,50,50,30,50,50,50,50,50,48,48,50,50,50,50,50,30,50,50,50,50,50,50,50,50,50,50,50,50,50],
+  // rows 15-19 — open floor (all 48)
+  [48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48],
+  [48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48],
+  [48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48],
+  [48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48],
+  [48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48],
 ]
 
-// Walkable tile indices:
-//   tile 0  = brownish floor (top room)
-//   tile 12 = rest room floor (left walled room — idle agents rest here)
-//   tile 20 = door gap
-//   tile 49 = orange floor (lower room / open area)
-const WALKABLE_TILES = new Set([0, 12, 20, 49])
+// Objects layer tile indices from hams.tmx (GID - 140, 0 = empty)
+// prettier-ignore
+export const OBJECTS_LAYER: number[][] = [
+  [ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+  [ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+  [ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,32,89, 0, 0, 0, 0,89,32, 0, 0],
+  [ 0, 0,72,72,72,72,72,72,72,72,72,72,72,72,72,72,72,72, 0, 0,62, 0, 0, 0, 0, 0, 0,62, 0, 0],
+  [ 0, 0,60,60,60,60,60,60,60,60,60,60,60,60,60,60,60,60, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+  [ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,32,89, 0,84,110, 0,89,32, 0, 0],
+  [ 0, 0,72,72,72,72,72,72,72, 0, 0,72,72,72,72,72,72,72, 0, 0,62, 0, 0, 0, 0, 0, 0,62, 0, 0],
+  [ 0, 0,60,60,60,60,60,60,60, 0, 0,60,60,60,60,60,60,60, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+  [ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,32,89, 0, 0, 0, 0,89,32, 0, 0],
+  [ 0, 0,72,60, 0,72,60, 0, 0, 0, 0, 0, 0,60,72, 0,60,72, 0, 0,62, 0, 0, 0, 0, 0, 0,62, 0, 0],
+  [ 0, 0,72,60, 0,72,60, 0, 0, 0, 0, 0, 0,60,72, 0,60,72, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+  [ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+  [ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+  [ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+  [ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+  [ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+  [ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+  [ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+  [ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+  [ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+]
 
-export const WALKABLE_GRID: boolean[][] = FLOOR_LAYER.map(
-  (row) => row.map((tileIndex) => WALKABLE_TILES.has(tileIndex)),
+// Keep FLOOR_LAYER as alias for backward compat (TileMapLayer references it)
+export const FLOOR_LAYER = DUNGEON_LAYER
+
+// Walkable tile indices (by packed index = GID - 140):
+//   48 = floor, 50 = transition, 40 = corridor, 10 = left door,
+//   11 = right door, 30 = column gap, 60 = workstation, 62 = commander station
+const WALKABLE_TILES = new Set([48, 50, 40, 10, 11, 30, 60, 62])
+
+// Door-path overrides: cells walkable despite wall tiles in dungeon layer.
+// Left door path (cols 9-10, rows 11-13) and right door path (cols 23-24, rows 11-13).
+// Row 13 cols 9-10 and 23-24 already have door tiles (10,11) in WALKABLE_TILES,
+// but rows 11-12 have wall tiles (26/2) that need overrides.
+const DOOR_PATH_OVERRIDES = new Set([
+  '9,11',  '10,11',
+  '9,12',  '10,12',
+  '9,13',  '10,13',
+  '23,11', '24,11',
+  '23,12', '24,12',
+  '23,13', '24,13',
+])
+
+export const WALKABLE_GRID: boolean[][] = DUNGEON_LAYER.map(
+  (row, r) => row.map((tileIndex, c) =>
+    WALKABLE_TILES.has(tileIndex) || DOOR_PATH_OVERRIDES.has(`${c},${r}`),
+  ),
 )
 
 // ---------------------------------------------------------------------------
-// Workstation spots — pixel centers one tile to the RIGHT of each prop tile.
-// Only spots whose right-neighbour is a walkable floor tile are included.
+// Workstation spots — agents stand ON the workstation/commander tiles (Objects layer).
+// Tile 60 (GID 200) = regular/factory/command-room workstations (38 spots).
+// Tile 62 (GID 202) = commander stations (6 spots).
 // ---------------------------------------------------------------------------
 
 /** pixel center of tile (col, row) */
@@ -90,39 +129,50 @@ function tc(col: number, row: number): { x: number; y: number } {
   return { x: col * TILE_SIZE + TILE_SIZE / 2, y: row * TILE_SIZE + TILE_SIZE / 2 }
 }
 
-// Regular agent desks — next to table tiles (GID 73 = tile 72)
-// Tables appear in rows 0,2,4 at cols 1,4,7,10,13
-// Tables appear in rows 6,8,10,12,14 at col 19 only (left-side tables removed in updated map)
-export const TABLE_SPOTS: Array<{ x: number; y: number }> = [
-  tc( 2, 0), tc( 5, 0), tc( 8, 0), tc(11, 0), tc(14, 0),
-  tc( 2, 2), tc( 5, 2), tc( 8, 2), tc(11, 2), tc(14, 2),
-  tc( 2, 4), tc( 5, 4), tc( 8, 4), tc(11, 4), tc(14, 4),
-  tc(20, 6),
-  tc(20, 8),
-  tc(20,10),
-  tc(20,12),
-  tc(20,14),
+// Regular/factory/command-room agents stand ON tile-200 positions
+// Row 4: cols 2-17 (16 spots)
+// Row 7: cols 2-8, 11-17 (14 spots, gap at 9-10)
+// Row 9: cols 3, 6, 13, 16 (4 spots)
+// Row 10: cols 3, 6, 13, 16 (4 spots)
+export const WORKSTATION_SPOTS: Array<{ x: number; y: number }> = [
+  // Row 4 (16 spots)
+  tc( 2, 4), tc( 3, 4), tc( 4, 4), tc( 5, 4), tc( 6, 4), tc( 7, 4), tc( 8, 4), tc( 9, 4),
+  tc(10, 4), tc(11, 4), tc(12, 4), tc(13, 4), tc(14, 4), tc(15, 4), tc(16, 4), tc(17, 4),
+  // Row 7 (14 spots)
+  tc( 2, 7), tc( 3, 7), tc( 4, 7), tc( 5, 7), tc( 6, 7), tc( 7, 7), tc( 8, 7),
+  tc(11, 7), tc(12, 7), tc(13, 7), tc(14, 7), tc(15, 7), tc(16, 7), tc(17, 7),
+  // Row 9 (4 spots)
+  tc( 3, 9), tc( 6, 9), tc(13, 9), tc(16, 9),
+  // Row 10 (4 spots)
+  tc( 3,10), tc( 6,10), tc(13,10), tc(16,10),
 ]
 
-// Factory agent desks — next to anvil tiles (GID 75 = tile 74)
-// Anvils appear in rows 0,2,4 at cols 16,19,22
-export const ANVIL_SPOTS: Array<{ x: number; y: number }> = [
-  tc(17, 0), tc(20, 0), tc(23, 0),
-  tc(17, 2), tc(20, 2), tc(23, 2),
-  tc(17, 4), tc(20, 4), tc(23, 4),
+// Commander agents stand ON tile-202 positions (one commander per 202 tile).
+// Row 3: cols 20, 27 / Row 6: cols 20, 27 / Row 9: cols 20, 27
+export const COMMANDER_SPOTS: Array<{ x: number; y: number }> = [
+  tc(20, 3), tc(27, 3),
+  tc(20, 6), tc(27, 6),
+  tc(20, 9), tc(27, 9),
 ]
 
-// Idle agent spots — fixed positions in the left rest room (tile 12 floor, cols 1-4, rows 6-21)
-// Arranged in a 2-column grid at cols 2 and 3, spaced every 2 rows
+// Idle agent spots — open floor area south of corridor (rows 15-19)
 export const IDLE_SPOTS: Array<{ x: number; y: number }> = [
-  tc(2, 7), tc(3, 7),
-  tc(2, 9), tc(3, 9),
-  tc(2,11), tc(3,11),
-  tc(2,13), tc(3,13),
-  tc(2,15), tc(3,15),
-  tc(2,17), tc(3,17),
-  tc(2,19), tc(3,19),
+  tc( 2,15), tc( 5,15), tc( 8,15), tc(11,15), tc(14,15), tc(17,15), tc(20,15), tc(23,15), tc(26,15),
+  tc( 2,17), tc( 5,17), tc( 8,17), tc(11,17), tc(14,17), tc(17,17), tc(20,17), tc(23,17), tc(26,17),
+  tc( 2,19), tc( 5,19), tc( 8,19), tc(11,19), tc(14,19), tc(17,19), tc(20,19), tc(23,19), tc(26,19),
 ]
+
+// Spawn positions
+export const REGULAR_SPAWN = tc(10, 10)
+export const COMMANDER_SPAWN = tc(24, 10)
+
+// Object interaction positions (from objects layer)
+export const QUEST_BOARD_POS = tc(23, 5)
+export const AGENT_CONTROL_POS = tc(24, 5)
+
+// Legacy exports for backward compatibility
+export const TABLE_SPOTS = WORKSTATION_SPOTS
+export const ANVIL_SPOTS = WORKSTATION_SPOTS
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -196,7 +246,7 @@ export function findPath(
   const cameFrom = new Int32Array(ROOM_ROWS * ROOM_COLS).fill(-1)
   const closed = new Uint8Array(ROOM_ROWS * ROOM_COLS)
 
-  // Tiny min-heap via sorted array (small map, 625 nodes max — acceptable)
+  // Tiny min-heap via sorted array (small map, 600 nodes max — acceptable)
   const open: number[] = []
 
   const startKey = key(sc, sr)

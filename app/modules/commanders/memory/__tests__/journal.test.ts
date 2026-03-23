@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -87,13 +87,27 @@ describe('JournalWriter.scaffold()', () => {
   it('is idempotent — running twice does not throw or overwrite existing files', async () => {
     await writer.scaffold()
     // Write custom content to MEMORY.md
-    const { writeFile } = await import('node:fs/promises')
     const memPath = join(tmpDir, 'test-commander', '.memory', 'MEMORY.md')
     await writeFile(memPath, '# My custom memory\n\n- fact 1\n', 'utf-8')
     // Scaffold again — should NOT overwrite
     await writer.scaffold()
     const content = await readFile(memPath, 'utf-8')
     expect(content).toBe('# My custom memory\n\n- fact 1\n')
+  })
+
+  it('does not overwrite commander.md identity file when scaffold runs', async () => {
+    const commanderMdPath = join(tmpDir, 'test-commander', 'commander.md')
+    await mkdir(join(tmpDir, 'test-commander'), { recursive: true })
+    await writeFile(
+      commanderMdPath,
+      '# Commander Identity\n\nYou are a custom commander.\n',
+      'utf-8',
+    )
+
+    await writer.scaffold()
+
+    const content = await readFile(commanderMdPath, 'utf-8')
+    expect(content).toBe('# Commander Identity\n\nYou are a custom commander.\n')
   })
 })
 

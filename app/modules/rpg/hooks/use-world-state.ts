@@ -21,6 +21,11 @@ export interface WorldAgent {
   task: string
   lastToolUse: string | null
   lastUpdatedAt: string
+  channelMeta?: {
+    provider: 'whatsapp' | 'telegram' | 'discord'
+    displayName: string
+    chatType: 'direct' | 'group' | 'channel' | 'forum-topic'
+  }
 }
 
 async function fetchWorldState(): Promise<WorldAgent[]> {

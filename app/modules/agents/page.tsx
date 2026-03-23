@@ -78,6 +78,7 @@ interface WorkerSummary {
 }
 
 type AgentSessionWithWorkers = AgentSession & {
+  processAlive?: boolean
   parentSession?: string
   spawnedWorkers?: string[]
   workerSummary?: WorkerSummary
@@ -108,6 +109,17 @@ function fallbackWorkerSummary(workerCount: number): WorkerSummary {
     starting: workerCount,
     done: 0,
   }
+}
+
+function isWorkerOrchestrationComplete(summary: WorkerSummary | null): boolean {
+  if (!summary) return false
+  return (
+    summary.total > 0
+    && summary.done === summary.total
+    && summary.running === 0
+    && summary.starting === 0
+    && summary.down === 0
+  )
 }
 
 function workerStatusSymbol(status: WorkerStatus): string {
@@ -144,17 +156,16 @@ function SessionCard({
   machine,
   selected,
   onSelect,
-  onView,
   onKill,
 }: {
   session: AgentSessionWithWorkers
   machine?: Machine
   selected: boolean
   onSelect: () => void
-  onView: () => void
   onKill: () => Promise<void> | void
 }) {
   const isFactory = session.name.startsWith('factory-')
+  const isCommander = session.name.startsWith('commander-')
   const Icon = isFactory ? Warehouse : Monitor
   const isRemote = Boolean(session.host)
   const isStream = session.sessionType === 'stream'
@@ -171,6 +182,8 @@ function SessionCard({
     workerSummary &&
     (workerSummary.total > 0 || (session.spawnedWorkers?.length ?? 0) > 0),
   )
+  const processAlive = rawAgentType === 'openclaw' ? true : session.processAlive !== false
+  const workerOrchestrationComplete = isWorkerOrchestrationComplete(workerSummary)
 
   return (
     <div
@@ -189,13 +202,15 @@ function SessionCard({
       className={cn(
         'w-full text-left p-5 card-sumi transition-all duration-300 ease-gentle cursor-pointer',
         isFactory && 'border-l-2 border-l-accent-indigo',
+        session.sessionType === 'pty' && 'border-2 border-sumi-black',
+        workerOrchestrationComplete && !isCommander && 'opacity-75',
         selected && 'ring-1 ring-sumi-black/10 shadow-ink-md',
       )}
     >
-      <div className="flex items-start justify-between">
-        <div className="flex items-center gap-3">
-          <Icon size={18} className={isFactory ? 'text-accent-indigo' : 'text-sumi-diluted'} />
-          <span className="font-mono text-sm text-sumi-black">{session.label ?? session.name}</span>
+      <div className="flex items-start justify-between gap-2">
+        <div className="flex items-center gap-3 min-w-0 flex-wrap">
+          <Icon size={18} className={cn('shrink-0', isFactory ? 'text-accent-indigo' : 'text-sumi-diluted')} />
+          <span className="font-mono text-sm text-sumi-black truncate">{session.label ?? session.name}</span>
           {isFactory && (
             <span className="badge-sumi bg-accent-indigo/10 text-accent-indigo">factory</span>
           )}
@@ -210,34 +225,33 @@ function SessionCard({
               {machine ? `${machine.label} · ${machine.host}` : session.host}
             </span>
           )}
+          {workerOrchestrationComplete && !isCommander && (
+            <span className="badge-sumi bg-ink-wash text-sumi-diluted text-[10px]">completed</span>
+          )}
         </div>
-        <div className="flex items-center gap-1.5">
-          <button
-            type="button"
-            onClick={(event) => {
-              event.stopPropagation()
-              onView()
-            }}
-            className="badge-sumi px-2 py-1 text-[10px] hover:bg-ink-wash text-sumi-gray transition-colors"
-          >
-            View
-          </button>
-          <button
-            type="button"
-            onClick={(event) => {
-              event.stopPropagation()
-              const confirmed = window.confirm(getKillConfirmationMessage(session.name, rawAgentType))
-              if (!confirmed) {
-                return
-              }
-              void Promise.resolve(onKill()).catch(() => {
-                // error handled by handleKillSession (sets killError state)
-              })
-            }}
-            className="badge-sumi px-2 py-1 text-[10px] text-accent-vermillion hover:bg-accent-vermillion/10 transition-colors"
-          >
-            Kill
-          </button>
+        <div className="flex items-center gap-1.5 shrink-0">
+          {processAlive ? (
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation()
+                const confirmed = window.confirm(getKillConfirmationMessage(session.name, rawAgentType))
+                if (!confirmed) {
+                  return
+                }
+                void Promise.resolve(onKill()).catch(() => {
+                  // error handled by handleKillSession (sets killError state)
+                })
+              }}
+              className="badge-sumi px-2 py-1 text-[10px] text-accent-vermillion hover:bg-accent-vermillion/10 transition-colors"
+            >
+              Kill
+            </button>
+          ) : (
+            <span className="badge-sumi px-2 py-1 text-[10px] bg-ink-wash text-sumi-diluted">
+              exited
+            </span>
+          )}
           <ChevronRight
             size={16}
             className={cn(
@@ -1216,7 +1230,6 @@ function MobileSessionView({
       phase: 'starting' as const,
     }))
   const workerRows = allWorkerRows.filter((w) => !dismissedWorkers.has(w.name))
-  const hasDoneWorkers = workerRows.some((w) => w.status === 'done')
   function handleClearDone() {
     const doneNames = allWorkerRows.filter((w) => w.status === 'done').map((w) => w.name)
     setDismissedWorkers((prev) => {
@@ -1231,14 +1244,16 @@ function MobileSessionView({
       ? { total: 0, running: 0, starting: 0, done: 0, down: 0 }
       : fallbackWorkerSummary(knownWorkerNames.length)
   const showWorkersPill = true
+  const hasDoneWorkers = workerSummary.done > 0
   const workerPillText = (() => {
     if (workerSummary.total === 0) return '+'
     const parts: string[] = []
     if (workerSummary.running > 0) parts.push(`●${workerSummary.running}`)
     if (workerSummary.starting > 0) parts.push(`○${workerSummary.starting}`)
     if (workerSummary.down > 0) parts.push(`⊘${workerSummary.down}`)
-    if (parts.length === 0) parts.push(`✓${workerSummary.done}`)
-    return parts.join(' ')
+    // Show done count only when no active workers exist
+    if (parts.length === 0 && workerSummary.done > 0) parts.push(`✓${workerSummary.done}`)
+    return parts.join(' ') || '+'
   })()
 
   return (
@@ -1297,19 +1312,25 @@ function MobileSessionView({
                       </button>
                     ))}
                   </div>
-                  <div className="p-2 border-t border-ink-border space-y-1.5">
+                  <div className="p-2 border-t border-ink-border flex gap-2">
                     {hasDoneWorkers && (
                       <button
                         type="button"
-                        className="w-full rounded-lg border border-ink-border px-2 py-1.5 text-xs text-sumi-diluted hover:bg-washi-shadow/60"
-                        onClick={handleClearDone}
+                        className="flex-1 rounded-lg border border-ink-border px-2 py-1.5 text-xs text-sumi-diluted hover:bg-washi-shadow/60"
+                        onClick={async () => {
+                          await fetchJson<{ cleared: number }>(
+                            `/api/agents/sessions/${encodeURIComponent(sessionName)}/workers/done`,
+                            { method: 'DELETE' },
+                          )
+                          await refreshWorkers()
+                        }}
                       >
                         Clear done
                       </button>
                     )}
                     <button
                       type="button"
-                      className="w-full rounded-lg border border-ink-border px-2 py-1.5 text-xs text-sumi-black hover:bg-washi-shadow/60"
+                      className="flex-1 rounded-lg border border-ink-border px-2 py-1.5 text-xs text-sumi-black hover:bg-washi-shadow/60"
                       onClick={() => {
                         setDispatchError(null)
                         setDispatchOpen(true)
@@ -1985,7 +2006,6 @@ export default function AgentsPage() {
                     selectedSession === session.name ? null : session.name,
                   )
                 }
-                onView={() => setSelectedSession(session.name)}
                 onKill={() => handleKillSession(session.name, session.agentType, session.sessionType)}
               />
             ))

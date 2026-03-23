@@ -42,11 +42,13 @@ function isObject(value: unknown): value is Record<string, unknown> {
 }
 
 interface CreateOptions {
-  instruction: string
-  cwd: string
-  permissionMode: string
-  agentType: string
-  skillsToUse: string[]
+  instruction?: string
+  contract?: {
+    cwd?: string
+    permissionMode?: string
+    agentType?: string
+    skillsToUse?: string[]
+  }
   source?: string
   githubIssueUrl?: string
   note?: string
@@ -56,7 +58,7 @@ function printUsage(stdout: Writable): void {
   stdout.write('Usage:\n')
   stdout.write('  hammurabi quests list\n')
   stdout.write(
-    '  hammurabi quests create --instruction "<text>" --cwd <path> --mode <mode> --agent <type> [--skills <s1,s2>] [--source <source>] [--issue <url>] [--note "<text>"]\n',
+    '  hammurabi quests create (--instruction "<text>" | --issue <url>) [--cwd <path>] [--mode <mode>] [--agent <type>] [--skills <s1,s2>] [--source <source>] [--note "<text>"]\n',
   )
   stdout.write('  hammurabi quests delete <id>\n')
   stdout.write('  hammurabi quests claim <id>\n')
@@ -346,6 +348,8 @@ function parseCreateOptions(args: readonly string[]): CreateOptions | null {
   let permissionMode: string | undefined
   let agentType: string | undefined
   let skillsToUse: string[] = []
+  let hasSkillsOption = false
+  let hasContractOverride = false
   let source: string | undefined
   let githubIssueUrl: string | undefined
   let note: string | undefined
@@ -374,11 +378,16 @@ function parseCreateOptions(args: readonly string[]): CreateOptions | null {
       instruction = value
     } else if (flag === '--cwd') {
       cwd = value
+      hasContractOverride = true
     } else if (flag === '--mode') {
       permissionMode = value
+      hasContractOverride = true
     } else if (flag === '--agent') {
       agentType = value
+      hasContractOverride = true
     } else if (flag === '--skills') {
+      hasSkillsOption = true
+      hasContractOverride = true
       skillsToUse = value.split(',').map((s) => s.trim()).filter((s) => s.length > 0)
     } else if (flag === '--source') {
       source = value
@@ -391,11 +400,47 @@ function parseCreateOptions(args: readonly string[]): CreateOptions | null {
     index += 1
   }
 
-  if (!instruction || !cwd || !permissionMode || !agentType) {
+  if (!instruction && !githubIssueUrl) {
     return null
   }
 
-  return { instruction, cwd, permissionMode, agentType, skillsToUse, source, githubIssueUrl, note }
+  const options: CreateOptions = {}
+  if (instruction) {
+    options.instruction = instruction
+  }
+  if (source) {
+    options.source = source
+  }
+  if (githubIssueUrl) {
+    options.githubIssueUrl = githubIssueUrl
+  }
+  if (note) {
+    options.note = note
+  }
+
+  if (hasContractOverride) {
+    const contract: {
+      cwd?: string
+      permissionMode?: string
+      agentType?: string
+      skillsToUse?: string[]
+    } = {}
+    if (cwd) {
+      contract.cwd = cwd
+    }
+    if (permissionMode) {
+      contract.permissionMode = permissionMode
+    }
+    if (agentType) {
+      contract.agentType = agentType
+    }
+    if (hasSkillsOption) {
+      contract.skillsToUse = skillsToUse
+    }
+    options.contract = contract
+  }
+
+  return options
 }
 
 async function runCreate(
@@ -409,14 +454,12 @@ async function runCreate(
     context.config.endpoint,
     `/api/commanders/${encodeURIComponent(context.commanderId)}/quests`,
   )
-  const payload: Record<string, unknown> = {
-    instruction: options.instruction,
-    contract: {
-      cwd: options.cwd,
-      permissionMode: options.permissionMode,
-      agentType: options.agentType,
-      skillsToUse: options.skillsToUse,
-    },
+  const payload: Record<string, unknown> = {}
+  if (options.instruction) {
+    payload.instruction = options.instruction
+  }
+  if (options.contract) {
+    payload.contract = options.contract
   }
   if (options.source) {
     payload.source = options.source
@@ -586,7 +629,7 @@ async function runPostNote(
   const result = await fetchJson(fetchImpl, url, {
     method: 'POST',
     headers: buildAuthHeaders(context.config, true),
-    body: JSON.stringify({ text }),
+    body: JSON.stringify({ note: text }),
   })
 
   if (!result.ok) {

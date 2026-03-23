@@ -1,6 +1,8 @@
+import { randomUUID } from 'node:crypto'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import {
+  createDefaultHeartbeatState,
   normalizeHeartbeatState,
   type CommanderHeartbeatState,
 } from './heartbeat.js'
@@ -36,15 +38,42 @@ export interface CommanderRemoteOrigin {
   syncToken: string
 }
 
+export interface CommanderChannelMeta {
+  provider: 'whatsapp' | 'telegram' | 'discord'
+  chatType: 'direct' | 'group' | 'channel' | 'forum-topic'
+  accountId: string
+  peerId: string
+  parentPeerId?: string
+  groupId?: string
+  threadId?: string
+  sessionKey: string
+  displayName: string
+  subject?: string
+  space?: string
+}
+
+export interface CommanderLastRoute {
+  channel: string
+  to: string
+  accountId: string
+  threadId?: string
+}
+
 export interface CommanderSession {
   id: string
   host: string
   avatarSeed?: string
+  /**
+   * @deprecated Backward-compatibility field for list/detail consumers.
+   * .memory/identity.md is the canonical identity source; this may be omitted.
+   */
   persona?: string
   pid: number | null
   state: 'idle' | 'running' | 'paused' | 'stopped'
   created: string
   agentType?: 'claude' | 'codex'
+  channelMeta?: CommanderChannelMeta
+  lastRoute?: CommanderLastRoute
   claudeSessionId?: string
   codexThreadId?: string
   cwd?: string
@@ -164,6 +193,74 @@ function parseRemoteOrigin(raw: unknown): CommanderRemoteOrigin | undefined {
   }
 }
 
+function parseOptionalNonEmptyString(raw: unknown): string | undefined {
+  return typeof raw === 'string' && raw.trim().length > 0
+    ? raw.trim()
+    : undefined
+}
+
+function parseChannelProvider(raw: unknown): CommanderChannelMeta['provider'] | null {
+  return raw === 'whatsapp' || raw === 'telegram' || raw === 'discord'
+    ? raw
+    : null
+}
+
+function parseChannelChatType(raw: unknown): CommanderChannelMeta['chatType'] | null {
+  return raw === 'direct' || raw === 'group' || raw === 'channel' || raw === 'forum-topic'
+    ? raw
+    : null
+}
+
+function parseCommanderChannelMeta(raw: unknown): CommanderChannelMeta | undefined {
+  if (!isObject(raw)) {
+    return undefined
+  }
+
+  const provider = parseChannelProvider(raw.provider)
+  const chatType = parseChannelChatType(raw.chatType)
+  const accountId = parseOptionalNonEmptyString(raw.accountId)
+  const peerId = parseOptionalNonEmptyString(raw.peerId)
+  const sessionKey = parseOptionalNonEmptyString(raw.sessionKey)
+  const displayName = parseOptionalNonEmptyString(raw.displayName)
+  if (!provider || !chatType || !accountId || !peerId || !sessionKey || !displayName) {
+    return undefined
+  }
+
+  return {
+    provider,
+    chatType,
+    accountId,
+    peerId,
+    parentPeerId: parseOptionalNonEmptyString(raw.parentPeerId),
+    groupId: parseOptionalNonEmptyString(raw.groupId),
+    threadId: parseOptionalNonEmptyString(raw.threadId),
+    sessionKey,
+    displayName,
+    subject: parseOptionalNonEmptyString(raw.subject),
+    space: parseOptionalNonEmptyString(raw.space),
+  }
+}
+
+function parseCommanderLastRoute(raw: unknown): CommanderLastRoute | undefined {
+  if (!isObject(raw)) {
+    return undefined
+  }
+
+  const channel = parseOptionalNonEmptyString(raw.channel)
+  const to = parseOptionalNonEmptyString(raw.to)
+  const accountId = parseOptionalNonEmptyString(raw.accountId)
+  if (!channel || !to || !accountId) {
+    return undefined
+  }
+
+  return {
+    channel,
+    to,
+    accountId,
+    threadId: parseOptionalNonEmptyString(raw.threadId),
+  }
+}
+
 function parseAgentType(raw: unknown): 'claude' | 'codex' {
   return raw === 'codex' ? 'codex' : 'claude'
 }
@@ -196,6 +293,8 @@ function parseCommanderSession(raw: unknown): CommanderSession | null {
   const currentTask = parseCurrentTask(raw.currentTask)
   const contextConfig = parseHeartbeatContextConfig(raw.contextConfig)
   const remoteOrigin = parseRemoteOrigin(raw.remoteOrigin)
+  const channelMeta = parseCommanderChannelMeta(raw.channelMeta)
+  const lastRoute = parseCommanderLastRoute(raw.lastRoute)
 
   const state = raw.state
   if (
@@ -237,6 +336,8 @@ function parseCommanderSession(raw: unknown): CommanderSession | null {
     claudeSessionId,
     codexThreadId,
     cwd,
+    ...(channelMeta ? { channelMeta } : {}),
+    ...(lastRoute ? { lastRoute } : {}),
     heartbeat,
     lastHeartbeat: synchronizedLastHeartbeat,
     heartbeatTickCount,
@@ -277,6 +378,8 @@ function cloneSession(session: CommanderSession): CommanderSession {
     contextConfig: session.contextConfig ? { ...session.contextConfig } : undefined,
     taskSource: session.taskSource ? { ...session.taskSource } : null,
     currentTask: session.currentTask ? { ...session.currentTask } : null,
+    channelMeta: session.channelMeta ? { ...session.channelMeta } : undefined,
+    lastRoute: session.lastRoute ? { ...session.lastRoute } : undefined,
     ...(session.remoteOrigin ? { remoteOrigin: { ...session.remoteOrigin } } : {}),
   }
 }
@@ -318,6 +421,75 @@ export class CommanderSessionStore {
       sessions.set(session.id, cloneSession(session))
       await this.writeToDisk()
       return cloneSession(session)
+    })
+  }
+
+  async findOrCreateBySessionKey(
+    sessionKey: string,
+    defaults: {
+      channelMeta: CommanderChannelMeta
+      lastRoute: CommanderLastRoute
+      host?: string
+      persona?: string
+    },
+  ): Promise<{ commander: CommanderSession; created: boolean }> {
+    return this.withMutationLock(async () => {
+      await this.ensureLoaded()
+      const normalizedSessionKey = sessionKey.trim()
+      if (!normalizedSessionKey) {
+        throw new Error('sessionKey must be a non-empty string')
+      }
+
+      const sessions = this.sessions()
+      for (const existing of sessions.values()) {
+        if (existing.channelMeta?.sessionKey !== normalizedSessionKey) {
+          continue
+        }
+
+        const updated: CommanderSession = {
+          ...cloneSession(existing),
+          lastRoute: { ...defaults.lastRoute },
+        }
+        sessions.set(existing.id, cloneSession(updated))
+        await this.writeToDisk()
+        return {
+          commander: cloneSession(updated),
+          created: false,
+        }
+      }
+
+      const fallbackHost = `${defaults.channelMeta.provider}-${defaults.channelMeta.chatType}-${defaults.channelMeta.peerId}`
+      const host = defaults.host?.trim() || fallbackHost
+      const persona = defaults.persona?.trim() || undefined
+      const nowIso = new Date().toISOString()
+      const createdCommander: CommanderSession = {
+        id: randomUUID(),
+        host,
+        ...(persona ? { persona } : {}),
+        pid: null,
+        state: 'idle',
+        created: nowIso,
+        agentType: 'claude',
+        heartbeat: createDefaultHeartbeatState(),
+        lastHeartbeat: null,
+        heartbeatTickCount: 0,
+        taskSource: null,
+        currentTask: null,
+        completedTasks: 0,
+        totalCostUsd: 0,
+        channelMeta: {
+          ...defaults.channelMeta,
+          sessionKey: normalizedSessionKey,
+        },
+        lastRoute: { ...defaults.lastRoute },
+      }
+
+      sessions.set(createdCommander.id, cloneSession(createdCommander))
+      await this.writeToDisk()
+      return {
+        commander: cloneSession(createdCommander),
+        created: true,
+      }
     })
   }
 

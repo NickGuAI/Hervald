@@ -41,10 +41,16 @@ interface CommandContext {
 }
 
 interface UpdateOptions {
+  commanderId?: string
   cronId: string
   schedule?: string
   instruction?: string
   enabled?: boolean
+}
+
+interface TriggerOptions {
+  commanderId?: string
+  instruction?: string
 }
 
 export interface CronCliDependencies {
@@ -67,9 +73,9 @@ function printUsage(stdout: Writable): void {
   )
   stdout.write('  hammurabi cron delete --commander <id> <cron-id>\n')
   stdout.write(
-    '  hammurabi cron update <id> [--schedule "<cron>"] [--instruction "<text>"] [--enabled true|false]\n',
+    '  hammurabi cron update <id> [--commander <id>] [--schedule "<cron>"] [--instruction "<text>"] [--enabled | --disabled | --enabled true|false]\n',
   )
-  stdout.write('  hammurabi cron trigger [--instruction "<text>"]\n')
+  stdout.write('  hammurabi cron trigger [--commander <id>] [--instruction "<text>"]\n')
 }
 
 function parseNonEmpty(value: string | undefined): string | null {
@@ -334,6 +340,7 @@ function formatTable(headers: readonly string[], rows: readonly (readonly string
 async function resolveCommandContext(
   dependencies: CronCliDependencies,
   stderr: Writable,
+  commanderOverride?: string,
 ): Promise<CommandContext | null> {
   const readConfig = dependencies.readConfig ?? readHammurabiConfig
   const config = await readConfig()
@@ -343,10 +350,10 @@ async function resolveCommandContext(
   }
 
   const commanderId = resolveCommanderId(
-    dependencies.commanderId ?? process.env.HAMMURABI_COMMANDER_ID,
+    commanderOverride ?? dependencies.commanderId ?? process.env.HAMMURABI_COMMANDER_ID,
   )
   if (!commanderId) {
-    stderr.write('HAMMURABI_COMMANDER_ID is required.\n')
+    stderr.write('--commander or HAMMURABI_COMMANDER_ID is required.\n')
     return null
   }
 
@@ -354,50 +361,97 @@ async function resolveCommandContext(
 }
 
 function parseUpdateOptions(args: readonly string[]): UpdateOptions | null {
-  const cronId = args[0]?.trim() ?? ''
+  const cronId = parseNonEmpty(args[0])
   if (!cronId) {
     return null
   }
 
+  let commanderId: string | undefined
   let schedule: string | undefined
   let instruction: string | undefined
   let enabled: boolean | undefined
   let hasField = false
 
   const flags = args.slice(1)
-  for (let index = 0; index < flags.length; index += 1) {
+  for (let index = 0; index < flags.length; ) {
     const flag = flags[index]
-    const value = flags[index + 1]?.trim()
 
-    if (flag !== '--schedule' && flag !== '--instruction' && flag !== '--enabled') {
-      return null
+    if (flag === '--enabled') {
+      const rawValue = flags[index + 1]
+      if (rawValue && !rawValue.startsWith('--')) {
+        const value = parseNonEmpty(rawValue)
+        if (value !== 'true' && value !== 'false') {
+          return null
+        }
+        enabled = value === 'true'
+        hasField = true
+        index += 2
+        continue
+      }
+
+      enabled = true
+      hasField = true
+      index += 1
+      continue
     }
+
+    if (flag === '--disabled') {
+      enabled = false
+      hasField = true
+      index += 1
+      continue
+    }
+
+    const value = parseNonEmpty(flags[index + 1])
     if (!value) {
       return null
     }
 
-    if (flag === '--schedule') {
+    if (flag === '--commander') {
+      commanderId = value
+    } else if (flag === '--schedule') {
       schedule = value
       hasField = true
     } else if (flag === '--instruction') {
       instruction = value
       hasField = true
-    } else if (flag === '--enabled') {
-      if (value !== 'true' && value !== 'false') {
-        return null
-      }
-      enabled = value === 'true'
-      hasField = true
+    } else {
+      return null
     }
 
-    index += 1
+    index += 2
   }
 
   if (!hasField) {
     return null
   }
 
-  return { cronId, schedule, instruction, enabled }
+  return { commanderId, cronId, schedule, instruction, enabled }
+}
+
+function parseTriggerOptions(args: readonly string[]): TriggerOptions | null {
+  let commanderId: string | undefined
+  let instruction: string | undefined
+
+  for (let index = 0; index < args.length; ) {
+    const flag = args[index]
+    const value = parseNonEmpty(args[index + 1])
+    if (!value) {
+      return null
+    }
+
+    if (flag === '--commander') {
+      commanderId = value
+    } else if (flag === '--instruction') {
+      instruction = value
+    } else {
+      return null
+    }
+
+    index += 2
+  }
+
+  return { commanderId, instruction }
 }
 
 async function runList(
@@ -670,32 +724,29 @@ export async function runCronCli(
     return runDelete(config, fetchImpl, deleteOptions, stdout, stderr)
   }
 
-  // update and trigger use HAMMURABI_COMMANDER_ID env var
-  const context = await resolveCommandContext(dependencies, stderr)
-  if (!context) {
-    return 1
-  }
-
   if (command === 'trigger') {
-    // Parse optional --instruction flag
-    let instruction: string | undefined
-    const triggerArgs = args.slice(1)
-    if (triggerArgs.length === 2 && triggerArgs[0] === '--instruction') {
-      instruction = triggerArgs[1]?.trim()
-      if (!instruction) {
-        printUsage(stdout)
-        return 1
-      }
-    } else if (triggerArgs.length !== 0) {
+    const triggerOptions = parseTriggerOptions(args.slice(1))
+    if (!triggerOptions) {
       printUsage(stdout)
       return 1
     }
-    return runTrigger(context, fetchImpl, instruction, stdout, stderr)
+
+    const context = await resolveCommandContext(dependencies, stderr, triggerOptions.commanderId)
+    if (!context) {
+      return 1
+    }
+
+    return runTrigger(context, fetchImpl, triggerOptions.instruction, stdout, stderr)
   }
 
   const updateOptions = parseUpdateOptions(args.slice(1))
   if (!updateOptions) {
     printUsage(stdout)
+    return 1
+  }
+
+  const context = await resolveCommandContext(dependencies, stderr, updateOptions.commanderId)
+  if (!context) {
     return 1
   }
 

@@ -41,11 +41,21 @@ describe('runCronCli', () => {
     const stderr = createBufferWriter()
 
     const exitCode = await runCronCli(
-      ['update', 'cron-1', '--schedule', '*/10 * * * *', '--instruction', 'Check logs', '--enabled', 'false'],
+      [
+        'update',
+        'cron-1',
+        '--commander',
+        'cmdr-2',
+        '--schedule',
+        '*/10 * * * *',
+        '--instruction',
+        'Check logs',
+        '--disabled',
+      ],
       {
         fetchImpl,
         readConfig: async () => config,
-        commanderId: 'cmdr-1',
+        commanderId: '',
         stdout: stdout.writer,
         stderr: stderr.writer,
       },
@@ -57,7 +67,7 @@ describe('runCronCli', () => {
 
     expect(fetchImpl).toHaveBeenCalledTimes(1)
     const call = fetchImpl.mock.calls[0]
-    expect(call?.[0]).toBe('https://hammurabi.gehirn.ai/api/commanders/cmdr-1/crons/cron-1')
+    expect(call?.[0]).toBe('https://hammurabi.gehirn.ai/api/commanders/cmdr-2/crons/cron-1')
     expect(call?.[1]).toMatchObject({
       method: 'PATCH',
       headers: expect.objectContaining({
@@ -76,10 +86,10 @@ describe('runCronCli', () => {
     const fetchImpl = vi.fn<typeof fetch>()
     const stdout = createBufferWriter()
 
-    const exitCode = await runCronCli(['update', 'cron-1'], {
+    const exitCode = await runCronCli(['update', 'cron-1', '--commander', 'cmdr-1'], {
       fetchImpl,
       readConfig: async () => config,
-      commanderId: 'cmdr-1',
+      commanderId: '',
       stdout: stdout.writer,
     })
 
@@ -97,13 +107,16 @@ describe('runCronCli', () => {
     const stdout = createBufferWriter()
     const stderr = createBufferWriter()
 
-    const exitCode = await runCronCli(['trigger', '--instruction', 'Check logs'], {
-      fetchImpl,
-      readConfig: async () => config,
-      commanderId: 'cmdr-1',
-      stdout: stdout.writer,
-      stderr: stderr.writer,
-    })
+    const exitCode = await runCronCli(
+      ['trigger', '--commander', 'cmdr-2', '--instruction', 'Check logs'],
+      {
+        fetchImpl,
+        readConfig: async () => config,
+        commanderId: '',
+        stdout: stdout.writer,
+        stderr: stderr.writer,
+      },
+    )
 
     expect(exitCode).toBe(0)
     expect(stderr.read()).toBe('')
@@ -111,7 +124,7 @@ describe('runCronCli', () => {
 
     expect(fetchImpl).toHaveBeenCalledTimes(1)
     const call = fetchImpl.mock.calls[0]
-    expect(call?.[0]).toBe('https://hammurabi.gehirn.ai/api/commanders/cmdr-1/cron-trigger')
+    expect(call?.[0]).toBe('https://hammurabi.gehirn.ai/api/commanders/cmdr-2/cron-trigger')
     expect(call?.[1]).toMatchObject({
       method: 'POST',
       headers: expect.objectContaining({
@@ -149,6 +162,35 @@ describe('runCronCli', () => {
     expect(JSON.parse((call?.[1]?.body as string) ?? '{}')).toEqual({})
   })
 
+  it('supports --enabled shorthand on update', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ id: 'cron-1', enabled: true }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    )
+    const stdout = createBufferWriter()
+    const stderr = createBufferWriter()
+
+    const exitCode = await runCronCli(
+      ['update', 'cron-1', '--enabled', '--instruction', 'Check logs'],
+      {
+        fetchImpl,
+        readConfig: async () => config,
+        commanderId: 'cmdr-1',
+        stdout: stdout.writer,
+        stderr: stderr.writer,
+      },
+    )
+
+    expect(exitCode).toBe(0)
+    const call = fetchImpl.mock.calls[0]
+    expect(JSON.parse((call?.[1]?.body as string) ?? '{}')).toEqual({
+      instruction: 'Check logs',
+      enabled: true,
+    })
+  })
+
   it('fails when HAMMURABI_COMMANDER_ID is missing', async () => {
     const fetchImpl = vi.fn<typeof fetch>()
     const stderr = createBufferWriter()
@@ -161,7 +203,7 @@ describe('runCronCli', () => {
     })
 
     expect(exitCode).toBe(1)
-    expect(stderr.read()).toContain('HAMMURABI_COMMANDER_ID is required.')
+    expect(stderr.read()).toContain('--commander or HAMMURABI_COMMANDER_ID is required.')
     expect(fetchImpl).not.toHaveBeenCalled()
   })
 

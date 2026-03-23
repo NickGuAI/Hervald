@@ -45,6 +45,8 @@ describe('runMemoryCli', () => {
     expect(stdout.read()).toContain('hammurabi memory compact')
     expect(stdout.read()).toContain('hammurabi memory find')
     expect(stdout.read()).toContain('hammurabi memory save')
+    expect(stdout.read()).toContain('hammurabi memory export')
+    expect(stdout.read()).toContain('hammurabi memory journal')
   })
 
   it('prints usage for unknown subcommand', async () => {
@@ -359,6 +361,126 @@ describe('runMemoryCli', () => {
 
       expect(exitCode).toBe(1)
       expect(stderr.read()).toContain('Request failed (500)')
+    })
+  })
+
+  describe('export', () => {
+    it('gets memory export payload and prints json', async () => {
+      const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            memoryMd: '# Commander Memory\n\n- Fact',
+            journal: { '2026-03-12': '## 2026-03-12\n- Entry' },
+            repos: { 'NickGuAI/monorepo-g/README.md': 'readme' },
+            skills: { 'hammurabi/skill.md': 'content' },
+          }),
+          {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          },
+        ),
+      )
+      const stdout = createBufferWriter()
+      const stderr = createBufferWriter()
+
+      const exitCode = await runMemoryCli(['export', '--commander', 'cmdr-1'], {
+        fetchImpl,
+        readConfig: async () => config,
+        stdout: stdout.writer,
+        stderr: stderr.writer,
+      })
+
+      expect(exitCode).toBe(0)
+      expect(stderr.read()).toBe('')
+      expect(stdout.read()).toContain('"memoryMd": "# Commander Memory')
+      expect(stdout.read()).toContain('"journal"')
+
+      expect(fetchImpl).toHaveBeenCalledWith(
+        'https://hammurabi.gehirn.ai/api/commanders/cmdr-1/memory/export',
+        expect.objectContaining({
+          method: 'GET',
+          headers: expect.objectContaining({
+            authorization: 'Bearer hmrb_test_key',
+          }),
+        }),
+      )
+    })
+  })
+
+  describe('journal', () => {
+    it('posts manual journal entry to journal endpoint', async () => {
+      const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+        new Response(
+          JSON.stringify({ date: '2026-03-15', added: 1, skipped: 0 }),
+          {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          },
+        ),
+      )
+      const stdout = createBufferWriter()
+      const stderr = createBufferWriter()
+
+      const exitCode = await runMemoryCli(
+        [
+          'journal',
+          '--commander',
+          'cmdr-1',
+          '--body',
+          'Closed quest and validated behavior.',
+          '--timestamp',
+          '2026-03-15T10:20:30.000Z',
+          '--outcome',
+          'Closed issue #544 parity gap',
+          '--salience',
+          'SPIKE',
+          '--issue-number',
+          '544',
+          '--repo',
+          'NickGuAI/monorepo-g',
+          '--duration-min',
+          '25',
+        ],
+        {
+          fetchImpl,
+          readConfig: async () => config,
+          stdout: stdout.writer,
+          stderr: stderr.writer,
+        },
+      )
+
+      expect(exitCode).toBe(0)
+      expect(stderr.read()).toBe('')
+      expect(stdout.read()).toContain('Journal entry appended for 2026-03-15.')
+
+      expect(fetchImpl).toHaveBeenCalledWith(
+        'https://hammurabi.gehirn.ai/api/commanders/cmdr-1/memory/journal',
+        expect.objectContaining({
+          method: 'POST',
+          headers: expect.objectContaining({
+            authorization: 'Bearer hmrb_test_key',
+            'content-type': 'application/json',
+          }),
+        }),
+      )
+
+      const sentBody = JSON.parse(
+        (fetchImpl.mock.calls[0]?.[1] as RequestInit)?.body as string,
+      )
+      expect(sentBody).toEqual({
+        date: '2026-03-15',
+        entries: [
+          {
+            timestamp: '2026-03-15T10:20:30.000Z',
+            issueNumber: 544,
+            repo: 'NickGuAI/monorepo-g',
+            outcome: 'Closed issue #544 parity gap',
+            durationMin: 25,
+            salience: 'SPIKE',
+            body: 'Closed quest and validated behavior.',
+          },
+        ],
+      })
     })
   })
 
