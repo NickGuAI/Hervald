@@ -5026,8 +5026,13 @@ export function createAgentsRouter(options: AgentsRouterOptions = {}): AgentsRou
       sessionName.startsWith(COMMANDER_SESSION_NAME_PREFIX) &&
       session.kind === 'stream'
     ) {
-      await resetCommanderSession(sessionName)
-      res.json({ reset: true })
+      try {
+        await resetCommanderSession(sessionName)
+        res.json({ reset: true })
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        res.status(500).json({ error: `Reset failed: ${message}` })
+      }
       return
     }
 

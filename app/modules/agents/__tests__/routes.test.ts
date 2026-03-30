@@ -4176,6 +4176,75 @@ describe('stream sessions', () => {
     }
   })
 
+  it('returns 500 when commander /reset cannot replace a remote session', async () => {
+    installMockProcess()
+    const registry = await createTempMachinesRegistry({
+      machines: [
+        {
+          id: 'gpu-1',
+          label: 'GPU',
+          host: '10.0.1.50',
+          user: 'ec2-user',
+        },
+      ],
+    })
+    const workDir = await mkdtemp(join(tmpdir(), 'hammurabi-commander-reset-remote-failure-'))
+    const commanderDataDir = join(workDir, 'commanders-data')
+    let server: RunningServer | null = null
+
+    try {
+      await seedCommanderSessionFixture({
+        commanderDataDir,
+        commanderId: 'remote-reset-failure',
+        workflowPrompt: 'Remote reset workflow prompt',
+        identityBody: 'Remote reset identity body.',
+      })
+
+      server = await startServer({
+        commanderSessionStorePath: join(commanderDataDir, 'sessions.json'),
+        machinesFilePath: registry.filePath,
+      })
+
+      const createResponse = await fetch(`${server.baseUrl}/api/agents/sessions`, {
+        method: 'POST',
+        headers: {
+          ...AUTH_HEADERS,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          name: 'commander-remote-reset-failure',
+          mode: 'default',
+          sessionType: 'stream',
+          host: 'gpu-1',
+        }),
+      })
+
+      expect(createResponse.status).toBe(201)
+      await writeFile(registry.filePath, JSON.stringify({ machines: [] }))
+
+      const response = await fetch(`${server.baseUrl}/api/agents/sessions/commander-remote-reset-failure/message`, {
+        method: 'POST',
+        headers: {
+          ...AUTH_HEADERS,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({ message: '/reset' }),
+      })
+
+      expect(response.status).toBe(500)
+      expect(await response.json()).toEqual({
+        error: 'Reset failed: Host machine "gpu-1" is unavailable for session replacement',
+      })
+      expect(mockedSpawn).toHaveBeenCalledTimes(1)
+    } finally {
+      if (server) {
+        await server.close()
+      }
+      await registry.cleanup()
+      await rm(workDir, { recursive: true, force: true })
+    }
+  })
+
   it('returns 429 when HTTP /message queue reaches max depth', async () => {
     const mock = installMockProcess()
     const server = await startServer()
