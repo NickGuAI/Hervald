@@ -10,7 +10,7 @@ export declare function buildCodexOtelConfig(endpoint: string, apiKey: string): 
  * Produces (inline-table form):
  *   [otel]
  *   log_user_prompt = true
- *   exporter = { otlp-http = { endpoint = "<endpoint>/v1/logs", protocol = "json", headers = { "x-hambros-api-key" = "<apiKey>" } } }
+ *   exporter = { otlp-http = { endpoint = "<endpoint>/v1/logs", protocol = "json", headers = { "x-hammurabi-api-key" = "<apiKey>" } } }
  */
 export declare function mergeCodexOtelConfig(config: CodexOtelConfig, configPath?: string): Promise<void>;
 //# sourceMappingURL=codex-settings.d.ts.map

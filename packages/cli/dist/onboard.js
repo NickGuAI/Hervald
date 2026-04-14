@@ -4,7 +4,7 @@ import { buildCodexOtelConfig, mergeCodexOtelConfig } from './codex-settings.js'
 import { buildCursorOtelEnv, mergeCursorEnv } from './cursor-settings.js';
 import { closePromptResources, promptMultiSelect, promptSecret, promptText, } from './prompts.js';
 import { validateTelemetryWriteKey } from './validate.js';
-const DEFAULT_ENDPOINT = 'http://localhost:20001';
+const DEFAULT_ENDPOINT = 'https://hammurabi.gehirn.ai';
 const DEFAULT_AGENTS = [
     'claude-code',
     'codex',
@@ -19,7 +19,7 @@ const AGENT_INSTRUCTIONS = [
             '  CLAUDE_CODE_ENABLE_TELEMETRY=1',
             '  OTEL_EXPORTER_OTLP_ENDPOINT=<endpoint>',
             '  OTEL_EXPORTER_OTLP_PROTOCOL=http/json',
-            '  OTEL_EXPORTER_OTLP_HEADERS=x-hambros-api-key=<KEY>',
+            '  OTEL_EXPORTER_OTLP_HEADERS=x-hammurabi-api-key=<KEY>',
         ],
     },
     {
@@ -29,13 +29,13 @@ const AGENT_INSTRUCTIONS = [
             'Set [otel] exporter in ~/.codex/config.toml:',
             '  [otel]',
             '  log_user_prompt = true',
-            '  exporter = { otlp-http = { endpoint = "<endpoint>/v1/logs", protocol = "json", headers = { "x-hambros-api-key" = "<KEY>" } } }',
+            '  exporter = { otlp-http = { endpoint = "<endpoint>/v1/logs", protocol = "json", headers = { "x-hammurabi-api-key" = "<KEY>" } } }',
         ],
     },
     {
         id: 'terminal-cri',
         label: 'Terminal CRI',
-        lines: ['Already integrated. HamBros agents read ~/.hambros.json directly; no extra setup is required.'],
+        lines: ['Already integrated. Hammurabi agents read ~/.hammurabi.json directly; no extra setup is required.'],
     },
     {
         id: 'cursor',
@@ -44,7 +44,7 @@ const AGENT_INSTRUCTIONS = [
             'Set OTEL env vars in Cursor User settings.json under terminal.integrated.env:',
             '  OTEL_EXPORTER_OTLP_ENDPOINT=<endpoint>',
             '  OTEL_EXPORTER_OTLP_PROTOCOL=http/json',
-            '  OTEL_EXPORTER_OTLP_HEADERS=x-hambros-api-key=<KEY>',
+            '  OTEL_EXPORTER_OTLP_HEADERS=x-hammurabi-api-key=<KEY>',
         ],
     },
     {
@@ -54,12 +54,12 @@ const AGENT_INSTRUCTIONS = [
             'Export standard OTEL env vars in your shell profile or Anti-Gravity config:',
             '  OTEL_EXPORTER_OTLP_ENDPOINT=<endpoint>',
             '  OTEL_EXPORTER_OTLP_PROTOCOL=http/json',
-            '  OTEL_EXPORTER_OTLP_HEADERS=x-hambros-api-key=<KEY>',
+            '  OTEL_EXPORTER_OTLP_HEADERS=x-hammurabi-api-key=<KEY>',
         ],
     },
 ];
 function printUsage() {
-    process.stdout.write('Usage: hambros onboard\n');
+    process.stdout.write('Usage: hammurabi onboard\n');
 }
 function printSelectedAgentInstructions(endpoint, apiKey, agents, autoConfigured) {
     process.stdout.write('\nAgent setup instructions:\n');
@@ -87,7 +87,7 @@ function printSelectedAgentInstructions(endpoint, apiKey, agents, autoConfigured
         process.stdout.write('\nOTEL environment variables:\n');
         process.stdout.write(`OTEL_EXPORTER_OTLP_ENDPOINT=${endpoint}\n`);
         process.stdout.write('OTEL_EXPORTER_OTLP_PROTOCOL=http/json\n');
-        process.stdout.write('OTEL_EXPORTER_OTLP_HEADERS=x-hambros-api-key=<your-api-key>\n');
+        process.stdout.write('OTEL_EXPORTER_OTLP_HEADERS=x-hammurabi-api-key=<your-api-key>\n');
     }
 }
 export async function runCli(args) {
@@ -97,9 +97,9 @@ export async function runCli(args) {
             printUsage();
             return 1;
         }
-        process.stdout.write('HamBros onboard\n');
-        process.stdout.write('Configure agents to send telemetry to your HamBros instance.\n\n');
-        const endpoint = await promptText('HamBros endpoint', {
+        process.stdout.write('Hammurabi onboard\n');
+        process.stdout.write('Configure agents to send telemetry to your Hammurabi instance.\n\n');
+        const endpoint = await promptText('Hammurabi endpoint', {
             defaultValue: DEFAULT_ENDPOINT,
             required: true,
         });

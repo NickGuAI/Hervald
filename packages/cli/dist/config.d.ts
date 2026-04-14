@@ -1,4 +1,4 @@
-export declare const HAMMURABI_CONFIG_FILENAME = ".hambros.json";
+export declare const HAMMURABI_CONFIG_FILENAME = ".hammurabi.json";
 export declare const HAMMURABI_AGENTS: readonly ["claude-code", "codex", "terminal-cri", "cursor", "anti-gravity"];
 export type HammurabiAgent = (typeof HAMMURABI_AGENTS)[number];
 export interface HammurabiConfig {

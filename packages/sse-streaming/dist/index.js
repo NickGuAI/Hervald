@@ -1,5 +1,5 @@
 function notImplemented(api) {
-    throw new Error(`@hambros/sse-streaming scaffold: "${api}" is not implemented yet.`);
+    throw new Error(`@gehirn/sse-streaming scaffold: "${api}" is not implemented yet.`);
 }
 export async function* streamSSE(url, body, options = {}) {
     void url;

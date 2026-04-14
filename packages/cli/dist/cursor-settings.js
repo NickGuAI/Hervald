@@ -35,7 +35,7 @@ export function buildCursorOtelEnv(endpoint, apiKey) {
     return {
         OTEL_EXPORTER_OTLP_ENDPOINT: endpoint,
         OTEL_EXPORTER_OTLP_PROTOCOL: 'http/json',
-        OTEL_EXPORTER_OTLP_HEADERS: `x-hambros-api-key=${apiKey}`,
+        OTEL_EXPORTER_OTLP_HEADERS: `x-hammurabi-api-key=${apiKey}`,
     };
 }
 export async function mergeCursorEnv(vars, settingsPath = defaultCursorSettingsPath()) {

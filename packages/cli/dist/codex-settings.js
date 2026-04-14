@@ -20,7 +20,7 @@ export function buildCodexOtelConfig(endpoint, apiKey) {
  * Produces (inline-table form):
  *   [otel]
  *   log_user_prompt = true
- *   exporter = { otlp-http = { endpoint = "<endpoint>/v1/logs", protocol = "json", headers = { "x-hambros-api-key" = "<apiKey>" } } }
+ *   exporter = { otlp-http = { endpoint = "<endpoint>/v1/logs", protocol = "json", headers = { "x-hammurabi-api-key" = "<apiKey>" } } }
  */
 export async function mergeCodexOtelConfig(config, configPath = defaultCodexConfigPath()) {
     let existing = {};
@@ -46,7 +46,7 @@ export async function mergeCodexOtelConfig(config, configPath = defaultCodexConf
             endpoint: `${config.endpoint}/v1/logs`,
             protocol: 'json',
             headers: {
-                'x-hambros-api-key': config.apiKey,
+                'x-hammurabi-api-key': config.apiKey,
             },
         },
     };
