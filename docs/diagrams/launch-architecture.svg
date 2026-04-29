@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 720" role="img" aria-label="Hammurabi launch architecture: product shape, owned stack, delegated layers, and worker patterns">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 720" role="img" aria-label="Hervald launch architecture: product shape, owned stack, delegated layers, and worker patterns">
   <defs>
     <marker id="larr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
       <path d="M 0 0 L 10 5 L 0 10 z" fill="#4338CA"/>
@@ -13,7 +13,7 @@
   <rect x="0" y="0" width="800" height="720" fill="#FAF8F5"/>
 
   <!-- Title block -->
-  <text x="400" y="32" font-family="Georgia, serif" font-size="20" font-weight="600" fill="#1C1C1C" text-anchor="middle">Hammurabi launch architecture</text>
+  <text x="400" y="32" font-family="Georgia, serif" font-size="20" font-weight="600" fill="#1C1C1C" text-anchor="middle">Hervald launch architecture</text>
   <text x="400" y="54" font-family="-apple-system, sans-serif" font-size="13" fill="#5A5A5A" text-anchor="middle" font-style="italic">orchestration owned · connectivity delegated · one wire protocol</text>
 
   <!-- ──────── BAND 1 — PRODUCT SHAPE ──────── -->
@@ -21,7 +21,7 @@
 
   <!-- OSS card -->
   <rect x="40" y="100" width="320" height="100" rx="6" fill="#F0EBE3" stroke="#D9D2C5" stroke-width="1"/>
-  <text x="200" y="124" font-family="Georgia, serif" font-size="14" font-weight="600" fill="#1C1C1C" text-anchor="middle">Hammurabi OSS — $0</text>
+  <text x="200" y="124" font-family="Georgia, serif" font-size="14" font-weight="600" fill="#1C1C1C" text-anchor="middle">Hervald OSS — $0</text>
   <text x="200" y="146" font-family="-apple-system, sans-serif" font-size="11" fill="#5A5A5A" text-anchor="middle">PolyForm Noncommercial 1.0</text>
   <text x="200" y="164" font-family="-apple-system, sans-serif" font-size="11" fill="#5A5A5A" text-anchor="middle">self-deploy · all features · community</text>
   <text x="200" y="186" font-family="-apple-system, sans-serif" font-size="10" fill="#1C1C1C" text-anchor="middle" font-style="italic">Buy Me a Coffee — donation funnel today</text>
@@ -32,13 +32,13 @@
 
   <!-- One card -->
   <rect x="440" y="100" width="320" height="100" rx="6" fill="#F0EBE3" stroke="#D9D2C5" stroke-width="1"/>
-  <text x="600" y="124" font-family="Georgia, serif" font-size="14" font-weight="600" fill="#1C1C1C" text-anchor="middle">Hammurabi One — $39 / mo</text>
+  <text x="600" y="124" font-family="Georgia, serif" font-size="14" font-weight="600" fill="#1C1C1C" text-anchor="middle">Hervald One — $39 / mo</text>
   <text x="600" y="146" font-family="-apple-system, sans-serif" font-size="11" fill="#5A5A5A" text-anchor="middle">Auto-deploy CLI · email support</text>
   <text x="600" y="164" font-family="-apple-system, sans-serif" font-size="11" fill="#5A5A5A" text-anchor="middle">Commercial license</text>
   <text x="600" y="186" font-family="-apple-system, sans-serif" font-size="10" fill="#5A5A5A" text-anchor="middle" font-style="italic">Phase 1.5 — license server + Stripe</text>
 
-  <!-- ──────── BAND 2 — HAMMURABI SERVER (owned) ──────── -->
-  <text x="40" y="234" font-family="-apple-system, sans-serif" font-size="11" fill="#5A5A5A" font-weight="600" letter-spacing="1.5">HAMMURABI SERVER &#8212; what we own</text>
+  <!-- ──────── BAND 2 — HERVALD SERVER (owned) ──────── -->
+  <text x="40" y="234" font-family="-apple-system, sans-serif" font-size="11" fill="#5A5A5A" font-weight="600" letter-spacing="1.5">HERVALD SERVER &#8212; what we own</text>
 
   <rect x="40" y="244" width="720" height="120" rx="6" fill="#FFFFFF" stroke="#4338CA" stroke-width="1.5"/>
   <text x="400" y="270" font-family="Georgia, serif" font-size="14" font-weight="600" fill="#1C1C1C" text-anchor="middle">Node.js · always-on · single process</text>
@@ -102,5 +102,5 @@
   <text x="644" y="678" font-family="-apple-system, sans-serif" font-size="10" fill="#5A5A5A" text-anchor="middle" font-style="italic">5 minutes. Free tier.</text>
 
   <!-- Footer caption -->
-  <text x="400" y="708" font-family="-apple-system, sans-serif" font-size="11" fill="#5A5A5A" text-anchor="middle" font-style="italic">No custom transport. No daemon. No reverse-tunnel CLI. Hammurabi delegates connectivity.</text>
+  <text x="400" y="708" font-family="-apple-system, sans-serif" font-size="11" fill="#5A5A5A" text-anchor="middle" font-style="italic">No custom transport. No daemon. No reverse-tunnel CLI. Hervald delegates connectivity.</text>
 </svg>
