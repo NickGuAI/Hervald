@@ -1,0 +1,209 @@
+<svg viewBox="0 0 720 1340" xmlns="http://www.w3.org/2000/svg" style="max-width: 100%; height: auto; background: #FAF8F5;" role="img" aria-label="Hammurabi Phase 1 architecture and Phase 1 to 1.5 to 2 evolution roadmap">
+  <defs>
+    <marker id="arrow-indigo" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#4338CA"/>
+    </marker>
+    <marker id="arrow-gray" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#5A5A5A"/>
+    </marker>
+  </defs>
+
+  <!-- Master title -->
+  <text x="360" y="32" font-family="Georgia, serif" font-size="20" font-weight="600" fill="#1C1C1C" text-anchor="middle">Hammurabi Phase 1 — Solution Architecture</text>
+  <text x="360" y="52" font-family="-apple-system, sans-serif" font-size="12" fill="#5A5A5A" text-anchor="middle">Sovereign deployable + Hammurabi One paid auto-deploy · monorepo-g #1233</text>
+
+  <!-- =================================================== -->
+  <!-- TOP HALF: Phase 1 detailed architecture              -->
+  <!-- =================================================== -->
+
+  <!-- User's infrastructure container -->
+  <rect x="40" y="80" width="640" height="280" fill="#F0EBE3" stroke="#D9D2C5" stroke-width="1" rx="6"/>
+  <text x="60" y="105" font-family="-apple-system, sans-serif" font-size="13" font-weight="600" fill="#1C1C1C">User's infrastructure</text>
+  <text x="60" y="122" font-family="-apple-system, sans-serif" font-size="11" fill="#5A5A5A">Railway · Fly.io · Docker · Mac mini · self-hosted VPS</text>
+
+  <!-- Hammurabi server box -->
+  <rect x="60" y="138" width="600" height="200" fill="#FFFFFF" stroke="#1C1C1C" stroke-width="1.5" rx="4"/>
+  <text x="360" y="162" font-family="Georgia, serif" font-size="15" font-weight="600" fill="#1C1C1C" text-anchor="middle">Hammurabi server</text>
+  <text x="360" y="180" font-family="-apple-system, sans-serif" font-size="11" fill="#5A5A5A" text-anchor="middle" font-style="italic">open-source, PolyForm Noncommercial 1.0 · Node 20 · Express + WebSocket</text>
+
+  <!-- Internal modules row -->
+  <rect x="78" y="195" width="125" height="50" fill="#F0EBE3" stroke="#D9D2C5" stroke-width="1" rx="3"/>
+  <text x="140" y="213" font-family="-apple-system, sans-serif" font-size="11" font-weight="600" fill="#1C1C1C" text-anchor="middle">agents</text>
+  <text x="140" y="227" font-family="-apple-system, sans-serif" font-size="10" fill="#5A5A5A" text-anchor="middle">commanders</text>
+  <text x="140" y="240" font-family="-apple-system, sans-serif" font-size="10" fill="#5A5A5A" text-anchor="middle">quests · sentinels</text>
+
+  <rect x="216" y="195" width="125" height="50" fill="#F0EBE3" stroke="#D9D2C5" stroke-width="1" rx="3"/>
+  <text x="278" y="213" font-family="-apple-system, sans-serif" font-size="11" font-weight="600" fill="#1C1C1C" text-anchor="middle">policies</text>
+  <text x="278" y="227" font-family="-apple-system, sans-serif" font-size="10" fill="#5A5A5A" text-anchor="middle">approvals</text>
+  <text x="278" y="240" font-family="-apple-system, sans-serif" font-size="10" fill="#5A5A5A" text-anchor="middle">telemetry</text>
+
+  <rect x="354" y="195" width="125" height="50" fill="#F0EBE3" stroke="#D9D2C5" stroke-width="1" rx="3"/>
+  <text x="416" y="213" font-family="-apple-system, sans-serif" font-size="11" font-weight="600" fill="#1C1C1C" text-anchor="middle">hervald</text>
+  <text x="416" y="227" font-family="-apple-system, sans-serif" font-size="10" fill="#5A5A5A" text-anchor="middle">command-room</text>
+  <text x="416" y="240" font-family="-apple-system, sans-serif" font-size="10" fill="#5A5A5A" text-anchor="middle">workspace</text>
+
+  <rect x="492" y="195" width="150" height="50" fill="rgba(67,56,202,0.08)" stroke="#4338CA" stroke-width="1" rx="3"/>
+  <text x="567" y="213" font-family="-apple-system, sans-serif" font-size="11" font-weight="600" fill="#1C1C1C" text-anchor="middle">storage  +  license</text>
+  <text x="567" y="227" font-family="-apple-system, sans-serif" font-size="10" fill="#5A5A5A" text-anchor="middle">Postgres / SQLite</text>
+  <text x="567" y="240" font-family="-apple-system, sans-serif" font-size="10" fill="#5A5A5A" text-anchor="middle">tenant_id ready</text>
+
+  <!-- Storage detail -->
+  <rect x="78" y="262" width="564" height="58" fill="rgba(67,56,202,0.04)" stroke="rgba(67,56,202,0.3)" stroke-width="1" stroke-dasharray="3,3" rx="3"/>
+  <text x="92" y="282" font-family="-apple-system, sans-serif" font-size="11" font-weight="600" fill="#1C1C1C">Phase-2 readiness:</text>
+  <text x="92" y="298" font-family="-apple-system, sans-serif" font-size="10" fill="#1C1C1C">• every row carries tenant_id (defaults to "default" tenant in Phase 1) → Phase 2 multi-tenancy = config change</text>
+  <text x="92" y="312" font-family="-apple-system, sans-serif" font-size="10" fill="#1C1C1C">• Storage interface abstracts Postgres / SQLite / FileSystem-legacy → portability across deployment targets</text>
+
+  <!-- Browser (Hervald UI) -->
+  <rect x="40" y="400" width="180" height="100" fill="#FFFFFF" stroke="#1C1C1C" stroke-width="1" rx="4"/>
+  <text x="130" y="422" font-family="Georgia, serif" font-size="13" font-weight="600" fill="#1C1C1C" text-anchor="middle">Browser / Phone</text>
+  <text x="130" y="442" font-family="-apple-system, sans-serif" font-size="10" fill="#5A5A5A" text-anchor="middle">Hervald UI</text>
+  <text x="130" y="458" font-family="-apple-system, sans-serif" font-size="10" fill="#5A5A5A" text-anchor="middle">Auth0 sign-in</text>
+  <text x="130" y="478" font-family="-apple-system, sans-serif" font-size="10" fill="#5A5A5A" text-anchor="middle" font-style="italic">user's device</text>
+
+  <!-- Mac daemon -->
+  <rect x="270" y="400" width="180" height="100" fill="#FFFFFF" stroke="#1C1C1C" stroke-width="1.5" rx="4"/>
+  <text x="360" y="422" font-family="Georgia, serif" font-size="13" font-weight="600" fill="#1C1C1C" text-anchor="middle">Mac daemon</text>
+  <text x="360" y="442" font-family="-apple-system, sans-serif" font-size="10" fill="#5A5A5A" text-anchor="middle">@gehirn/hammurabi-daemon</text>
+  <text x="360" y="458" font-family="-apple-system, sans-serif" font-size="10" fill="#5A5A5A" text-anchor="middle">signed by Apple Dev ID</text>
+  <text x="360" y="474" font-family="-apple-system, sans-serif" font-size="10" fill="#5A5A5A" text-anchor="middle">Sparkle auto-update</text>
+  <text x="360" y="490" font-family="-apple-system, sans-serif" font-size="10" fill="#5A5A5A" text-anchor="middle" font-style="italic">on user's Mac (GUI session)</text>
+
+  <!-- License server -->
+  <rect x="500" y="400" width="180" height="100" fill="#FFFFFF" stroke="#1C1C1C" stroke-width="1" rx="4"/>
+  <text x="590" y="422" font-family="Georgia, serif" font-size="13" font-weight="600" fill="#1C1C1C" text-anchor="middle">License server</text>
+  <text x="590" y="442" font-family="-apple-system, sans-serif" font-size="10" fill="#5A5A5A" text-anchor="middle">Gehirn-operated</text>
+  <text x="590" y="458" font-family="-apple-system, sans-serif" font-size="10" fill="#5A5A5A" text-anchor="middle">Stripe billing</text>
+  <text x="590" y="474" font-family="-apple-system, sans-serif" font-size="10" fill="#5A5A5A" text-anchor="middle">issue · validate · revoke</text>
+  <text x="590" y="490" font-family="-apple-system, sans-serif" font-size="10" fill="#5A5A5A" text-anchor="middle" font-style="italic">tier resolution</text>
+
+  <!-- Connection arrows -->
+  <!-- Browser to server (HTTPS) -->
+  <path d="M 130 400 L 130 360" stroke="#4338CA" stroke-width="1.5" fill="none" marker-end="url(#arrow-indigo)"/>
+  <text x="138" y="383" font-family="-apple-system, sans-serif" font-size="10" fill="#4338CA">HTTPS · WS</text>
+
+  <!-- Mac daemon to server (outbound WSS) -->
+  <path d="M 360 400 L 360 360" stroke="#4338CA" stroke-width="1.5" fill="none" marker-end="url(#arrow-indigo)"/>
+  <text x="368" y="383" font-family="-apple-system, sans-serif" font-size="10" fill="#4338CA">outbound wss://</text>
+
+  <!-- License server to server (HTTPS validate) -->
+  <path d="M 590 400 L 590 360" stroke="#5A5A5A" stroke-width="1" fill="none" stroke-dasharray="4,3" marker-end="url(#arrow-gray)"/>
+  <text x="598" y="383" font-family="-apple-system, sans-serif" font-size="10" fill="#5A5A5A">validate key</text>
+
+  <!-- Provider CLIs spawned by daemon -->
+  <rect x="240" y="535" width="240" height="55" fill="#F0EBE3" stroke="#D9D2C5" stroke-width="1" rx="3"/>
+  <text x="360" y="556" font-family="-apple-system, sans-serif" font-size="12" font-weight="600" fill="#1C1C1C" text-anchor="middle">claude · codex · gemini · cursor · opencode · ...</text>
+  <text x="360" y="572" font-family="-apple-system, sans-serif" font-size="10" fill="#5A5A5A" text-anchor="middle">spawned by daemon · GUI-session env (keychain, OAuth files)</text>
+  <text x="360" y="585" font-family="-apple-system, sans-serif" font-size="10" fill="#5A5A5A" text-anchor="middle" font-style="italic">provider auth Just Works · Hammurabi never reads credentials</text>
+
+  <!-- Mac daemon to providers -->
+  <path d="M 360 500 L 360 535" stroke="#4338CA" stroke-width="1.5" fill="none" marker-end="url(#arrow-indigo)"/>
+  <text x="368" y="520" font-family="-apple-system, sans-serif" font-size="10" fill="#4338CA">fork+exec</text>
+
+  <!-- Hammurabi One CLI box -->
+  <rect x="40" y="615" width="640" height="80" fill="rgba(67,56,202,0.06)" stroke="#4338CA" stroke-width="1" rx="6"/>
+  <text x="60" y="638" font-family="-apple-system, sans-serif" font-size="13" font-weight="600" fill="#1C1C1C">Hammurabi One CLI · $39/month/user (paid tier)</text>
+  <text x="60" y="657" font-family="-apple-system, sans-serif" font-size="11" fill="#1C1C1C">brew install gehirn/tap/hammurabi-one  →  hammurabi-one deploy --target railway|flyio|docker</text>
+  <text x="60" y="673" font-family="-apple-system, sans-serif" font-size="11" fill="#5A5A5A">Automates Railway/Fly OAuth + project creation + initial deploy · Pairs Mac daemon · Onboards providers</text>
+  <text x="60" y="688" font-family="-apple-system, sans-serif" font-size="11" fill="#5A5A5A">Removes the Railway-deploy ceremony for users who don't want to operate cloud platforms themselves</text>
+
+  <!-- Section divider -->
+  <line x1="40" y1="740" x2="680" y2="740" stroke="#D9D2C5" stroke-width="1"/>
+  <text x="360" y="775" font-family="Georgia, serif" font-size="18" font-weight="600" fill="#1C1C1C" text-anchor="middle">Architecture Evolution Roadmap</text>
+  <text x="360" y="795" font-family="-apple-system, sans-serif" font-size="12" fill="#5A5A5A" text-anchor="middle" font-style="italic">Same codebase across all phases · Phase 2 is configuration, not rewrite</text>
+
+  <!-- =================================================== -->
+  <!-- BOTTOM HALF: Phase evolution timeline                -->
+  <!-- =================================================== -->
+
+  <!-- Phase 1 -->
+  <rect x="40" y="820" width="200" height="240" fill="#F0EBE3" stroke="#4338CA" stroke-width="2" rx="6"/>
+  <rect x="40" y="820" width="200" height="34" fill="#4338CA" rx="6"/>
+  <rect x="40" y="850" width="200" height="6" fill="#4338CA"/>
+  <text x="140" y="842" font-family="Georgia, serif" font-size="14" font-weight="600" fill="#FFFFFF" text-anchor="middle">PHASE 1 · TODAY</text>
+  
+  <text x="140" y="876" font-family="-apple-system, sans-serif" font-size="11" font-weight="600" fill="#1C1C1C" text-anchor="middle">Sovereign + One</text>
+  
+  <line x1="60" y1="888" x2="220" y2="888" stroke="#D9D2C5" stroke-width="1"/>
+  
+  <text x="55" y="908" font-family="-apple-system, sans-serif" font-size="10" fill="#1C1C1C">USER DEPLOYS:</text>
+  <text x="55" y="924" font-family="-apple-system, sans-serif" font-size="10" fill="#5A5A5A">→ Railway · Fly · Docker</text>
+  <text x="55" y="938" font-family="-apple-system, sans-serif" font-size="10" fill="#5A5A5A">→ or their Mac mini</text>
+  
+  <text x="55" y="960" font-family="-apple-system, sans-serif" font-size="10" fill="#1C1C1C">TIERS:</text>
+  <text x="55" y="976" font-family="-apple-system, sans-serif" font-size="10" fill="#5A5A5A">• OSS = $0 (limits)</text>
+  <text x="55" y="990" font-family="-apple-system, sans-serif" font-size="10" fill="#5A5A5A">• One = $39/mo</text>
+
+  <text x="55" y="1014" font-family="-apple-system, sans-serif" font-size="10" fill="#1C1C1C">FEATURES:</text>
+  <text x="55" y="1030" font-family="-apple-system, sans-serif" font-size="10" fill="#5A5A5A">• Mac daemon</text>
+  <text x="55" y="1044" font-family="-apple-system, sans-serif" font-size="10" fill="#5A5A5A">• Auto-deploy CLI</text>
+
+  <!-- Phase 1 -> 1.5 arrow -->
+  <path d="M 245 940 L 280 940" stroke="#4338CA" stroke-width="2" fill="none" marker-end="url(#arrow-indigo)"/>
+
+  <!-- Phase 1.5 -->
+  <rect x="290" y="820" width="200" height="240" fill="#F0EBE3" stroke="#5A5A5A" stroke-width="1.5" stroke-dasharray="4,3" rx="6"/>
+  <rect x="290" y="820" width="200" height="34" fill="#5A5A5A" rx="6"/>
+  <rect x="290" y="850" width="200" height="6" fill="#5A5A5A"/>
+  <text x="390" y="842" font-family="Georgia, serif" font-size="14" font-weight="600" fill="#FFFFFF" text-anchor="middle">PHASE 1.5 · NEAR-TERM</text>
+  
+  <text x="390" y="876" font-family="-apple-system, sans-serif" font-size="11" font-weight="600" fill="#1C1C1C" text-anchor="middle">Pro / Teams tiers</text>
+  
+  <line x1="310" y1="888" x2="470" y2="888" stroke="#D9D2C5" stroke-width="1"/>
+  
+  <text x="305" y="908" font-family="-apple-system, sans-serif" font-size="10" fill="#1C1C1C">ARCHITECTURE:</text>
+  <text x="305" y="924" font-family="-apple-system, sans-serif" font-size="10" fill="#5A5A5A">→ identical to Phase 1</text>
+  <text x="305" y="938" font-family="-apple-system, sans-serif" font-size="10" fill="#5A5A5A">→ no infra changes</text>
+  
+  <text x="305" y="960" font-family="-apple-system, sans-serif" font-size="10" fill="#1C1C1C">NEW TIERS:</text>
+  <text x="305" y="976" font-family="-apple-system, sans-serif" font-size="10" fill="#5A5A5A">• Pro = $99/mo</text>
+  <text x="305" y="990" font-family="-apple-system, sans-serif" font-size="10" fill="#5A5A5A">• Teams = $499+/mo</text>
+
+  <text x="305" y="1014" font-family="-apple-system, sans-serif" font-size="10" fill="#1C1C1C">UNLOCKED FEATURES:</text>
+  <text x="305" y="1030" font-family="-apple-system, sans-serif" font-size="10" fill="#5A5A5A">• Multi-user, RBAC</text>
+  <text x="305" y="1044" font-family="-apple-system, sans-serif" font-size="10" fill="#5A5A5A">• Audit log 1y, SSO</text>
+
+  <!-- Phase 1.5 -> 2 arrow -->
+  <path d="M 495 940 L 530 940" stroke="#4338CA" stroke-width="2" fill="none" marker-end="url(#arrow-indigo)"/>
+
+  <!-- Phase 2 -->
+  <rect x="540" y="820" width="140" height="240" fill="#F0EBE3" stroke="#5A5A5A" stroke-width="1.5" stroke-dasharray="4,3" rx="6"/>
+  <rect x="540" y="820" width="140" height="34" fill="#5A5A5A" rx="6"/>
+  <rect x="540" y="850" width="140" height="6" fill="#5A5A5A"/>
+  <text x="610" y="842" font-family="Georgia, serif" font-size="14" font-weight="600" fill="#FFFFFF" text-anchor="middle">PHASE 2 · LATER</text>
+  
+  <text x="610" y="876" font-family="-apple-system, sans-serif" font-size="11" font-weight="600" fill="#1C1C1C" text-anchor="middle">Hammurabi Cloud</text>
+  
+  <line x1="560" y1="888" x2="660" y2="888" stroke="#D9D2C5" stroke-width="1"/>
+  
+  <text x="555" y="908" font-family="-apple-system, sans-serif" font-size="10" fill="#1C1C1C">GEHIRN HOSTS:</text>
+  <text x="555" y="924" font-family="-apple-system, sans-serif" font-size="10" fill="#5A5A5A">→ multi-tenant</text>
+  <text x="555" y="938" font-family="-apple-system, sans-serif" font-size="10" fill="#5A5A5A">→ instant signup</text>
+  
+  <text x="555" y="960" font-family="-apple-system, sans-serif" font-size="10" fill="#1C1C1C">NEW TIER:</text>
+  <text x="555" y="976" font-family="-apple-system, sans-serif" font-size="10" fill="#5A5A5A">• Cloud = $79-129/mo</text>
+  
+  <text x="555" y="998" font-family="-apple-system, sans-serif" font-size="10" fill="#1C1C1C">CHANGES:</text>
+  <text x="555" y="1014" font-family="-apple-system, sans-serif" font-size="10" fill="#5A5A5A">• tenant_id pop'd</text>
+  <text x="555" y="1028" font-family="-apple-system, sans-serif" font-size="10" fill="#5A5A5A">  per-user</text>
+  <text x="555" y="1044" font-family="-apple-system, sans-serif" font-size="10" fill="#5A5A5A">• same code · diff config</text>
+
+  <!-- =================================================== -->
+  <!-- KEY INSIGHTS BOX                                      -->
+  <!-- =================================================== -->
+
+  <rect x="40" y="1090" width="640" height="200" fill="rgba(67,56,202,0.04)" stroke="rgba(67,56,202,0.3)" stroke-width="1" rx="6"/>
+  <text x="60" y="1115" font-family="-apple-system, sans-serif" font-size="13" font-weight="600" fill="#1C1C1C">Key insights</text>
+  
+  <text x="60" y="1138" font-family="-apple-system, sans-serif" font-size="11" fill="#1C1C1C" font-weight="600">1. The Mac daemon is unchanged across all phases.</text>
+  <text x="60" y="1154" font-family="-apple-system, sans-serif" font-size="11" fill="#5A5A5A">Same binary, same WebSocket protocol, same provider-spawn logic. Only the destination URL changes.</text>
+  
+  <text x="60" y="1178" font-family="-apple-system, sans-serif" font-size="11" fill="#1C1C1C" font-weight="600">2. Phase 2 multi-tenancy is a database population change, not a codebase rewrite.</text>
+  <text x="60" y="1194" font-family="-apple-system, sans-serif" font-size="11" fill="#5A5A5A">Phase 1 already populates tenant_id="default" on every row. Phase 2 just replaces "default" with real tenant IDs from auth.</text>
+  
+  <text x="60" y="1218" font-family="-apple-system, sans-serif" font-size="11" fill="#1C1C1C" font-weight="600">3. License-tier expansion (Phase 1 → 1.5) requires zero infrastructure change.</text>
+  <text x="60" y="1234" font-family="-apple-system, sans-serif" font-size="11" fill="#5A5A5A">License key validates a tier; feature gates check tier; new tiers unlock more features. Same server, same daemon, same deploy.</text>
+  
+  <text x="60" y="1258" font-family="-apple-system, sans-serif" font-size="11" fill="#1C1C1C" font-weight="600">4. Provider auth lives on the Mac in all three phases.</text>
+  <text x="60" y="1274" font-family="-apple-system, sans-serif" font-size="11" fill="#5A5A5A">Hammurabi never reads or writes Anthropic / OpenAI / Google credentials regardless of where the server runs.</text>
+
+</svg>
