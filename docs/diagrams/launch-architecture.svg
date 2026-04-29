@@ -1,0 +1,106 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 720" role="img" aria-label="Hammurabi launch architecture: product shape, owned stack, delegated layers, and worker patterns">
+  <defs>
+    <marker id="larr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#4338CA"/>
+    </marker>
+    <marker id="arrowmuted" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#5A5A5A"/>
+    </marker>
+  </defs>
+
+  <!-- Background -->
+  <rect x="0" y="0" width="800" height="720" fill="#FAF8F5"/>
+
+  <!-- Title block -->
+  <text x="400" y="32" font-family="Georgia, serif" font-size="20" font-weight="600" fill="#1C1C1C" text-anchor="middle">Hammurabi launch architecture</text>
+  <text x="400" y="54" font-family="-apple-system, sans-serif" font-size="13" fill="#5A5A5A" text-anchor="middle" font-style="italic">orchestration owned · connectivity delegated · one wire protocol</text>
+
+  <!-- ──────── BAND 1 — PRODUCT SHAPE ──────── -->
+  <text x="40" y="92" font-family="-apple-system, sans-serif" font-size="11" fill="#5A5A5A" font-weight="600" letter-spacing="1.5">PRODUCT SHAPE</text>
+
+  <!-- OSS card -->
+  <rect x="40" y="100" width="320" height="100" rx="6" fill="#F0EBE3" stroke="#D9D2C5" stroke-width="1"/>
+  <text x="200" y="124" font-family="Georgia, serif" font-size="14" font-weight="600" fill="#1C1C1C" text-anchor="middle">Hammurabi OSS — $0</text>
+  <text x="200" y="146" font-family="-apple-system, sans-serif" font-size="11" fill="#5A5A5A" text-anchor="middle">PolyForm Noncommercial 1.0</text>
+  <text x="200" y="164" font-family="-apple-system, sans-serif" font-size="11" fill="#5A5A5A" text-anchor="middle">self-deploy · all features · community</text>
+  <text x="200" y="186" font-family="-apple-system, sans-serif" font-size="10" fill="#1C1C1C" text-anchor="middle" font-style="italic">Buy Me a Coffee — donation funnel today</text>
+
+  <!-- Arrow OSS → One -->
+  <line x1="370" y1="150" x2="430" y2="150" stroke="#4338CA" stroke-width="1.5" marker-end="url(#larr)"/>
+  <text x="400" y="142" font-family="-apple-system, sans-serif" font-size="10" fill="#4338CA" text-anchor="middle" font-weight="600">upgrade</text>
+
+  <!-- One card -->
+  <rect x="440" y="100" width="320" height="100" rx="6" fill="#F0EBE3" stroke="#D9D2C5" stroke-width="1"/>
+  <text x="600" y="124" font-family="Georgia, serif" font-size="14" font-weight="600" fill="#1C1C1C" text-anchor="middle">Hammurabi One — $39 / mo</text>
+  <text x="600" y="146" font-family="-apple-system, sans-serif" font-size="11" fill="#5A5A5A" text-anchor="middle">Auto-deploy CLI · email support</text>
+  <text x="600" y="164" font-family="-apple-system, sans-serif" font-size="11" fill="#5A5A5A" text-anchor="middle">Commercial license</text>
+  <text x="600" y="186" font-family="-apple-system, sans-serif" font-size="10" fill="#5A5A5A" text-anchor="middle" font-style="italic">Phase 1.5 — license server + Stripe</text>
+
+  <!-- ──────── BAND 2 — HAMMURABI SERVER (owned) ──────── -->
+  <text x="40" y="234" font-family="-apple-system, sans-serif" font-size="11" fill="#5A5A5A" font-weight="600" letter-spacing="1.5">HAMMURABI SERVER &#8212; what we own</text>
+
+  <rect x="40" y="244" width="720" height="120" rx="6" fill="#FFFFFF" stroke="#4338CA" stroke-width="1.5"/>
+  <text x="400" y="270" font-family="Georgia, serif" font-size="14" font-weight="600" fill="#1C1C1C" text-anchor="middle">Node.js · always-on · single process</text>
+  <text x="400" y="296" font-family="-apple-system, sans-serif" font-size="12" fill="#1C1C1C" text-anchor="middle">Hervald UI · Commanders · Quests · Sentinels · Approval policy gate</text>
+  <text x="400" y="318" font-family="-apple-system, sans-serif" font-size="12" fill="#1C1C1C" text-anchor="middle">Provider-agnostic agents (Claude · Codex · Gemini · Cursor · OpenCode · Aider · Continue · Tabnine)</text>
+  <text x="400" y="340" font-family="-apple-system, sans-serif" font-size="12" fill="#1C1C1C" text-anchor="middle">Persistent state · restart resume · OTEL telemetry · quest semantics</text>
+
+  <!-- ──────── BAND 3 — DELEGATED ──────── -->
+  <text x="40" y="394" font-family="-apple-system, sans-serif" font-size="11" fill="#5A5A5A" font-weight="600" letter-spacing="1.5">DELEGATED &#8212; use the best-of-class</text>
+
+  <!-- 4 delegate columns -->
+  <rect x="40" y="404" width="170" height="80" rx="4" fill="#F4EFE7" stroke="#D9D2C5" stroke-width="1"/>
+  <text x="125" y="428" font-family="-apple-system, sans-serif" font-size="11" fill="#5A5A5A" text-anchor="middle" font-weight="600">Connectivity</text>
+  <text x="125" y="450" font-family="-apple-system, sans-serif" font-size="13" fill="#1C1C1C" text-anchor="middle" font-weight="600">Tailscale</text>
+  <text x="125" y="470" font-family="-apple-system, sans-serif" font-size="10" fill="#5A5A5A" text-anchor="middle">(or any mesh VPN)</text>
+
+  <rect x="223" y="404" width="170" height="80" rx="4" fill="#F4EFE7" stroke="#D9D2C5" stroke-width="1"/>
+  <text x="308" y="428" font-family="-apple-system, sans-serif" font-size="11" fill="#5A5A5A" text-anchor="middle" font-weight="600">Hosting</text>
+  <text x="308" y="450" font-family="-apple-system, sans-serif" font-size="12" fill="#1C1C1C" text-anchor="middle" font-weight="600">user picks</text>
+  <text x="308" y="470" font-family="-apple-system, sans-serif" font-size="10" fill="#5A5A5A" text-anchor="middle">EC2 · Railway · Fly · Mac mini</text>
+
+  <rect x="406" y="404" width="170" height="80" rx="4" fill="#F4EFE7" stroke="#D9D2C5" stroke-width="1"/>
+  <text x="491" y="428" font-family="-apple-system, sans-serif" font-size="11" fill="#5A5A5A" text-anchor="middle" font-weight="600">Auth</text>
+  <text x="491" y="450" font-family="-apple-system, sans-serif" font-size="13" fill="#1C1C1C" text-anchor="middle" font-weight="600">Auth0</text>
+  <text x="491" y="470" font-family="-apple-system, sans-serif" font-size="10" fill="#5A5A5A" text-anchor="middle">(pluggable to user OIDC)</text>
+
+  <rect x="589" y="404" width="171" height="80" rx="4" fill="#F4EFE7" stroke="#D9D2C5" stroke-width="1"/>
+  <text x="674" y="428" font-family="-apple-system, sans-serif" font-size="11" fill="#5A5A5A" text-anchor="middle" font-weight="600">Provider auth</text>
+  <text x="674" y="450" font-family="-apple-system, sans-serif" font-size="13" fill="#1C1C1C" text-anchor="middle" font-weight="600">worker host</text>
+  <text x="674" y="470" font-family="-apple-system, sans-serif" font-size="10" fill="#5A5A5A" text-anchor="middle">(Mac keychain · env file)</text>
+
+  <!-- SSH wire-protocol arrow -->
+  <line x1="400" y1="494" x2="400" y2="528" stroke="#4338CA" stroke-width="2" marker-end="url(#larr)"/>
+  <text x="400" y="514" font-family="-apple-system, sans-serif" font-size="11" fill="#4338CA" text-anchor="middle" font-weight="600" dx="60">SSH (the one wire protocol)</text>
+
+  <!-- ──────── BAND 4 — WORKERS ──────── -->
+  <text x="40" y="554" font-family="-apple-system, sans-serif" font-size="11" fill="#5A5A5A" font-weight="600" letter-spacing="1.5">WORKERS &#8212; heterogeneous, attach via SSH</text>
+
+  <!-- Same-host -->
+  <rect x="40" y="566" width="232" height="120" rx="6" fill="#FFFFFF" stroke="#D9D2C5" stroke-width="1"/>
+  <text x="156" y="592" font-family="Georgia, serif" font-size="13" font-weight="600" fill="#1C1C1C" text-anchor="middle">Same-host worker</text>
+  <text x="156" y="614" font-family="-apple-system, sans-serif" font-size="11" fill="#5A5A5A" text-anchor="middle">subprocess on the server's host</text>
+  <text x="156" y="634" font-family="-apple-system, sans-serif" font-size="11" fill="#5A5A5A" text-anchor="middle">spawn(claude · codex · gemini)</text>
+  <text x="156" y="660" font-family="-apple-system, sans-serif" font-size="11" fill="#1C1C1C" text-anchor="middle" font-weight="600">Setup: none</text>
+  <text x="156" y="678" font-family="-apple-system, sans-serif" font-size="10" fill="#5A5A5A" text-anchor="middle" font-style="italic">Already works.</text>
+
+  <!-- Reachable Mac/Linux -->
+  <rect x="284" y="566" width="232" height="120" rx="6" fill="#FFFFFF" stroke="#D9D2C5" stroke-width="1"/>
+  <text x="400" y="592" font-family="Georgia, serif" font-size="13" font-weight="600" fill="#1C1C1C" text-anchor="middle">Reachable Mac/Linux</text>
+  <text x="400" y="614" font-family="-apple-system, sans-serif" font-size="11" fill="#5A5A5A" text-anchor="middle">direct SSH</text>
+  <text x="400" y="634" font-family="-apple-system, sans-serif" font-size="11" fill="#5A5A5A" text-anchor="middle">(public IP · LAN · port forward · corp VPN)</text>
+  <text x="400" y="660" font-family="-apple-system, sans-serif" font-size="11" fill="#1C1C1C" text-anchor="middle" font-weight="600">Setup: SSH key</text>
+  <text x="400" y="678" font-family="-apple-system, sans-serif" font-size="10" fill="#5A5A5A" text-anchor="middle" font-style="italic">Already works.</text>
+
+  <!-- Behind NAT -->
+  <rect x="528" y="566" width="232" height="120" rx="6" fill="#FFFFFF" stroke="#D9D2C5" stroke-width="1"/>
+  <text x="644" y="592" font-family="Georgia, serif" font-size="13" font-weight="600" fill="#1C1C1C" text-anchor="middle">Behind NAT (home Mac)</text>
+  <text x="644" y="614" font-family="-apple-system, sans-serif" font-size="11" fill="#5A5A5A" text-anchor="middle">SSH via Tailscale mesh</text>
+  <text x="644" y="634" font-family="-apple-system, sans-serif" font-size="11" fill="#5A5A5A" text-anchor="middle">(or equivalent VPN)</text>
+  <text x="644" y="660" font-family="-apple-system, sans-serif" font-size="11" fill="#1C1C1C" text-anchor="middle" font-weight="600">Setup: install Tailscale</text>
+  <text x="644" y="678" font-family="-apple-system, sans-serif" font-size="10" fill="#5A5A5A" text-anchor="middle" font-style="italic">5 minutes. Free tier.</text>
+
+  <!-- Footer caption -->
+  <text x="400" y="708" font-family="-apple-system, sans-serif" font-size="11" fill="#5A5A5A" text-anchor="middle" font-style="italic">No custom transport. No daemon. No reverse-tunnel CLI. Hammurabi delegates connectivity.</text>
+</svg>
