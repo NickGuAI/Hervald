@@ -1,6 +1,6 @@
 # Tailscale Quickstart
 
-Use this when a worker is behind NAT and SSH is not directly reachable from the Hammurabi host.
+Use this when a worker is behind NAT and SSH is not directly reachable from the Hervald host.
 
 ## Guided Flows
 
@@ -29,10 +29,10 @@ After the worker joins your tailnet, capture its MagicDNS hostname:
 tailscale status --json
 ```
 
-Register the worker with Hammurabi:
+Register the worker with Hervald:
 
 ```bash
 hammurabi machine add --id <id> --label <label> --tailscale-hostname <magicdns-hostname>
 ```
 
-Hammurabi verifies the hostname with `tailscale ping` before it writes the machine registry entry.
+Hervald verifies the hostname with `tailscale ping` before it writes the machine registry entry.

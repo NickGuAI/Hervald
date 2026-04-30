@@ -2,7 +2,7 @@
 
 Use the Hervald **Add Worker** wizard when possible. The in-product flow now guides worker auth for Claude, Codex, and Gemini and verifies each provider before you dispatch the first session.
 
-If you need the manual fallback, the worker auth model in Phase 1 is:
+If you need the manual fallback, the worker auth model is:
 
 ## Claude
 

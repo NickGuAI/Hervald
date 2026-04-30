@@ -41,7 +41,7 @@ Browser / Mobile
 
 - Provider login state for Claude, Codex, Gemini, Cursor, or other tools.
 - Remote connectivity fabric beyond SSH reachability.
-- A daemon transport layer for Phase 1.
+- A custom daemon transport layer — SSH (direct or over Tailscale) is the wire protocol.
 
 ## Supported Worker Patterns
 
@@ -67,7 +67,7 @@ Hervald’s commander runtime is intentionally layered:
 2. Long-term memory: durable facts in `.memory/MEMORY.md` and related memory files.
 3. Working scratchpad: short-horizon notes in `.memory/working-memory.md` and indexed transcript recall when you need prior execution context.
 
-That layering is already implemented in `modules/commanders/memory/**`. Phase 1 keeps the model; it does not add a new memory subsystem for the public repo.
+That layering is implemented in `modules/commanders/memory/**`. Hervald keeps this model and does not add a separate memory subsystem.
 
 ## Approval and Auth Defaults
 
@@ -82,7 +82,3 @@ That layering is already implemented in `modules/commanders/memory/**`. Phase 1 
 - [Provider Auth Setup](./provider-auth-setup.md)
 - [Operator Guide](./operator-guide.md)
 - [Approval Routing](./approval-routing.md)
-
-## Canonical Report
-
-For the longer architecture argument behind “SSH, not daemon transport”, see the [canonical architecture report](https://www.nickgu.me/reports/hammurabi-daemon-vs-ssh-2026).
