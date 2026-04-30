@@ -13,32 +13,7 @@ Internal implementation details live in [../modules/policies/README.md](../modul
 
 ## Overview
 
-```text
-                    provider-native permission event
-                                      |
-              +-----------------------+-----------------------+
-              |                                               |
-              v                                               v
-   Claude PreToolUse hook                            Codex requestApproval
-              |                                               |
-              +-----------------------+-----------------------+
-                                      |
-                                      v
-                           Hervald adapter layer
-                                      |
-                                      v
-                           ActionPolicyGateRequest
-                                      |
-                                      v
-                               ActionPolicyGate
-                         +------------+------------+
-                         |                         |
-                         v                         v
-                      auto/block                 review
-                         |                         |
-                         v                         v
-             provider-native allow/deny     enqueue + wait
-```
+![Approval routing — provider event to gate decision](./diagrams/approval-routing-overview.svg)
 
 Legend:
 - `adapter layer`: translates provider-specific events into one Hervald gate request.
@@ -57,13 +32,7 @@ Hervald does not disable provider approvals and does not rely on project-local a
 
 Claude approval detection is hook-driven.
 
-```text
-Claude Bash tool call
-  -> injected PreToolUse hook
-  -> POST /api/approval/check
-  -> ActionPolicyGate
-  -> Claude-native allow/deny reply
-```
+![Claude approval path — Bash call to PreToolUse hook to ActionPolicyGate to allow/deny](./diagrams/approval-routing-claude.svg)
 
 Important invariants:
 - Claude `auto` allow must be returned as structured `PreToolUse` JSON on stdout.
@@ -87,12 +56,7 @@ If Claude shows `This command requires approval` while Hervald has no pending ap
 
 Codex approval detection is runtime-native.
 
-```text
-Codex native requestApproval
-  -> Hervald Codex adapter
-  -> ActionPolicyGate
-  -> Codex-native accept/decline reply
-```
+![Codex approval path — requestApproval to Hervald adapter to ActionPolicyGate to accept/decline](./diagrams/approval-routing-codex.svg)
 
 Important invariants:
 - Codex sessions still start with granular `approvalPolicy`.
@@ -144,19 +108,7 @@ state transition rather than a 300-second silent timeout.
 
 Only `review` creates a visible pending approval in Hervald.
 
-```text
-policy result = auto
-  -> allow immediately
-  -> no pending approval row
-
-policy result = review
-  -> enqueue pending approval
-  -> wait for human decision
-
-policy result = block
-  -> deny immediately
-  -> no pending approval row
-```
+![Queue semantics — only review enqueues](./diagrams/approval-routing-queue.svg)
 
 That means an empty approval queue does not prove approvals are bypassed. It often means one of these is true:
 - the action resolved to `auto`
@@ -225,17 +177,7 @@ When approval behavior looks wrong, check in this order:
 
 Quick interpretation guide:
 
-```text
-Claude says "This command requires approval"
-and queue is empty
-  -> likely Claude hook contract failure
-
-Codex start fails before first turn
-  -> likely initialize capability mismatch
-
-Queue has pending item
-  -> policy resolved to review and routing is working
-```
+![Symptom to likely cause — three common diagnostic paths](./diagrams/approval-routing-symptoms.svg)
 
 ## Practical Expectation
 

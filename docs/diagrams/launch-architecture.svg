@@ -31,11 +31,11 @@
   <text x="546" y="188" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="13" fill="#1f2933">Railway</text>
   <text x="546" y="207" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" fill="#52606d">host shell</text>
 
-  <text x="455" y="242" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="12" fill="#52606d">Internal engine names stay Hammurabi: apps/hammurabi, hammurabi-cli, ~/.hammurabi, HAMMURABI_*</text>
+  <text x="455" y="242" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="12" fill="#52606d">Same shell binary on every target — config differs, not the engine.</text>
 
   <rect x="650" y="100" width="230" height="120" rx="14" fill="#ffffff" stroke="#1f2933" stroke-width="1.5"/>
   <text x="765" y="130" text-anchor="middle" font-family="Georgia, serif" font-size="18" fill="#1f2933">Worker Attachment</text>
-  <text x="765" y="156" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="12" fill="#52606d">No daemon transport in Phase 1</text>
+  <text x="765" y="156" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="12" fill="#52606d">SSH is the only wire protocol</text>
   <text x="765" y="176" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="12" fill="#52606d">same-host · direct SSH · Tailscale + SSH</text>
   <text x="765" y="196" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="12" fill="#52606d">Connectivity fabric is external to Hervald</text>
 
@@ -46,8 +46,9 @@
   <text x="627" y="148" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" fill="#34495E">SSH dispatch</text>
 
   <rect x="70" y="300" width="350" height="170" rx="16" fill="#ffffff" stroke="#1f2933" stroke-width="1.5"/>
-  <text x="245" y="332" text-anchor="middle" font-family="Georgia, serif" font-size="20" fill="#1f2933">Hervald Shell</text>
-  <text x="245" y="356" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="13" fill="#52606d">Command Room · Fleet · Telemetry Hub · Settings · Services Manager · Action Policies</text>
+  <text x="245" y="328" text-anchor="middle" font-family="Georgia, serif" font-size="20" fill="#1f2933">Hervald Shell</text>
+  <text x="245" y="350" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="12" fill="#52606d">Command Room · Fleet · Telemetry Hub</text>
+  <text x="245" y="368" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="12" fill="#52606d">Settings · Services Manager · Action Policies</text>
 
   <rect x="102" y="386" width="110" height="48" rx="10" fill="#efe7db" stroke="#9b8f7a"/>
   <text x="157" y="406" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="12" fill="#1f2933">Commanders</text>
@@ -80,5 +81,5 @@
   <path d="M 420 385 L 500 385" stroke="#34495E" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
   <text x="460" y="372" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" fill="#34495E">spawn / resume via attached machine</text>
 
-  <text x="460" y="520" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="13" fill="#52606d">Phase 1 keeps the current same-host and SSH paths. Public branding changes to Hervald; the internal engine contract stays Hammurabi.</text>
+  <text x="460" y="520" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="13" fill="#52606d">Hervald keeps orchestration sovereign; SSH is the wire protocol; provider credentials stay on the worker.</text>
 </svg>

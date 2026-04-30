@@ -1,0 +1,59 @@
+<svg viewBox="0 0 720 720" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Hervald core model — browser to provider runtime via shell and worker">
+  <defs>
+    <marker id="acm-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#34495E"/>
+    </marker>
+  </defs>
+
+  <rect width="720" height="720" fill="#f7f2ea"/>
+  <text x="360" y="42" text-anchor="middle" font-family="Georgia, serif" font-size="22" fill="#1f2933">Core model</text>
+  <text x="360" y="64" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="13" fill="#52606d">Operator → shell → worker → provider runtime</text>
+
+  <!-- Row 1: Browser / Mobile -->
+  <rect x="220" y="100" width="280" height="80" rx="14" fill="#ffffff" stroke="#1f2933" stroke-width="1.5"/>
+  <text x="360" y="130" text-anchor="middle" font-family="Georgia, serif" font-size="16" fill="#1f2933">Browser / Mobile</text>
+  <text x="360" y="152" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" fill="#52606d">operator surface — chat, approvals,</text>
+  <text x="360" y="168" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" fill="#52606d">commanders, fleet, telemetry</text>
+
+  <path d="M 360 180 L 360 220" stroke="#34495E" stroke-width="2" fill="none" marker-end="url(#acm-arrow)"/>
+  <text x="380" y="206" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" fill="#34495E">HTTPS / WS</text>
+
+  <!-- Row 2: Hervald shell -->
+  <rect x="160" y="230" width="400" height="100" rx="14" fill="#efe7db" stroke="#9b8f7a" stroke-width="1.5"/>
+  <text x="360" y="262" text-anchor="middle" font-family="Georgia, serif" font-size="16" fill="#1f2933">Hervald shell</text>
+  <text x="360" y="282" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" fill="#52606d">apps/hammurabi engine</text>
+  <text x="360" y="302" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" fill="#52606d">command room · fleet · telemetry · approvals · keys</text>
+  <text x="360" y="318" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" fill="#52606d">orchestration, recovery, mission state</text>
+
+  <path d="M 360 330 L 360 370" stroke="#34495E" stroke-width="2" fill="none" marker-end="url(#acm-arrow)"/>
+  <text x="380" y="356" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" fill="#34495E">SSH (direct or via Tailscale)</text>
+
+  <!-- Row 3: Worker -->
+  <rect x="160" y="380" width="400" height="100" rx="14" fill="#ffffff" stroke="#1f2933" stroke-width="1.5"/>
+  <text x="360" y="412" text-anchor="middle" font-family="Georgia, serif" font-size="16" fill="#1f2933">Attached worker box</text>
+  <text x="360" y="432" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" fill="#52606d">same-host · remote VM / Mac · Tailnet peer</text>
+  <text x="360" y="452" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" fill="#52606d">holds provider login state — credentials never leave</text>
+  <text x="360" y="468" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" fill="#52606d">~/.claude · ~/.codex · ~/.gemini</text>
+
+  <path d="M 360 480 L 360 520" stroke="#34495E" stroke-width="2" fill="none" marker-end="url(#acm-arrow)"/>
+  <text x="380" y="506" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" fill="#34495E">local process spawn</text>
+
+  <!-- Row 4: Providers -->
+  <rect x="60" y="530" width="600" height="100" rx="14" fill="#efe7db" stroke="#9b8f7a" stroke-width="1.5"/>
+  <text x="360" y="562" text-anchor="middle" font-family="Georgia, serif" font-size="16" fill="#1f2933">Provider runtime stays local</text>
+  <text x="360" y="582" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="12" fill="#52606d">CLIs run on the worker, return events through SSH back to the shell.</text>
+
+  <rect x="100" y="600" width="120" height="20" rx="6" fill="#ffffff" stroke="#1f2933"/>
+  <text x="160" y="615" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" fill="#1f2933">Claude Code</text>
+
+  <rect x="240" y="600" width="120" height="20" rx="6" fill="#ffffff" stroke="#1f2933"/>
+  <text x="300" y="615" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" fill="#1f2933">Codex</text>
+
+  <rect x="380" y="600" width="120" height="20" rx="6" fill="#ffffff" stroke="#1f2933"/>
+  <text x="440" y="615" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" fill="#1f2933">Gemini</text>
+
+  <rect x="520" y="600" width="120" height="20" rx="6" fill="#ffffff" stroke="#1f2933"/>
+  <text x="580" y="615" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" fill="#1f2933">Cursor / custom</text>
+
+  <text x="360" y="680" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="12" fill="#52606d">Hervald owns orchestration; SSH is the wire protocol; provider credentials stay on the worker.</text>
+</svg>

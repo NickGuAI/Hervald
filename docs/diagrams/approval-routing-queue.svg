@@ -1,0 +1,52 @@
+<svg viewBox="0 0 920 380" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Hervald approval routing — queue semantics by policy result">
+  <defs>
+    <marker id="arq-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#34495E"/>
+    </marker>
+  </defs>
+
+  <rect width="920" height="380" fill="#f7f2ea"/>
+  <text x="460" y="38" text-anchor="middle" font-family="Georgia, serif" font-size="20" fill="#1f2933">Queue semantics — only review enqueues</text>
+  <text x="460" y="62" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="12" fill="#52606d">An empty queue does not prove approvals are bypassed.</text>
+
+  <!-- Column 1: auto -->
+  <rect x="40" y="100" width="240" height="50" rx="10" fill="#efe7db" stroke="#9b8f7a" stroke-width="1.5"/>
+  <text x="160" y="132" text-anchor="middle" font-family="Georgia, serif" font-size="16" fill="#1f2933">policy result = auto</text>
+
+  <path d="M 160 150 L 160 180" stroke="#34495E" stroke-width="2" fill="none" marker-end="url(#arq-arrow)"/>
+
+  <rect x="40" y="190" width="240" height="60" rx="10" fill="#ffffff" stroke="#1f2933" stroke-width="1.5"/>
+  <text x="160" y="216" text-anchor="middle" font-family="Georgia, serif" font-size="14" fill="#1f2933">allow immediately</text>
+  <text x="160" y="236" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" fill="#52606d">no pending approval row</text>
+
+  <text x="160" y="290" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" fill="#52606d">silent fast-path —</text>
+  <text x="160" y="306" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" fill="#52606d">action runs without operator review</text>
+
+  <!-- Column 2: review -->
+  <rect x="340" y="100" width="240" height="50" rx="10" fill="#efe7db" stroke="#9b8f7a" stroke-width="1.5"/>
+  <text x="460" y="132" text-anchor="middle" font-family="Georgia, serif" font-size="16" fill="#1f2933">policy result = review</text>
+
+  <path d="M 460 150 L 460 180" stroke="#34495E" stroke-width="2" fill="none" marker-end="url(#arq-arrow)"/>
+
+  <rect x="340" y="190" width="240" height="60" rx="10" fill="#ffffff" stroke="#1f2933" stroke-width="1.5"/>
+  <text x="460" y="216" text-anchor="middle" font-family="Georgia, serif" font-size="14" fill="#1f2933">enqueue + wait</text>
+  <text x="460" y="236" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" fill="#52606d">visible in approval queue</text>
+
+  <text x="460" y="290" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" fill="#52606d">human decision required —</text>
+  <text x="460" y="306" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" fill="#52606d">turn pauses until approve / deny</text>
+
+  <!-- Column 3: block -->
+  <rect x="640" y="100" width="240" height="50" rx="10" fill="#efe7db" stroke="#9b8f7a" stroke-width="1.5"/>
+  <text x="760" y="132" text-anchor="middle" font-family="Georgia, serif" font-size="16" fill="#1f2933">policy result = block</text>
+
+  <path d="M 760 150 L 760 180" stroke="#34495E" stroke-width="2" fill="none" marker-end="url(#arq-arrow)"/>
+
+  <rect x="640" y="190" width="240" height="60" rx="10" fill="#ffffff" stroke="#1f2933" stroke-width="1.5"/>
+  <text x="760" y="216" text-anchor="middle" font-family="Georgia, serif" font-size="14" fill="#1f2933">deny immediately</text>
+  <text x="760" y="236" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" fill="#52606d">no pending approval row</text>
+
+  <text x="760" y="290" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" fill="#52606d">hard stop —</text>
+  <text x="760" y="306" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" fill="#52606d">provider sees deny, no operator prompt</text>
+
+  <text x="460" y="354" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="12" fill="#52606d">Empty queue can also mean the provider-to-Hervald contract failed before review could be enqueued.</text>
+</svg>

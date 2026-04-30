@@ -1,0 +1,47 @@
+<svg viewBox="0 0 920 240" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Hervald approval routing — Claude path">
+  <defs>
+    <marker id="arc-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#34495E"/>
+    </marker>
+  </defs>
+
+  <rect width="920" height="240" fill="#f7f2ea"/>
+  <text x="460" y="36" text-anchor="middle" font-family="Georgia, serif" font-size="20" fill="#1f2933">Claude path — hook-driven approval</text>
+
+  <!-- Box 1 -->
+  <rect x="20" y="80" width="170" height="80" rx="12" fill="#ffffff" stroke="#1f2933" stroke-width="1.5"/>
+  <text x="105" y="110" text-anchor="middle" font-family="Georgia, serif" font-size="14" fill="#1f2933">Claude Bash</text>
+  <text x="105" y="130" text-anchor="middle" font-family="Georgia, serif" font-size="14" fill="#1f2933">tool call</text>
+
+  <path d="M 190 120 L 218 120" stroke="#34495E" stroke-width="2" fill="none" marker-end="url(#arc-arrow)"/>
+
+  <!-- Box 2 -->
+  <rect x="220" y="80" width="170" height="80" rx="12" fill="#efe7db" stroke="#9b8f7a" stroke-width="1.5"/>
+  <text x="305" y="110" text-anchor="middle" font-family="Georgia, serif" font-size="14" fill="#1f2933">PreToolUse hook</text>
+  <text x="305" y="130" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" fill="#52606d">Hervald-injected, /bin/sh-safe</text>
+
+  <path d="M 390 120 L 418 120" stroke="#34495E" stroke-width="2" fill="none" marker-end="url(#arc-arrow)"/>
+
+  <!-- Box 3 -->
+  <rect x="420" y="80" width="180" height="80" rx="12" fill="#ffffff" stroke="#1f2933" stroke-width="1.5"/>
+  <text x="510" y="106" text-anchor="middle" font-family="Georgia, serif" font-size="14" fill="#1f2933">POST</text>
+  <text x="510" y="126" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="12" fill="#1f2933">/api/approval/check</text>
+  <text x="510" y="144" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" fill="#52606d">internal-token auth</text>
+
+  <path d="M 600 120 L 628 120" stroke="#34495E" stroke-width="2" fill="none" marker-end="url(#arc-arrow)"/>
+
+  <!-- Box 4 -->
+  <rect x="630" y="80" width="170" height="80" rx="12" fill="#ffffff" stroke="#1f2933" stroke-width="1.5"/>
+  <text x="715" y="110" text-anchor="middle" font-family="Georgia, serif" font-size="14" fill="#1f2933">ActionPolicyGate</text>
+  <text x="715" y="130" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" fill="#52606d">auto · review · block</text>
+
+  <path d="M 800 120 L 828 120" stroke="#34495E" stroke-width="2" fill="none" marker-end="url(#arc-arrow)"/>
+
+  <!-- Box 5 (right edge) -->
+  <rect x="830" y="80" width="80" height="80" rx="12" fill="#efe7db" stroke="#9b8f7a" stroke-width="1.5"/>
+  <text x="870" y="110" text-anchor="middle" font-family="Georgia, serif" font-size="13" fill="#1f2933">Claude</text>
+  <text x="870" y="128" text-anchor="middle" font-family="Georgia, serif" font-size="13" fill="#1f2933">reply</text>
+  <text x="870" y="146" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10" fill="#52606d">allow / deny</text>
+
+  <text x="460" y="206" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="12" fill="#52606d">Allow must return structured PreToolUse JSON on stdout — exit code 0 alone is not enough.</text>
+</svg>

@@ -1,0 +1,41 @@
+<svg viewBox="0 0 920 240" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Hervald approval routing — Codex path">
+  <defs>
+    <marker id="arx-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#34495E"/>
+    </marker>
+  </defs>
+
+  <rect width="920" height="240" fill="#f7f2ea"/>
+  <text x="460" y="36" text-anchor="middle" font-family="Georgia, serif" font-size="20" fill="#1f2933">Codex path — runtime-native approval</text>
+
+  <!-- Box 1 -->
+  <rect x="40" y="80" width="200" height="80" rx="12" fill="#ffffff" stroke="#1f2933" stroke-width="1.5"/>
+  <text x="140" y="106" text-anchor="middle" font-family="Georgia, serif" font-size="14" fill="#1f2933">Codex native</text>
+  <text x="140" y="126" text-anchor="middle" font-family="Georgia, serif" font-size="14" fill="#1f2933">requestApproval</text>
+  <text x="140" y="146" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10" fill="#52606d">JSON-RPC, granular policy</text>
+
+  <path d="M 240 120 L 268 120" stroke="#34495E" stroke-width="2" fill="none" marker-end="url(#arx-arrow)"/>
+
+  <!-- Box 2 -->
+  <rect x="270" y="80" width="200" height="80" rx="12" fill="#efe7db" stroke="#9b8f7a" stroke-width="1.5"/>
+  <text x="370" y="106" text-anchor="middle" font-family="Georgia, serif" font-size="14" fill="#1f2933">Hervald</text>
+  <text x="370" y="126" text-anchor="middle" font-family="Georgia, serif" font-size="14" fill="#1f2933">Codex adapter</text>
+  <text x="370" y="146" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10" fill="#52606d">classifies the granular method</text>
+
+  <path d="M 470 120 L 498 120" stroke="#34495E" stroke-width="2" fill="none" marker-end="url(#arx-arrow)"/>
+
+  <!-- Box 3 -->
+  <rect x="500" y="80" width="200" height="80" rx="12" fill="#ffffff" stroke="#1f2933" stroke-width="1.5"/>
+  <text x="600" y="110" text-anchor="middle" font-family="Georgia, serif" font-size="14" fill="#1f2933">ActionPolicyGate</text>
+  <text x="600" y="130" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" fill="#52606d">auto · review · block</text>
+
+  <path d="M 700 120 L 728 120" stroke="#34495E" stroke-width="2" fill="none" marker-end="url(#arx-arrow)"/>
+
+  <!-- Box 4 -->
+  <rect x="730" y="80" width="160" height="80" rx="12" fill="#efe7db" stroke="#9b8f7a" stroke-width="1.5"/>
+  <text x="810" y="106" text-anchor="middle" font-family="Georgia, serif" font-size="14" fill="#1f2933">Codex reply</text>
+  <text x="810" y="126" text-anchor="middle" font-family="Georgia, serif" font-size="14" fill="#1f2933">accept / decline</text>
+  <text x="810" y="146" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10" fill="#52606d">on the original requestId</text>
+
+  <text x="460" y="206" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="12" fill="#52606d">Codex initialize must advertise experimentalApi or the session is rejected before policy can run.</text>
+</svg>

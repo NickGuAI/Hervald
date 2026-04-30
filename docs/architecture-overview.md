@@ -6,29 +6,7 @@ Hervald owns orchestration; connectivity is delegated.
 
 ## Core Model
 
-```
-Browser / Mobile
-       │ HTTPS / WS
-       ▼
-┌──────────────────────┐
-│ Hervald shell        │
-│ apps/hammurabi       │
-│ - command room       │
-│ - fleet / telemetry  │
-│ - approvals / keys   │
-└──────────┬───────────┘
-           │ SSH (direct or via Tailscale)
-           ▼
-┌──────────────────────┐
-│ Attached worker box  │
-│ - same host          │
-│ - remote VM / Mac    │
-│ - tailnet peer       │
-└──────────┬───────────┘
-           │ local process spawn
-           ▼
- Claude Code / Codex / Gemini / Cursor / custom runtimes
-```
+![Core model — operator browser to Hervald shell to attached worker to provider runtime](./diagrams/architecture-core-model.svg)
 
 ## What Hervald Owns
 
