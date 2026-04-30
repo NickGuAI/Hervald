@@ -16,7 +16,7 @@ import { ModalFormContainer } from '@modules/components/ModalFormContainer'
 const INPUT_CLASS =
   'w-full rounded-lg border border-ink-border px-3 py-2 text-[16px] md:text-sm bg-washi-white focus:outline-none focus:ring-1 focus:ring-sumi-black/20 placeholder:text-sumi-mist'
 const TEXTAREA_CLASS = `${INPUT_CLASS} min-h-[96px] resize-y`
-const GUIDE_URL = 'https://github.com/example-org/example-repo/blob/release-2604/apps/hammurabi/docs/provider-auth-setup.md'
+const GUIDE_URL = 'https://github.com/NickGuAI/Hervald/blob/main/apps/hammurabi/docs/provider-auth-setup.md'
 const PROVIDER_ORDER: MachineAuthProvider[] = ['claude', 'codex', 'gemini']
 
 interface AddWorkerWizardProps {

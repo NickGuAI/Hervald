@@ -96,7 +96,6 @@ app.use('/v1', otelRouter)
 // ~100 MB. Match here so HTTP queue/send/message endpoints accept the same
 // payloads instead of hitting Express's 100 KB default and rejecting image-bearing
 // drafts as "message too big". Same containment pattern as the OTEL escape above.
-// Issue: example-repo#1218.
 app.use('/api/agents', express.json({ limit: '100mb' }))
 
 app.use(express.json())

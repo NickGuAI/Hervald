@@ -168,7 +168,7 @@ function parseTaskCollection(raw: unknown): ParsedTaskCollection {
     // Migrate deprecated `permissionMode` literals (bypassPermissions /
     // dangerouslySkipPermissions / acceptEdits) to 'default' BEFORE the strict
     // schema validation. Tracked entries get rewritten on disk by the caller +
-    // a structured warn. See migrateLegacyPermissionMode + example-repo#1222.
+    // a structured warn. See migrateLegacyPermissionMode.
     const migration = migrateLegacyPermissionMode(candidate.permissionMode)
     if (migration.changed) {
       candidate.permissionMode = 'default'
