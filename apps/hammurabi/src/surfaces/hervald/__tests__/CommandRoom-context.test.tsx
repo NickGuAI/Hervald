@@ -167,7 +167,7 @@ function buildCommander() {
   return {
     id: 'cmd-1',
     host: 'athena',
-    displayName: 'Athena',
+    displayName: 'Test Commander',
     pid: null,
     state: 'running',
     created: '2026-04-20T16:00:00.000Z',

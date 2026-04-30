@@ -17,8 +17,8 @@ describe('buildFleetViewModel', () => {
     const commanders: FleetCommander[] = [
       {
         id: 'alpha',
-        host: 'Athena',
-        displayName: 'Athena',
+        host: 'workshop-mac',
+        displayName: 'Test Commander',
         state: 'running',
         totalCostUsd: 12.4,
         currentTask: {
@@ -28,8 +28,8 @@ describe('buildFleetViewModel', () => {
       },
       {
         id: 'beta',
-        host: 'Jarvis',
-        displayName: 'Jarvis',
+        host: 'Test Operator',
+        displayName: 'Test Operator',
         state: 'stopped',
         totalCostUsd: 2.1,
       },

@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { SentinelStore } from '../store'
 
-// Targeted regression tests for monorepo-g#1222: legacy permissionMode literals
+// Targeted regression tests for example-repo#1222: legacy permissionMode literals
 // (bypassPermissions / dangerouslySkipPermissions / acceptEdits) on sentinel
 // records on disk used to be silently dropped by parseSentinel because the
 // strict parser returns null for those values. Now they migrate to 'default',

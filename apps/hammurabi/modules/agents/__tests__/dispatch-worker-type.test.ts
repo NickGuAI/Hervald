@@ -377,7 +377,7 @@ describe('dispatch-worker', () => {
         },
         body: JSON.stringify({
           cwd: '/tmp/standalone-worker',
-          task: '/legion-implement https://github.com/NickGuAI/Hervald/issues/818',
+          task: '/legion-implement https://github.com/example-org/example-repo/issues/818',
         }),
       })
 
@@ -406,7 +406,7 @@ describe('dispatch-worker', () => {
 
       const taskWrite = workerProcess.stdin.write.mock.calls.find(([chunk]) =>
         typeof chunk === 'string' &&
-        chunk.includes('/legion-implement https://github.com/NickGuAI/Hervald/issues/818'),
+        chunk.includes('/legion-implement https://github.com/example-org/example-repo/issues/818'),
       )
       expect(taskWrite).toBeDefined()
 

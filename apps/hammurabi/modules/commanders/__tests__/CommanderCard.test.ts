@@ -21,7 +21,7 @@ function createProps(
   return {
     commander: {
       id: 'commander-1',
-      host: 'Athena',
+      host: 'workshop-mac',
       pid: 123,
       state: 'running',
       created: '2026-04-10T00:00:00.000Z',

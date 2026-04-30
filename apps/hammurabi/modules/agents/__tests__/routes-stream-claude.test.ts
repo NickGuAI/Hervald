@@ -586,12 +586,12 @@ describe("stream sessions", () => {
         heartbeatTickCount: 0,
         taskSource: {
           owner: 'NickGuAI',
-          repo: 'monorepo-g',
+          repo: 'example-repo',
           label: 'bug',
         },
         currentTask: {
           issueNumber: 77,
-          issueUrl: 'https://github.com/NickGuAI/Hervald/issues/77',
+          issueUrl: 'https://github.com/example-org/example-repo/issues/77',
           startedAt: '2026-04-25T12:00:00.000Z',
         },
         completedTasks: 0,

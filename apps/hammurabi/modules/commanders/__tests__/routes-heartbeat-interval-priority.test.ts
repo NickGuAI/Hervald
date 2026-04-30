@@ -151,7 +151,7 @@ describe('commander config source of truth', () => {
           contextConfig: {
             fatPinInterval: 5,
           },
-          taskSource: { owner: 'NickGuAI', repo: 'monorepo-g', label: 'commander' },
+          taskSource: { owner: 'NickGuAI', repo: 'example-repo', label: 'commander' },
         }),
       })
 

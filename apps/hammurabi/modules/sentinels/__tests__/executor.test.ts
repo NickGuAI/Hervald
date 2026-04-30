@@ -24,7 +24,7 @@ describe('SentinelExecutor', () => {
       name: 'email-watch',
       instruction: 'Summarize urgent messages.',
       schedule: '*/15 * * * *',
-      workDir: '/tmp/monorepo-g',
+      workDir: '/tmp/example-repo',
     })
 
     const createSession = vi.fn(async () => ({ sessionId: 'sentinel-session-1' }))
@@ -57,7 +57,7 @@ describe('SentinelExecutor', () => {
       transportType: 'stream',
       sessionType: 'sentinel',
       agentType: 'claude',
-      cwd: '/tmp/monorepo-g',
+      cwd: '/tmp/example-repo',
     })
   })
 
@@ -72,7 +72,7 @@ describe('SentinelExecutor', () => {
       name: 'context-hygiene',
       instruction: 'Sweep stale context.',
       schedule: '0 4 * * *',
-      workDir: '/tmp/monorepo-g',
+      workDir: '/tmp/example-repo',
     })
 
     const createSession = vi.fn(async () => ({ sessionId: 'sentinel-session-rate-limited' }))
@@ -127,7 +127,7 @@ describe('SentinelExecutor', () => {
       name: 'context-hygiene-hang',
       instruction: 'Sweep stale context.',
       schedule: '0 4 * * *',
-      workDir: '/tmp/monorepo-g',
+      workDir: '/tmp/example-repo',
     })
 
     const createSession = vi.fn(async () => ({ sessionId: 'sentinel-session-hang' }))

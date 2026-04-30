@@ -33,11 +33,11 @@ describe('commander workflow template scaffolding', () => {
       ].join('\n'),
       {
         commanderId: '33333333-3333-4333-8333-333333333333',
-        cwd: '/workspace/monorepo-g',
+        cwd: '/workspace/example-repo',
       },
     )
 
-    expect(rendered).toContain('Workspace: /workspace/monorepo-g')
+    expect(rendered).toContain('Workspace: /workspace/example-repo')
     expect(rendered).toContain('hammurabi memory save --commander 33333333-3333-4333-8333-333333333333 "<fact>"')
   })
 

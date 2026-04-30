@@ -137,7 +137,7 @@ describe('AddWorkerWizard', () => {
 
     mocks.createMachine.mockResolvedValue({
       id: 'athena-mac-mini',
-      label: 'Athena Mac Mini',
+      label: 'Workshop Mac Mini',
       host: 'tail2bb6ea.ts.net',
       user: 'yugu',
       port: 22,
@@ -181,14 +181,14 @@ describe('AddWorkerWizard', () => {
     await renderWizard({ onClose, onMachineReady })
 
     const inputs = Array.from(document.body.querySelectorAll('input')) as HTMLInputElement[]
-    const labelInput = inputs.find((input) => input.placeholder === 'Athena Mac Mini')
+    const labelInput = inputs.find((input) => input.placeholder === 'Workshop Mac Mini')
     const hostInput = inputs.find((input) => input.placeholder === 'tail2bb6ea.ts.net')
 
     await act(async () => {
       if (!labelInput || !hostInput) {
         throw new Error('Worker connection inputs missing')
       }
-      setElementValue(labelInput, 'Athena Mac Mini')
+      setElementValue(labelInput, 'Workshop Mac Mini')
       setElementValue(hostInput, 'tail2bb6ea.ts.net')
     })
 
@@ -202,7 +202,7 @@ describe('AddWorkerWizard', () => {
 
     expect(mocks.createMachine).toHaveBeenCalledWith({
       id: 'athena-mac-mini',
-      label: 'Athena Mac Mini',
+      label: 'Workshop Mac Mini',
       host: 'tail2bb6ea.ts.net',
     })
 
@@ -251,7 +251,7 @@ describe('AddWorkerWizard', () => {
 
     expect(onMachineReady).toHaveBeenCalledWith({
       id: 'athena-mac-mini',
-      label: 'Athena Mac Mini',
+      label: 'Workshop Mac Mini',
       host: 'tail2bb6ea.ts.net',
       user: 'yugu',
       port: 22,

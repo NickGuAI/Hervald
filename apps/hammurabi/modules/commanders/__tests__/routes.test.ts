@@ -384,7 +384,7 @@ describe('commanders routes', () => {
               state: 'idle',
               created: '2026-02-20T00:00:00.000Z',
               lastHeartbeat: null,
-              taskSource: { owner: 'NickGuAI', repo: 'monorepo-g', label: 'commander' },
+              taskSource: { owner: 'NickGuAI', repo: 'example-repo', label: 'commander' },
               currentTask: null,
               completedTasks: 0,
               totalCostUsd: 0,
@@ -433,7 +433,7 @@ describe('commanders routes', () => {
               state: 'idle',
               created: '2026-02-20T00:00:00.000Z',
               lastHeartbeat: null,
-              taskSource: { owner: 'NickGuAI', repo: 'monorepo-g', label: 'commander' },
+              taskSource: { owner: 'NickGuAI', repo: 'example-repo', label: 'commander' },
               currentTask: null,
               completedTasks: 0,
               totalCostUsd: 0,
@@ -522,7 +522,7 @@ describe('commanders routes', () => {
           host: 'worker-1',
           taskSource: {
             owner: 'NickGuAI',
-            repo: 'monorepo-g',
+            repo: 'example-repo',
             label: 'commander',
           },
         }),
@@ -560,7 +560,7 @@ describe('commanders routes', () => {
           host: 'worker-1',
           taskSource: {
             owner: 'NickGuAI',
-            repo: 'monorepo-g',
+            repo: 'example-repo',
             label: 'commander',
           },
         }),
@@ -802,7 +802,7 @@ describe('commanders routes', () => {
         },
         body: JSON.stringify({
           host: 'worker-config-backed-start',
-          taskSource: { owner: 'NickGuAI', repo: 'monorepo-g', label: 'commander' },
+          taskSource: { owner: 'NickGuAI', repo: 'example-repo', label: 'commander' },
         }),
       })
       expect(createResponse.status).toBe(201)
@@ -854,7 +854,7 @@ describe('commanders routes', () => {
         body: JSON.stringify({
           host: 'worker-max-turn-state',
           maxTurns: 9,
-          taskSource: { owner: 'NickGuAI', repo: 'monorepo-g', label: 'commander' },
+          taskSource: { owner: 'NickGuAI', repo: 'example-repo', label: 'commander' },
         }),
       })
       expect(createResponse.status).toBe(201)
@@ -935,7 +935,7 @@ describe('commanders routes', () => {
           contextConfig: {
             fatPinInterval: 3,
           },
-          taskSource: { owner: 'NickGuAI', repo: 'monorepo-g', label: 'commander' },
+          taskSource: { owner: 'NickGuAI', repo: 'example-repo', label: 'commander' },
         }),
       })
       expect(createResponse.status).toBe(201)
@@ -1031,7 +1031,7 @@ describe('commanders routes', () => {
         },
         body: JSON.stringify({
           host: 'worker-email-config',
-          taskSource: { owner: 'NickGuAI', repo: 'monorepo-g', label: 'commander' },
+          taskSource: { owner: 'NickGuAI', repo: 'example-repo', label: 'commander' },
         }),
       })
       expect(createResponse.status).toBe(201)
@@ -1122,7 +1122,7 @@ describe('commanders routes', () => {
         },
         body: JSON.stringify({
           host: 'worker-email-reply',
-          taskSource: { owner: 'NickGuAI', repo: 'monorepo-g', label: 'commander' },
+          taskSource: { owner: 'NickGuAI', repo: 'example-repo', label: 'commander' },
         }),
       })
       expect(createResponse.status).toBe(201)
@@ -1195,7 +1195,7 @@ describe('commanders routes', () => {
         },
         body: JSON.stringify({
           host: 'worker-heartbeat-config',
-          taskSource: { owner: 'NickGuAI', repo: 'monorepo-g', label: 'commander' },
+          taskSource: { owner: 'NickGuAI', repo: 'example-repo', label: 'commander' },
         }),
       })
       const created = (await createResponse.json()) as { id: string }
@@ -1256,7 +1256,7 @@ describe('commanders routes', () => {
         },
         body: JSON.stringify({
           host: 'worker-heartbeat-loop',
-          taskSource: { owner: 'NickGuAI', repo: 'monorepo-g', label: 'commander' },
+          taskSource: { owner: 'NickGuAI', repo: 'example-repo', label: 'commander' },
         }),
       })
       expect(createResponse.status).toBe(201)
@@ -1356,7 +1356,7 @@ describe('commanders routes', () => {
         },
         body: JSON.stringify({
           host: 'worker-heartbeat-backpressure',
-          taskSource: { owner: 'NickGuAI', repo: 'monorepo-g', label: 'commander' },
+          taskSource: { owner: 'NickGuAI', repo: 'example-repo', label: 'commander' },
         }),
       })
       expect(createResponse.status).toBe(201)
@@ -1436,7 +1436,7 @@ describe('commanders routes', () => {
         },
         body: JSON.stringify({
           host: 'worker-heartbeat-manual',
-          taskSource: { owner: 'NickGuAI', repo: 'monorepo-g', label: 'commander' },
+          taskSource: { owner: 'NickGuAI', repo: 'example-repo', label: 'commander' },
         }),
       })
       expect(createResponse.status).toBe(201)
@@ -1521,7 +1521,7 @@ describe('commanders routes', () => {
         },
         body: JSON.stringify({
           host: 'fixture-heartbeat-stop-log',
-          taskSource: { owner: 'NickGuAI', repo: 'monorepo-g', label: 'commander' },
+          taskSource: { owner: 'NickGuAI', repo: 'example-repo', label: 'commander' },
         }),
       })
       expect(createResponse.status).toBe(201)
@@ -1623,7 +1623,7 @@ describe('commanders routes', () => {
         },
         body: JSON.stringify({
           host: 'worker-heartbeat-live',
-          taskSource: { owner: 'NickGuAI', repo: 'monorepo-g', label: 'commander' },
+          taskSource: { owner: 'NickGuAI', repo: 'example-repo', label: 'commander' },
         }),
       })
       expect(createResponse.status).toBe(201)
@@ -1712,7 +1712,7 @@ describe('commanders routes', () => {
         },
         body: JSON.stringify({
           host: 'worker-lifecycle',
-          taskSource: { owner: 'NickGuAI', repo: 'monorepo-g', label: 'commander' },
+          taskSource: { owner: 'NickGuAI', repo: 'example-repo', label: 'commander' },
         }),
       })
       const created = (await createResponse.json()) as { id: string }
@@ -1799,7 +1799,7 @@ describe('commanders routes', () => {
         body: JSON.stringify({
           host: 'worker-persona-prompt',
           persona: '  Grumpy pirate who gives terse status updates and owns bug triage.  ',
-          taskSource: { owner: 'NickGuAI', repo: 'monorepo-g', label: 'commander' },
+          taskSource: { owner: 'NickGuAI', repo: 'example-repo', label: 'commander' },
         }),
       })
       const created = (await createResponse.json()) as { id: string }
@@ -1862,7 +1862,7 @@ describe('commanders routes', () => {
         body: JSON.stringify({
           host: 'worker-workflow-fallback',
           cwd: workspaceDir,
-          taskSource: { owner: 'NickGuAI', repo: 'monorepo-g', label: 'commander' },
+          taskSource: { owner: 'NickGuAI', repo: 'example-repo', label: 'commander' },
         }),
       })
       const firstCommander = (await firstCreate.json()) as { id: string }
@@ -1897,7 +1897,7 @@ describe('commanders routes', () => {
         body: JSON.stringify({
           host: 'worker-workflow-authoritative',
           cwd: workspaceDir,
-          taskSource: { owner: 'NickGuAI', repo: 'monorepo-g', label: 'commander' },
+          taskSource: { owner: 'NickGuAI', repo: 'example-repo', label: 'commander' },
         }),
       })
       const secondCommander = (await secondCreate.json()) as { id: string }
@@ -1946,7 +1946,7 @@ describe('commanders routes', () => {
         },
         body: JSON.stringify({
           host: 'worker-workflow-identity-only',
-          taskSource: { owner: 'NickGuAI', repo: 'monorepo-g', label: 'commander' },
+          taskSource: { owner: 'NickGuAI', repo: 'example-repo', label: 'commander' },
         }),
       })
       const thirdCommander = (await thirdCreate.json()) as { id: string }
@@ -2007,7 +2007,7 @@ describe('commanders routes', () => {
         },
         body: JSON.stringify({
           host: 'worker-workflow-reload',
-          taskSource: { owner: 'NickGuAI', repo: 'monorepo-g', label: 'commander' },
+          taskSource: { owner: 'NickGuAI', repo: 'example-repo', label: 'commander' },
         }),
       })
       const commander = (await createResponse.json()) as { id: string }
@@ -2096,7 +2096,7 @@ describe('commanders routes', () => {
               lastSentAt: null,
             },
             lastHeartbeat: null,
-            taskSource: { owner: 'NickGuAI', repo: 'monorepo-g', label: 'commander' },
+            taskSource: { owner: 'NickGuAI', repo: 'example-repo', label: 'commander' },
             currentTask: null,
             completedTasks: 0,
             totalCostUsd: 0,
@@ -2193,7 +2193,7 @@ describe('commanders routes', () => {
               lastSentAt: null,
             },
             lastHeartbeat: null,
-            taskSource: { owner: 'NickGuAI', repo: 'monorepo-g', label: 'commander' },
+            taskSource: { owner: 'NickGuAI', repo: 'example-repo', label: 'commander' },
             currentTask: null,
             completedTasks: 0,
             totalCostUsd: 0,
@@ -2264,7 +2264,7 @@ describe('commanders routes', () => {
             contextConfig: {
               fatPinInterval: 4,
             },
-            taskSource: { owner: 'NickGuAI', repo: 'monorepo-g', label: 'commander' },
+            taskSource: { owner: 'NickGuAI', repo: 'example-repo', label: 'commander' },
             currentTask: null,
             completedTasks: 0,
             totalCostUsd: 0,
@@ -2344,7 +2344,7 @@ describe('commanders routes', () => {
         },
         body: JSON.stringify({
           host: 'worker-cwd',
-          taskSource: { owner: 'NickGuAI', repo: 'monorepo-g', label: 'commander' },
+          taskSource: { owner: 'NickGuAI', repo: 'example-repo', label: 'commander' },
           cwd: '/tmp/my-project',
         }),
       })
@@ -2390,7 +2390,7 @@ describe('commanders routes', () => {
         },
         body: JSON.stringify({
           host: 'worker-cost-stop',
-          taskSource: { owner: 'NickGuAI', repo: 'monorepo-g', label: 'commander' },
+          taskSource: { owner: 'NickGuAI', repo: 'example-repo', label: 'commander' },
         }),
       })
       const created = (await createResponse.json()) as { id: string }
@@ -2447,7 +2447,7 @@ describe('commanders routes', () => {
         },
         body: JSON.stringify({
           host: 'worker-claude-restart',
-          taskSource: { owner: 'NickGuAI', repo: 'monorepo-g', label: 'commander' },
+          taskSource: { owner: 'NickGuAI', repo: 'example-repo', label: 'commander' },
         }),
       })
       const created = (await createResponse.json()) as { id: string }
@@ -2572,7 +2572,7 @@ describe('commanders routes', () => {
         },
         body: JSON.stringify({
           host: 'worker-codex-restart',
-          taskSource: { owner: 'NickGuAI', repo: 'monorepo-g', label: 'commander' },
+          taskSource: { owner: 'NickGuAI', repo: 'example-repo', label: 'commander' },
         }),
       })
       const created = (await createResponse.json()) as { id: string }
@@ -2670,7 +2670,7 @@ describe('commanders routes', () => {
         },
         body: JSON.stringify({
           host: 'worker-codex-bootstrap-failure',
-          taskSource: { owner: 'NickGuAI', repo: 'monorepo-g', label: 'commander' },
+          taskSource: { owner: 'NickGuAI', repo: 'example-repo', label: 'commander' },
         }),
       })
       const created = (await createResponse.json()) as { id: string }
@@ -2733,7 +2733,7 @@ describe('commanders routes', () => {
         },
         body: JSON.stringify({
           host: 'worker-message',
-          taskSource: { owner: 'NickGuAI', repo: 'monorepo-g', label: 'commander' },
+          taskSource: { owner: 'NickGuAI', repo: 'example-repo', label: 'commander' },
         }),
       })
       const created = (await createResponse.json()) as { id: string }
@@ -2810,7 +2810,7 @@ describe('commanders routes', () => {
         },
         body: JSON.stringify({
           host: 'worker-message-queue',
-          taskSource: { owner: 'NickGuAI', repo: 'monorepo-g', label: 'commander' },
+          taskSource: { owner: 'NickGuAI', repo: 'example-repo', label: 'commander' },
         }),
       })
       expect(createResponse.status).toBe(201)
@@ -2897,7 +2897,7 @@ describe('commanders routes', () => {
         },
         body: JSON.stringify({
           host: 'worker-message-queue',
-          taskSource: { owner: 'NickGuAI', repo: 'monorepo-g', label: 'commander' },
+          taskSource: { owner: 'NickGuAI', repo: 'example-repo', label: 'commander' },
         }),
       })
       expect(createResponse.status).toBe(201)
@@ -2965,7 +2965,7 @@ describe('commanders routes', () => {
         },
         body: JSON.stringify({
           host: 'worker-message-queue',
-          taskSource: { owner: 'NickGuAI', repo: 'monorepo-g', label: 'commander' },
+          taskSource: { owner: 'NickGuAI', repo: 'example-repo', label: 'commander' },
         }),
       })
       expect(createResponse.status).toBe(201)
@@ -3042,7 +3042,7 @@ describe('commanders routes', () => {
         },
         body: JSON.stringify({
           host: 'worker-internal-filter',
-          taskSource: { owner: 'NickGuAI', repo: 'monorepo-g', label: 'commander' },
+          taskSource: { owner: 'NickGuAI', repo: 'example-repo', label: 'commander' },
         }),
       })
       const created = (await createResponse.json()) as { id: string }
@@ -3132,7 +3132,7 @@ describe('commanders routes', () => {
         },
         body: JSON.stringify({
           host: 'worker-memory',
-          taskSource: { owner: 'NickGuAI', repo: 'monorepo-g', label: 'commander' },
+          taskSource: { owner: 'NickGuAI', repo: 'example-repo', label: 'commander' },
         }),
       })
       expect(createResponse.status).toBe(201)
@@ -3204,14 +3204,14 @@ describe('commanders routes', () => {
               number: 167,
               title: 'Commander lifecycle',
               body: 'Implement routes',
-              html_url: 'https://github.com/NickGuAI/Hervald/issues/167',
+              html_url: 'https://github.com/example-org/example-repo/issues/167',
               state: 'open',
               labels: [{ name: 'commander' }],
             },
             {
               number: 999,
               title: 'PR placeholder',
-              html_url: 'https://github.com/NickGuAI/Hervald/pull/999',
+              html_url: 'https://github.com/example-org/example-repo/pull/999',
               state: 'open',
               pull_request: {},
               labels: [],
@@ -3236,7 +3236,7 @@ describe('commanders routes', () => {
         },
         body: JSON.stringify({
           host: 'worker-tasks',
-          taskSource: { owner: 'NickGuAI', repo: 'monorepo-g', label: 'commander' },
+          taskSource: { owner: 'NickGuAI', repo: 'example-repo', label: 'commander' },
         }),
       })
       const created = (await createResponse.json()) as { id: string }
@@ -3251,7 +3251,7 @@ describe('commanders routes', () => {
           number: 167,
           title: 'Commander lifecycle',
           body: 'Implement routes',
-          issueUrl: 'https://github.com/NickGuAI/Hervald/issues/167',
+          issueUrl: 'https://github.com/example-org/example-repo/issues/167',
           state: 'open',
           labels: ['commander'],
         },
@@ -3296,7 +3296,7 @@ describe('commanders routes', () => {
         },
         body: JSON.stringify({
           host: 'worker-assign',
-          taskSource: { owner: 'NickGuAI', repo: 'monorepo-g', label: 'commander' },
+          taskSource: { owner: 'NickGuAI', repo: 'example-repo', label: 'commander' },
         }),
       })
       const created = (await createResponse.json()) as { id: string }
@@ -3317,7 +3317,7 @@ describe('commanders routes', () => {
         assigned: true,
         currentTask: {
           issueNumber: 167,
-          issueUrl: 'https://github.com/NickGuAI/Hervald/issues/167',
+          issueUrl: 'https://github.com/example-org/example-repo/issues/167',
           startedAt: '2026-02-21T12:00:00.000Z',
         },
       })
@@ -3394,7 +3394,7 @@ describe('commanders routes', () => {
         },
         body: JSON.stringify({
           host: 'worker-cron-routes',
-          taskSource: { owner: 'NickGuAI', repo: 'monorepo-g', label: 'commander' },
+          taskSource: { owner: 'NickGuAI', repo: 'example-repo', label: 'commander' },
         }),
       })
       expect(createCommanderResponse.status).toBe(201)
@@ -3411,7 +3411,7 @@ describe('commanders routes', () => {
           instruction: 'Check the park status.',
           enabled: true,
           agentType: 'claude',
-          workDir: '/tmp/monorepo-g',
+          workDir: '/tmp/example-repo',
         }),
       })
       expect(createCronResponse.status).toBe(201)
@@ -3562,7 +3562,7 @@ describe('commanders routes', () => {
         },
         body: JSON.stringify({
           host: 'worker-quest-routes',
-          taskSource: { owner: 'NickGuAI', repo: 'monorepo-g', label: 'commander' },
+          taskSource: { owner: 'NickGuAI', repo: 'example-repo', label: 'commander' },
         }),
       })
       const commander = (await createCommanderResponse.json()) as { id: string }
@@ -3577,7 +3577,7 @@ describe('commanders routes', () => {
           source: 'manual',
           instruction: 'Draft implementation plan',
           contract: {
-            cwd: '/tmp/monorepo-g',
+            cwd: '/tmp/example-repo',
             permissionMode: 'default',
             agentType: 'claude',
             skillsToUse: ['issue-finder'],
@@ -3754,7 +3754,7 @@ describe('commanders routes', () => {
         },
         body: JSON.stringify({
           host: 'worker-quest-stale-guard',
-          taskSource: { owner: 'NickGuAI', repo: 'monorepo-g', label: 'commander' },
+          taskSource: { owner: 'NickGuAI', repo: 'example-repo', label: 'commander' },
         }),
       })
       const commander = (await createCommanderResponse.json()) as { id: string }
@@ -3836,7 +3836,7 @@ describe('commanders routes', () => {
         },
         body: JSON.stringify({
           host: 'worker-quest-heartbeat',
-          taskSource: { owner: 'NickGuAI', repo: 'monorepo-g', label: 'commander' },
+          taskSource: { owner: 'NickGuAI', repo: 'example-repo', label: 'commander' },
         }),
       })
       const commander = (await createCommanderResponse.json()) as { id: string }
@@ -3955,7 +3955,7 @@ describe('commanders routes', () => {
         },
         body: JSON.stringify({
           host: 'worker-active-quest-heartbeat',
-          taskSource: { owner: 'NickGuAI', repo: 'monorepo-g', label: 'commander' },
+          taskSource: { owner: 'NickGuAI', repo: 'example-repo', label: 'commander' },
         }),
       })
       const commander = (await createCommanderResponse.json()) as { id: string }
@@ -4066,7 +4066,7 @@ describe('commanders routes', () => {
       labels: ['commander'],
       assignees: [],
       comments: [],
-      url: 'https://github.com/NickGuAI/Hervald/issues/331',
+      url: 'https://github.com/example-org/example-repo/issues/331',
     }))
     const ghTasksFactory = vi.fn((_repo: string) => ({ readTask }))
 
@@ -4084,7 +4084,7 @@ describe('commanders routes', () => {
         },
         body: JSON.stringify({
           host: 'worker-quest-github-import',
-          taskSource: { owner: 'NickGuAI', repo: 'monorepo-g', label: 'commander' },
+          taskSource: { owner: 'NickGuAI', repo: 'example-repo', label: 'commander' },
         }),
       })
       const commander = (await createCommanderResponse.json()) as { id: string }
@@ -4096,7 +4096,7 @@ describe('commanders routes', () => {
           'content-type': 'application/json',
         },
         body: JSON.stringify({
-          githubIssueUrl: 'https://github.com/NickGuAI/Hervald/issues/331',
+          githubIssueUrl: 'https://github.com/example-org/example-repo/issues/331',
         }),
       })
 
@@ -4108,7 +4108,7 @@ describe('commanders routes', () => {
       expect(createdQuest.source).toBe('github-issue')
       expect(createdQuest.instruction).toContain('Implement quest board backend')
       expect(createdQuest.instruction).toContain('Add store, routes, and tests for commander quests.')
-      expect(ghTasksFactory).toHaveBeenCalledWith('NickGuAI/Hervald')
+      expect(ghTasksFactory).toHaveBeenCalledWith('example-org/example-repo')
       expect(readTask).toHaveBeenCalledWith(331)
     } finally {
       await server.close()
@@ -4128,7 +4128,7 @@ describe('commanders routes', () => {
       },
       body: JSON.stringify({
         host: 'worker-restart',
-        taskSource: { owner: 'NickGuAI', repo: 'monorepo-g', label: 'commander' },
+        taskSource: { owner: 'NickGuAI', repo: 'example-repo', label: 'commander' },
       }),
     })
     expect(createResponse.status).toBe(201)
@@ -4177,7 +4177,7 @@ describe('commanders routes', () => {
               state,
               created: '2026-03-01T00:00:00.000Z',
               lastHeartbeat: null,
-              taskSource: { owner: 'NickGuAI', repo: 'monorepo-g', label: 'commander' },
+              taskSource: { owner: 'NickGuAI', repo: 'example-repo', label: 'commander' },
               currentTask: null,
               completedTasks: 0,
               totalCostUsd: 0,

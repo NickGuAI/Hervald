@@ -69,7 +69,7 @@ describe('MemoryContextBuilder.build()', () => {
       body: 'Refresh fails when cert rotates and token skew is high.',
       labels: [{ name: 'bug' }],
       owner: 'NickGuAI',
-      repo: 'monorepo-g',
+      repo: 'example-repo',
       comments: [
         {
           author: 'reviewer-1',
@@ -114,7 +114,7 @@ describe('MemoryContextBuilder.build()', () => {
         title: 'Small backlog item',
         body: 'Keep the prompt small.',
         owner: 'NickGuAI',
-        repo: 'monorepo-g',
+        repo: 'example-repo',
       },
       recentConversation: [{ role: 'user', content: 'Keep only the important layers.' }],
       tokenBudget: 80,

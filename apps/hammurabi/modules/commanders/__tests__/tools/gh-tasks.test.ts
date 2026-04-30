@@ -12,7 +12,7 @@ describe('GhTasks', () => {
       exec,
     }
     tasks = new GhTasks({
-      repo: 'NickGuAI/Hervald',
+      repo: 'example-org/example-repo',
       label: 'commander',
       runner,
     })
@@ -27,7 +27,7 @@ describe('GhTasks', () => {
           body: 'later',
           labels: [{ name: 'commander' }],
           assignees: [{ login: 'octocat' }],
-          url: 'https://github.com/NickGuAI/Hervald/issues/203',
+          url: 'https://github.com/example-org/example-repo/issues/203',
         },
         {
           number: 167,
@@ -35,7 +35,7 @@ describe('GhTasks', () => {
           body: 'earlier',
           labels: [{ name: 'commander' }],
           assignees: [{ login: 'octocat' }],
-          url: 'https://github.com/NickGuAI/Hervald/issues/167',
+          url: 'https://github.com/example-org/example-repo/issues/167',
         },
       ]),
       stderr: '',
@@ -47,7 +47,7 @@ describe('GhTasks', () => {
       'issue',
       'list',
       '--repo',
-      'NickGuAI/Hervald',
+      'example-org/example-repo',
       '--state',
       'open',
       '--label',
@@ -69,7 +69,7 @@ describe('GhTasks', () => {
           body: '',
           labels: [{ name: 'commander' }],
           assignees: [{ login: 'octocat' }],
-          url: 'https://github.com/NickGuAI/Hervald/issues/220',
+          url: 'https://github.com/example-org/example-repo/issues/220',
         },
         {
           number: 201,
@@ -77,7 +77,7 @@ describe('GhTasks', () => {
           body: '',
           labels: [{ name: 'commander' }],
           assignees: [],
-          url: 'https://github.com/NickGuAI/Hervald/issues/201',
+          url: 'https://github.com/example-org/example-repo/issues/201',
         },
         {
           number: 199,
@@ -85,7 +85,7 @@ describe('GhTasks', () => {
           body: '',
           labels: [{ name: 'commander' }],
           assignees: [],
-          url: 'https://github.com/NickGuAI/Hervald/issues/199',
+          url: 'https://github.com/example-org/example-repo/issues/199',
         },
       ]),
       stderr: '',
@@ -109,7 +109,7 @@ describe('GhTasks', () => {
           { body: 'Please include tests', author: { login: 'nick' } },
           { body: 'Remember to update manager wiring', author: { login: 'reviewer' } },
         ],
-        url: 'https://github.com/NickGuAI/Hervald/issues/167',
+        url: 'https://github.com/example-org/example-repo/issues/167',
       }),
       stderr: '',
     })
@@ -121,7 +121,7 @@ describe('GhTasks', () => {
       'view',
       '167',
       '--repo',
-      'NickGuAI/Hervald',
+      'example-org/example-repo',
       '--json',
       'number,title,body,labels,assignees,comments,url',
     ])
@@ -146,7 +146,7 @@ describe('GhTasks', () => {
       'edit',
       '167',
       '--repo',
-      'NickGuAI/Hervald',
+      'example-org/example-repo',
       '--add-assignee',
       '@me',
     ])
@@ -155,7 +155,7 @@ describe('GhTasks', () => {
       'comment',
       '167',
       '--repo',
-      'NickGuAI/Hervald',
+      'example-org/example-repo',
       '--body',
       'Starting issue #167.',
     ])
@@ -164,7 +164,7 @@ describe('GhTasks', () => {
       'comment',
       '167',
       '--repo',
-      'NickGuAI/Hervald',
+      'example-org/example-repo',
       '--body',
       'Completed issue #167.',
     ])
@@ -173,7 +173,7 @@ describe('GhTasks', () => {
       'close',
       '167',
       '--repo',
-      'NickGuAI/Hervald',
+      'example-org/example-repo',
     ])
   })
 })

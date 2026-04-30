@@ -50,7 +50,7 @@ function buildCommander(overrides: Partial<Record<string, unknown>> = {}) {
   return {
     id: 'cmd-1',
     host: 'athena',
-    displayName: 'Athena',
+    displayName: 'Test Commander',
     pid: null,
     state: 'running',
     created: '2026-04-20T16:00:00.000Z',
@@ -183,7 +183,7 @@ describe('CommandRoom mobile branch', () => {
           actionId: 'file_change',
           source: 'codex',
           commanderId: 'cmd-1',
-          commanderName: 'Athena',
+          commanderName: 'Test Commander',
           sessionName: 'commander-cmd-1',
           requestedAt: '2026-04-21T15:00:00.000Z',
           requestId: 'approval-1',

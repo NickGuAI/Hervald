@@ -24,7 +24,7 @@ describe('QuestStore', () => {
       source: 'manual',
       instruction: 'Investigate issue queue drift',
       contract: {
-        cwd: '/tmp/monorepo-g',
+        cwd: '/tmp/example-repo',
         permissionMode: 'default',
         agentType: 'claude',
         skillsToUse: ['issue-finder'],
@@ -63,7 +63,7 @@ describe('QuestStore', () => {
       source: 'idea',
       instruction: 'Prototype quest picker',
       contract: {
-        cwd: '/tmp/monorepo-g',
+        cwd: '/tmp/example-repo',
         permissionMode: 'default',
         agentType: 'claude',
         skillsToUse: [],
@@ -75,7 +75,7 @@ describe('QuestStore', () => {
       source: 'manual',
       instruction: 'Ship API baseline',
       contract: {
-        cwd: '/tmp/monorepo-g',
+        cwd: '/tmp/example-repo',
         permissionMode: 'default',
         agentType: 'claude',
         skillsToUse: [],
@@ -96,7 +96,7 @@ describe('QuestStore', () => {
       source: 'manual',
       instruction: 'Implement commander board grouping',
       contract: {
-        cwd: '/tmp/monorepo-g',
+        cwd: '/tmp/example-repo',
         permissionMode: 'default',
         agentType: 'claude',
         skillsToUse: [],
@@ -133,7 +133,7 @@ describe('QuestStore', () => {
         {
           type: 'github_issue',
           label: 'Issue #101',
-          href: 'https://github.com/NickGuAI/Hervald/issues/101',
+          href: 'https://github.com/example-org/example-repo/issues/101',
         },
         {
           type: 'file',
@@ -142,7 +142,7 @@ describe('QuestStore', () => {
         },
       ],
       contract: {
-        cwd: '/tmp/monorepo-g',
+        cwd: '/tmp/example-repo',
         permissionMode: 'default',
         agentType: 'claude',
         skillsToUse: [],
@@ -153,7 +153,7 @@ describe('QuestStore', () => {
       {
         type: 'github_issue',
         label: 'Issue #101',
-        href: 'https://github.com/NickGuAI/Hervald/issues/101',
+        href: 'https://github.com/example-org/example-repo/issues/101',
       },
       {
         type: 'file',
@@ -167,7 +167,7 @@ describe('QuestStore', () => {
         {
           type: 'github_pr',
           label: 'PR #202',
-          href: 'https://github.com/NickGuAI/Hervald/pull/202',
+          href: 'https://github.com/example-org/example-repo/pull/202',
         },
       ],
     })
@@ -175,7 +175,7 @@ describe('QuestStore', () => {
       {
         type: 'github_pr',
         label: 'PR #202',
-        href: 'https://github.com/NickGuAI/Hervald/pull/202',
+        href: 'https://github.com/example-org/example-repo/pull/202',
       },
     ])
 

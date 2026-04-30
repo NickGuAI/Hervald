@@ -42,7 +42,7 @@ describe('MobileChatView', () => {
       createElement(MobileChatView, {
         commander: {
           id: 'cmd-1',
-          name: 'Athena',
+          name: 'Test Commander',
           status: 'running',
           description: 'Primary commander',
           avatarUrl: null,
@@ -59,7 +59,7 @@ describe('MobileChatView', () => {
           actionId: 'tool_use',
           source: 'codex',
           commanderId: 'cmd-1',
-          commanderName: 'Athena',
+          commanderName: 'Test Commander',
           sessionName: 'commander-cmd-1',
           requestedAt: '2026-04-21T15:00:00.000Z',
           requestId: 'approval-1',
@@ -103,7 +103,7 @@ describe('MobileChatView', () => {
     )
 
     expect(html).toContain('data-testid="mobile-session-shell"')
-    expect(html).toContain('data-session-label="Athena"')
+    expect(html).toContain('data-session-label="Test Commander"')
     expect(html).toContain('data-is-streaming="true"')
     expect(html).toContain('data-theme="dark"')
     expect(html).toContain('data-root-class="mobile-session-shell session-view-overlay hv-dark"')
@@ -117,7 +117,7 @@ describe('MobileChatView', () => {
       createElement(MobileChatView, {
         commander: {
           id: 'cmd-1',
-          name: 'Athena',
+          name: 'Test Commander',
           status: 'idle',
           description: 'Primary commander',
         },

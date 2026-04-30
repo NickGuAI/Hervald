@@ -2909,7 +2909,7 @@ describe("stream sessions", () => {
       const server = await startServer()
 
       try {
-        const systemPrompt = 'You are Athena. Follow commander runtime policy.'
+        const systemPrompt = 'You are a test commander. Follow commander runtime policy.'
         await server.agents.sessionsInterface.createCommanderSession({
           name: 'commander-codex-bootstrap',
           commanderId: 'codex-bootstrap',

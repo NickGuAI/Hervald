@@ -9,7 +9,7 @@ describe('Hervald TeamColumn creator filter', () => {
       createElement(TeamColumn, {
         commander: {
           id: 'cmdr-1',
-          name: 'Athena',
+          name: 'Test Commander',
           status: 'running',
         },
         workers: [
@@ -56,7 +56,7 @@ describe('Hervald TeamColumn creator filter', () => {
   // creator: { kind: "commander", id: <url-id> } and must therefore
   // appear on the dispatching commander's TEAM panel — even though
   // the underlying API key is operating on behalf of an external
-  // process (Athena heartbeat, scripted dispatch, etc.) instead of
+  // process (Test Commander heartbeat, scripted dispatch, etc.) instead of
   // the commander runtime itself.
   it('matches workers dispatched via the URL-baked /api/commanders/:id/workers route to their commander', () => {
     const commanderId = 'd66a5217-ace6-4f00-b2ac-bbd64a9a7e7e'
@@ -64,7 +64,7 @@ describe('Hervald TeamColumn creator filter', () => {
       createElement(TeamColumn, {
         commander: {
           id: commanderId,
-          name: 'Athena',
+          name: 'Test Commander',
           status: 'running',
         },
         workers: [

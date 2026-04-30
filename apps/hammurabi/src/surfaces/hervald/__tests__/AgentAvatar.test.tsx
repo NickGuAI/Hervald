@@ -36,7 +36,7 @@ describe('AgentAvatar — live commander shape', () => {
       <AgentAvatar
         commander={{
           id: 'athena-id',
-          displayName: 'Athena',
+          displayName: 'Test Commander',
           host: 'athena',
           avatarUrl: '/commander-assets/athena-id/avatar',
           ui: { accentColor: '#C23B22' },
@@ -51,7 +51,7 @@ describe('AgentAvatar — live commander shape', () => {
     const img = avatar?.querySelector('img')
     expect(img).not.toBeNull()
     expect(img?.getAttribute('src')).toBe('/commander-assets/athena-id/avatar')
-    expect(img?.getAttribute('alt')).toBe('Athena')
+    expect(img?.getAttribute('alt')).toBe('Test Commander')
   })
 
   it('renders the initial letter when avatarUrl is absent, colored by ui.accentColor', async () => {
@@ -59,7 +59,7 @@ describe('AgentAvatar — live commander shape', () => {
       <AgentAvatar
         commander={{
           id: 'zendude-id',
-          displayName: 'Zendude',
+          displayName: 'Demo User',
           host: 'zendude',
           avatarUrl: null,
           ui: { accentColor: '#D4763A' },

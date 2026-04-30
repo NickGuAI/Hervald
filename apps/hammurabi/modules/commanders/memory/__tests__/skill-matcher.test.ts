@@ -52,7 +52,7 @@ describe('matchSkill()', () => {
     body: 'Refresh tokens fail when certificate chain rotates unexpectedly.',
     labels: [{ name: 'bug' }],
     owner: 'NickGuAI',
-    repo: 'monorepo-g',
+    repo: 'example-repo',
   }
 
   it('matches on labels', () => {
@@ -105,7 +105,7 @@ describe('rankMatchingSkills()', () => {
     body: 'Refresh token and cert validation race condition in auth middleware.',
     labels: [{ name: 'bug' }],
     owner: 'NickGuAI',
-    repo: 'monorepo-g',
+    repo: 'example-repo',
   }
 
   it('sorts by strongest match score', () => {

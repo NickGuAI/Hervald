@@ -107,7 +107,7 @@ async function renderRoom() {
               commanders={[
                 {
                   id: 'cmd-1',
-                  name: 'Athena',
+                  name: 'Test Commander',
                   status: 'running',
                   description: 'Primary commander',
                 },
@@ -116,7 +116,7 @@ async function renderRoom() {
                 {
                   id: 'cmd-1',
                   host: 'athena',
-                  displayName: 'Athena',
+                  displayName: 'Test Commander',
                   pid: null,
                   state: 'running',
                   created: '2026-04-23T12:00:00.000Z',

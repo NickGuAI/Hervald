@@ -144,7 +144,7 @@ describe('remote commander sync routes', () => {
             source: 'manual',
             instruction: 'Process remote queue item',
             contract: {
-              cwd: '/tmp/monorepo-g',
+              cwd: '/tmp/example-repo',
               permissionMode: 'default',
               agentType: 'claude',
               skillsToUse: [],

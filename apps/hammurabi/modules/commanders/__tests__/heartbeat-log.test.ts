@@ -174,7 +174,7 @@ describe('GET /api/commanders/:id/heartbeat-log', () => {
         },
         body: JSON.stringify({
           host: 'worker-heartbeat-log',
-          taskSource: { owner: 'NickGuAI', repo: 'monorepo-g', label: 'commander' },
+          taskSource: { owner: 'NickGuAI', repo: 'example-repo', label: 'commander' },
         }),
       })
       expect(createResponse.status).toBe(201)

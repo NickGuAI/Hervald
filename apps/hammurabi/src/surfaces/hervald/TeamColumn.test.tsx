@@ -9,7 +9,7 @@ describe('Hervald TeamColumn', () => {
       createElement(TeamColumn, {
         commander: {
           id: 'cmdr-1',
-          name: 'Athena',
+          name: 'Test Commander',
           status: 'running',
         },
         workers: [
@@ -49,7 +49,7 @@ describe('Hervald TeamColumn', () => {
       createElement(TeamColumn, {
         commander: {
           id: 'cmdr-1',
-          name: 'Athena',
+          name: 'Test Commander',
           status: 'running',
         },
         workers: [

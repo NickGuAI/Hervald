@@ -81,7 +81,7 @@ describe('Hervald SessionsColumn', () => {
           commanders: [
             {
               id: 'cmdr-1',
-              name: 'Athena',
+              name: 'Test Commander',
               status: 'running',
               description: 'Primary commander',
             },
@@ -147,7 +147,7 @@ describe('Hervald SessionsColumn', () => {
             },
             {
               id: 'cmdr-1',
-              name: 'Athena',
+              name: 'Test Commander',
               status: 'running',
             },
           ],
@@ -161,7 +161,7 @@ describe('Hervald SessionsColumn', () => {
     })
 
     const globalIndex = container.textContent?.indexOf('Global') ?? -1
-    const athenaIndex = container.textContent?.indexOf('Athena') ?? -1
+    const athenaIndex = container.textContent?.indexOf('Test Commander') ?? -1
     expect(globalIndex).toBeGreaterThanOrEqual(0)
     expect(athenaIndex).toBeGreaterThan(globalIndex)
 

@@ -110,7 +110,7 @@ function buildApproval(overrides: Partial<PendingApproval> = {}): PendingApprova
     actionId: 'file_change',
     source: 'codex',
     commanderId: 'cmd-1',
-    commanderName: 'Athena',
+    commanderName: 'Test Commander',
     sessionName: 'commander-athena',
     requestedAt: '2026-04-21T15:00:00.000Z',
     requestId: 'approval-1',
@@ -128,7 +128,7 @@ function buildApproval(overrides: Partial<PendingApproval> = {}): PendingApprova
 function buildProps(overrides: Partial<ShellProps> = {}): ShellProps {
   return {
     sessionName: 'commander-athena',
-    sessionLabel: 'Athena',
+    sessionLabel: 'Test Commander',
     agentType: 'claude',
     wsStatus: 'connected',
     costUsd: 1.23,
@@ -207,7 +207,7 @@ describe('MobileSessionShell', () => {
   it('renders the header with label and meta', async () => {
     renderShell()
 
-    expect(document.body.textContent).toContain('Athena')
+    expect(document.body.textContent).toContain('Test Commander')
     expect(document.body.textContent).toContain('connected')
     expect(document.body.textContent).toContain('$1.23')
     expect(document.body.textContent).toContain('2m 05s')

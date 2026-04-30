@@ -27,7 +27,7 @@ export const COMMANDER_ARCHETYPES: CommanderArchetype[] = [
     defaultContextMode: 'thin',
     suggestedTaskSource: {
       owner: 'NickGuAI',
-      repo: 'monorepo-g',
+      repo: 'example-repo',
     },
   },
   {

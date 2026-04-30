@@ -34,7 +34,7 @@ describe('CommanderAgent system prompt injection', () => {
       body: 'Authentication fails during token refresh.',
       labels: [{ name: 'bug' }],
       owner: 'NickGuAI',
-      repo: 'monorepo-g',
+      repo: 'example-repo',
     }
 
     const agent = new CommanderAgent(commanderId, tmpDir)

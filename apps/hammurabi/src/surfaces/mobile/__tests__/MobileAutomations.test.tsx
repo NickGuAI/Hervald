@@ -25,7 +25,7 @@ let originalMatchMedia: typeof window.matchMedia | undefined
 const commander = {
   id: 'cmd-1',
   host: 'athena',
-  displayName: 'Athena',
+  displayName: 'Test Commander',
 } as const
 
 async function renderAt(path: string) {

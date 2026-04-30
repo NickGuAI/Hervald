@@ -189,7 +189,7 @@ export function createClaudeStreamSession(
   // and (b) propagate the internal token via `-o SendEnv=HAMMURABI_INTERNAL_TOKEN`.
   // Token may be undefined when the local server has not minted one — we still
   // open the tunnel so the hook can reach the daemon (auth fails with a clear
-  // 401, not a `fetch failed`). See monorepo-g#1225.
+  // 401, not a `fetch failed`). See the upstream session-launch issue.
   const remoteApprovalBridge = remote
     ? {
         port: resolveClaudeApprovalPort(process.env),

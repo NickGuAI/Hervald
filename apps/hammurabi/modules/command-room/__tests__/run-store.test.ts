@@ -75,7 +75,7 @@ describe('CommandRoomRunStore', () => {
       name: 'Commander task',
       schedule: '0 2 * * *',
       machine: 'workstation-1',
-      workDir: '/tmp/monorepo-g',
+      workDir: '/tmp/example-repo',
       agentType: 'claude',
       instruction: 'Run commander task',
       enabled: true,

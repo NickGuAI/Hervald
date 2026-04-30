@@ -36,7 +36,7 @@ describe('CommanderManager', () => {
         '- Keep diffs surgical.',
         '',
         '## Repo Notes',
-        '- monorepo-g uses pnpm workspaces.',
+        '- example-repo uses pnpm workspaces.',
       ].join('\n'),
       'utf-8',
     )
@@ -50,15 +50,15 @@ describe('CommanderManager', () => {
 
     const task: GHIssue = {
       number: 167,
-      title: 'Fix lint regression in monorepo-g',
+      title: 'Fix lint regression in example-repo',
       body: 'Need to resolve eslint issues in commander memory modules.',
-      repo: 'NickGuAI/Hervald',
+      repo: 'example-org/example-repo',
       comments: ['Please include tests', 'Verify with package lint'],
     }
     const context = await manager.buildSubagentSystemContext(task)
 
     expect(context).toContain(`## Handoff from Commander ${COMMANDER_ID}`)
-    expect(context).toContain('**Issue #167**: Fix lint regression in monorepo-g')
+    expect(context).toContain('**Issue #167**: Fix lint regression in example-repo')
     expect(context).toContain('### Standing Instructions')
     expect(context).toContain('Report durable conventions or pitfalls back to the commander')
     expect(context).not.toContain('### Suggested Skills (manual invoke only)')
@@ -71,7 +71,7 @@ describe('CommanderManager', () => {
       number: 168,
       title: 'Patch websocket reconnect',
       body: 'Investigate intermittent reconnect failures.',
-      repo: 'NickGuAI/Hervald',
+      repo: 'example-org/example-repo',
     }
     const result: SubagentResult = {
       status: 'SUCCESS',
@@ -109,7 +109,7 @@ describe('CommanderManager', () => {
       number: 167,
       title: 'Commander: agent orchestration capabilities',
       body: 'Wire sub-agent execution from Commander manager.',
-      repo: 'NickGuAI/Hervald',
+      repo: 'example-org/example-repo',
       comments: ['Include memory handoff context.'],
     }
 

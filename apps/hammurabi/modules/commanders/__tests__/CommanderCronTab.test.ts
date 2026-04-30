@@ -340,7 +340,7 @@ describe('CommanderCronTab', () => {
         agentType: 'claude',
         sessionType: 'stream',
         permissionMode: 'default',
-        workDir: '/Users/yugu/.factory/monorepo-g-1086-pr4',
+        workDir: '/Users/example/example-repo-fixture',
         machine: '',
       }],
     })

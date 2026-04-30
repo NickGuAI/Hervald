@@ -117,25 +117,25 @@ describe('commanders identity routes', () => {
         },
         body: JSON.stringify({
           host: 'identity-worker',
-          persona: 'Athena, goddess of wisdom and engineering commander',
-          cwd: '/workspace/monorepo-g',
+          persona: 'Test Commander, generic engineering persona',
+          cwd: '/workspace/example-repo',
           taskSource: {
             owner: 'NickGuAI',
-            repo: 'monorepo-g',
+            repo: 'example-repo',
             label: 'commander',
           },
         }),
       })
       expect(createResponse.status).toBe(201)
       const created = (await createResponse.json()) as { id: string; persona?: string }
-      expect(created.persona).toBe('Athena, goddess of wisdom and engineering commander')
+      expect(created.persona).toBe('Test Commander, generic engineering persona')
 
       const persistedSessions = JSON.parse(await readFile(storePath, 'utf8')) as {
         sessions: Array<Record<string, unknown>>
       }
       expect(persistedSessions.sessions).toHaveLength(1)
       expect(persistedSessions.sessions[0]?.persona).toBe(
-        'Athena, goddess of wisdom and engineering commander',
+        'Test Commander, generic engineering persona',
       )
 
       await expect(access(join(memoryBasePath, created.id, '.memory', 'identity.md'))).rejects.toThrow()
@@ -152,7 +152,7 @@ describe('commanders identity routes', () => {
       expect(listResponse.status).toBe(200)
       const listed = (await listResponse.json()) as Array<{ id: string; persona?: string }>
       expect(listed.find((entry) => entry.id === created.id)?.persona).toBe(
-        'Athena, goddess of wisdom and engineering commander',
+        'Test Commander, generic engineering persona',
       )
 
       const detailResponse = await fetch(`${server.baseUrl}/api/commanders/${created.id}`, {

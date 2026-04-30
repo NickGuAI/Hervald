@@ -117,12 +117,12 @@ describe('commander memory module facade', () => {
         cwd: tmpDir,
         currentTask: {
           issueNumber: 77,
-          issueUrl: 'https://github.com/NickGuAI/Hervald/issues/77',
+          issueUrl: 'https://github.com/example-org/example-repo/issues/77',
           startedAt: '2026-04-25T11:00:00.000Z',
         },
         taskSource: {
           owner: 'NickGuAI',
-          repo: 'monorepo-g',
+          repo: 'example-repo',
           label: 'bug',
         },
         maxTurns: 12,
@@ -136,6 +136,6 @@ describe('commander memory module facade', () => {
     expect(built.systemPrompt).toContain('# Hammurabi Quest Board')
     expect(built.systemPrompt).toContain('# Commander Memory Workflow')
     expect(built.systemPrompt).toContain('## Commander Memory')
-    expect(built.systemPrompt).toContain('**Issue #77**: Issue #77 — NickGuAI/Hervald')
+    expect(built.systemPrompt).toContain('**Issue #77**: Issue #77 — example-org/example-repo')
   })
 })

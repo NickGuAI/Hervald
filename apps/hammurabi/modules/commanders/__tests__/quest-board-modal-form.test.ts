@@ -43,7 +43,7 @@ describe('QuestBoard modal form', () => {
       createElement(QuestBoard, {
         commanders: [{
           id: 'commander-1',
-          host: 'Athena',
+          host: 'workshop-mac',
         }],
         selectedCommanderId: 'commander-1',
       }),

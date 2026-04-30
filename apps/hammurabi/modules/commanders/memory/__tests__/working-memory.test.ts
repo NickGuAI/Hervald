@@ -136,7 +136,7 @@ describe('WorkingMemoryStore', () => {
       source: 'api',
       summary: 'Auth issue scratchpad opened with refresh-token hypothesis',
       issueNumber: 247,
-      repo: 'NickGuAI/Hervald',
+      repo: 'example-org/example-repo',
       hypothesis: 'Token skew mismatch',
       files: ['apps/hammurabi/modules/commanders/routes.ts'],
       tags: ['task-linked'],
@@ -147,7 +147,7 @@ describe('WorkingMemoryStore', () => {
       source: 'append',
       summary: 'Validate refresh middleware tests before patching',
       issueNumber: 247,
-      repo: 'NickGuAI/Hervald',
+      repo: 'example-org/example-repo',
       tags: ['instruction'],
     })
 
@@ -157,8 +157,8 @@ describe('WorkingMemoryStore', () => {
     expect(rendered).toContain('Active hypothesis: Token skew mismatch')
     expect(rendered).toContain('## Files In Focus')
     expect(rendered).toContain('- apps/hammurabi/modules/commanders/routes.ts')
-    expect(rendered).toContain('(api) #247 [NickGuAI/Hervald] {task-linked}')
-    expect(rendered).toContain('(append) #247 [NickGuAI/Hervald] {instruction}')
+    expect(rendered).toContain('(api) #247 [example-org/example-repo] {task-linked}')
+    expect(rendered).toContain('(append) #247 [example-org/example-repo] {instruction}')
   })
 
   it('honors the checkpoint cap when rendering', async () => {

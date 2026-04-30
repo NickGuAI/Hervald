@@ -375,7 +375,7 @@ export function CreateCommanderForm({
             <input
               value={taskRepo}
               onChange={(event) => setTaskRepo(event.target.value)}
-              placeholder="GitHub repo (e.g. monorepo-g)"
+              placeholder="GitHub repo (e.g. example-repo)"
               className={INPUT_CLASS}
             />
             <input

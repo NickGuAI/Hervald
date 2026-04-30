@@ -80,7 +80,7 @@ function buildCommander(overrides: Partial<Record<string, unknown>> = {}) {
   return {
     id: '72e40eda-4ab1-457a-a91d-e5ab7ac2f5d3',
     host: 'athena',
-    displayName: 'Athena',
+    displayName: 'Test Commander',
     pid: null,
     state: 'idle',
     created: '2026-04-20T16:00:00.000Z',
@@ -264,7 +264,7 @@ describe('Hervald create commander workflow', () => {
     await renderCommandRoom()
 
     await vi.waitFor(() => {
-      expect(document.body.querySelector('[data-testid="selected-commander"]')?.textContent).toContain('Athena')
+      expect(document.body.querySelector('[data-testid="selected-commander"]')?.textContent).toContain('Test Commander')
     })
 
     await act(async () => {
@@ -402,7 +402,7 @@ describe('Hervald create commander workflow', () => {
     await renderCommandRoom()
 
     await vi.waitFor(() => {
-      expect(document.body.querySelector('[data-testid="selected-commander"]')?.textContent).toContain('Athena')
+      expect(document.body.querySelector('[data-testid="selected-commander"]')?.textContent).toContain('Test Commander')
     })
 
     await act(async () => {
@@ -501,7 +501,7 @@ describe('Hervald create commander workflow', () => {
     const { queryClient } = await renderCommandRoom()
 
     await vi.waitFor(() => {
-      expect(document.body.querySelector('[data-testid="selected-commander"]')?.textContent).toContain('Athena')
+      expect(document.body.querySelector('[data-testid="selected-commander"]')?.textContent).toContain('Test Commander')
     })
 
     const globalButton = Array.from(document.body.querySelectorAll('button')).find(
