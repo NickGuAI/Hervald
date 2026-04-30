@@ -1,0 +1,178 @@
+/* ============================================================
+   Hervald Design System — CSS Custom Properties
+   Sumi-e aesthetics · wabi-sabi principles · Noguchi sculpture
+
+   These tokens layer alongside the existing Tailwind config.
+   Import this file in index.css to make tokens available globally.
+   ============================================================ */
+
+:root {
+  /* ------------------------------------------------------------
+     INK TONES — primary palette (sumi ink, diluted in stages)
+     ------------------------------------------------------------ */
+  --sumi-black:          #1C1C1C;
+  --brushed-gray:        #4A4A4A;
+  --diluted-ink:         #8B8B8B;
+  --ink-mist:            #C4C4C4;
+  --stone-gray:          #A8A19A;
+  --carved-basalt:       #5C5C5C;
+  --weathered-granite:   #9A938B;
+
+  /* ------------------------------------------------------------
+     GROUND TONES — backgrounds (paper, stone, alcove)
+     ------------------------------------------------------------ */
+  --washi-white:         #FAF8F5;
+  --aged-paper:          #F0EBE3;
+  --tokonoma-shadow:     #E8E4DC;
+  --mist:                rgba(28, 28, 28, 0.03);
+  --akari-glow:          rgba(255, 248, 235, 0.95);
+
+  /* ------------------------------------------------------------
+     ACCENTS — used sparingly, like hanko seals
+     ------------------------------------------------------------ */
+  --vermillion-seal:     #C23B22;
+  --moss-stone:          #6B7B5E;
+  --persimmon:           #D4763A;
+
+  /* ------------------------------------------------------------
+     SEMANTIC — foreground
+     ------------------------------------------------------------ */
+  --hv-fg:               var(--sumi-black);
+  --hv-fg-muted:         var(--brushed-gray);
+  --hv-fg-subtle:        var(--diluted-ink);
+  --hv-fg-faint:         var(--stone-gray);
+  --hv-fg-inverse:       var(--washi-white);
+
+  /* ------------------------------------------------------------
+     SEMANTIC — background
+     ------------------------------------------------------------ */
+  --hv-bg:               var(--washi-white);
+  --hv-bg-raised:        var(--aged-paper);
+  --hv-bg-sunken:        var(--tokonoma-shadow);
+  --hv-bg-overlay:       rgba(28, 28, 28, 0.20);
+
+  /* ------------------------------------------------------------
+     BORDERS
+     ------------------------------------------------------------ */
+  --hv-border-hair:      rgba(28, 28, 28, 0.06);
+  --hv-border-soft:      rgba(28, 28, 28, 0.12);
+  --hv-border-firm:      rgba(28, 28, 28, 0.20);
+
+  /* ------------------------------------------------------------
+     INK WASHES — tinted fills
+     ------------------------------------------------------------ */
+  --hv-ink-wash-01:      rgba(28, 28, 28, 0.02);
+  --hv-ink-wash-02:      rgba(28, 28, 28, 0.04);
+  --hv-ink-wash-03:      rgba(28, 28, 28, 0.08);
+
+  /* ------------------------------------------------------------
+     TYPOGRAPHY — fonts & scale
+     ------------------------------------------------------------ */
+  --hv-font-primary:     'Cormorant Garamond', 'Hiragino Mincho Pro', 'Yu Mincho', 'Times New Roman', serif;
+  --hv-font-body:        'Source Sans 3', -apple-system, 'Hiragino Kaku Gothic Pro', 'Helvetica Neue', sans-serif;
+  --hv-font-mono:        'JetBrains Mono', 'SF Mono', Menlo, monospace;
+
+  --hv-text-display:     32px;
+  --hv-text-heading:     22px;
+  --hv-text-section:     14px;
+  --hv-text-body:        16px;
+  --hv-text-small:       13px;
+  --hv-text-whisper:     11px;
+
+  --hv-leading-tight:    1.25;
+  --hv-leading-normal:   1.55;
+  --hv-leading-loose:    1.75;
+
+  --hv-track-tight:      -0.01em;
+  --hv-track-normal:     0;
+  --hv-track-section:    0.12em;
+  --hv-track-whisper:    0.08em;
+  --hv-track-button:     0.04em;
+
+  /* ------------------------------------------------------------
+     SPACING — ma (間) between elements
+     ------------------------------------------------------------ */
+  --hv-space-1:          4px;
+  --hv-space-2:          8px;
+  --hv-space-3:          16px;
+  --hv-space-4:          24px;
+  --hv-space-5:          32px;
+  --hv-space-6:          48px;
+  --hv-space-7:          64px;
+  --hv-space-8:          96px;
+  --hv-space-9:          128px;
+
+  /* ------------------------------------------------------------
+     RADII — asymmetric, carved forms
+     ------------------------------------------------------------ */
+  --hv-radius-sharp:     2px;
+  --hv-radius-soft:      4px;
+  --hv-radius-carved-sm: 2px 8px 2px 8px;
+  --hv-radius-carved:    2px 12px 2px 12px;
+  --hv-radius-carved-md: 4px 16px 4px 16px;
+  --hv-radius-carved-lg: 4px 20px 4px 20px;
+  --hv-radius-carved-xl: 4px 24px 4px 24px;
+  --hv-radius-organic:   40% 4px 35% 4px / 4px 40% 4px 35%;
+  --hv-radius-seal:      50%;
+
+  /* ------------------------------------------------------------
+     SHADOWS — diffused, never harsh
+     ------------------------------------------------------------ */
+  --hv-shadow-whisper:   0 1px 2px rgba(28, 28, 28, 0.02);
+  --hv-shadow-rest:      0 2px 4px rgba(28, 28, 28, 0.02), 0 12px 40px rgba(28, 28, 28, 0.03);
+  --hv-shadow-lift:      0 4px 20px rgba(28, 28, 28, 0.08);
+  --hv-shadow-float:     0 8px 32px rgba(28, 28, 28, 0.06);
+  --hv-shadow-modal:     0 12px 48px rgba(28, 28, 28, 0.08);
+  --hv-shadow-carved:    inset 0 2px 8px rgba(28, 28, 28, 0.03);
+  --hv-shadow-inner-hi:  inset 0 1px 0 rgba(255, 255, 255, 0.5);
+
+  /* ------------------------------------------------------------
+     MOTION — stillness in motion
+     ------------------------------------------------------------ */
+  --hv-ease-out-expo:    cubic-bezier(0.19, 1, 0.22, 1);
+  --hv-ease-gentle:      cubic-bezier(0.23, 1, 0.32, 1);
+  --hv-duration-fast:    0.2s;
+  --hv-duration-medium:  0.35s;
+  --hv-duration-slow:    0.5s;
+
+  /* ------------------------------------------------------------
+     LAYOUT
+     ------------------------------------------------------------ */
+  --hv-measure-reading:  680px;
+  --hv-measure-app:      1120px;
+}
+
+.hv-light {
+  color-scheme: light;
+}
+
+.hv-dark {
+  color-scheme: dark;
+
+  --hv-fg:               #f2eee7;
+  --hv-fg-muted:         #d4cdc4;
+  --hv-fg-subtle:        #a9a197;
+  --hv-fg-faint:         #7f786f;
+  --hv-fg-inverse:       #141414;
+
+  --hv-bg:               #151515;
+  --hv-bg-raised:        #1c1c1c;
+  --hv-bg-sunken:        #101010;
+  --hv-bg-overlay:       rgba(0, 0, 0, 0.58);
+
+  --hv-border-hair:      rgba(250, 248, 245, 0.08);
+  --hv-border-soft:      rgba(250, 248, 245, 0.14);
+  --hv-border-firm:      rgba(250, 248, 245, 0.22);
+
+  --hv-ink-wash-01:      rgba(250, 248, 245, 0.02);
+  --hv-ink-wash-02:      rgba(250, 248, 245, 0.05);
+  --hv-ink-wash-03:      rgba(250, 248, 245, 0.10);
+
+  --hv-shadow-whisper:   0 1px 2px rgba(0, 0, 0, 0.24);
+  --hv-shadow-rest:      0 2px 6px rgba(0, 0, 0, 0.24), 0 12px 40px rgba(0, 0, 0, 0.28);
+  --hv-shadow-lift:      0 6px 24px rgba(0, 0, 0, 0.34);
+  --hv-shadow-float:     0 8px 32px rgba(0, 0, 0, 0.36);
+  --hv-shadow-modal:     0 16px 56px rgba(0, 0, 0, 0.42);
+  --hv-shadow-carved:    inset 0 1px 0 rgba(250, 248, 245, 0.04);
+  --hv-shadow-inner-hi:  inset 0 1px 0 rgba(255, 255, 255, 0.06);
+}

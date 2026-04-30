@@ -1,0 +1,283 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8"/>
+<title>Hervald · Wireframes · Multi-agent sessions</title>
+<link rel="stylesheet" href="ds/colors_and_type.css"/>
+<link href="https://fonts.googleapis.com/css2?family=Caveat:wght@400;500;600&family=Gloria+Hallelujah&display=swap" rel="stylesheet"/>
+<style>
+  html, body { margin: 0; padding: 0; background: var(--washi-white); }
+  body { font-family: var(--font-body); color: var(--fg); }
+  * { box-sizing: border-box; }
+
+  .shell { max-width: 1280px; margin: 0 auto; padding: 56px 48px 120px; }
+
+  .top-bar {
+    display: flex; justify-content: space-between; align-items: baseline;
+    padding-bottom: 22px; border-bottom: 1px solid var(--border-hair);
+    margin-bottom: 44px;
+  }
+  .brand {
+    font-family: var(--font-primary); font-weight: 300;
+    font-size: 22px; letter-spacing: -0.01em;
+    display: flex; align-items: baseline; gap: 12px;
+  }
+  .brand .mark { font-style: italic; color: var(--vermillion-seal); }
+  .meta {
+    font-size: 11px; letter-spacing: 0.14em;
+    text-transform: uppercase; color: var(--fg-subtle);
+  }
+
+  .preamble {
+    display: grid; grid-template-columns: 1.3fr 1fr; gap: 56px;
+    margin-bottom: 56px; padding-bottom: 40px;
+    border-bottom: 1px solid var(--border-hair);
+  }
+  .preamble h1 {
+    font-family: var(--font-primary); font-weight: 300; font-size: 64px;
+    line-height: 1.02; margin: 0 0 20px; letter-spacing: -0.02em;
+  }
+  .preamble h1 em {
+    font-family: 'Caveat', cursive; font-style: normal; font-weight: 500;
+    color: var(--vermillion-seal); font-size: 60px;
+  }
+  .preamble p {
+    font-size: 15px; line-height: 1.8; color: var(--fg-muted);
+    margin: 0 0 14px; max-width: 580px;
+  }
+  .preamble .notes {
+    font-family: 'Caveat', cursive; font-size: 19px;
+    line-height: 1.35; color: var(--fg-muted);
+    padding-left: 24px; border-left: 1.5px dashed var(--border-firm);
+  }
+  .preamble .notes b { color: var(--sumi-black); font-weight: 500; }
+
+  .tabs {
+    display: flex; gap: 6px; margin-bottom: 48px;
+    border-bottom: 1px solid var(--border-hair);
+    padding-bottom: 0;
+    position: sticky; top: 0; background: var(--washi-white); z-index: 5;
+    padding-top: 16px; padding-bottom: 2px;
+  }
+  .tab {
+    font-family: var(--font-body); font-size: 13px;
+    letter-spacing: 0.08em; text-transform: uppercase;
+    padding: 12px 20px; cursor: pointer; border: none; background: transparent;
+    color: var(--fg-subtle); border-bottom: 2px solid transparent;
+    transition: all 0.3s var(--ease-gentle);
+  }
+  .tab:hover { color: var(--fg-muted); }
+  .tab.active { color: var(--sumi-black); border-bottom-color: var(--sumi-black); }
+  .tab .num {
+    font-family: var(--font-primary); font-style: italic; font-size: 12px;
+    margin-right: 8px; color: var(--fg-faint);
+  }
+  .tab.active .num { color: var(--vermillion-seal); }
+
+  /* tweaks */
+  .tweaks-panel {
+    position: fixed; right: 24px; bottom: 24px;
+    background: var(--washi-white); border: 1px solid var(--border-firm);
+    border-radius: 4px 16px 4px 16px;
+    padding: 16px 18px; min-width: 220px;
+    box-shadow: 0 12px 48px rgba(28,28,28,0.08);
+    z-index: 20; display: none;
+  }
+  .tweaks-panel.open { display: block; }
+  .tweaks-panel h4 {
+    font-family: var(--font-body); font-size: 11px;
+    letter-spacing: 0.14em; text-transform: uppercase;
+    color: var(--fg-muted); margin: 0 0 12px;
+  }
+  .tweak-row {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 6px 0; gap: 10px; font-size: 13px;
+  }
+  .tweak-row label { color: var(--fg-muted); }
+  .tweak-row select, .tweak-row input {
+    font-family: var(--font-body); font-size: 12px;
+    background: var(--aged-paper); border: 1px solid var(--border-hair);
+    padding: 4px 8px; border-radius: 2px 8px 2px 8px;
+  }
+
+  /* Roughness off (polished toggle) */
+  body.polished [style*="url(#rough)"],
+  body.polished [style*="url(#rough-hard)"] { filter: none !important; }
+  body.polished .caveat, body.polished .caveat * {
+    font-family: var(--font-body) !important;
+  }
+
+  /* Hide sketchy for north-star-only mode */
+  body.north-only .variant-grid { display: none; }
+
+  footer {
+    margin-top: 80px; padding-top: 32px;
+    border-top: 1px solid var(--border-hair);
+    font-size: 11px; color: var(--fg-faint);
+    letter-spacing: 0.12em; text-transform: uppercase;
+    display: flex; justify-content: space-between;
+  }
+</style>
+</head>
+<body>
+
+<div class="shell">
+  <div class="top-bar">
+    <div class="brand">
+      <span class="mark">●</span>
+      <span>Hervald</span>
+      <span class="meta" style="margin-left: 14px">wireframes · multi-agent</span>
+    </div>
+    <div class="meta">18 april 2026 · v1</div>
+  </div>
+
+  <div class="preamble">
+    <div>
+      <h1>Many agents,<br/>one <em>command</em> room.</h1>
+      <p>You asked for three things tangled together: seeing parallel agent sessions while chatting with one · seeing a commander's team of sub-agents · modifying the local filesystem inside the session. This file explores each surface separately, with one polished pick per surface.</p>
+      <p style="font-style: italic; color: var(--fg-subtle)">All four surfaces also answer: how does this collapse onto a phone?</p>
+    </div>
+    <div class="notes">
+      <b>Notes before we start.</b><br/>
+      · sketchy = exploration. polished "north star" at the bottom of each tab.<br/>
+      · vermillion used once per view — the hanko rule.<br/>
+      · nothing here is final; tweak the switch at bottom-right.
+    </div>
+  </div>
+
+  <div class="tabs" id="tabs">
+    <button class="tab active" data-surface="sessions"><span class="num">01</span>Sessions</button>
+    <button class="tab" data-surface="team"><span class="num">02</span>Team</button>
+    <button class="tab" data-surface="workspace"><span class="num">03</span>Workspace</button>
+    <button class="tab" data-surface="mobile"><span class="num">04</span>Mobile</button>
+  </div>
+
+  <div id="surface-root"></div>
+
+  <footer>
+    <span>hervald · 2026</span>
+    <span>agent orchestration control plane</span>
+  </footer>
+</div>
+
+<!-- Tweaks panel -->
+<div class="tweaks-panel" id="tweaks">
+  <h4>Tweaks</h4>
+  <div class="tweak-row">
+    <label>Fidelity</label>
+    <select id="tw-fid">
+      <option value="sketchy">sketchy</option>
+      <option value="polished">polished only</option>
+    </select>
+  </div>
+  <div class="tweak-row">
+    <label>Show variants</label>
+    <select id="tw-show">
+      <option value="all">all 5 + ★</option>
+      <option value="north">★ only</option>
+    </select>
+  </div>
+  <div class="tweak-row">
+    <label>Default tab</label>
+    <select id="tw-tab">
+      <option value="sessions">sessions</option>
+      <option value="team">team</option>
+      <option value="workspace">workspace</option>
+      <option value="mobile">mobile</option>
+    </select>
+  </div>
+</div>
+
+<!-- React + Babel -->
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+<script type="text/babel" src="wf-shared.jsx"></script>
+<script type="text/babel" src="wf-sessions.jsx"></script>
+<script type="text/babel" src="wf-team.jsx"></script>
+<script type="text/babel" src="wf-workspace.jsx"></script>
+<script type="text/babel" src="wf-mobile.jsx"></script>
+
+<script type="text/babel" data-presets="react">
+  // --- load persisted tweak defaults --------------------------
+  const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
+    "fidelity": "sketchy",
+    "show": "all",
+    "defaultTab": "sessions"
+  }/*EDITMODE-END*/;
+
+  function App() {
+    const [tab, setTab] = React.useState(() => localStorage.getItem("hv-tab") || TWEAK_DEFAULTS.defaultTab);
+    const [fid, setFid] = React.useState(TWEAK_DEFAULTS.fidelity);
+    const [show, setShow] = React.useState(TWEAK_DEFAULTS.show);
+    const [tweaksOpen, setTweaksOpen] = React.useState(false);
+
+    React.useEffect(() => { localStorage.setItem("hv-tab", tab); }, [tab]);
+    React.useEffect(() => {
+      document.body.classList.toggle("polished", fid === "polished");
+      document.body.classList.toggle("north-only", show === "north");
+    }, [fid, show]);
+
+    // wire up surface buttons
+    React.useEffect(() => {
+      document.querySelectorAll("#tabs .tab").forEach(b => {
+        b.classList.toggle("active", b.dataset.surface === tab);
+        b.onclick = () => setTab(b.dataset.surface);
+      });
+    });
+
+    // wire up tweaks
+    React.useEffect(() => {
+      const p = document.getElementById("tweaks");
+      p.classList.toggle("open", tweaksOpen);
+      document.getElementById("tw-fid").value = fid;
+      document.getElementById("tw-show").value = show;
+      document.getElementById("tw-tab").value = tab;
+      document.getElementById("tw-fid").onchange = e => {
+        setFid(e.target.value);
+        window.parent.postMessage({type:'__edit_mode_set_keys', edits:{fidelity: e.target.value}}, '*');
+      };
+      document.getElementById("tw-show").onchange = e => {
+        setShow(e.target.value);
+        window.parent.postMessage({type:'__edit_mode_set_keys', edits:{show: e.target.value}}, '*');
+      };
+      document.getElementById("tw-tab").onchange = e => {
+        setTab(e.target.value);
+        window.parent.postMessage({type:'__edit_mode_set_keys', edits:{defaultTab: e.target.value}}, '*');
+      };
+    });
+
+    // edit-mode protocol (register handler before announcing)
+    React.useEffect(() => {
+      const handler = (e) => {
+        if (!e.data || !e.data.type) return;
+        if (e.data.type === "__activate_edit_mode") setTweaksOpen(true);
+        if (e.data.type === "__deactivate_edit_mode") setTweaksOpen(false);
+      };
+      window.addEventListener("message", handler);
+      window.parent.postMessage({ type: "__edit_mode_available" }, "*");
+      return () => window.removeEventListener("message", handler);
+    }, []);
+
+    const Surface = {
+      sessions: window.SessionsSurface,
+      team: window.TeamSurface,
+      workspace: window.WorkspaceSurface,
+      mobile: window.MobileSurface,
+    }[tab];
+
+    return (
+      <>
+        <window.RoughDefs />
+        {Surface ? <Surface /> : null}
+      </>
+    );
+  }
+
+  const root = ReactDOM.createRoot(document.getElementById("surface-root"));
+  root.render(<App />);
+</script>
+
+</body>
+</html>

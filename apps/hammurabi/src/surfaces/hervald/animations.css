@@ -1,0 +1,53 @@
+/* ============================================================
+   Hervald — Keyframe animations & scroll utilities
+   ============================================================ */
+
+@keyframes hvPulse {
+  0%   { box-shadow: 0 0 0 0 currentColor; opacity: 1; }
+  70%  { box-shadow: 0 0 0 6px transparent; opacity: 0.8; }
+  100% { box-shadow: 0 0 0 0 transparent; opacity: 1; }
+}
+
+@keyframes hvBlink {
+  50% { opacity: 0.35; }
+}
+
+@keyframes hvMarch {
+  from { background-position: 0 0; }
+  to   { background-position: 20px 0; }
+}
+
+@keyframes hvFadeIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.hv-fade-in {
+  animation: hvFadeIn 0.45s var(--hv-ease-gentle) both;
+}
+
+.hv-caret::after {
+  content: "\25CD"; /* ▍ */
+  color: currentColor;
+  margin-left: 2px;
+  animation: hvBlink 1s steps(1) infinite;
+}
+
+/* Scrollbars — quiet */
+.hv-scroll::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.hv-scroll::-webkit-scrollbar-thumb {
+  background: rgba(28, 28, 28, 0.10);
+  border-radius: 3px;
+}
+
+.hv-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.hv-dark .hv-scroll::-webkit-scrollbar-thumb {
+  background: rgba(250, 248, 245, 0.10);
+}

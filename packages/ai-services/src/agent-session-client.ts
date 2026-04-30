@@ -5,6 +5,13 @@ const DEFAULT_MAX_POLL_ATTEMPTS = 30
 export type AgentSessionTransportMode = 'default' | 'acceptEdits' | 'dangerouslySkipPermissions'
 export type AgentSessionKind = 'pty' | 'stream'
 export type AgentType = 'claude' | 'codex' | 'gemini'
+export type SessionType = 'commander' | 'worker' | 'cron' | 'sentinel'
+export type SessionCreatorKind = 'human' | 'commander' | 'cron' | 'sentinel'
+
+export interface SessionCreator {
+  kind: SessionCreatorKind
+  id?: string
+}
 
 export type SessionCompletionStatus = 'SUCCESS' | 'PARTIAL' | 'BLOCKED'
 export type SessionRuntimeState = 'queued' | 'running' | 'completed' | 'failed' | 'unknown'
@@ -14,7 +21,9 @@ export interface AgentSessionCreateInput {
   task: string
   systemPrompt?: string
   mode?: AgentSessionTransportMode
-  sessionType?: AgentSessionKind
+  transportType?: AgentSessionKind
+  sessionType?: SessionType
+  creator?: SessionCreator
   agentType?: AgentType
   cwd?: string
   host?: string
@@ -193,7 +202,9 @@ export class AgentSessionClient {
         task: input.task,
         systemPrompt: input.systemPrompt,
         mode: input.mode ?? 'acceptEdits',
-        sessionType: input.sessionType ?? 'stream',
+        transportType: input.transportType ?? 'stream',
+        sessionType: input.sessionType,
+        creator: input.creator,
         agentType: input.agentType ?? 'claude',
         cwd: input.cwd,
         host: input.host,

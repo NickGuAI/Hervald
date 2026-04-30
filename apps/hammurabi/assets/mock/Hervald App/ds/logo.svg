@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 80" fill="none">
+  
+  <g transform="translate(28, 40)">
+    <path d="M 0 0&#xA;             C 0 -18, 15 -28, 28 -20&#xA;             C 40 -12, 40 10, 28 18&#xA;             C 16 26, -2 20, -8 4&#xA;             C -10 -2, -8 -8, -4 -10" stroke="#1C1C1C" stroke-width="2.4" stroke-linecap="round" fill="none" opacity="0.9"></path>
+  </g>
+  
+  <text x="80" y="52" font-family="&#39;Cormorant Garamond&#39;, &#39;Hiragino Mincho Pro&#39;, serif" font-size="36" font-weight="300" letter-spacing="0.08em" fill="#1C1C1C">
+    Hervald
+  </text>
+</svg>

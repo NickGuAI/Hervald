@@ -1,0 +1,33 @@
+export { createAgentsRouter } from './routes.js'
+export type {
+  AgentSession,
+  AgentType,
+  AgentsRouterOptions,
+  AgentsRouterResult,
+  ClaudePermissionMode,
+  CommanderSessionsInterface,
+  MachineConfig,
+  PtyHandle,
+  PtySpawner,
+  SessionType,
+  WorldAgent,
+} from './types.js'
+export type {
+  HammurabiAssistantContent,
+  HammurabiAssistantMessage,
+  HammurabiBackend,
+  HammurabiContentBlock,
+  HammurabiContentDelta,
+  HammurabiEvent,
+  HammurabiEventSource,
+  HammurabiImageSource,
+  HammurabiProvider,
+  HammurabiToolExecution,
+  HammurabiToolResult,
+  HammurabiToolUse,
+  HammurabiTranscriptLine,
+  HammurabiUsage,
+  HammurabiUserContent,
+  HammurabiUserMessage,
+  PlanningEvent,
+} from './types/index.js'

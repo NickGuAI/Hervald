@@ -1,5 +1,5 @@
 {
-  "name": "@hambros/auth-providers",
+  "name": "@gehirn/auth-providers",
   "version": "0.1.0",
   "private": true,
   "description": "Provider-agnostic authentication interfaces with Supabase/Auth0 adapters.",

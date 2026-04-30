@@ -1,0 +1,172 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8"/>
+<title>Hervald · North Star · Multi-agent sessions</title>
+<link rel="stylesheet" href="ds/colors_and_type.css"/>
+<style>
+  html, body { margin: 0; padding: 0; background: var(--washi-white); }
+  body { font-family: var(--font-body); color: var(--fg); }
+  * { box-sizing: border-box; }
+
+  .shell { max-width: 1440px; margin: 0 auto; padding: 48px 48px 120px; }
+
+  .top-bar {
+    display: flex; justify-content: space-between; align-items: baseline;
+    padding-bottom: 22px; border-bottom: 1px solid var(--border-hair);
+    margin-bottom: 40px;
+  }
+  .brand {
+    font-family: var(--font-primary); font-weight: 300;
+    font-size: 22px; letter-spacing: -0.01em;
+    display: flex; align-items: baseline; gap: 12px;
+  }
+  .brand .mark { font-style: italic; color: var(--vermillion-seal); }
+  .meta {
+    font-size: 11px; letter-spacing: 0.14em;
+    text-transform: uppercase; color: var(--fg-subtle);
+  }
+
+  .preamble {
+    display: grid; grid-template-columns: 1.3fr 1fr; gap: 56px;
+    margin-bottom: 40px; padding-bottom: 36px;
+    border-bottom: 1px solid var(--border-hair);
+  }
+  .preamble h1 {
+    font-family: var(--font-primary); font-weight: 300; font-size: 64px;
+    line-height: 1.02; margin: 0 0 20px; letter-spacing: -0.02em;
+  }
+  .preamble h1 em {
+    font-style: italic; color: var(--vermillion-seal);
+  }
+  .preamble p {
+    font-size: 15px; line-height: 1.8; color: var(--fg-muted);
+    margin: 0 0 14px; max-width: 580px;
+  }
+  .preamble .notes {
+    font-family: var(--font-body); font-size: 13px; font-style: italic;
+    line-height: 1.7; color: var(--fg-muted);
+    padding-left: 20px; border-left: 2px solid var(--sumi-black);
+  }
+  .preamble .notes b { color: var(--sumi-black); font-style: normal; font-weight: 500; }
+
+  .tabs {
+    display: flex; gap: 2px; margin-bottom: 48px;
+    border-bottom: 1px solid var(--border-hair);
+    position: sticky; top: 0; background: var(--washi-white); z-index: 5;
+    padding-top: 16px;
+  }
+  .tab {
+    font-family: var(--font-body); font-size: 13px;
+    letter-spacing: 0.08em; text-transform: uppercase;
+    padding: 12px 20px; cursor: pointer; border: none; background: transparent;
+    color: var(--fg-subtle); border-bottom: 2px solid transparent;
+    transition: all 0.3s var(--ease-gentle);
+  }
+  .tab:hover { color: var(--fg-muted); }
+  .tab.active { color: var(--sumi-black); border-bottom-color: var(--sumi-black); }
+  .tab .num {
+    font-family: var(--font-primary); font-style: italic; font-size: 12px;
+    margin-right: 8px; color: var(--fg-faint);
+  }
+  .tab.active .num { color: var(--vermillion-seal); }
+
+  footer {
+    margin-top: 80px; padding-top: 32px;
+    border-top: 1px solid var(--border-hair);
+    font-size: 11px; color: var(--fg-faint);
+    letter-spacing: 0.12em; text-transform: uppercase;
+    display: flex; justify-content: space-between;
+  }
+</style>
+</head>
+<body>
+
+<div class="shell">
+  <div class="top-bar">
+    <div class="brand">
+      <span class="mark">●</span>
+      <span>Hervald</span>
+      <span class="meta" style="margin-left: 14px">north star · multi-agent</span>
+    </div>
+    <div class="meta">18 april 2026 · v2</div>
+  </div>
+
+  <div class="preamble">
+    <div>
+      <h1>One <em>command room.</em><br/>One fleet view.</h1>
+      <p>Sessions, commanders, and their teams fold into a single working surface. A separate <i>Fleet</i> tab answers "where is work actually happening?" across every commander at once. Workspace stays as it is — a modal you summon inside a session.</p>
+      <p style="font-style: italic; color: var(--fg-subtle)">Refined from the wireframe round. Mobile is hi-fi now.</p>
+    </div>
+    <div class="notes">
+      <b>This round's moves.</b><br/>
+      · Sessions + team merged into <b>Command room</b> — rail · chat · team, side by side.<br/>
+      · Swim-lane promoted to its own <b>Fleet</b> dashboard — every commander, every sub-agent, last 30 min.<br/>
+      · Workspace unchanged — modal pattern, kept.<br/>
+      · Mobile carries the same three-panel story across three tightly-linked screens.
+    </div>
+  </div>
+
+  <div class="tabs" id="tabs">
+    <button class="tab active" data-surface="command"><span class="num">01</span>Command room</button>
+    <button class="tab" data-surface="fleet"><span class="num">02</span>Fleet</button>
+    <button class="tab" data-surface="mobile"><span class="num">03</span>Mobile</button>
+    <button class="tab" data-surface="workspace"><span class="num">04</span>Workspace</button>
+  </div>
+
+  <div id="surface-root"></div>
+
+  <footer>
+    <span>hervald · 2026</span>
+    <span>agent orchestration control plane</span>
+  </footer>
+</div>
+
+<!-- React + Babel -->
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+<!-- shared primitives (SurfaceHeading etc.) -->
+<script type="text/babel" src="wf-shared.jsx"></script>
+
+<!-- hi-fi surfaces -->
+<script type="text/babel" src="hi-commander-tabs.jsx"></script>
+<script type="text/babel" src="hi-command-room.jsx"></script>
+<script type="text/babel" src="hi-fleet.jsx"></script>
+<script type="text/babel" src="hi-mobile.jsx"></script>
+<script type="text/babel" src="hi-workspace.jsx"></script>
+
+<script type="text/babel" data-presets="react">
+  function App() {
+    const [tab, setTab] = React.useState(() => localStorage.getItem("hv-ns-tab") || "command");
+    React.useEffect(() => { localStorage.setItem("hv-ns-tab", tab); }, [tab]);
+
+    React.useEffect(() => {
+      document.querySelectorAll("#tabs .tab").forEach(b => {
+        b.classList.toggle("active", b.dataset.surface === tab);
+        b.onclick = () => setTab(b.dataset.surface);
+      });
+    });
+
+    const Surface = {
+      command: window.CommandRoomSurface,
+      fleet: window.FleetSurface,
+      mobile: window.MobileSurface,
+      workspace: window.WorkspaceSurface,
+    }[tab];
+
+    return (
+      <>
+        <window.RoughDefs />
+        {Surface ? <Surface /> : null}
+      </>
+    );
+  }
+
+  const root = ReactDOM.createRoot(document.getElementById("surface-root"));
+  root.render(<App />);
+</script>
+
+</body>
+</html>

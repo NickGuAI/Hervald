@@ -13,6 +13,9 @@ export type {
   AgentSessionTransportMode,
   AgentSessionKind,
   AgentType,
+  SessionType,
+  SessionCreator,
+  SessionCreatorKind,
   SessionCompletionStatus,
   SessionRuntimeState,
   AgentSessionCreateInput,
@@ -33,7 +36,7 @@ import { runCodex } from './codex-adapter'
  *
  * @example
  * ```ts
- * import { agentCall } from '@hambros/ai-services'
+ * import { agentCall } from '@gehirn/ai-services'
  *
  * for await (const event of agentCall('Fix the failing tests', 'claude', { passive: true })) {
  *   if (event.type === 'text') console.log(event.content)

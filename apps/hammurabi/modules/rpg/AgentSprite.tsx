@@ -1,0 +1,296 @@
+import { type MutableRefObject, useEffect, useRef } from 'react'
+import { useTick } from '@pixi/react'
+import type { Texture } from 'pixi.js'
+import type { WorldAgent } from './use-world-state'
+import { isWalkable } from './room-layout'
+
+const DEFAULT_AGENT_RADIUS = 6
+const IDLE_AFTER_COMPLETION_MS = 60 * 60 * 1000 // 60 minutes
+
+interface RuntimeAgentPosition {
+  x: number
+  y: number
+  markedForRemoval?: boolean
+}
+
+interface AgentSpriteProps {
+  id: string
+  tileTexture: Texture
+  x: number
+  y: number
+  agentRadius?: number
+  runtimeAgentsRef: MutableRefObject<Record<string, RuntimeAgentPosition>>
+  waypoints: Array<{ x: number; y: number }>
+  status: WorldAgent['status']
+  role?: WorldAgent['role']
+  phaseChangedAt?: number
+  completedAt?: number
+  markedForRemoval?: boolean
+  onFadeOutComplete?: (id: string) => void
+  selectFrameTexture?: Texture | null
+  idleIndicatorTexture?: Texture | null
+  isInteractable?: boolean
+}
+
+function hashSeed(value: string): number {
+  let hash = 0
+  for (let i = 0; i < value.length; i += 1) {
+    hash = (hash * 31 + value.charCodeAt(i)) >>> 0
+  }
+  return hash
+}
+
+export function AgentSprite({
+  id,
+  tileTexture,
+  x,
+  y,
+  agentRadius = DEFAULT_AGENT_RADIUS,
+  runtimeAgentsRef,
+  waypoints,
+  status,
+  role,
+  phaseChangedAt,
+  completedAt,
+  markedForRemoval = false,
+  onFadeOutComplete,
+  selectFrameTexture,
+  idleIndicatorTexture,
+  isInteractable = false,
+}: AgentSpriteProps) {
+  const isCommander = role === 'commander'
+  const baseScale = 1
+  const spriteRef = useRef<any>(null)
+  const selectRef = useRef<any>(null)
+  const indicatorRef = useRef<any>(null)
+  const currentRef = useRef({ x, y, alpha: 0, rotation: 0, scale: baseScale })
+  const waypointsRef = useRef<Array<{ x: number; y: number }>>(waypoints)
+  const removalNotifiedRef = useRef(false)
+  const bobSeedRef = useRef(hashSeed(id) % 2000)
+
+  // Sync waypoints ref only when the path changes (new destination computed)
+  useEffect(() => {
+    waypointsRef.current = waypoints
+  }, [waypoints])
+
+  useEffect(() => {
+    currentRef.current = { x, y, alpha: 0, rotation: 0, scale: baseScale }
+    removalNotifiedRef.current = false
+    bobSeedRef.current = hashSeed(id) % 2000
+  }, [id, x, y, baseScale])
+
+  useTick((ticker) => {
+    const sprite = spriteRef.current
+    if (!sprite) {
+      return
+    }
+
+    const now = performance.now()
+    const moveRate = status === 'idle'
+      ? Math.min(1, 0.04 * ticker.deltaTime)
+      : Math.min(1, 0.09 * ticker.deltaTime)
+    const blendRate = Math.min(1, 0.18 * ticker.deltaTime)
+
+    // Advance waypoint queue: when close enough to the current waypoint, shift it off
+    const wps = waypointsRef.current
+    if (wps.length > 1) {
+      const wp = wps[0]
+      const dx = wp.x - currentRef.current.x
+      const dy = wp.y - currentRef.current.y
+      if (dx * dx + dy * dy <= 1) {
+        waypointsRef.current = wps.slice(1)
+      }
+    }
+    const target = waypointsRef.current[0] ?? { x: currentRef.current.x, y: currentRef.current.y }
+    currentRef.current.x += (target.x - currentRef.current.x) * moveRate
+    currentRef.current.y += (target.y - currentRef.current.y) * moveRate
+
+    const selfRuntimeAgent = runtimeAgentsRef.current[id]
+    if (selfRuntimeAgent) {
+      selfRuntimeAgent.x = currentRef.current.x
+      selfRuntimeAgent.y = currentRef.current.y
+    }
+
+    const minDistance = agentRadius * 2
+    const minDistanceSquared = minDistance * minDistance
+    for (const [otherId, other] of Object.entries(runtimeAgentsRef.current)) {
+      if (otherId === id || other.markedForRemoval) continue
+
+      const dx = currentRef.current.x - other.x
+      const dy = currentRef.current.y - other.y
+      const distanceSquared = dx * dx + dy * dy
+      if (distanceSquared >= minDistanceSquared) continue
+
+      let nx = 1
+      let ny = 0
+      let push = minDistance / 2
+
+      if (distanceSquared > 0) {
+        const distance = Math.sqrt(distanceSquared)
+        nx = dx / distance
+        ny = dy / distance
+        push = (minDistance - distance) / 2
+      }
+
+      const nextX = currentRef.current.x + nx * push
+      const nextY = currentRef.current.y + ny * push
+      if (!isWalkable(nextX, nextY, agentRadius)) continue
+
+      currentRef.current.x = nextX
+      currentRef.current.y = nextY
+    }
+
+    if (selfRuntimeAgent) {
+      selfRuntimeAgent.x = currentRef.current.x
+      selfRuntimeAgent.y = currentRef.current.y
+    }
+
+    let targetAlpha = 1
+    let targetTint = 0xFFFFFF
+    let targetRotation = 0
+    let yOffset = 0
+    let targetScale = baseScale
+    let showIdleIndicator = false
+
+    if (status === 'active' || isCommander) {
+      const phase = ((now + bobSeedRef.current) / 1000) * Math.PI
+      yOffset = Math.sin(phase) * 2
+    }
+
+    if (status === 'active') {
+      targetTint = 0xFFEE88
+    } else if (status === 'idle') {
+      targetAlpha = 0.75
+      targetTint = 0x8E8E8E
+      showIdleIndicator = true
+    } else if (status === 'stale') {
+      targetAlpha = 0.5
+      targetTint = 0x7A7A7A
+      targetRotation = Math.PI / 2
+      showIdleIndicator = true
+    } else if (status === 'completed') {
+      const completionStart = completedAt ?? now
+      const elapsedMs = Math.max(0, now - completionStart)
+
+      if (elapsedMs >= IDLE_AFTER_COMPLETION_MS) {
+        // Idle after completion — downed state with indicator
+        targetAlpha = 0.4
+        targetTint = 0x7A7A7A
+        targetRotation = Math.PI / 2
+        showIdleIndicator = true
+      } else {
+        // Active completion — golden glow with pulse
+        const fade = Math.max(0, 1 - (elapsedMs / 60000))
+        const pulse = 1 + (Math.sin((elapsedMs / 1000) * Math.PI * 4) * 0.18 * fade)
+        targetAlpha = Math.max(0.6, fade)
+        targetTint = 0xFFD34D
+        targetScale *= pulse
+      }
+    }
+
+    if (isCommander) {
+      targetTint = 0xFFD700
+      targetAlpha = 1
+    }
+
+    if (phaseChangedAt !== undefined) {
+      const elapsed = now - phaseChangedAt
+      if (elapsed >= 0 && elapsed <= 200) {
+        const t = elapsed / 200
+        const popScale = t < 0.5
+          ? 1 + (t * 1)
+          : 1.5 - ((t - 0.5) * 1)
+        targetScale *= popScale
+      }
+    }
+
+    if (markedForRemoval && status !== 'completed') {
+      targetAlpha = 0
+    }
+
+    currentRef.current.alpha += (targetAlpha - currentRef.current.alpha) * blendRate
+    currentRef.current.rotation += (targetRotation - currentRef.current.rotation) * blendRate
+    currentRef.current.scale += (targetScale - currentRef.current.scale) * blendRate
+
+    sprite.x = Math.round(currentRef.current.x)
+    sprite.y = Math.round(currentRef.current.y + yOffset)
+    sprite.alpha = Math.max(0, Math.min(1, currentRef.current.alpha))
+    sprite.rotation = currentRef.current.rotation
+    sprite.scale.set(currentRef.current.scale)
+    sprite.tint = targetTint
+
+    // Select frame for interactable agents
+    if (selectRef.current) {
+      selectRef.current.x = Math.round(currentRef.current.x)
+      selectRef.current.y = Math.round(currentRef.current.y + yOffset)
+      selectRef.current.visible = isInteractable
+      if (isInteractable) {
+        const selectPulse = 1 + Math.sin(now / 300) * 0.08
+        selectRef.current.scale.set(selectPulse * 1.5)
+        selectRef.current.alpha = 0.8 + Math.sin(now / 400) * 0.2
+      }
+    }
+
+    // Idle indicator above downed agents
+    if (indicatorRef.current) {
+      indicatorRef.current.x = Math.round(currentRef.current.x)
+      indicatorRef.current.y = Math.round(currentRef.current.y - 14)
+      indicatorRef.current.visible = showIdleIndicator
+      if (showIdleIndicator) {
+        const bob = Math.sin(now / 600) * 2
+        indicatorRef.current.y += bob
+        indicatorRef.current.alpha = 0.7 + Math.sin(now / 500) * 0.3
+      }
+    }
+
+    if (
+      markedForRemoval &&
+      sprite.alpha <= 0.02 &&
+      !removalNotifiedRef.current
+    ) {
+      removalNotifiedRef.current = true
+      onFadeOutComplete?.(id)
+    }
+  })
+
+  return (
+    <pixiContainer>
+      {selectFrameTexture ? (
+        <pixiSprite
+          ref={selectRef}
+          texture={selectFrameTexture}
+          x={x}
+          y={y}
+          width={24}
+          height={24}
+          anchor={0.5}
+          roundPixels
+          visible={false}
+        />
+      ) : null}
+      <pixiSprite
+        ref={spriteRef}
+        texture={tileTexture}
+        x={x}
+        y={y}
+        width={16}
+        height={16}
+        anchor={0.5}
+        roundPixels
+      />
+      {idleIndicatorTexture ? (
+        <pixiSprite
+          ref={indicatorRef}
+          texture={idleIndicatorTexture}
+          x={x}
+          y={y - 14}
+          width={12}
+          height={12}
+          anchor={0.5}
+          roundPixels
+          visible={false}
+        />
+      ) : null}
+    </pixiContainer>
+  )
+}

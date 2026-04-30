@@ -1,5 +1,5 @@
 {
-  "name": "@hambros/sse-streaming",
+  "name": "@gehirn/sse-streaming",
   "version": "0.1.0",
   "private": true,
   "description": "Scaffold package for Gehirn SSE client/server utilities.",

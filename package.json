@@ -1,5 +1,12 @@
 {
-  "name": "hambros-workspace",
+  "name": "hervald-workspace",
   "private": true,
-  "version": "0.1.0"
+  "version": "0.0.0",
+  "license": "PolyForm-Noncommercial-1.0.0",
+  "packageManager": "pnpm@10.23.0",
+  "scripts": {
+    "build": "pnpm --filter hammurabi run build",
+    "test": "pnpm --filter hammurabi test",
+    "start": "pnpm --filter hammurabi start"
+  }
 }

@@ -1,0 +1,27 @@
+{
+  "$schema": "https://railway.com/railway.schema.json",
+  "build": {
+    "builder": "DOCKERFILE",
+    "dockerfilePath": "/apps/hammurabi/Dockerfile",
+    "watchPatterns": [
+      "/apps/hammurabi/**",
+      "/packages/ai-services/**",
+      "/packages/auth-providers/**",
+      "/packages/hammurabi-cli/**",
+      "/packages/sse-streaming/**",
+      "/packages/telemetry/**",
+      "/packages/tsconfig/**",
+      "/package.json",
+      "/pnpm-lock.yaml",
+      "/pnpm-workspace.yaml"
+    ]
+  },
+  "deploy": {
+    "startCommand": "node dist-server/server/index.js",
+    "healthcheckPath": "/api/health",
+    "healthcheckTimeout": 300,
+    "requiredMountPath": "/data/.hammurabi",
+    "restartPolicyType": "ON_FAILURE",
+    "restartPolicyMaxRetries": 10
+  }
+}

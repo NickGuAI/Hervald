@@ -1,0 +1,42 @@
+{
+  "name": "@gehirn/hammurabi-cli",
+  "version": "0.1.0",
+  "private": false,
+  "description": "Hammurabi onboarding CLI — configure agents to send telemetry.",
+  "type": "module",
+  "bin": {
+    "hammurabi": "./bin/hammurabi.mjs"
+  },
+  "main": "./dist/index.js",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js"
+    },
+    "./commander-runtime-config": {
+      "import": "./dist/commander-runtime-config.js"
+    },
+    "./commander-runtime-config-node": {
+      "import": "./dist/commander-runtime-config-node.js"
+    },
+    "./session-contract": {
+      "import": "./dist/session-contract.js"
+    }
+  },
+  "files": [
+    "bin",
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@gehirn/tsconfig": "workspace:*",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.0"
+  },
+  "dependencies": {
+    "smol-toml": "^1.6.0"
+  }
+}

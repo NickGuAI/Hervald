@@ -1,0 +1,1 @@
+/*EDITMODE-BEGIN*/{"theme":"dark","density":"comfortable","fleetWindow":30,"activity":"normal","startTab":"command"}/*EDITMODE-END*/

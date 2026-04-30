@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <title>Hervald · Prototype</title>
+  <link rel="stylesheet" href="ds/colors_and_type.css"/>
+  <style>
+    html, body { margin: 0; padding: 0; height: 100%; background: var(--bg); overflow: hidden; }
+    * { box-sizing: border-box; }
+    #root { height: 100vh; width: 100vw; }
+    button { font-family: inherit; }
+    kbd { font-family: var(--font-mono); }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+  <script type="text/babel" src="src/data.jsx"></script>
+  <script type="text/babel" src="src/primitives.jsx"></script>
+  <script type="text/babel" src="src/shell.jsx"></script>
+  <script type="text/babel" src="src/command-room.jsx"></script>
+  <script type="text/babel" src="src/fleet.jsx"></script>
+  <script type="text/babel" src="src/workspace-modal.jsx"></script>
+  <script type="text/babel" src="src/other-surfaces.jsx"></script>
+  <script type="text/babel" src="src/mobile.jsx"></script>
+  <script type="text/babel" src="src/tweaks.jsx"></script>
+
+  <script type="text/babel" data-presets="react">
+    const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
+      "theme": "light",
+      "density": "comfortable",
+      "fleetWindow": 30,
+      "activity": "normal",
+      "startTab": "command"
+    }/*EDITMODE-END*/;
+
+    function App() {
+      const [tab, setTab] = React.useState(() =>
+        localStorage.getItem("hv-tab") || TWEAK_DEFAULTS.startTab);
+      React.useEffect(() => { localStorage.setItem("hv-tab", tab); }, [tab]);
+
+      const [wsOpen, setWsOpen] = React.useState(false);
+
+      const [tweaks, setTweaks] = React.useState(TWEAK_DEFAULTS);
+      const updateTweaks = (patch) => {
+        setTweaks(t => ({ ...t, ...patch }));
+        try { window.parent.postMessage({ type: "__edit_mode_set_keys", edits: patch }, "*"); } catch(e){}
+      };
+
+      // Tweaks toggle — wired to host
+      const [tweaksOpen, setTweaksOpen] = React.useState(false);
+      React.useEffect(() => {
+        const onMsg = (e) => {
+          const d = e.data || {};
+          if (d.type === "__activate_edit_mode")    setTweaksOpen(true);
+          if (d.type === "__deactivate_edit_mode")  setTweaksOpen(false);
+        };
+        window.addEventListener("message", onMsg);
+        try { window.parent.postMessage({ type: "__edit_mode_available" }, "*"); } catch(e){}
+        return () => window.removeEventListener("message", onMsg);
+      }, []);
+
+      // ⌘W → open workspace modal when in command room
+      React.useEffect(() => {
+        const onKey = (e) => {
+          if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "w" && tab === "command") {
+            e.preventDefault();
+            setWsOpen(v => !v);
+          }
+        };
+        window.addEventListener("keydown", onKey);
+        return () => window.removeEventListener("keydown", onKey);
+      }, [tab]);
+
+      // Patch HV_DATA with tweak-dependent values
+      React.useEffect(() => {
+        window.HV_DATA.fleetWindow = tweaks.fleetWindow;
+      }, [tweaks.fleetWindow]);
+
+      const Surface = {
+        command:   () => <CommandRoom onOpenWorkspace={() => setWsOpen(true)} theme={tweaks.theme} density={tweaks.density}/>,
+        fleet:     () => <Fleet/>,
+        mobile:    () => <MobileSurface onOpenWorkspace={() => setWsOpen(true)}/>,
+        sessions:  () => <SessionsSurface/>,
+        quests:    () => <QuestsSurface/>,
+        sentinels: () => <SentinelsSurface/>,
+        cron:      () => <CronSurface/>,
+        identity:  () => <IdentitySurface/>,
+        settings:  () => <SettingsSurface/>,
+      }[tab];
+
+      return (
+        <>
+          <Shell active={tab} setActive={setTab}
+                 onOpenWorkspace={() => setWsOpen(true)}
+                 theme={tweaks.theme} setTheme={(v) => updateTweaks({ theme: v })}
+                 density={tweaks.density} setDensity={(v) => updateTweaks({ density: v })}>
+            {Surface ? <Surface/> : null}
+          </Shell>
+          <WorkspaceModal open={wsOpen} onClose={() => setWsOpen(false)}/>
+          <TweaksPanel open={tweaksOpen} state={tweaks} set={updateTweaks} onClose={() => setTweaksOpen(false)}/>
+        </>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+  </script>
+</body>
+</html>

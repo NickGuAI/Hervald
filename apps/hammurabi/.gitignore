@@ -1,0 +1,7 @@
+.env
+node_modules/
+dist/
+dist-server/
+.hammurabi.json
+data/
+data.migrated-*/
