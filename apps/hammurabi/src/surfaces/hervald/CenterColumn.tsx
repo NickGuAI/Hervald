@@ -55,6 +55,7 @@ export interface HervaldCommander extends Partial<CommanderSession> {
 export interface CenterColumnProps {
   commander: HervaldCommander
   isGlobalScope?: boolean
+  hasSelectedConversation?: boolean
   activeChatSession?: ChatSession | null
   transcript?: MsgItem[]
   workers?: Worker[]
@@ -237,6 +238,7 @@ function IdleStartState({
 export function CenterColumn({
   commander,
   isGlobalScope = false,
+  hasSelectedConversation = false,
   activeChatSession = null,
   transcript = [],
   workers = [],
@@ -300,8 +302,15 @@ export function CenterColumn({
 
   const subAgents = workers.filter((w) => w.kind === 'worker' || w.kind === 'tool')
   const hasCommander = !isGlobalScope && commander.id.trim().length > 0
-  const hasConversation = isGlobalScope ? false : hasCommander || commander.name !== 'No commander'
-  const idleCommanderChat = !isGlobalScope && currentTab === 'chat' && hasCommander && commander.status !== 'running'
+  const hasConversation = isGlobalScope
+    ? false
+    : Boolean(activeChatSession) || hasSelectedConversation || hasCommander || commander.name !== 'No commander'
+  const idleCommanderChat = !isGlobalScope
+    && currentTab === 'chat'
+    && hasCommander
+    && !activeChatSession
+    && !hasSelectedConversation
+    && commander.status !== 'running'
   const activeChatIsPty = activeChatSession?.sessionType === 'pty'
   const showTerminalSession = currentTab === 'chat' && activeChatIsPty
 

@@ -224,6 +224,7 @@ export function createClaudeStreamSession(
     name: sessionName,
     sessionType: options.sessionType ?? 'worker',
     creator: options.creator ?? { kind: 'human' },
+    conversationId: options.conversationId,
     agentType: 'claude',
     effort,
     adaptiveThinking,

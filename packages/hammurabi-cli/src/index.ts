@@ -7,6 +7,7 @@ import { runCronCli } from './cron.js'
 import { runMemoryCli } from './memory.js'
 import { runSessionCli } from './session.js'
 import { runSentinelCli } from './sentinel.js'
+import { runConversationsCli } from './conversations.js'
 import {
   buildCommanderSessionName,
   isOwnedByCommander,
@@ -28,6 +29,9 @@ export async function runCli(args: readonly string[]): Promise<number> {
   }
   if (command === 'workers') {
     return runWorkersCli(args.slice(1))
+  }
+  if (command === 'conversations') {
+    return runConversationsCli(args.slice(1))
   }
   if (command === 'cron') {
     return runCronCli(args.slice(1))
@@ -53,6 +57,7 @@ export async function runCli(args: readonly string[]): Promise<number> {
   process.stdout.write('  hammurabi machine <command>\n')
   process.stdout.write('  hammurabi quests <command>\n')
   process.stdout.write('  hammurabi workers <command>\n')
+  process.stdout.write('  hammurabi conversations <command>\n')
   process.stdout.write('  hammurabi cron <command>\n')
   process.stdout.write('  hammurabi commander <command>\n')
   process.stdout.write('  hammurabi commander transcripts <command>\n')
@@ -68,6 +73,7 @@ export { runUpCli } from './up.js'
 export { runMachinesCli } from './machines.js'
 export { runQuestsCli } from './quests.js'
 export { runWorkersCli } from './workers.js'
+export { runConversationsCli } from './conversations.js'
 export { runCommanderCli } from './commander.js'
 export { runCronCli } from './cron.js'
 export { runMemoryCli } from './memory.js'

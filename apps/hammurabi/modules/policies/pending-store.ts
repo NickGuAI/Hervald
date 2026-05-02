@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { resolveModuleDataDir } from '../data-dir.js'
 import {
@@ -20,6 +21,7 @@ import type {
   PendingApprovalRecord,
   PendingApprovalResolution,
   PendingApprovalSource,
+  PendingApprovalStatus,
 } from './types.js'
 
 function resolveDefaultPendingSnapshotPath(): string {
@@ -37,7 +39,6 @@ interface PersistedPendingSnapshot {
 
 interface PendingApprovalWaiter {
   resolve: (outcome: ApprovalResolutionOutcome) => void
-  timer: NodeJS.Timeout
 }
 
 interface WaitRegistration {
@@ -65,6 +66,12 @@ type ApprovalResolutionHandler = (
 interface EnqueueApprovalInput extends Omit<PendingApproval, 'id' | 'requestedAt'> {
   id?: string
   requestedAt?: string
+}
+
+interface EnqueueApprovalOptions {
+  resolutionHandler?: ApprovalResolutionHandler
+  timeoutMs?: number
+  timeoutAction?: PendingApprovalResolution
 }
 
 type LegacyApprovalResolutionHandler = (
@@ -184,6 +191,27 @@ function normalizePendingApproval(entry: unknown): PendingApproval | null {
     }
   }
 
+  if (typeof entry.expiresAt === 'string' && entry.expiresAt.trim().length > 0) {
+    approval.expiresAt = entry.expiresAt.trim()
+  }
+  if (entry.timeoutAction === 'approve' || entry.timeoutAction === 'reject') {
+    approval.timeoutAction = entry.timeoutAction
+  }
+  if (typeof entry.resolvedAt === 'string' && entry.resolvedAt.trim().length > 0) {
+    approval.resolvedAt = entry.resolvedAt.trim()
+  }
+  if (typeof entry.deliveredAt === 'string' && entry.deliveredAt.trim().length > 0) {
+    approval.deliveredAt = entry.deliveredAt.trim()
+  }
+  if (isRecord(entry.resolution)) {
+    approval.resolution = {
+      decision: entry.resolution.decision === 'approve' ? 'approve' : 'reject',
+      allowed: entry.resolution.allowed === true,
+      reason: typeof entry.resolution.reason === 'string' ? entry.resolution.reason : undefined,
+      timedOut: entry.resolution.timedOut === true,
+    }
+  }
+
   return approval
 }
 
@@ -296,6 +324,8 @@ export class ApprovalCoordinator {
 
   private readonly waiters = new Map<string, PendingApprovalWaiter[]>()
 
+  private readonly timeoutTimers = new Map<string, NodeJS.Timeout>()
+
   private readonly resolvedOutcomes = new Map<string, ApprovalResolutionOutcome>()
 
   private readonly subscribers = new Set<(event: ApprovalCoordinatorEvent) => void>()
@@ -303,6 +333,8 @@ export class ApprovalCoordinator {
   private initialized = false
 
   private initPromise: Promise<void> | null = null
+
+  private timeoutsInitialized = false
 
   private mutationQueue: Promise<void> = Promise.resolve()
 
@@ -323,28 +355,41 @@ export class ApprovalCoordinator {
     }
   }
 
+  shutdown(): void {
+    for (const timer of this.timeoutTimers.values()) {
+      clearTimeout(timer)
+    }
+    this.timeoutTimers.clear()
+  }
+
   async enqueue(
     input: EnqueueApprovalInput,
-    options?: { resolutionHandler?: ApprovalResolutionHandler },
+    options?: EnqueueApprovalOptions,
   ): Promise<PendingApproval> {
     return this.serializeMutation(async () => {
       await this.ensureLoaded()
 
+      const requestedAt = input.requestedAt ?? this.now().toISOString()
       const approval: PendingApproval = {
         ...input,
         id: input.id?.trim() || randomUUID(),
-        requestedAt: input.requestedAt ?? this.now().toISOString(),
+        requestedAt,
         toolInput: toJsonSafe(input.toolInput),
+      }
+      if (!approval.resolution && options?.timeoutMs && options.timeoutMs > 0 && options.timeoutAction) {
+        approval.expiresAt = new Date(this.now().getTime() + options.timeoutMs).toISOString()
+        approval.timeoutAction = options.timeoutAction
       }
 
       this.approvals.set(approval.id, approval)
       if (options?.resolutionHandler) {
         this.resolutionHandlers.set(approval.id, options.resolutionHandler)
       }
+      this.scheduleTimeout(approval)
 
       await this.persistSnapshot()
       await this.appendAudit({
-        timestamp: this.now().toISOString(),
+        timestamp: requestedAt,
         type: 'approval.enqueued',
         approvalId: approval.id,
         actionId: approval.actionId,
@@ -408,6 +453,9 @@ export class ApprovalCoordinator {
 
     return Array.from(this.approvals.values())
       .filter((approval) => {
+        if (approval.resolution) {
+          return false
+        }
         if (filter?.commanderId && approval.commanderId !== filter.commanderId) {
           return false
         }
@@ -471,6 +519,64 @@ export class ApprovalCoordinator {
     return this.approvals.get(id) ?? null
   }
 
+  async getStatus(id: string): Promise<PendingApprovalStatus | null> {
+    await this.ensureLoaded()
+    const approval = this.approvals.get(id)
+    if (!approval) {
+      return null
+    }
+
+    if (!approval.resolution && this.hasExpired(approval) && approval.timeoutAction) {
+      const timedOut = await this.resolve(approval.id, approval.timeoutAction, { timedOut: true })
+      if (!timedOut) {
+        return null
+      }
+      return {
+        state: 'resolved',
+        approval: timedOut.approval,
+        outcome: timedOut.outcome,
+        delivered: timedOut.delivered,
+      }
+    }
+
+    if (approval.resolution) {
+      return {
+        state: 'resolved',
+        approval,
+        outcome: approval.resolution,
+        delivered: typeof approval.deliveredAt === 'string',
+      }
+    }
+
+    return {
+      state: 'pending',
+      approval,
+    }
+  }
+
+  async markDelivered(id: string): Promise<boolean> {
+    return this.serializeMutation(async () => {
+      await this.ensureLoaded()
+
+      const approval = this.approvals.get(id)
+      if (!approval?.resolution) {
+        return false
+      }
+
+      if (approval.deliveredAt) {
+        return true
+      }
+
+      approval.deliveredAt = this.now().toISOString()
+      this.approvals.delete(id)
+      this.resolutionHandlers.delete(id)
+      this.clearTimeout(id)
+      await this.persistSnapshot()
+      await this.updateAuditDelivered(id)
+      return true
+    })
+  }
+
   async attachResolutionHandler(
     id: string,
     handler: ApprovalResolutionHandler,
@@ -498,28 +604,23 @@ export class ApprovalCoordinator {
         }
       }
 
-      if (!this.approvals.has(id)) {
+      const approval = this.approvals.get(id)
+      if (!approval) {
         return { kind: 'missing' }
+      }
+
+      if (approval.resolution) {
+        return {
+          kind: 'resolved',
+          outcome: approval.resolution,
+        }
       }
 
       return {
         kind: 'waiting',
         promise: new Promise((resolve) => {
-          const timer = setTimeout(() => {
-            void this.resolve(id, options.timeoutAction, { timedOut: true }).then((result) => {
-              resolve(
-                result?.outcome ?? {
-                  decision: options.timeoutAction,
-                  allowed: options.timeoutAction === 'approve',
-                  reason: 'Approval timed out.',
-                  timedOut: true,
-                },
-              )
-            })
-          }, options.timeoutMs)
-
           const waiters = this.waiters.get(id) ?? []
-          waiters.push({ resolve, timer })
+          waiters.push({ resolve })
           this.waiters.set(id, waiters)
         }),
       }
@@ -543,7 +644,7 @@ export class ApprovalCoordinator {
   async resolve(
     id: string,
     decision: PendingApprovalResolution,
-    options?: { timedOut?: boolean },
+  options?: { timedOut?: boolean },
   ): Promise<{ approval: PendingApproval; delivered: boolean; outcome: ApprovalResolutionOutcome } | null> {
     return this.serializeMutation(async () => {
       await this.ensureLoaded()
@@ -553,7 +654,17 @@ export class ApprovalCoordinator {
         return null
       }
 
+      if (approval.resolution) {
+        return {
+          approval,
+          delivered: typeof approval.deliveredAt === 'string',
+          outcome: approval.resolution,
+        }
+      }
+
+      this.clearTimeout(id)
       const handler = this.resolutionHandlers.get(id)
+      const waiters = this.waiters.get(id) ?? []
       let delivered = false
       let outcome = defaultOutcome(decision, options)
       if (handler) {
@@ -573,20 +684,23 @@ export class ApprovalCoordinator {
         }
       }
 
-      this.approvals.delete(id)
-      this.resolutionHandlers.delete(id)
-      this.rememberResolvedOutcome(id, outcome)
-
-      const waiters = this.waiters.get(id) ?? []
       this.waiters.delete(id)
       for (const waiter of waiters) {
-        clearTimeout(waiter.timer)
         waiter.resolve(outcome)
+      }
+
+      if (handler || waiters.length > 0) {
+        this.approvals.delete(id)
+        this.resolutionHandlers.delete(id)
+        this.rememberResolvedOutcome(id, outcome)
+      } else {
+        approval.resolution = outcome
+        approval.resolvedAt = this.now().toISOString()
       }
 
       await this.persistSnapshot()
       await this.appendAudit({
-        timestamp: this.now().toISOString(),
+        timestamp: approval.resolvedAt ?? this.now().toISOString(),
         type: 'approval.resolved',
         approvalId: approval.id,
         actionId: approval.actionId,
@@ -654,6 +768,9 @@ export class ApprovalCoordinator {
 
   private async ensureLoaded(): Promise<void> {
     if (this.initialized) {
+      if (!this.timeoutsInitialized) {
+        this.initializeTimeouts()
+      }
       return
     }
 
@@ -670,6 +787,9 @@ export class ApprovalCoordinator {
     }
 
     await this.initPromise
+    if (!this.timeoutsInitialized) {
+      this.initializeTimeouts()
+    }
   }
 
   private async persistSnapshot(): Promise<void> {
@@ -681,6 +801,85 @@ export class ApprovalCoordinator {
 
   private async appendAudit(entry: Record<string, unknown> | ApprovalHistoryEntry): Promise<void> {
     await appendJsonLine(this.auditFilePath, entry as Record<string, unknown>)
+  }
+
+  private initializeTimeouts(): void {
+    this.timeoutsInitialized = true
+    for (const approval of this.approvals.values()) {
+      this.scheduleTimeout(approval)
+    }
+  }
+
+  private scheduleTimeout(approval: PendingApproval): void {
+    this.clearTimeout(approval.id)
+    if (!approval.expiresAt || !approval.timeoutAction || approval.resolution) {
+      return
+    }
+
+    const delayMs = Date.parse(approval.expiresAt) - this.now().getTime()
+    const timer = setTimeout(() => {
+      this.timeoutTimers.delete(approval.id)
+      void this.resolve(approval.id, approval.timeoutAction!, { timedOut: true })
+    }, Math.max(0, delayMs))
+    this.timeoutTimers.set(approval.id, timer)
+  }
+
+  private clearTimeout(id: string): void {
+    const timer = this.timeoutTimers.get(id)
+    if (!timer) {
+      return
+    }
+    clearTimeout(timer)
+    this.timeoutTimers.delete(id)
+  }
+
+  private hasExpired(approval: PendingApproval): boolean {
+    if (!approval.expiresAt) {
+      return false
+    }
+    return Date.parse(approval.expiresAt) <= this.now().getTime()
+  }
+
+  private async updateAuditDelivered(approvalId: string): Promise<void> {
+    let raw: string
+    try {
+      raw = await readFile(this.auditFilePath, 'utf8')
+    } catch (error) {
+      const code = error instanceof Error && 'code' in error ? error.code : undefined
+      if (code === 'ENOENT') {
+        return
+      }
+      throw error
+    }
+
+    const lines = raw.split(/\r?\n/)
+    for (let index = lines.length - 1; index >= 0; index -= 1) {
+      const line = lines[index]?.trim()
+      if (!line) {
+        continue
+      }
+      try {
+        const entry = JSON.parse(line) as Record<string, unknown>
+        if (
+          entry.type === 'approval.resolved'
+          && entry.approvalId === approvalId
+          && entry.delivered !== true
+        ) {
+          lines[index] = JSON.stringify({
+            ...entry,
+            delivered: true,
+          })
+          await writeFile(
+            this.auditFilePath,
+            `${lines.filter((candidate) => candidate.trim().length > 0).join('\n')}\n`,
+            'utf8',
+          )
+          return
+        }
+      } catch {
+        // Ignore malformed audit rows when rewriting delivered state.
+      }
+    }
   }
 
   private rememberResolvedOutcome(id: string, outcome: ApprovalResolutionOutcome): void {

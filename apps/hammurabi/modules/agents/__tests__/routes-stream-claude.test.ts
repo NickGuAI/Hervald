@@ -1866,7 +1866,7 @@ describe("stream sessions", () => {
 
         expect(createResponse.status).toBe(201)
 
-        const checkPromise = fetch(`${server.baseUrl}/api/approval/check`, {
+        const checkResponse = await fetch(`${server.baseUrl}/api/approval/check`, {
           method: 'POST',
           headers: {
             ...INTERNAL_AUTH_HEADERS,
@@ -1880,6 +1880,11 @@ describe("stream sessions", () => {
             },
           }),
         })
+        const checkPayload = await checkResponse.json() as {
+          decision: string
+          request_id: string
+          retry_after_ms: number
+        }
 
         let pendingApprovalId = ''
         await vi.waitFor(async () => {
@@ -1892,13 +1897,24 @@ describe("stream sessions", () => {
             source: 'claude',
           }))
         })
+        expect(checkResponse.status).toBe(200)
+        expect(checkPayload).toEqual({
+          decision: 'pending',
+          request_id: pendingApprovalId,
+          retry_after_ms: 1000,
+        })
 
         await server.approvalCoordinator.resolve(pendingApprovalId, 'approve')
 
-        const approvalResponse = await checkPromise
+        const approvalResponse = await fetch(`${server.baseUrl}/api/approval/check/${pendingApprovalId}`, {
+          headers: INTERNAL_AUTH_HEADERS,
+        })
         expect(approvalResponse.status).toBe(200)
         expect(await approvalResponse.json()).toEqual({
           decision: 'allow',
+        })
+        await vi.waitFor(async () => {
+          expect(await server.approvalCoordinator.getStatus(pendingApprovalId)).toBeNull()
         })
       } finally {
         await server.close()

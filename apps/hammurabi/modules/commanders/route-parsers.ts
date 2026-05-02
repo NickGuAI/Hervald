@@ -41,6 +41,7 @@ export interface ParsedChannelMessageInput {
   mode: CommanderMessageMode
   channelMeta: CommanderChannelMeta
   lastRoute: CommanderLastRoute
+  commanderId?: string
   host: string
 }
 
@@ -315,7 +316,7 @@ function buildCommanderSessionKeyFromChannelMeta(
   meta: Pick<CommanderChannelMeta, 'provider' | 'accountId' | 'chatType' | 'peerId' | 'threadId'>,
 ): string {
   const base = `${meta.provider}:${meta.accountId}:${meta.chatType}:${meta.peerId}`
-  if (meta.chatType === 'forum-topic' && meta.threadId) {
+  if (meta.threadId) {
     return `${base}:thread:${meta.threadId}`
   }
   return base
@@ -356,6 +357,13 @@ export function parseChannelMessageInput(
   const mode = raw.mode === undefined ? 'followup' : parseMessageMode(raw.mode)
   if (!mode) {
     return { valid: false, error: 'mode must be either "collect" or "followup"' }
+  }
+
+  const commanderId = raw.commanderId === undefined
+    ? undefined
+    : parseCommanderId(raw.commanderId)
+  if (raw.commanderId !== undefined && !commanderId) {
+    return { valid: false, error: 'commanderId is invalid' }
   }
 
   const displayName = parseMessage(raw.displayName)
@@ -445,6 +453,7 @@ export function parseChannelMessageInput(
     value: {
       message,
       mode,
+      ...(commanderId ? { commanderId } : {}),
       channelMeta,
       lastRoute,
       host: buildChannelCommanderHost(channelMeta),

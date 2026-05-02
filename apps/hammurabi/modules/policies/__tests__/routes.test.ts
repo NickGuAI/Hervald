@@ -44,6 +44,21 @@ interface RunningServer {
   policyStore: PolicyStore
 }
 
+async function removeDirectoryWithRetry(directory: string, attempts = 5): Promise<void> {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      await rm(directory, { recursive: true, force: true })
+      return
+    } catch (error) {
+      const code = error instanceof Error && 'code' in error ? error.code : undefined
+      if (code !== 'ENOTEMPTY' || attempt === attempts - 1) {
+        throw error
+      }
+      await new Promise((resolve) => setTimeout(resolve, 25))
+    }
+  }
+}
+
 function createTestApiKeyStore(): ApiKeyStoreLike {
   const recordsByRawKey = {
     'test-key': {
@@ -194,9 +209,11 @@ function createApprovalSessionsStub(): ApprovalSessionsStub {
   }
 }
 
-async function startServer(): Promise<RunningServer> {
-  const rootDir = await mkdtemp(path.join(tmpdir(), 'hammurabi-policies-routes-'))
-  tempDirectories.push(rootDir)
+async function startServer(options: { rootDir?: string } = {}): Promise<RunningServer> {
+  const rootDir = options.rootDir ?? await mkdtemp(path.join(tmpdir(), 'hammurabi-policies-routes-'))
+  if (!options.rootDir) {
+    tempDirectories.push(rootDir)
+  }
 
   const policyStore = new PolicyStore({
     filePath: path.join(rootDir, 'policies.json'),
@@ -268,6 +285,7 @@ async function startServer(): Promise<RunningServer> {
           resolve()
         })
       })
+      approvalCoordinator.shutdown()
     },
   }
 }
@@ -292,13 +310,20 @@ function waitForMessage(ws: WebSocket): Promise<Record<string, unknown>> {
   })
 }
 
+async function waitForDelivery(
+  coordinator: ApprovalCoordinator,
+  approvalId: string,
+): Promise<void> {
+  await vi.waitFor(async () => {
+    expect(await coordinator.getStatus(approvalId)).toBeNull()
+  })
+}
+
 afterEach(async () => {
   vi.restoreAllMocks()
-  await Promise.all(
-    tempDirectories.splice(0).map((directory) =>
-      rm(directory, { recursive: true, force: true }),
-    ),
-  )
+  for (const directory of tempDirectories.splice(0)) {
+    await removeDirectoryWithRetry(directory)
+  }
 })
 
 describe('policies routes', () => {
@@ -466,7 +491,7 @@ describe('policies routes', () => {
         'claude-session-accept-edits-01',
       )
 
-      const checkPromise = fetch(`${server.baseUrl}/api/approval/check`, {
+      const checkResponse = await fetch(`${server.baseUrl}/api/approval/check`, {
         method: 'POST',
         headers: {
           'content-type': 'application/json',
@@ -480,6 +505,11 @@ describe('policies routes', () => {
           },
         }),
       })
+      const checkPayload = await checkResponse.json() as {
+        decision: string
+        request_id: string
+        retry_after_ms: number
+      }
 
       let pendingApprovalId = ''
       await vi.waitFor(async () => {
@@ -491,6 +521,12 @@ describe('policies routes', () => {
           sessionId: 'stream-accept-edits-01',
           source: 'claude',
         }))
+      })
+      expect(checkResponse.status).toBe(200)
+      expect(checkPayload).toEqual({
+        decision: 'pending',
+        request_id: pendingApprovalId,
+        retry_after_ms: 1000,
       })
 
       const decideResponse = await fetch(`${server.baseUrl}/api/approval/decide`, {
@@ -506,9 +542,16 @@ describe('policies routes', () => {
       })
 
       expect(decideResponse.status).toBe(200)
-      expect(await checkPromise.then((response) => response.json())).toEqual({
+      const resolvedResponse = await fetch(`${server.baseUrl}/api/approval/check/${pendingApprovalId}`, {
+        headers: {
+          'x-hammurabi-internal-token': INTERNAL_TOKEN,
+        },
+      })
+      expect(resolvedResponse.status).toBe(200)
+      expect(await resolvedResponse.json()).toEqual({
         decision: 'allow',
       })
+      await waitForDelivery(server.approvalCoordinator, pendingApprovalId)
     } finally {
       await server.close()
     }
@@ -658,7 +701,7 @@ describe('policies routes', () => {
         },
       })
 
-      const checkPromise = fetch(`${server.baseUrl}/api/approval/check`, {
+      const checkResponse = await fetch(`${server.baseUrl}/api/approval/check`, {
         method: 'POST',
         headers: {
           'content-type': 'application/json',
@@ -673,6 +716,11 @@ describe('policies routes', () => {
           },
         }),
       })
+      const checkPayload = await checkResponse.json() as {
+        decision: string
+        request_id: string
+        retry_after_ms: number
+      }
 
       await vi.waitFor(async () => {
         const approvals = await server.approvalCoordinator.listPending()
@@ -704,11 +752,23 @@ describe('policies routes', () => {
       })
       expect(decideResponse.status).toBe(200)
 
-      const checkResponse = await checkPromise
       expect(checkResponse.status).toBe(200)
-      expect(await checkResponse.json()).toEqual({
+      expect(checkPayload).toEqual({
+        decision: 'pending',
+        request_id: pendingApproval.id,
+        retry_after_ms: 1000,
+      })
+
+      const resolvedResponse = await fetch(`${server.baseUrl}/api/approval/check/${pendingApproval.id}`, {
+        headers: {
+          'x-hammurabi-internal-token': INTERNAL_TOKEN,
+        },
+      })
+      expect(resolvedResponse.status).toBe(200)
+      expect(await resolvedResponse.json()).toEqual({
         decision: 'allow',
       })
+      await waitForDelivery(server.approvalCoordinator, pendingApproval.id)
     } finally {
       await server.close()
     }
@@ -718,7 +778,7 @@ describe('policies routes', () => {
     const server = await startServer()
 
     try {
-      const checkPromise = fetch(`${server.baseUrl}/api/approval/check`, {
+      const checkResponse = await fetch(`${server.baseUrl}/api/approval/check`, {
         method: 'POST',
         headers: {
           'content-type': 'application/json',
@@ -733,12 +793,23 @@ describe('policies routes', () => {
           },
         }),
       })
+      const checkPayload = await checkResponse.json() as {
+        decision: string
+        request_id: string
+        retry_after_ms: number
+      }
 
       let pendingApprovalId = ''
       await vi.waitFor(async () => {
         const approvals = await server.approvalCoordinator.listPending()
         expect(approvals).toHaveLength(1)
         pendingApprovalId = approvals[0].id
+      })
+      expect(checkResponse.status).toBe(200)
+      expect(checkPayload).toEqual({
+        decision: 'pending',
+        request_id: pendingApprovalId,
+        retry_after_ms: 1000,
       })
 
       const pendingResponse = await fetch(`${server.baseUrl}/api/approvals/pending`, {
@@ -777,35 +848,277 @@ describe('policies routes', () => {
         decision: 'approve',
       })
 
-      const checkResponse = await checkPromise
-      expect(checkResponse.status).toBe(200)
-      expect(await checkResponse.json()).toEqual({
+      const resolvedResponse = await fetch(`${server.baseUrl}/api/approval/check/${pendingApprovalId}`, {
+        headers: {
+          'x-hammurabi-internal-token': INTERNAL_TOKEN,
+        },
+      })
+      expect(resolvedResponse.status).toBe(200)
+      expect(await resolvedResponse.json()).toEqual({
         decision: 'allow',
       })
+      await waitForDelivery(server.approvalCoordinator, pendingApprovalId)
       expect(await server.approvalCoordinator.listPending()).toHaveLength(0)
 
-      const historyResponse = await fetch(
-        `${server.baseUrl}/api/approvals/history?commander=&limit=5`,
-        { headers: AUTH_HEADERS },
-      )
-      expect(historyResponse.status).toBe(200)
-      expect(await historyResponse.json()).toEqual({
-        history: [
-          expect.objectContaining({
-            type: 'approval.resolved',
-            approvalId: pendingApprovalId,
-            actionId: 'send-message',
-            decision: 'approve',
-          }),
-          expect.objectContaining({
-            type: 'approval.enqueued',
-            approvalId: pendingApprovalId,
-            actionId: 'send-message',
-          }),
-        ],
+      await vi.waitFor(async () => {
+        const historyResponse = await fetch(
+          `${server.baseUrl}/api/approvals/history?commander=&limit=5`,
+          { headers: AUTH_HEADERS },
+        )
+        expect(historyResponse.status).toBe(200)
+        expect(await historyResponse.json()).toEqual({
+          history: [
+            expect.objectContaining({
+              type: 'approval.resolved',
+              approvalId: pendingApprovalId,
+              actionId: 'send-message',
+              decision: 'approve',
+              delivered: true,
+            }),
+            expect.objectContaining({
+              type: 'approval.enqueued',
+              approvalId: pendingApprovalId,
+              actionId: 'send-message',
+            }),
+          ],
+        })
       })
     } finally {
       await server.close()
+    }
+  })
+
+  it('returns pending from the polling endpoint until a review resolves', async () => {
+    const server = await startServer()
+
+    try {
+      const createResponse = await fetch(`${server.baseUrl}/api/approval/check`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-hammurabi-internal-token': INTERNAL_TOKEN,
+        },
+        body: JSON.stringify({
+          hammurabi_session_name: 'stream-poll-01',
+          tool_name: 'mcp__slack__post_message',
+          tool_input: {
+            channel: '#ops',
+            message: 'Ship the hotfix.',
+          },
+        }),
+      })
+      const createPayload = await createResponse.json() as {
+        decision: string
+        request_id: string
+        retry_after_ms: number
+      }
+
+      expect(createResponse.status).toBe(200)
+      expect(createPayload.decision).toBe('pending')
+
+      const pendingResponse = await fetch(`${server.baseUrl}/api/approval/check/${createPayload.request_id}`, {
+        headers: {
+          'x-hammurabi-internal-token': INTERNAL_TOKEN,
+        },
+      })
+      expect(pendingResponse.status).toBe(200)
+      expect(await pendingResponse.json()).toEqual({
+        decision: 'pending',
+        request_id: createPayload.request_id,
+        retry_after_ms: 1000,
+      })
+
+      const decideResponse = await fetch(`${server.baseUrl}/api/approval/decide`, {
+        method: 'POST',
+        headers: {
+          ...AUTH_HEADERS,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          id: createPayload.request_id,
+          decision: 'approve',
+        }),
+      })
+      expect(decideResponse.status).toBe(200)
+
+      const resolvedResponse = await fetch(`${server.baseUrl}/api/approval/check/${createPayload.request_id}`, {
+        headers: {
+          'x-hammurabi-internal-token': INTERNAL_TOKEN,
+        },
+      })
+      expect(resolvedResponse.status).toBe(200)
+      expect(await resolvedResponse.json()).toEqual({
+        decision: 'allow',
+      })
+      await waitForDelivery(server.approvalCoordinator, createPayload.request_id)
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('keeps pending approvals restart-safe across the polling route', async () => {
+    const rootDir = await mkdtemp(path.join(tmpdir(), 'hammurabi-policies-routes-restart-'))
+    tempDirectories.push(rootDir)
+
+    const firstServer = await startServer({ rootDir })
+
+    let requestId = ''
+    try {
+      const createResponse = await fetch(`${firstServer.baseUrl}/api/approval/check`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-hammurabi-internal-token': INTERNAL_TOKEN,
+        },
+        body: JSON.stringify({
+          hammurabi_session_name: 'stream-restart-01',
+          tool_name: 'mcp__slack__post_message',
+          tool_input: {
+            channel: '#ops',
+            message: 'Wait for restart.',
+          },
+        }),
+      })
+      const createPayload = await createResponse.json() as {
+        decision: string
+        request_id: string
+      }
+      requestId = createPayload.request_id
+      expect(createPayload.decision).toBe('pending')
+    } finally {
+      await firstServer.close()
+    }
+
+    const secondServer = await startServer({ rootDir })
+    try {
+      const pendingResponse = await fetch(`${secondServer.baseUrl}/api/approval/check/${requestId}`, {
+        headers: {
+          'x-hammurabi-internal-token': INTERNAL_TOKEN,
+        },
+      })
+      expect(pendingResponse.status).toBe(200)
+      expect(await pendingResponse.json()).toEqual({
+        decision: 'pending',
+        request_id: requestId,
+        retry_after_ms: 1000,
+      })
+
+      const decideResponse = await fetch(`${secondServer.baseUrl}/api/approval/decide`, {
+        method: 'POST',
+        headers: {
+          ...AUTH_HEADERS,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          id: requestId,
+          decision: 'approve',
+        }),
+      })
+      expect(decideResponse.status).toBe(200)
+
+      const resolvedResponse = await fetch(`${secondServer.baseUrl}/api/approval/check/${requestId}`, {
+        headers: {
+          'x-hammurabi-internal-token': INTERNAL_TOKEN,
+        },
+      })
+      expect(resolvedResponse.status).toBe(200)
+      expect(await resolvedResponse.json()).toEqual({
+        decision: 'allow',
+      })
+      await waitForDelivery(secondServer.approvalCoordinator, requestId)
+    } finally {
+      await secondServer.close()
+    }
+  })
+
+  it('keeps 60+ minute reviews deliverable once polling is in place', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-05-01T12:00:00.000Z'))
+
+    const server = await startServer()
+    try {
+      const settingsResponse = await fetch(`${server.baseUrl}/api/action-policies/settings`, {
+        method: 'PUT',
+        headers: {
+          ...AUTH_HEADERS,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          timeoutMinutes: 62,
+        }),
+      })
+      expect(settingsResponse.status).toBe(200)
+
+      const createResponse = await fetch(`${server.baseUrl}/api/approval/check`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-hammurabi-internal-token': INTERNAL_TOKEN,
+        },
+        body: JSON.stringify({
+          hammurabi_session_name: 'stream-long-review-01',
+          tool_name: 'mcp__slack__post_message',
+          tool_input: {
+            channel: '#ops',
+            message: 'Long-running review.',
+          },
+        }),
+      })
+      const createPayload = await createResponse.json() as {
+        decision: string
+        request_id: string
+      }
+      expect(createPayload.decision).toBe('pending')
+
+      await vi.advanceTimersByTimeAsync(61 * 60 * 1_000)
+
+      const decideResponse = await fetch(`${server.baseUrl}/api/approval/decide`, {
+        method: 'POST',
+        headers: {
+          ...AUTH_HEADERS,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          id: createPayload.request_id,
+          decision: 'approve',
+        }),
+      })
+      expect(decideResponse.status).toBe(200)
+
+      const resolvedResponse = await fetch(`${server.baseUrl}/api/approval/check/${createPayload.request_id}`, {
+        headers: {
+          'x-hammurabi-internal-token': INTERNAL_TOKEN,
+        },
+      })
+      expect(resolvedResponse.status).toBe(200)
+      expect(await resolvedResponse.json()).toEqual({
+        decision: 'allow',
+      })
+      await waitForDelivery(server.approvalCoordinator, createPayload.request_id)
+
+      await vi.waitFor(async () => {
+        const historyResponse = await fetch(
+          `${server.baseUrl}/api/approvals/history?commander=&limit=5`,
+          { headers: AUTH_HEADERS },
+        )
+        expect(historyResponse.status).toBe(200)
+        expect(await historyResponse.json()).toEqual({
+          history: [
+            expect.objectContaining({
+              type: 'approval.resolved',
+              approvalId: createPayload.request_id,
+              delivered: true,
+            }),
+            expect.objectContaining({
+              type: 'approval.enqueued',
+              approvalId: createPayload.request_id,
+            }),
+          ],
+        })
+      })
+    } finally {
+      await server.close()
+      vi.useRealTimers()
     }
   })
 

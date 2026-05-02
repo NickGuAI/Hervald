@@ -6,11 +6,8 @@
  *   │  COMMANDERS · {count}    [+]│  ← ColumnHeader
  *   ├─────────────────────────────┤
  *   │  [●] jarvis          2 PEND │  ← Commander SessionRows (always shown)
- *   │      ↳ worker-1             │
  *   │  [●] jake                   │
- *   ├─────────────────────────────┤
- *   │  CHATS · {count}         [+]│  ← create agent session
- *   │ ▾ WORKERS · {n}             │  ← expanded by default
+ *   │ ▾ WORKERS · {n}         [⌁] │  ← expanded by default
  *   │   pn-920              2d    │
  *   │   srswworker          1d    │
  *   │ ▸ CRON · {n}                │  ← collapsed by default
@@ -19,10 +16,11 @@
  *   │ live · auto-refresh   A− A+ │  ← font-size control
  *   └─────────────────────────────┘
  */
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useState, type ReactNode } from 'react'
 import { Icon, STATE_COLOR } from '@/surfaces/hervald'
 import type { AgentSession, AgentType } from '@/types'
 import { SessionCard } from '@modules/agents/page-shell/SessionCard'
+import type { ConversationRecord } from '@modules/conversation/hooks/use-conversations'
 import { ColumnHeader } from './ColumnHeader'
 import { SessionRow } from './SessionRow'
 import type { Commander, Worker, Approval } from './SessionRow'
@@ -41,9 +39,14 @@ interface SessionsColumnProps {
   onCreateCommander: () => void
   onCreateWorker: () => void
   onCreateSession: () => void
+  onCreateChatForCommander?: (commanderId: string) => void | Promise<void>
   selectedChatId?: string | null
   onSelectChat: (id: string) => void
+  onSelectConversation?: (id: string) => void
+  onStartConversation?: (id: string) => void
+  onStopConversation?: (id: string) => void | Promise<void>
   commanders: Commander[]
+  conversations?: ConversationRecord[]
   workers: Worker[]
   /** Pending approval items. */
   approvals?: Approval[]
@@ -132,6 +135,7 @@ interface SessionListSectionProps {
   sessions: ChatSession[]
   collapsed: boolean
   onToggle: () => void
+  headerAction?: ReactNode
   showExited: boolean
   onToggleShowExited: () => void
   selectedChatId: string | null
@@ -147,6 +151,7 @@ function SessionListSection({
   sessions,
   collapsed,
   onToggle,
+  headerAction,
   showExited,
   onToggleShowExited,
   selectedChatId,
@@ -156,7 +161,7 @@ function SessionListSection({
   onKillSession,
   onResumeSession,
 }: SessionListSectionProps) {
-  if (sessions.length === 0) return null
+  if (sessions.length === 0 && !headerAction) return null
   const visibleSessions = showExited
     ? sessions
     : sessions.filter((session) => !EXITED_SESSION_STATUSES.has(session.status ?? ''))
@@ -197,26 +202,29 @@ function SessionListSection({
           <span>{label}</span>
           <span>· {visibleSessions.length}</span>
         </button>
-        <button
-          type="button"
-          onClick={onToggleShowExited}
-          aria-pressed={showExited}
-          aria-label={`${showExited ? 'Hide' : 'Show'} exited ${label.toLowerCase()} sessions`}
-          style={{
-            background: 'transparent',
-            border: 'none',
-            color: 'var(--hv-fg-subtle)',
-            fontFamily: 'var(--hv-font-body)',
-            fontSize: 'calc(10px * var(--hv-sessions-scale, 1))',
-            letterSpacing: '0.02em',
-            cursor: 'pointer',
-            padding: 0,
-            textTransform: 'none',
-            flexShrink: 0,
-          }}
-        >
-          {showExited ? 'hide exited' : 'show exited'}
-        </button>
+        {headerAction}
+        {sessions.length > 0 && (
+          <button
+            type="button"
+            onClick={onToggleShowExited}
+            aria-pressed={showExited}
+            aria-label={`${showExited ? 'Hide' : 'Show'} exited ${label.toLowerCase()} sessions`}
+            style={{
+              background: 'transparent',
+              border: 'none',
+              color: 'var(--hv-fg-subtle)',
+              fontFamily: 'var(--hv-font-body)',
+              fontSize: 'calc(10px * var(--hv-sessions-scale, 1))',
+              letterSpacing: '0.02em',
+              cursor: 'pointer',
+              padding: 0,
+              textTransform: 'none',
+              flexShrink: 0,
+            }}
+          >
+            {showExited ? 'hide exited' : 'show exited'}
+          </button>
+        )}
       </div>
 
       {!collapsed &&
@@ -318,15 +326,199 @@ function SessionListSection({
   )
 }
 
+function formatConversationLabel(conversation: ConversationRecord): string {
+  const taskTitle = conversation.currentTask?.title?.trim()
+  if (taskTitle) {
+    return taskTitle
+  }
+
+  return conversation.liveSession?.name ?? `chat ${conversation.id.slice(0, 8)}`
+}
+
+interface ConversationChatRowProps {
+  conversation: ConversationRecord
+  selected: boolean
+  onSelect?: (id: string) => void
+  onStart?: (id: string) => void
+  onStop?: (id: string) => void | Promise<void>
+}
+
+/**
+ * Per-commander chat row rendered nested inside a `commander-block`. The
+ * Start button does a one-click resume — it does NOT open a wizard.
+ */
+function ConversationChatRow({
+  conversation,
+  selected,
+  onSelect,
+  onStart,
+  onStop,
+}: ConversationChatRowProps) {
+  const canStart = conversation.status === 'idle' || conversation.status === 'paused'
+  const canStop = conversation.status === 'active'
+
+  return (
+    <div
+      data-testid="commander-chat-row"
+      data-conversation-id={conversation.id}
+      data-conversation-status={conversation.status}
+      style={{
+        width: '100%',
+        padding: '6px 20px 6px 34px',
+        display: 'flex',
+        alignItems: 'center',
+        gap: 8,
+        background: selected ? 'var(--hv-ink-wash-02)' : 'transparent',
+        borderLeft: selected
+          ? '2px solid var(--sumi-black)'
+          : '2px solid transparent',
+      }}
+    >
+      <button
+        type="button"
+        data-testid="commander-chat-row-button"
+        onClick={() => onSelect?.(conversation.id)}
+        style={{
+          flex: 1,
+          minWidth: 0,
+          display: 'flex',
+          alignItems: 'center',
+          gap: 8,
+          background: 'transparent',
+          border: 'none',
+          cursor: onSelect ? 'pointer' : 'default',
+          padding: 0,
+          textAlign: 'left',
+        }}
+      >
+        <span
+          aria-hidden
+          style={{
+            width: 6,
+            height: 6,
+            borderRadius: '50%',
+            background: STATE_COLOR[conversation.status] ?? STATE_COLOR.idle,
+            flexShrink: 0,
+          }}
+        />
+        <span style={{ minWidth: 0, flex: 1 }}>
+          <span
+            data-testid="commander-chat-row-label"
+            style={{
+              display: 'block',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+              fontFamily: 'var(--hv-font-mono)',
+              fontSize: 'calc(11.5px * var(--hv-sessions-scale, 1))',
+              color: selected ? 'var(--hv-fg)' : 'var(--hv-fg-faint)',
+            }}
+          >
+            {formatConversationLabel(conversation)}
+          </span>
+          <span
+            style={{
+              display: 'block',
+              marginTop: 2,
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+              fontFamily: 'var(--hv-font-body)',
+              fontSize: 'calc(10px * var(--hv-sessions-scale, 1))',
+              color: 'var(--hv-fg-subtle)',
+              letterSpacing: '0.04em',
+              textTransform: 'uppercase',
+            }}
+          >
+            {conversation.surface} · {conversation.id.slice(0, 8)}
+          </span>
+        </span>
+      </button>
+
+      <span
+        data-testid="commander-chat-row-status"
+        style={{
+          flexShrink: 0,
+          padding: '2px 6px',
+          borderRadius: 999,
+          background: 'var(--hv-ink-wash-02)',
+          color: 'var(--hv-fg-subtle)',
+          fontFamily: 'var(--hv-font-body)',
+          fontSize: 'calc(9.5px * var(--hv-sessions-scale, 1))',
+          letterSpacing: '0.08em',
+          textTransform: 'uppercase',
+        }}
+      >
+        {conversation.status}
+      </span>
+
+      {canStart && onStart && (
+        <button
+          type="button"
+          data-testid="commander-chat-start-button"
+          onClick={(event) => {
+            event.stopPropagation()
+            onStart(conversation.id)
+          }}
+          style={{
+            background: 'transparent',
+            border: '1px solid var(--hv-border-hair)',
+            borderRadius: 999,
+            color: 'var(--hv-fg-subtle)',
+            cursor: 'pointer',
+            padding: '3px 8px',
+            fontFamily: 'var(--hv-font-mono)',
+            fontSize: 'calc(10.5px * var(--hv-sessions-scale, 1))',
+            letterSpacing: '0.04em',
+            flexShrink: 0,
+          }}
+        >
+          Start
+        </button>
+      )}
+
+      {canStop && onStop && (
+        <button
+          type="button"
+          data-testid="commander-chat-stop-button"
+          onClick={(event) => {
+            event.stopPropagation()
+            void onStop(conversation.id)
+          }}
+          style={{
+            background: 'transparent',
+            border: '1px solid var(--hv-border-hair)',
+            borderRadius: 999,
+            color: 'var(--hv-fg-subtle)',
+            cursor: 'pointer',
+            padding: '3px 8px',
+            fontFamily: 'var(--hv-font-mono)',
+            fontSize: 'calc(10.5px * var(--hv-sessions-scale, 1))',
+            letterSpacing: '0.04em',
+            flexShrink: 0,
+          }}
+        >
+          Stop
+        </button>
+      )}
+    </div>
+  )
+}
+
 export function SessionsColumn({
   selectedCommanderId,
   onSelectCommander,
   onCreateCommander,
   onCreateWorker,
-  onCreateSession,
+  onCreateSession: _onCreateSession,
+  onCreateChatForCommander,
   selectedChatId = null,
   onSelectChat,
+  onSelectConversation,
+  onStartConversation,
+  onStopConversation,
   commanders,
+  conversations = [],
   workers,
   approvals = [],
   workerSessions = [],
@@ -337,7 +529,6 @@ export function SessionsColumn({
   sessionActionError = null,
 }: SessionsColumnProps) {
   const commanderCount = commanders.filter((commander) => !commander.isVirtual).length
-  const chatCount = workerSessions.length + cronSessions.length + sentinelSessions.length
 
   const [collapsed, setCollapsed] = useState<Record<SectionKey, boolean>>(readCollapsedState)
   const [fontScale, setFontScale] = useState<number>(readFontScale)
@@ -384,6 +575,7 @@ export function SessionsColumn({
 
   return (
     <aside
+      data-testid="sessions-column"
       style={
         {
           width: 232,
@@ -421,66 +613,68 @@ export function SessionsColumn({
 
       {/* Scrollable session list */}
       <div
+        data-testid="sessions-scroll"
         style={{
           flex: 1,
           overflowY: 'auto',
           padding: '4px 0 20px',
         }}
       >
-        {/* Section 1 — Commanders (always visible) */}
-        {commanders.map((c) => (
-          <SessionRow
-            key={c.id}
-            commander={c}
-            selected={selectedCommanderId === c.id}
-            onClick={() => onSelectCommander(c.id)}
-            workers={workers.filter((w) => w.commanderId === c.id)}
-            approvals={approvals.filter((a) => a.commanderId === c.id)}
-          />
-        ))}
+        {/* Section 1 — Commanders (always visible). Each commander's chats are
+            rendered nested under that commander when the commander is selected. */}
+        <div data-testid="commanders-list">
+          {commanders.map((c) => {
+            const isSelected = selectedCommanderId === c.id
+            const commanderConversations = isSelected
+              ? conversations.filter((conv) => conv.commanderId === c.id)
+              : []
 
-        <ColumnHeader
-          label={
-            <>
-              CHATS
-              <span style={{ color: 'var(--hv-fg-faint)', marginLeft: 6 }}>
-                · {chatCount}
-              </span>
-            </>
-          }
-          right={
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-              <button
-                style={tinyIconBtn}
-                type="button"
-                aria-label="Add worker"
-                onClick={onCreateWorker}
+            return (
+              <div
+                key={c.id}
+                data-testid="commander-block"
+                data-commander-id={c.id}
               >
-                <Icon name="terminal" size={13} />
-              </button>
-              <button
-                style={tinyIconBtn}
-                type="button"
-                aria-label="New session"
-                onClick={onCreateSession}
-              >
-                <Icon name="plus" size={13} />
-              </button>
-            </div>
-          }
-          style={{
-            paddingTop: 18,
-            paddingBottom: 8,
-            borderTop: '1px solid var(--hv-border-hair)',
-            borderBottom: 'none',
-            background: 'var(--hv-bg-raised)',
-          }}
-        />
+                <SessionRow
+                  commander={c}
+                  selected={isSelected}
+                  onClick={() => onSelectCommander(c.id)}
+                  onCreateChat={
+                    isSelected && !c.isVirtual && onCreateChatForCommander
+                      ? () => { void onCreateChatForCommander(c.id) }
+                      : undefined
+                  }
+                  approvals={approvals.filter((a) => a.commanderId === c.id)}
+                />
+
+                {isSelected && commanderConversations.length > 0 && (
+                  <div
+                    data-testid="commander-chat-list"
+                    data-commander-id={c.id}
+                    style={{ paddingBottom: 6 }}
+                  >
+                    {commanderConversations.map((conversation) => (
+                      <ConversationChatRow
+                        key={conversation.id}
+                        conversation={conversation}
+                        selected={selectedChatId === conversation.id}
+                        onSelect={onSelectConversation}
+                        onStart={onStartConversation}
+                        onStop={onStopConversation}
+                      />
+                    ))}
+                  </div>
+                )}
+              </div>
+            )
+          })}
+        </div>
 
         {sessionActionError && (
           <div
+            data-testid="sessions-action-error"
             style={{
-              padding: '0 20px 8px',
+              padding: '12px 20px 0',
               color: 'var(--vermillion-seal)',
               fontSize: 'calc(10.5px * var(--hv-sessions-scale, 1))',
               lineHeight: 1.5,
@@ -490,46 +684,63 @@ export function SessionsColumn({
           </div>
         )}
 
-        <SessionListSection
-          label="Workers"
-          sessions={workerSessions}
-          collapsed={collapsed.workers}
-          onToggle={() => toggle('workers')}
-          showExited={showExited.workers}
-          onToggleShowExited={() => toggleShowExited('workers')}
-          selectedChatId={selectedChatId}
-          onSelectChat={onSelectChat}
-          variant="session-card"
-          sessionCardVariant="row"
-          onKillSession={onKillSession}
-          onResumeSession={onResumeSession}
-        />
+        <div data-testid="workers-section">
+          <SessionListSection
+            label="Workers"
+            sessions={workerSessions}
+            collapsed={collapsed.workers}
+            onToggle={() => toggle('workers')}
+            headerAction={(
+              <button
+                style={tinyIconBtn}
+                type="button"
+                aria-label="Add worker"
+                onClick={onCreateWorker}
+              >
+                <Icon name="terminal" size={13} />
+              </button>
+            )}
+            showExited={showExited.workers}
+            onToggleShowExited={() => toggleShowExited('workers')}
+            selectedChatId={selectedChatId}
+            onSelectChat={onSelectChat}
+            variant="session-card"
+            sessionCardVariant="row"
+            onKillSession={onKillSession}
+            onResumeSession={onResumeSession}
+          />
+        </div>
 
-        <SessionListSection
-          label="Cron"
-          sessions={cronSessions}
-          collapsed={collapsed.cron}
-          onToggle={() => toggle('cron')}
-          showExited={showExited.cron}
-          onToggleShowExited={() => toggleShowExited('cron')}
-          selectedChatId={selectedChatId}
-          onSelectChat={onSelectChat}
-        />
+        <div data-testid="cron-section">
+          <SessionListSection
+            label="Cron"
+            sessions={cronSessions}
+            collapsed={collapsed.cron}
+            onToggle={() => toggle('cron')}
+            showExited={showExited.cron}
+            onToggleShowExited={() => toggleShowExited('cron')}
+            selectedChatId={selectedChatId}
+            onSelectChat={onSelectChat}
+          />
+        </div>
 
-        <SessionListSection
-          label="Sentinels"
-          sessions={sentinelSessions}
-          collapsed={collapsed.sentinel}
-          onToggle={() => toggle('sentinel')}
-          showExited={showExited.sentinel}
-          onToggleShowExited={() => toggleShowExited('sentinel')}
-          selectedChatId={selectedChatId}
-          onSelectChat={onSelectChat}
-        />
+        <div data-testid="sentinel-section">
+          <SessionListSection
+            label="Sentinels"
+            sessions={sentinelSessions}
+            collapsed={collapsed.sentinel}
+            onToggle={() => toggle('sentinel')}
+            showExited={showExited.sentinel}
+            onToggleShowExited={() => toggleShowExited('sentinel')}
+            selectedChatId={selectedChatId}
+            onSelectChat={onSelectChat}
+          />
+        </div>
       </div>
 
       {/* Footer */}
       <div
+        data-testid="sessions-footer"
         style={{
           padding: '10px 12px 12px 20px',
           borderTop: '1px solid var(--hv-border-hair)',

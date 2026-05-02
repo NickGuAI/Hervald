@@ -8,9 +8,11 @@ import { homedir } from 'node:os'
 import { promisify } from 'node:util'
 import multer from 'multer'
 import { buildCommanderSessionSeed } from '../commanders/memory/module.js'
+import { ConversationStore } from '../commanders/conversation-store.js'
 import { resolveCommanderDataDir } from '../commanders/paths.js'
 import { resolveHammurabiDataDir, resolveModuleDataDir } from '../data-dir.js'
 import {
+  buildLegacyCommanderConversationId,
   CommanderSessionStore,
   DEFAULT_COMMANDER_MAX_TURNS,
 } from '../commanders/store.js'
@@ -352,6 +354,7 @@ export function createAgentsRouter(options: AgentsRouterOptions = {}): AgentsRou
   const commanderSessionStore = options.commanderSessionStorePath !== undefined
     ? new CommanderSessionStore(options.commanderSessionStorePath)
     : new CommanderSessionStore()
+  const conversationStore = new ConversationStore(commanderDataDir)
   const runtimeConfig = loadCommanderRuntimeConfig()
   const prunerConfig = {
     enabled: runtimeConfig.agents?.pruner?.enabled ?? DEFAULT_AGENT_PRUNER_ENABLED,
@@ -559,6 +562,7 @@ export function createAgentsRouter(options: AgentsRouterOptions = {}): AgentsRou
         resumedFrom: entry.resumedFrom,
         sessionType: entry.sessionType,
         creator: entry.creator,
+        conversationId: entry.conversationId,
         currentSkillInvocation: entry.currentSkillInvocation,
         spawnedBy: entry.spawnedBy,
         spawnedWorkers: entry.spawnedWorkers,
@@ -578,6 +582,7 @@ export function createAgentsRouter(options: AgentsRouterOptions = {}): AgentsRou
           resumedFrom: entry.resumedFrom,
           sessionType: entry.sessionType,
           creator: entry.creator,
+          conversationId: entry.conversationId,
           currentSkillInvocation: entry.currentSkillInvocation,
           machine,
           spawnedBy: entry.spawnedBy,
@@ -600,6 +605,7 @@ export function createAgentsRouter(options: AgentsRouterOptions = {}): AgentsRou
           resumedFrom: entry.resumedFrom,
           sessionType: entry.sessionType,
           creator: entry.creator,
+          conversationId: entry.conversationId,
           currentSkillInvocation: entry.currentSkillInvocation,
           spawnedBy: entry.spawnedBy,
           spawnedWorkers: entry.spawnedWorkers,
@@ -674,6 +680,7 @@ export function createAgentsRouter(options: AgentsRouterOptions = {}): AgentsRou
     requireReadAccess,
     requireWriteAccess,
     commanderSessionStorePath: options.commanderSessionStorePath,
+    conversationStore,
     sessions,
     buildSshArgs,
     isRemoteMachine,
@@ -1013,10 +1020,12 @@ export function createAgentsRouter(options: AgentsRouterOptions = {}): AgentsRou
 
     try {
       const commanderSession = await commanderSessionStore.get(commanderId)
+      const conversationId = session.conversationId?.trim() || buildLegacyCommanderConversationId(commanderId)
+      const conversation = await conversationStore.get(conversationId)
       const seeded = await buildCommanderSessionSeed({
         commanderId,
         cwd: commanderSession?.cwd ?? session.cwd,
-        currentTask: commanderSession?.currentTask ?? null,
+        currentTask: conversation?.currentTask ?? null,
         taskSource: commanderSession?.taskSource ?? null,
         maxTurns: commanderSession?.maxTurns ?? session.maxTurns ?? DEFAULT_COMMANDER_MAX_TURNS,
         memoryBasePath: commanderDataDir,
@@ -1049,6 +1058,8 @@ export function createAgentsRouter(options: AgentsRouterOptions = {}): AgentsRou
           spawnedWorkers: session.spawnedWorkers,
           sessionType: session.sessionType,
           creator: session.creator,
+          conversationId: session.conversationId,
+          currentSkillInvocation: session.currentSkillInvocation,
           resumedFrom: session.resumedFrom,
           systemPrompt: promptOptions.systemPrompt,
           model: session.model,
@@ -1074,6 +1085,8 @@ export function createAgentsRouter(options: AgentsRouterOptions = {}): AgentsRou
         resumedFrom: session.resumedFrom,
         sessionType: session.sessionType,
         creator: session.creator,
+        conversationId: session.conversationId,
+        currentSkillInvocation: session.currentSkillInvocation,
         systemPrompt: promptOptions.systemPrompt,
         maxTurns: promptOptions.maxTurns,
       },
@@ -2082,6 +2095,7 @@ export function createAgentsRouter(options: AgentsRouterOptions = {}): AgentsRou
       resumedFrom?: string
       sessionType?: SessionType
       creator?: SessionCreator
+      conversationId?: string
       currentSkillInvocation?: ActiveSkillInvocation
       machine?: MachineConfig
       spawnedBy?: string
@@ -2094,6 +2108,7 @@ export function createAgentsRouter(options: AgentsRouterOptions = {}): AgentsRou
       resumedFrom: options.resumedFrom,
       sessionType: options.sessionType,
       creator: options.creator,
+      conversationId: options.conversationId,
       currentSkillInvocation: options.currentSkillInvocation,
       machine: options.machine,
       spawnedBy: options.spawnedBy,

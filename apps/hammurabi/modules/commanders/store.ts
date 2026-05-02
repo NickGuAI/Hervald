@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto'
+import { createHash } from 'node:crypto'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import {
@@ -11,6 +11,7 @@ import {
   normalizeHeartbeatState,
   type CommanderHeartbeatState,
 } from './heartbeat.js'
+import type { ConversationStore } from './conversation-store.js'
 import { resolveCommanderSessionStorePath } from './paths.js'
 import {
   createDefaultCommanderRuntimeConfig,
@@ -25,6 +26,21 @@ const COMMANDER_STATES = new Set<CommanderSession['state']>([
   'paused',
   'stopped',
 ])
+
+const LEGACY_RUNTIME_KEYS = [
+  'pid',
+  'currentTask',
+  'lastHeartbeat',
+  'heartbeat',
+  'heartbeatTickCount',
+  'claudeSessionId',
+  'codexThreadId',
+  'geminiSessionId',
+  'channelMeta',
+  'lastRoute',
+  'completedTasks',
+  'totalCostUsd',
+]
 
 export const DEFAULT_COMMANDER_MAX_TURNS = DEFAULT_COMMANDER_RUNTIME_DEFAULT_MAX_TURNS
 export const MAX_COMMANDER_MAX_TURNS = DEFAULT_COMMANDER_RUNTIME_LIMIT_MAX_TURNS
@@ -80,38 +96,50 @@ export interface CommanderSession {
   host: string
   avatarSeed?: string
   persona?: string
-  pid: number | null
   state: 'idle' | 'running' | 'paused' | 'stopped'
   created: string
   agentType?: 'claude' | 'codex' | 'gemini'
   effort?: ClaudeEffortLevel
-  channelMeta?: CommanderChannelMeta
-  lastRoute?: CommanderLastRoute
-  claudeSessionId?: string
-  codexThreadId?: string
-  geminiSessionId?: string
   cwd?: string
   maxTurns: number
   contextMode: CommanderContextMode
-  heartbeat: CommanderHeartbeatState
-  lastHeartbeat: string | null
-  heartbeatTickCount?: number
   contextConfig?: HeartbeatContextConfig
   taskSource: CommanderTaskSource | null
-  currentTask: CommanderCurrentTask | null
-  completedTasks: number
-  totalCostUsd: number
   remoteOrigin?: CommanderRemoteOrigin
 }
 
-export function isCommanderSessionRunning(
-  session: Pick<CommanderSession, 'state'> | null | undefined,
-): boolean {
-  return session?.state === 'running'
+export type CommanderConversationSurface =
+  | 'discord'
+  | 'telegram'
+  | 'whatsapp'
+  | 'ui'
+  | 'cli'
+  | 'api'
+
+export interface CommanderConversationBackfill {
+  id: string
+  commanderId: string
+  surface: CommanderConversationSurface
+  channelMeta?: CommanderChannelMeta
+  lastRoute?: CommanderLastRoute
+  status: 'active' | 'idle' | 'archived'
+  currentTask: CommanderCurrentTask | null
+  claudeSessionId?: string
+  codexThreadId?: string
+  geminiSessionId?: string
+  lastHeartbeat: string | null
+  heartbeat: CommanderHeartbeatState
+  heartbeatTickCount: number
+  completedTasks: number
+  totalCostUsd: number
+  createdAt: string
+  lastMessageAt: string
 }
 
-interface PersistedCommanderSessions {
+interface ParsedCommanderSessions {
   sessions: CommanderSession[]
+  backfills: CommanderConversationBackfill[]
+  legacyShapeDetected: boolean
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -233,7 +261,7 @@ function parseChannelChatType(raw: unknown): CommanderChannelMeta['chatType'] | 
     : null
 }
 
-function parseCommanderChannelMeta(raw: unknown): CommanderChannelMeta | undefined {
+export function parseCommanderChannelMeta(raw: unknown): CommanderChannelMeta | undefined {
   if (!isObject(raw)) {
     return undefined
   }
@@ -263,7 +291,7 @@ function parseCommanderChannelMeta(raw: unknown): CommanderChannelMeta | undefin
   }
 }
 
-function parseCommanderLastRoute(raw: unknown): CommanderLastRoute | undefined {
+export function parseCommanderLastRoute(raw: unknown): CommanderLastRoute | undefined {
   if (!isObject(raw)) {
     return undefined
   }
@@ -308,12 +336,96 @@ function parseCommanderContextMode(raw: unknown): CommanderContextMode {
     : DEFAULT_COMMANDER_CONTEXT_MODE
 }
 
+function hasLegacyRuntimeShape(raw: Record<string, unknown>): boolean {
+  return LEGACY_RUNTIME_KEYS.some((key) => raw[key] !== undefined && raw[key] !== null)
+}
+
+function normalizeLegacyConversationStatus(
+  rawState: CommanderSession['state'],
+): CommanderConversationBackfill['status'] {
+  return rawState === 'running'
+    ? 'active'
+    : 'idle'
+}
+
+function surfaceFromChannelMeta(
+  channelMeta: CommanderChannelMeta | undefined,
+): CommanderConversationSurface {
+  switch (channelMeta?.provider) {
+    case 'discord':
+      return 'discord'
+    case 'telegram':
+      return 'telegram'
+    case 'whatsapp':
+      return 'whatsapp'
+    default:
+      return 'ui'
+  }
+}
+
+export function buildLegacyCommanderConversationId(commanderId: string): string {
+  const hash = createHash('sha256')
+    .update(`legacy-conversation:${commanderId}`)
+    .digest('hex')
+
+  return [
+    hash.slice(0, 8),
+    hash.slice(8, 12),
+    hash.slice(12, 16),
+    hash.slice(16, 20),
+    hash.slice(20, 32),
+  ].join('-')
+}
+
+function buildLegacyBackfill(
+  raw: Record<string, unknown>,
+  session: CommanderSession,
+  runtimeConfig: CommanderRuntimeConfig,
+): CommanderConversationBackfill {
+  const channelMeta = parseCommanderChannelMeta(raw.channelMeta)
+  const lastRoute = parseCommanderLastRoute(raw.lastRoute)
+  const currentTask = parseCurrentTask(raw.currentTask)
+  const lastHeartbeat = typeof raw.lastHeartbeat === 'string'
+    ? raw.lastHeartbeat.trim() || null
+    : null
+  const heartbeatTickCount = typeof raw.heartbeatTickCount === 'number' && Number.isFinite(raw.heartbeatTickCount)
+    ? Math.max(0, Math.floor(raw.heartbeatTickCount))
+    : 0
+  const heartbeat = normalizeHeartbeatState(raw.heartbeat, lastHeartbeat)
+  const completedTasks = typeof raw.completedTasks === 'number' && Number.isFinite(raw.completedTasks)
+    ? Math.max(0, Math.floor(raw.completedTasks))
+    : 0
+  const totalCostUsd = typeof raw.totalCostUsd === 'number' && Number.isFinite(raw.totalCostUsd)
+    ? Math.max(0, raw.totalCostUsd)
+    : 0
+
+  return {
+    id: buildLegacyCommanderConversationId(session.id),
+    commanderId: session.id,
+    surface: surfaceFromChannelMeta(channelMeta),
+    ...(channelMeta ? { channelMeta } : {}),
+    ...(lastRoute ? { lastRoute } : {}),
+    status: normalizeLegacyConversationStatus(session.state),
+    currentTask,
+    claudeSessionId: parseOptionalNonEmptyString(raw.claudeSessionId),
+    codexThreadId: parseOptionalNonEmptyString(raw.codexThreadId),
+    geminiSessionId: parseOptionalNonEmptyString(raw.geminiSessionId),
+    lastHeartbeat: heartbeat.lastSentAt ?? lastHeartbeat,
+    heartbeat,
+    heartbeatTickCount,
+    completedTasks,
+    totalCostUsd,
+    createdAt: session.created,
+    lastMessageAt: heartbeat.lastSentAt ?? session.created,
+  }
+}
+
 function parseCommanderSession(
   raw: unknown,
   runtimeConfig: CommanderRuntimeConfig,
-): CommanderSession | null {
+): { session: CommanderSession | null; backfill?: CommanderConversationBackfill; legacyShapeDetected: boolean } {
   if (!isObject(raw)) {
-    return null
+    return { session: null, legacyShapeDetected: false }
   }
 
   const id = typeof raw.id === 'string' ? raw.id.trim() : ''
@@ -327,120 +439,90 @@ function parseCommanderSession(
   const created = typeof raw.created === 'string' ? raw.created.trim() : ''
   const agentType = parseAgentType(raw.agentType)
   const effort = normalizeClaudeEffortLevel(raw.effort, DEFAULT_CLAUDE_EFFORT_LEVEL)
-  const claudeSessionId = typeof raw.claudeSessionId === 'string' && raw.claudeSessionId.trim().length > 0
-    ? raw.claudeSessionId.trim()
-    : undefined
-  const codexThreadId = typeof raw.codexThreadId === 'string' && raw.codexThreadId.trim().length > 0
-    ? raw.codexThreadId.trim()
-    : undefined
-  const geminiSessionId = typeof raw.geminiSessionId === 'string' && raw.geminiSessionId.trim().length > 0
-    ? raw.geminiSessionId.trim()
-    : undefined
   const cwd = typeof raw.cwd === 'string' && raw.cwd.trim().length > 0
     ? raw.cwd.trim()
     : undefined
   const taskSource = raw.taskSource != null ? parseTaskSource(raw.taskSource) : null
-  const currentTask = parseCurrentTask(raw.currentTask)
   const contextConfig = parseHeartbeatContextConfig(raw.contextConfig)
   const maxTurns = parseCommanderMaxTurns(raw.maxTurns, runtimeConfig)
   const contextMode = parseCommanderContextMode(raw.contextMode)
   const remoteOrigin = parseRemoteOrigin(raw.remoteOrigin)
-  const channelMeta = parseCommanderChannelMeta(raw.channelMeta)
-  const lastRoute = parseCommanderLastRoute(raw.lastRoute)
-
   const state = raw.state
+
   if (
     !id ||
     !host ||
     !created ||
     !COMMANDER_STATES.has(state as CommanderSession['state'])
   ) {
-    return null
+    return { session: null, legacyShapeDetected: false }
   }
 
-  const pid = typeof raw.pid === 'number' && Number.isFinite(raw.pid)
-    ? Math.max(0, Math.floor(raw.pid))
-    : null
-  const completedTasks = typeof raw.completedTasks === 'number' && Number.isFinite(raw.completedTasks)
-    ? Math.max(0, Math.floor(raw.completedTasks))
-    : 0
-  const totalCostUsd = typeof raw.totalCostUsd === 'number' && Number.isFinite(raw.totalCostUsd)
-    ? Math.max(0, raw.totalCostUsd)
-    : 0
-  const lastHeartbeat = typeof raw.lastHeartbeat === 'string'
-    ? raw.lastHeartbeat.trim()
-    : null
-  const heartbeatTickCount = typeof raw.heartbeatTickCount === 'number' && Number.isFinite(raw.heartbeatTickCount)
-    ? Math.max(0, Math.floor(raw.heartbeatTickCount))
-    : 0
-  const heartbeat = normalizeHeartbeatState(raw.heartbeat, lastHeartbeat || null)
-  const synchronizedLastHeartbeat = heartbeat.lastSentAt ?? null
-
-  return {
+  const session: CommanderSession = {
     id,
     host,
     avatarSeed,
     persona,
-    pid,
     state: state as CommanderSession['state'],
     created,
     agentType,
     effort,
-    claudeSessionId,
-    codexThreadId,
-    geminiSessionId,
     cwd,
-    ...(channelMeta ? { channelMeta } : {}),
-    ...(lastRoute ? { lastRoute } : {}),
     maxTurns,
     contextMode,
-    heartbeat,
-    lastHeartbeat: synchronizedLastHeartbeat,
-    heartbeatTickCount,
     contextConfig,
     taskSource,
-    currentTask,
-    completedTasks,
-    totalCostUsd,
     ...(remoteOrigin ? { remoteOrigin } : {}),
+  }
+
+  const legacyShapeDetected = hasLegacyRuntimeShape(raw)
+  return {
+    session,
+    backfill: legacyShapeDetected
+      ? buildLegacyBackfill(raw, session, runtimeConfig)
+      : undefined,
+    legacyShapeDetected,
   }
 }
 
 function parsePersistedCommanderSessions(
   raw: unknown,
   runtimeConfig: CommanderRuntimeConfig,
-): PersistedCommanderSessions {
-  if (Array.isArray(raw)) {
-    return {
-      sessions: raw
-        .map((entry) => parseCommanderSession(entry, runtimeConfig))
-        .filter((entry): entry is CommanderSession => entry !== null),
+): ParsedCommanderSessions {
+  const candidates: unknown[] = Array.isArray(raw)
+    ? raw
+    : (isObject(raw) && Array.isArray(raw.sessions) ? raw.sessions : [])
+
+  const sessions: CommanderSession[] = []
+  const backfills: CommanderConversationBackfill[] = []
+  let legacyShapeDetected = false
+
+  for (const entry of candidates) {
+    const parsed = parseCommanderSession(entry, runtimeConfig)
+    if (!parsed.session) {
+      continue
     }
+    sessions.push(parsed.session)
+    if (parsed.backfill) {
+      backfills.push(parsed.backfill)
+    }
+    legacyShapeDetected = legacyShapeDetected || parsed.legacyShapeDetected
   }
 
-  if (isObject(raw) && Array.isArray(raw.sessions)) {
-    return {
-      sessions: raw.sessions
-        .map((entry) => parseCommanderSession(entry, runtimeConfig))
-        .filter((entry): entry is CommanderSession => entry !== null),
-    }
-  }
-
-  return { sessions: [] }
+  return { sessions, backfills, legacyShapeDetected }
 }
 
 function cloneSession(session: CommanderSession): CommanderSession {
   return {
     ...session,
-    heartbeat: { ...session.heartbeat },
-    heartbeatTickCount: session.heartbeatTickCount ?? 0,
     contextConfig: session.contextConfig ? { ...session.contextConfig } : undefined,
     taskSource: session.taskSource ? { ...session.taskSource } : null,
-    currentTask: session.currentTask ? { ...session.currentTask } : null,
-    channelMeta: session.channelMeta ? { ...session.channelMeta } : undefined,
-    lastRoute: session.lastRoute ? { ...session.lastRoute } : undefined,
     ...(session.remoteOrigin ? { remoteOrigin: { ...session.remoteOrigin } } : {}),
   }
+}
+
+function serializeSession(session: CommanderSession): CommanderSession {
+  return cloneSession(session)
 }
 
 export function defaultCommanderSessionStorePath(): string {
@@ -449,11 +531,15 @@ export function defaultCommanderSessionStorePath(): string {
 
 export interface CommanderSessionStoreOptions {
   runtimeConfig?: CommanderRuntimeConfig
+  persistBackfilledConversation?: (conversation: CommanderConversationBackfill) => Promise<void>
+  logger?: Pick<Console, 'info' | 'warn'>
 }
 
 export class CommanderSessionStore {
   private readonly filePath: string
   private readonly runtimeConfig: CommanderRuntimeConfig
+  private readonly persistBackfilledConversation?: (conversation: CommanderConversationBackfill) => Promise<void>
+  private readonly logger: Pick<Console, 'info' | 'warn'>
   private sessionsById: Map<string, CommanderSession> | null = null
   private loadPromise: Promise<void> | null = null
   private mutationQueue: Promise<void> = Promise.resolve()
@@ -464,6 +550,8 @@ export class CommanderSessionStore {
   ) {
     this.filePath = path.resolve(filePath)
     this.runtimeConfig = options.runtimeConfig ?? createDefaultCommanderRuntimeConfig()
+    this.persistBackfilledConversation = options.persistBackfilledConversation
+    this.logger = options.logger ?? console
   }
 
   async list(): Promise<CommanderSession[]> {
@@ -493,91 +581,29 @@ export class CommanderSessionStore {
     })
   }
 
-  async findOrCreateBySessionKey(
-    sessionKey: string,
-    defaults: {
-      channelMeta: CommanderChannelMeta
-      lastRoute: CommanderLastRoute
-      host?: string
-      persona?: string
-    },
-  ): Promise<{ commander: CommanderSession; created: boolean }> {
-    return this.withMutationLock(async () => {
-      await this.ensureLoaded()
-      const normalizedSessionKey = sessionKey.trim()
-      if (!normalizedSessionKey) {
-        throw new Error('sessionKey must be a non-empty string')
-      }
-
-      const sessions = this.sessions()
-      for (const existing of sessions.values()) {
-        if (existing.channelMeta?.sessionKey !== normalizedSessionKey) {
-          continue
-        }
-
-        const updated: CommanderSession = {
-          ...cloneSession(existing),
-          lastRoute: { ...defaults.lastRoute },
-        }
-        sessions.set(existing.id, cloneSession(updated))
-        await this.writeToDisk()
-        return {
-          commander: cloneSession(updated),
-          created: false,
-        }
-      }
-
-      const fallbackHost = `${defaults.channelMeta.provider}-${defaults.channelMeta.chatType}-${defaults.channelMeta.peerId}`
-      const host = defaults.host?.trim() || fallbackHost
-      const persona = defaults.persona?.trim() || undefined
-      const nowIso = new Date().toISOString()
-      const createdCommander: CommanderSession = {
-        id: randomUUID(),
-        host,
-        ...(persona ? { persona } : {}),
-        pid: null,
-        state: 'idle',
-        created: nowIso,
-        agentType: 'claude',
-        effort: DEFAULT_CLAUDE_EFFORT_LEVEL,
-        maxTurns: this.runtimeConfig.defaults.maxTurns,
-        contextMode: DEFAULT_COMMANDER_CONTEXT_MODE,
-        heartbeat: createDefaultHeartbeatState(),
-        lastHeartbeat: null,
-        heartbeatTickCount: 0,
-        taskSource: null,
-        currentTask: null,
-        completedTasks: 0,
-        totalCostUsd: 0,
-        channelMeta: {
-          ...defaults.channelMeta,
-          sessionKey: normalizedSessionKey,
-        },
-        lastRoute: { ...defaults.lastRoute },
-      }
-
-      sessions.set(createdCommander.id, cloneSession(createdCommander))
-      await this.writeToDisk()
-      return {
-        commander: cloneSession(createdCommander),
-        created: true,
-      }
-    })
+  // Deprecated compatibility shim. Channel binding moved to ConversationStore.
+  async findOrCreateBySessionKey(): Promise<never> {
+    throw new Error('CommanderSessionStore.findOrCreateBySessionKey moved to ConversationStore')
   }
 
+  // Deprecated compatibility shim. Heartbeat state moved to Conversation persistence.
   async updateLastHeartbeat(
-    id: string,
-    timestamp: string,
-  ): Promise<CommanderSession | null> {
-    return this.update(id, (current) => ({
+    input: {
+      conversationId: string
+      timestamp: string
+    },
+    conversationStore: Pick<ConversationStore, 'update'>,
+  ): Promise<boolean> {
+    const updated = await conversationStore.update(input.conversationId, (current) => ({
       ...current,
-      lastHeartbeat: timestamp,
-      heartbeatTickCount: (current.heartbeatTickCount ?? 0) + 1,
+      lastHeartbeat: input.timestamp,
       heartbeat: {
         ...current.heartbeat,
-        lastSentAt: timestamp,
+        lastSentAt: input.timestamp,
       },
+      heartbeatTickCount: current.heartbeatTickCount + 1,
     }))
+    return updated !== null
   }
 
   async update(
@@ -635,6 +661,25 @@ export class CommanderSessionStore {
           persisted.sessions.map((session) => [session.id, cloneSession(session)]),
         )
       }
+
+      let backfillPersisted = false
+      if (persisted.backfills.length > 0 && this.persistBackfilledConversation) {
+        for (const backfill of persisted.backfills) {
+          await this.persistBackfilledConversation(backfill)
+          this.logger.info(
+            `[commanders][backfill] Lifted runtime fields from commander "${backfill.commanderId}" into conversation "${backfill.id}"`,
+          )
+        }
+        backfillPersisted = true
+      } else if (persisted.backfills.length > 0) {
+        this.logger.warn(
+          `[commanders][backfill] Detected ${persisted.backfills.length} legacy commander runtime records but no conversation backfill handler is configured`,
+        )
+      }
+
+      if (persisted.legacyShapeDetected && (persisted.backfills.length === 0 || backfillPersisted)) {
+        await this.writeToDisk()
+      }
     })()
 
     try {
@@ -644,13 +689,13 @@ export class CommanderSessionStore {
     }
   }
 
-  private async readFromDisk(): Promise<PersistedCommanderSessions> {
+  private async readFromDisk(): Promise<ParsedCommanderSessions> {
     let rawFile: string
     try {
       rawFile = await readFile(this.filePath, 'utf8')
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-        return { sessions: [] }
+        return { sessions: [], backfills: [], legacyShapeDetected: false }
       }
       throw error
     }
@@ -659,7 +704,7 @@ export class CommanderSessionStore {
     try {
       parsed = JSON.parse(rawFile) as unknown
     } catch {
-      return { sessions: [] }
+      return { sessions: [], backfills: [], legacyShapeDetected: false }
     }
 
     return parsePersistedCommanderSessions(parsed, this.runtimeConfig)
@@ -667,13 +712,13 @@ export class CommanderSessionStore {
 
   private async writeToDisk(): Promise<void> {
     const sessions = [...this.sessions().values()]
-      .map((session) => cloneSession(session))
+      .map((session) => serializeSession(session))
       .sort((left, right) => left.created.localeCompare(right.created))
 
     await mkdir(path.dirname(this.filePath), { recursive: true })
     await writeFile(
       this.filePath,
-      JSON.stringify({ sessions } satisfies PersistedCommanderSessions, null, 2),
+      JSON.stringify({ sessions }, null, 2),
       'utf8',
     )
   }
@@ -686,4 +731,10 @@ export class CommanderSessionStore {
     )
     return run
   }
+}
+
+export function isCommanderSessionRunning(
+  session: Pick<CommanderSession, 'state'> | null | undefined,
+): boolean {
+  return session?.state === 'running'
 }

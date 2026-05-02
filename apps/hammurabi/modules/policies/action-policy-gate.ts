@@ -33,6 +33,20 @@ export interface ActionPolicyGateResult {
   sessionContext: ApprovalSessionContext | null
 }
 
+export interface ActionPolicyGatePendingResult {
+  actionId: string
+  actionLabel: string
+  approvalId: string
+  decision: 'pending'
+  policyDecision: 'review'
+  retryAfterMs: number
+  sessionContext: ApprovalSessionContext | null
+}
+
+export type ActionPolicyGateEvaluationResult = ActionPolicyGateResult | ActionPolicyGatePendingResult
+
+export const DEFAULT_REVIEW_RETRY_AFTER_MS = 1_000
+
 function getCurrentSkillPolicy(
   policyView: Awaited<ReturnType<PolicyStore['resolveEffective']>>,
   skillId: string,
@@ -64,7 +78,10 @@ export class ActionPolicyGate {
     this.policyStore = options.policyStore
   }
 
-  async enforceAndWait(request: ActionPolicyGateRequest): Promise<ActionPolicyGateResult> {
+  async enforce(
+    request: ActionPolicyGateRequest,
+    options: { waitForReview?: boolean } = {},
+  ): Promise<ActionPolicyGateEvaluationResult> {
     const approvalSessionsInterface = this.getApprovalSessionsInterface()
     const sessionContext = this.resolveSessionContext(request, approvalSessionsInterface)
     const policyView = await this.policyStore.resolveEffective(sessionContext?.commanderScopeId)
@@ -117,6 +134,7 @@ export class ActionPolicyGate {
       }
     }
 
+    const settings = await this.policyStore.getSettings()
     const approval = await this.approvalCoordinator.enqueue(
       {
         source: request.source,
@@ -130,9 +148,24 @@ export class ActionPolicyGate {
         currentSkillId: sessionContext?.currentSkillInvocation?.skillId,
         currentSkillName: sessionContext?.currentSkillInvocation?.displayName,
       },
+      {
+        timeoutMs: settings.timeoutMinutes * 60_000,
+        timeoutAction: settings.timeoutAction === 'auto' ? 'approve' : 'reject',
+      },
     )
 
-    const settings = await this.policyStore.getSettings()
+    if (options.waitForReview === false) {
+      return {
+        actionId,
+        actionLabel,
+        approvalId: approval.id,
+        decision: 'pending',
+        policyDecision: resolved.decision,
+        retryAfterMs: DEFAULT_REVIEW_RETRY_AFTER_MS,
+        sessionContext,
+      }
+    }
+
     const outcome = await this.approvalCoordinator.waitForResolution(approval.id, {
       timeoutMs: settings.timeoutMinutes * 60_000,
       timeoutAction: settings.timeoutAction === 'auto' ? 'approve' : 'reject',
@@ -147,6 +180,14 @@ export class ActionPolicyGate {
       reason: outcome.reason,
       sessionContext,
     }
+  }
+
+  async enforceAndWait(request: ActionPolicyGateRequest): Promise<ActionPolicyGateResult> {
+    const result = await this.enforce(request)
+    if (result.decision === 'pending') {
+      throw new Error('Expected a terminal approval decision')
+    }
+    return result
   }
 
   private resolveSessionContext(

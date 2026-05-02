@@ -45,6 +45,7 @@ export type CodexSessionCreator = (
     systemPrompt?: string
     sessionType?: SessionType
     creator?: SessionCreator
+    conversationId?: string
   },
 ) => Promise<StreamSession>
 
@@ -60,6 +61,7 @@ export type GeminiSessionCreator = (
     maxTurns?: number
     sessionType?: SessionType
     creator?: SessionCreator
+    conversationId?: string
   },
 ) => Promise<StreamSession>
 
@@ -79,6 +81,7 @@ export type ClaudeSessionCreator = (
     maxTurns?: number
     sessionType?: SessionType
     creator?: SessionCreator
+    conversationId?: string
   },
 ) => StreamSession
 
@@ -183,6 +186,7 @@ export function createCommanderSessionsInterface(
     async createCommanderSession({
       name,
       commanderId,
+      conversationId,
       systemPrompt,
       agentType,
       effort,
@@ -210,6 +214,7 @@ export function createCommanderSessionsInterface(
                 resumeSessionId: resumeCodexThreadId,
                 sessionType: 'commander',
                 creator,
+                conversationId,
               },
             )
           } catch {
@@ -222,6 +227,7 @@ export function createCommanderSessionsInterface(
                 systemPrompt,
                 sessionType: 'commander',
                 creator,
+                conversationId,
               },
             )
           }
@@ -235,6 +241,7 @@ export function createCommanderSessionsInterface(
               systemPrompt,
               sessionType: 'commander',
               creator,
+              conversationId,
             },
           )
         }
@@ -251,6 +258,7 @@ export function createCommanderSessionsInterface(
             maxTurns,
             sessionType: 'commander',
             creator,
+            conversationId,
           },
         )
       } else {
@@ -269,6 +277,7 @@ export function createCommanderSessionsInterface(
             maxTurns,
             sessionType: 'commander',
             creator,
+            conversationId,
           },
         )
       }

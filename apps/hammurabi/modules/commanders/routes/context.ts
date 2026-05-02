@@ -42,10 +42,12 @@ import {
 import { EmailPoller } from '../email-poller.js'
 import {
   CommanderHeartbeatManager,
+  createDefaultHeartbeatState,
   type CommanderHeartbeatState,
 } from '../heartbeat.js'
 import { HeartbeatLog, type HeartbeatLogAppendInput } from '../heartbeat-log.js'
 import { CommanderManager, type CommanderSubagentLifecycleEvent } from '../manager.js'
+import { ConversationStore, type Conversation } from '../conversation-store.js'
 import {
   resolveCommanderDataDir,
   resolveCommanderPaths,
@@ -60,6 +62,7 @@ import {
   parseSessionId,
 } from '../route-parsers.js'
 import {
+  buildLegacyCommanderConversationId,
   CommanderSessionStore,
   type CommanderChannelMeta,
   type CommanderCurrentTask,
@@ -85,6 +88,7 @@ import type {
   CommanderCronTaskResponse,
   CommanderRoutesContext,
   CommanderRuntime,
+  CommanderConversationRuntimeView,
   CommanderSessionResponse,
   CommanderSessionStats,
   CommanderSubAgentEntry,
@@ -101,6 +105,14 @@ export { BASE_SYSTEM_PROMPT, STARTUP_PROMPT }
 
 export function toCommanderSessionName(commanderId: string): string {
   return `${COMMANDER_SESSION_NAME_PREFIX}${commanderId}`
+}
+
+export function buildConversationSessionName(
+  conversation: Pick<Conversation, 'commanderId' | 'id'>,
+): string {
+  return conversation.id === buildLegacyCommanderConversationId(conversation.commanderId)
+    ? toCommanderSessionName(conversation.commanderId)
+    : `${toCommanderSessionName(conversation.commanderId)}-conversation-${conversation.id}`
 }
 
 function defaultAgentsSessionStorePath(): string {
@@ -299,9 +311,182 @@ type HeartbeatLogTaskSnapshot = {
   claimedQuestInstruction?: string
 }
 
+function defaultCommanderRuntimeView(): CommanderConversationRuntimeView {
+  return {
+    heartbeat: createDefaultHeartbeatState(),
+    lastHeartbeat: null,
+    heartbeatTickCount: 0,
+    currentTask: null,
+    completedTasks: 0,
+    totalCostUsd: 0,
+  }
+}
+
+async function resolveLegacyConversationForCommander(
+  commanderId: string,
+  conversationStore: ConversationStore,
+): Promise<Conversation | null> {
+  return conversationStore.get(buildLegacyCommanderConversationId(commanderId))
+}
+
+function latestIsoTimestamp(values: Array<string | null | undefined>): string | null {
+  let latest: string | null = null
+  for (const value of values) {
+    if (!value) {
+      continue
+    }
+    if (!latest || value > latest) {
+      latest = value
+    }
+  }
+  return latest
+}
+
+function getConversationActivityTimestamp(conversation: Conversation): string {
+  return latestIsoTimestamp([
+    conversation.lastMessageAt,
+    conversation.createdAt,
+  ]) ?? conversation.createdAt
+}
+
+function getConversationHeartbeatTimestamp(conversation: Conversation): string | null {
+  return latestIsoTimestamp([
+    conversation.lastHeartbeat,
+    conversation.heartbeat.lastSentAt,
+  ])
+}
+
+function conversationStatusPriority(status: Conversation['status']): number {
+  switch (status) {
+    case 'active':
+      return 0
+    case 'idle':
+      return 1
+    case 'archived':
+      return 2
+  }
+}
+
+function compareConversationPriority(left: Conversation, right: Conversation): number {
+  const statusDelta = conversationStatusPriority(left.status) - conversationStatusPriority(right.status)
+  if (statusDelta !== 0) {
+    return statusDelta
+  }
+  return getConversationActivityTimestamp(right).localeCompare(getConversationActivityTimestamp(left))
+}
+
+function selectPrimaryConversationForCommander(
+  conversations: readonly Conversation[],
+): Conversation | null {
+  return [...conversations].sort(compareConversationPriority)[0] ?? null
+}
+
+function selectMostRecentActiveConversationForCommander(
+  conversations: readonly Conversation[],
+): Conversation | null {
+  const active = conversations
+    .filter((conversation) => conversation.status === 'active')
+    .sort((left, right) =>
+      getConversationActivityTimestamp(right).localeCompare(getConversationActivityTimestamp(left)),
+    )
+  return active[0] ?? null
+}
+
+async function resolveHeartbeatConversationForCommander(
+  commanderId: string,
+  conversationStore: ConversationStore,
+  conversationId?: string,
+): Promise<Conversation | null> {
+  if (conversationId) {
+    const conversation = await conversationStore.get(conversationId)
+    return conversation?.commanderId === commanderId
+      ? conversation
+      : null
+  }
+
+  const conversations = await conversationStore.listByCommander(commanderId)
+  return selectMostRecentActiveConversationForCommander(conversations)
+}
+
+async function resolveCommanderRuntimeViewForCommander(
+  commanderId: string,
+  conversationStore: ConversationStore,
+): Promise<CommanderConversationRuntimeView> {
+  const conversations = await conversationStore.listByCommander(commanderId)
+  if (conversations.length === 0) {
+    return defaultCommanderRuntimeView()
+  }
+
+  const primary = selectPrimaryConversationForCommander(conversations)
+
+  if (!primary) {
+    return defaultCommanderRuntimeView()
+  }
+
+  const totalCostUsd = conversations.reduce((sum, conversation) => sum + conversation.totalCostUsd, 0)
+  const completedTasks = conversations.reduce((sum, conversation) => sum + conversation.completedTasks, 0)
+  const heartbeatTickCount = conversations.reduce((sum, conversation) => sum + conversation.heartbeatTickCount, 0)
+  const lastHeartbeat = latestIsoTimestamp(
+    conversations.map((conversation) => getConversationHeartbeatTimestamp(conversation)),
+  )
+
+  return {
+    heartbeat: {
+      ...primary.heartbeat,
+      lastSentAt: lastHeartbeat,
+    },
+    lastHeartbeat,
+    heartbeatTickCount,
+    currentTask: primary.currentTask ? { ...primary.currentTask } : null,
+    completedTasks,
+    totalCostUsd,
+    channelMeta: primary.channelMeta ? { ...primary.channelMeta } : undefined,
+    lastRoute: primary.lastRoute ? { ...primary.lastRoute } : undefined,
+    claudeSessionId: primary.claudeSessionId,
+    codexThreadId: primary.codexThreadId,
+    geminiSessionId: primary.geminiSessionId,
+  }
+}
+
+async function resolveLatestChannelConversationForCommander(
+  commanderId: string,
+  conversationStore: ConversationStore,
+): Promise<Conversation | null> {
+  const conversations = await conversationStore.listByCommander(commanderId)
+  const channelConversations = conversations
+    .filter((conversation) => conversation.channelMeta && conversation.lastRoute)
+    .sort((left, right) => {
+      const byLastMessage = right.lastMessageAt.localeCompare(left.lastMessageAt)
+      if (byLastMessage !== 0) {
+        return byLastMessage
+      }
+      return right.createdAt.localeCompare(left.createdAt)
+    })
+
+  return channelConversations[0] ?? null
+}
+
+async function ensureLegacyConversationForCommander(
+  session: CommanderSession,
+  conversationStore: ConversationStore,
+  options: {
+    surface?: Conversation['surface']
+    heartbeat?: CommanderHeartbeatState
+    currentTask?: CommanderCurrentTask | null
+  } = {},
+): Promise<Conversation> {
+  return conversationStore.ensureLegacyConversation({
+    commanderId: session.id,
+    surface: options.surface,
+    createdAt: session.created,
+    heartbeat: options.heartbeat,
+    currentTask: options.currentTask,
+  })
+}
+
 async function buildHeartbeatLogTaskSnapshot(
   commanderId: string,
-  session: CommanderSession | null,
+  runtimeView: CommanderConversationRuntimeView,
   questStore: QuestStore,
 ): Promise<HeartbeatLogTaskSnapshot> {
   try {
@@ -324,7 +509,7 @@ async function buildHeartbeatLogTaskSnapshot(
       error,
     )
 
-    const claimedTask = session?.currentTask
+    const claimedTask = runtimeView.currentTask
     if (!claimedTask) {
       return { questCount: 0 }
     }
@@ -346,21 +531,24 @@ export function resolveCommanderAgentType(
   return 'claude'
 }
 
-export function toCommanderSessionResponse(
+export async function toCommanderSessionResponse(
   session: CommanderSession,
+  conversationStore: ConversationStore,
   runtime?: CommanderRuntime | undefined,
   stats: CommanderSessionStats = { questCount: 0, scheduleCount: 0 },
-): CommanderSessionResponse & {
+): Promise<CommanderSessionResponse & {
   contextConfig: { fatPinInterval: number }
   runtime: {
     heartbeatCount: number
     terminalState: CommanderRuntime['terminalState']
   }
-} {
+}> {
   const normalizedAgentType = resolveCommanderAgentType(session)
+  const runtimeView = await resolveCommanderRuntimeViewForCommander(session.id, conversationStore)
   const base = session.remoteOrigin
     ? {
         ...session,
+        ...runtimeView,
         name: session.host,
         agentType: normalizedAgentType,
         remoteOrigin: {
@@ -370,6 +558,7 @@ export function toCommanderSessionResponse(
       }
     : {
         ...session,
+        ...runtimeView,
         name: session.host,
         agentType: normalizedAgentType,
       }
@@ -383,7 +572,7 @@ export function toCommanderSessionResponse(
       fatPinInterval: resolveFatPinInterval(session.contextConfig?.fatPinInterval),
     },
     runtime: {
-      heartbeatCount: runtime?.heartbeatCount ?? session.heartbeatTickCount ?? 0,
+      heartbeatCount: runtime?.heartbeatCount ?? runtimeView.heartbeatTickCount ?? 0,
       terminalState: runtime?.terminalState ?? null,
     },
   }
@@ -566,8 +755,15 @@ export function buildCommandersContext(
   const runtimeConfig = options.runtimeConfig ?? loadCommanderRuntimeConfig({
     filePath: runtimeConfigPath,
   })
+  const conversationStore = options.conversationStore
+    ?? new ConversationStore(commanderDataDir)
   const sessionStore = options.sessionStore
-    ?? new CommanderSessionStore(options.sessionStorePath, { runtimeConfig })
+    ?? new CommanderSessionStore(options.sessionStorePath, {
+      runtimeConfig,
+      persistBackfilledConversation: async (conversation) => {
+        await conversationStore.upsertBackfilledConversation(conversation)
+      },
+    })
   const emailStoresDataDir = parseMessage(options.memoryBasePath)
     ?? parseMessage(options.heartbeatBasePath)
     ?? commanderDataDir
@@ -743,7 +939,7 @@ export function buildCommandersContext(
   )
   const runtimes = new Map<string, CommanderRuntime>()
   const activeCommanderSessions = new Map<string, { sessionName: string; startedAt: string }>()
-  const heartbeatFiredAtByCommander = new Map<string, string>()
+  const heartbeatFiredAtByConversation = new Map<string, string>()
   const emailReplyService = options.emailPoller ?? (
     sessionsInterface
       ? new EmailPoller({
@@ -911,7 +1107,7 @@ export function buildCommandersContext(
 
   const heartbeatManager = new CommanderHeartbeatManager({
     now,
-    sendHeartbeat: async ({ commanderId, renderedMessage, timestamp }) => {
+    sendHeartbeat: async ({ commanderId, conversationId, renderedMessage, timestamp }) => {
       const appendHeartbeatLog = async (
         input: HeartbeatLogAppendInput,
         label: string,
@@ -926,10 +1122,16 @@ export function buildCommandersContext(
         }
       }
 
-      heartbeatFiredAtByCommander.set(commanderId, timestamp)
+      heartbeatFiredAtByConversation.set(conversationId, timestamp)
       const session = await sessionStore.get(commanderId)
       if (!session) return false  // commander deleted — valid stop
-      const taskSnapshot = await buildHeartbeatLogTaskSnapshot(commanderId, session, questStore)
+      const conversation = await conversationStore.get(conversationId)
+      if (!conversation || conversation.commanderId !== commanderId) {
+        heartbeatFiredAtByConversation.delete(conversationId)
+        return false
+      }
+      const runtimeView = await resolveCommanderRuntimeViewForCommander(commanderId, conversationStore)
+      const taskSnapshot = await buildHeartbeatLogTaskSnapshot(commanderId, runtimeView, questStore)
       if (session.state !== 'running') {
         if (session.state === 'idle') {
           // Idle commanders can be resumed without recreating the loop.
@@ -942,7 +1144,7 @@ export function buildCommandersContext(
             },
             'commander-idle',
           )
-          heartbeatFiredAtByCommander.delete(commanderId)
+          heartbeatFiredAtByConversation.delete(conversationId)
           return true
         }
 
@@ -955,7 +1157,7 @@ export function buildCommandersContext(
           },
           'commander-not-running',
         )
-        heartbeatFiredAtByCommander.delete(commanderId)
+        heartbeatFiredAtByConversation.delete(conversationId)
         return false
       }
 
@@ -969,13 +1171,20 @@ export function buildCommandersContext(
           },
           'no-sessions-interface',
         )
-        heartbeatFiredAtByCommander.delete(commanderId)
+        heartbeatFiredAtByConversation.delete(conversationId)
         return false
       }
 
-      const sessionName = toCommanderSessionName(commanderId)
+      const sessionName = buildConversationSessionName({
+        commanderId,
+        id: conversationId,
+      })
       const activeAgentSession = sessionsInterface.getSession(sessionName)
       const runtime = runtimes.get(commanderId)
+      const heartbeatModeRuntime = {
+        heartbeatCount: conversation.heartbeatTickCount,
+        forceNextFatHeartbeat: runtime?.forceNextFatHeartbeat ?? false,
+      }
       let heartbeatMessage: string
 
       const buildFatHeartbeatMessage = async (
@@ -991,7 +1200,7 @@ export function buildCommandersContext(
       }
 
       if (runtime) {
-        const heartbeatMode = chooseHeartbeatMode(runtime, session, activeAgentSession)
+        const heartbeatMode = chooseHeartbeatMode(heartbeatModeRuntime, session, activeAgentSession)
 
         if (heartbeatMode === 'fat') {
           const workflow = await resolveCommanderWorkflow(
@@ -1020,10 +1229,7 @@ export function buildCommandersContext(
         runtime.lastTaskState = heartbeatMessage
       } else {
         const heartbeatMode = chooseHeartbeatMode(
-          {
-            heartbeatCount: session.heartbeatTickCount ?? 0,
-            forceNextFatHeartbeat: false,
-          },
+          heartbeatModeRuntime,
           session,
           activeAgentSession,
         )
@@ -1073,7 +1279,7 @@ export function buildCommandersContext(
           },
           'session-unavailable',
         )
-        heartbeatFiredAtByCommander.delete(commanderId)
+        heartbeatFiredAtByConversation.delete(conversationId)
         return false
       }
 
@@ -1088,17 +1294,24 @@ export function buildCommandersContext(
       )
       return true
     },
-    onHeartbeatSent: async ({ commanderId, timestamp }) => {
-      await sessionStore.updateLastHeartbeat(commanderId, timestamp)
+    onHeartbeatSent: async ({ conversationId, timestamp }) => {
+      await sessionStore.updateLastHeartbeat(
+        {
+          conversationId,
+          timestamp,
+        },
+        conversationStore,
+      )
+      heartbeatFiredAtByConversation.delete(conversationId)
     },
-    onHeartbeatError: ({ commanderId, error }) => {
+    onHeartbeatError: ({ commanderId, conversationId, error }) => {
       const errorMessage = error instanceof Error ? error.message : String(error)
       void (async () => {
-        const session = await sessionStore.get(commanderId)
         try {
-          const taskSnapshot = await buildHeartbeatLogTaskSnapshot(commanderId, session, questStore)
+          const runtimeView = await resolveCommanderRuntimeViewForCommander(commanderId, conversationStore)
+          const taskSnapshot = await buildHeartbeatLogTaskSnapshot(commanderId, runtimeView, questStore)
           await heartbeatLog.append(commanderId, {
-            firedAt: heartbeatFiredAtByCommander.get(commanderId) ?? now().toISOString(),
+            firedAt: heartbeatFiredAtByConversation.get(conversationId) ?? now().toISOString(),
             ...taskSnapshot,
             outcome: 'error',
             errorMessage,
@@ -1108,12 +1321,15 @@ export function buildCommandersContext(
             `[commanders] Failed to append heartbeat error log for "${commanderId}":`,
             appendError,
           )
+        } finally {
+          heartbeatFiredAtByConversation.delete(conversationId)
         }
       })().catch((appendError) => {
         console.error(
           `[commanders] Failed to append heartbeat error log for "${commanderId}":`,
           appendError,
         )
+        heartbeatFiredAtByConversation.delete(conversationId)
       })
     },
   })
@@ -1127,26 +1343,44 @@ export function buildCommandersContext(
     const allCommanders = await sessionStore.list()
     const runningCommanders = allCommanders.filter((session) => session.state === 'running')
     for (const commander of runningCommanders) {
-      const sessionName = toCommanderSessionName(commander.id)
-      const liveSession = persistedCommanderSessions.parseFailed
-        ? sessionsInterface.getSession(sessionName)
-        : persistedCommanderSessions.names.has(sessionName)
+      const conversations = await conversationStore.listByCommander(commander.id)
+      let hasLiveConversation = false
+      activeCommanderSessions.delete(commander.id)
+      for (const conversation of conversations) {
+        if (conversation.status !== 'active') {
+          continue
+        }
+
+        const sessionName = buildConversationSessionName(conversation)
+        const liveSession = persistedCommanderSessions.parseFailed
           ? sessionsInterface.getSession(sessionName)
-          : undefined
-      if (liveSession) {
-        const effectiveHeartbeat = resolveEffectiveHeartbeat(commander.heartbeat)
-        activeCommanderSessions.set(commander.id, {
-          sessionName,
-          startedAt: liveSession.createdAt ?? commander.created,
-        })
-        heartbeatManager.start(commander.id, effectiveHeartbeat)
-        continue
+          : persistedCommanderSessions.names.has(sessionName)
+            ? sessionsInterface.getSession(sessionName)
+            : undefined
+        if (!liveSession) {
+          continue
+        }
+
+        hasLiveConversation = true
+        if (conversation.id === buildLegacyCommanderConversationId(commander.id)) {
+          activeCommanderSessions.set(commander.id, {
+            sessionName,
+            startedAt: liveSession.createdAt ?? commander.created,
+          })
+        }
+        heartbeatManager.start(
+          conversation.id,
+          commander.id,
+          resolveEffectiveHeartbeat(conversation.heartbeat),
+        )
       }
 
-      await sessionStore.update(commander.id, (current) => ({
-        ...current,
-        state: 'idle',
-      }))
+      if (!hasLiveConversation) {
+        await sessionStore.update(commander.id, (current) => ({
+          ...current,
+          state: 'idle',
+        }))
+      }
     }
   }
 
@@ -1208,7 +1442,11 @@ export function buildCommandersContext(
       return { ok: false, status: 404, error: `Commander "${input.commanderId}" not found` }
     }
 
-    if (!session.channelMeta || !session.lastRoute) {
+    const channelConversation = await resolveLatestChannelConversationForCommander(
+      input.commanderId,
+      conversationStore,
+    )
+    if (!channelConversation?.channelMeta || !channelConversation.lastRoute) {
       return {
         ok: false,
         status: 409,
@@ -1216,7 +1454,7 @@ export function buildCommandersContext(
       }
     }
 
-    const provider = session.channelMeta.provider
+    const provider = channelConversation.channelMeta.provider
     const dispatcher = channelReplyDispatchers[provider]
     if (!dispatcher) {
       return {
@@ -1227,7 +1465,7 @@ export function buildCommandersContext(
     }
 
     const normalizedLastRoute: CommanderLastRoute = {
-      ...session.lastRoute,
+      ...channelConversation.lastRoute,
       channel: provider,
     }
 
@@ -1236,7 +1474,7 @@ export function buildCommandersContext(
         commanderId: input.commanderId,
         message: input.message,
         channelMeta: {
-          ...session.channelMeta,
+          ...channelConversation.channelMeta,
         },
         lastRoute: normalizedLastRoute,
       } satisfies CommanderChannelReplyDispatchInput)
@@ -1252,7 +1490,7 @@ export function buildCommandersContext(
     return {
       ok: true,
       provider,
-      sessionKey: session.channelMeta.sessionKey,
+      sessionKey: channelConversation.channelMeta.sessionKey,
       lastRoute: normalizedLastRoute,
     }
   }
@@ -1293,6 +1531,7 @@ export function buildCommandersContext(
     githubToken,
     runtimeConfig,
     sessionStore,
+    conversationStore,
     questStore,
     emailConfigStore,
     emailStateStore,
@@ -1306,7 +1545,7 @@ export function buildCommandersContext(
     heartbeatManager,
     runtimes,
     activeCommanderSessions,
-    heartbeatFiredAtByCommander,
+    heartbeatFiredAtByConversation,
     avatarUpload,
     commandRoomScheduler,
     commandRoomSchedulerInitialized,
@@ -1323,6 +1562,18 @@ export function buildCommandersContext(
     dispatchCommanderMessage,
     dispatchCommanderChannelReply,
     attachCommanderPublicUi,
+    resolveLegacyConversation: (commanderId: string) =>
+      resolveLegacyConversationForCommander(commanderId, conversationStore),
+    resolveHeartbeatConversation: (
+      commanderId: string,
+      conversationId?: string,
+    ) => resolveHeartbeatConversationForCommander(commanderId, conversationStore, conversationId),
+    resolveCommanderRuntimeView: (commanderId: string) =>
+      resolveCommanderRuntimeViewForCommander(commanderId, conversationStore),
+    ensureLegacyConversation: (
+      session: CommanderSession,
+      options,
+    ) => ensureLegacyConversationForCommander(session, conversationStore, options),
     migrateCommanderConfigSource,
     migrateLegacyCommanderConfig: migrateAllCommanderConfigSources,
     reconcileCommanderSessions,

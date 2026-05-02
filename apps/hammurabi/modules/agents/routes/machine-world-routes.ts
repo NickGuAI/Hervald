@@ -21,7 +21,8 @@ import {
 } from '../machine-auth.js'
 import { updateMachineEnvEntries } from '../machine-credentials.js'
 import { parseSessionName } from '../session/input.js'
-import { toCommanderWorldAgent, toWorldAgent } from '../session/state.js'
+import { aggregateCommanderWorldAgentSource, toCommanderWorldAgent, toWorldAgent } from '../session/state.js'
+import type { ConversationStore } from '../../commanders/conversation-store.js'
 import type {
   AnySession,
   MachineConfig,
@@ -34,6 +35,7 @@ interface MachineWorldRouteDeps {
   requireReadAccess: RequestHandler
   requireWriteAccess: RequestHandler
   commanderSessionStorePath?: string
+  conversationStore?: ConversationStore
   sessions: Map<string, AnySession>
   buildSshArgs(
     machine: MachineConfig & { host: string },
@@ -363,7 +365,21 @@ export function registerMachineWorldRoutes(deps: MachineWorldRouteDeps): void {
         if (commanderSession.state === 'stopped') {
           continue
         }
-        const worldAgent = toCommanderWorldAgent(commanderSession)
+        // Conversation rows now own runtime telemetry (`currentTask`,
+        // `totalCostUsd`, `lastHeartbeat`); aggregate them so /api/agents/world
+        // continues to report best-effort runtime values for commanders that
+        // are not currently backed by a live stream session. See codex-review
+        // P2 on PR #1279 (comment 3174491802).
+        let source = {}
+        if (deps.conversationStore) {
+          try {
+            const conversations = await deps.conversationStore.listByCommander(commanderSession.id)
+            source = aggregateCommanderWorldAgentSource(conversations)
+          } catch {
+            // Conversation store failures fall back to commander-only data.
+          }
+        }
+        const worldAgent = toCommanderWorldAgent(commanderSession, source)
         if (!worldAgentsById.has(worldAgent.id)) {
           worldAgentsById.set(worldAgent.id, worldAgent)
         }

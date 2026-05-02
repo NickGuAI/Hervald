@@ -146,9 +146,10 @@ export function registerCommandRoomRoutes(
       issueUrl: `https://github.com/${session.taskSource.owner}/${session.taskSource.repo}/issues/${issueNumber}`,
       startedAt: context.now().toISOString(),
     }
-    const previousIssueNumber = session.currentTask?.issueNumber ?? null
+    const legacyConversation = await context.ensureLegacyConversation(session)
+    const previousIssueNumber = legacyConversation.currentTask?.issueNumber ?? null
 
-    const updated = await context.sessionStore.update(commanderId, (current) => ({
+    const updated = await context.conversationStore.update(legacyConversation.id, (current) => ({
       ...current,
       currentTask,
     }))

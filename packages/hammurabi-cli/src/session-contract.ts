@@ -12,6 +12,29 @@ export interface CommanderOwnedSessionLike {
   creator?: SessionCreator | null
 }
 
+export type ConversationSurface = 'discord' | 'telegram' | 'whatsapp' | 'ui' | 'cli' | 'api'
+export type ConversationStatus = 'active' | 'idle' | 'archived'
+
+export interface Conversation {
+  id: string
+  commanderId: string
+  surface: ConversationSurface
+  channelMeta?: Record<string, unknown>
+  lastRoute?: Record<string, unknown>
+  status: ConversationStatus
+  currentTask: Record<string, unknown> | null
+  claudeSessionId?: string
+  codexThreadId?: string
+  geminiSessionId?: string
+  lastHeartbeat: string | null
+  heartbeat: Record<string, unknown>
+  heartbeatTickCount: number
+  completedTasks: number
+  totalCostUsd: number
+  createdAt: string
+  lastMessageAt: string
+}
+
 export interface WorkerLifecycleSessionLike {
   status?: string | null
   processAlive?: boolean | null

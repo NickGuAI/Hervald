@@ -206,6 +206,9 @@ export function parsePersistedStreamSessionEntry(value: unknown): PersistedStrea
   }
   const sessionType = parseSessionType(entry.sessionType) ?? undefined
   const creator = resolveStoredSessionCreator(entry.creator)
+  const conversationId = typeof entry.conversationId === 'string' && entry.conversationId.trim().length > 0
+    ? entry.conversationId.trim()
+    : undefined
   const parsedCurrentSkillInvocation = parseActiveSkillInvocation(entry.currentSkillInvocation)
   const currentSkillInvocation = parsedCurrentSkillInvocation === null
     ? undefined
@@ -242,6 +245,7 @@ export function parsePersistedStreamSessionEntry(value: unknown): PersistedStrea
     name,
     sessionType,
     creator,
+    conversationId,
     agentType,
     effort: agentType === 'claude' ? effort : undefined,
     adaptiveThinking: agentType === 'claude' ? adaptiveThinking : undefined,
@@ -341,17 +345,86 @@ export function getCommanderWorldAgentPhase(session: CommanderSession): WorldAge
   return 'idle'
 }
 
-export function toCommanderWorldAgent(session: CommanderSession): WorldAgent {
+export interface CommanderWorldAgentSource {
+  totalCostUsd?: number
+  task?: string
+  lastUpdatedAt?: string | null
+}
+
+/**
+ * Aggregate per-conversation runtime state for a commander into the shape
+ * `toCommanderWorldAgent` consumes. Per #1216 phase 1, `currentTask`,
+ * `totalCostUsd`, and `lastHeartbeat` moved off CommanderSession onto the
+ * Conversation store, so observability has to read from there.
+ *
+ * Caller hands in the commander's conversations (typically
+ * `conversationStore.listByCommander(id)`); this picks the most-relevant
+ * conversation for `task` (active first, else most-recently messaged) and
+ * sums per-conversation totalCostUsd. See codex-review P2 on PR #1279
+ * (comment 3174491802).
+ */
+export function aggregateCommanderWorldAgentSource(
+  conversations: ReadonlyArray<{
+    status?: string
+    currentTask?: { issueUrl?: string | null } | null
+    totalCostUsd?: number
+    lastHeartbeat?: string | null
+    lastMessageAt?: string
+    createdAt?: string
+  }>,
+): CommanderWorldAgentSource {
+  if (conversations.length === 0) {
+    return {}
+  }
+
+  const totalCostUsd = conversations.reduce(
+    (sum, conversation) => sum + (typeof conversation.totalCostUsd === 'number' ? conversation.totalCostUsd : 0),
+    0,
+  )
+
+  const activeConversation = conversations.find((conversation) => conversation.status === 'active')
+  const recentByMessage = [...conversations].sort((left, right) => {
+    const leftMs = left.lastMessageAt ? Date.parse(left.lastMessageAt) : 0
+    const rightMs = right.lastMessageAt ? Date.parse(right.lastMessageAt) : 0
+    return rightMs - leftMs
+  })[0]
+  const taskCandidate = (activeConversation ?? recentByMessage)?.currentTask?.issueUrl
+  const task = typeof taskCandidate === 'string' ? taskCandidate.trim() : ''
+
+  let latestUpdate: string | null = null
+  for (const conversation of conversations) {
+    const candidates = [conversation.lastHeartbeat, conversation.lastMessageAt, conversation.createdAt]
+    for (const candidate of candidates) {
+      if (typeof candidate !== 'string' || candidate.length === 0) {
+        continue
+      }
+      if (!latestUpdate || Date.parse(candidate) > Date.parse(latestUpdate)) {
+        latestUpdate = candidate
+      }
+    }
+  }
+
+  return { totalCostUsd, task, lastUpdatedAt: latestUpdate }
+}
+
+export function toCommanderWorldAgent(
+  session: CommanderSession,
+  source: CommanderWorldAgentSource = {},
+): WorldAgent {
   return {
     id: getCommanderWorldAgentId(session.id),
     agentType: session.agentType ?? 'claude',
     transportType: 'stream',
     status: getCommanderWorldAgentStatus(session),
-    usage: { inputTokens: 0, outputTokens: 0, costUsd: session.totalCostUsd ?? 0 },
-    task: session.currentTask?.issueUrl ?? '',
+    usage: {
+      inputTokens: 0,
+      outputTokens: 0,
+      costUsd: source.totalCostUsd ?? 0,
+    },
+    task: source.task ?? '',
     phase: getCommanderWorldAgentPhase(session),
     lastToolUse: null,
-    lastUpdatedAt: session.lastHeartbeat ?? session.created,
+    lastUpdatedAt: source.lastUpdatedAt ?? session.created,
     role: 'commander',
   }
 }
@@ -827,6 +900,7 @@ export function snapshotExitedStreamSession(session: StreamSession): ExitedStrea
     host: session.host,
     currentSkillInvocation: cloneActiveSkillInvocation(session.currentSkillInvocation),
     spawnedBy: session.spawnedBy,
+    conversationId: session.conversationId,
     spawnedWorkers: [...session.spawnedWorkers],
     createdAt: session.createdAt,
     claudeSessionId: session.claudeSessionId,
@@ -870,6 +944,7 @@ export function snapshotDeletedResumableStreamSession(session: StreamSession): E
     host: session.host,
     currentSkillInvocation: cloneActiveSkillInvocation(session.currentSkillInvocation),
     spawnedBy: session.spawnedBy,
+    conversationId: session.conversationId,
     spawnedWorkers: [...session.spawnedWorkers],
     createdAt: session.createdAt,
     claudeSessionId,
@@ -893,6 +968,7 @@ export function buildPersistedEntryFromExitedSession(
     name: sessionName,
     sessionType: exited.sessionType,
     creator: exited.creator,
+    conversationId: exited.conversationId,
     agentType: exited.agentType,
     effort: exited.effort,
     adaptiveThinking: exited.adaptiveThinking,
@@ -926,6 +1002,7 @@ export function buildPersistedEntryFromLiveStreamSession(
     name: sessionName,
     sessionType: session.sessionType,
     creator: session.creator,
+    conversationId: session.conversationId,
     agentType: session.agentType,
     effort: session.effort,
     adaptiveThinking: session.adaptiveThinking,

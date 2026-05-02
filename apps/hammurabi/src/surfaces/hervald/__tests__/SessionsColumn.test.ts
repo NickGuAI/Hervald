@@ -18,6 +18,7 @@ describe('SessionsColumn', () => {
         selectedCommanderId: 'commander-1',
         onSelectCommander: vi.fn(),
         onCreateCommander: vi.fn(),
+        onCreateWorker: vi.fn(),
         onCreateSession: vi.fn(),
         selectedChatId: 'worker-pty',
         onSelectChat: vi.fn(),
@@ -48,12 +49,13 @@ describe('SessionsColumn', () => {
     expect(html).toContain('SessionCard:worker-pty:pty:row')
   })
 
-  it('shows nested delegated workers for the selected commander', () => {
+  it('does not render delegated workers inline for the selected commander', () => {
     const html = renderToStaticMarkup(
       createElement(SessionsColumn, {
         selectedCommanderId: 'commander-1',
         onSelectCommander: vi.fn(),
         onCreateCommander: vi.fn(),
+        onCreateWorker: vi.fn(),
         onCreateSession: vi.fn(),
         selectedChatId: null,
         onSelectChat: vi.fn(),
@@ -77,6 +79,6 @@ describe('SessionsColumn', () => {
       }),
     )
 
-    expect(html).toContain('worker-nested')
+    expect(html).not.toContain('worker-nested')
   })
 })

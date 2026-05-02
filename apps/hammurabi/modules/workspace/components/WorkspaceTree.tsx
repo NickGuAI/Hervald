@@ -11,7 +11,7 @@ interface WorkspaceTreeProps {
   variant?: 'light' | 'dark'
   onSelectPath: (path: string) => void
   onToggleDirectory: (path: string) => void
-  onAddPath?: (path: string) => void
+  onAddPath?: (path: string, knownType?: WorkspaceTreeNode['type']) => void
   selectDirectoriesOnClick?: boolean
 }
 
@@ -107,7 +107,7 @@ function TreeBranch({
                   )}
                   onClick={(event) => {
                     event.stopPropagation()
-                    onAddPath(node.path)
+                    onAddPath(node.path, node.type)
                   }}
                   aria-label={isAdded ? `Added ${node.path}` : `Add ${node.path} to context`}
                 >

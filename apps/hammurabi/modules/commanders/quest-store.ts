@@ -27,6 +27,7 @@ export interface CommanderQuestContract {
 export interface CommanderQuest {
   id: string
   commanderId: string
+  claimedByConversationId?: string
   createdAt: string
   completedAt?: string
   status: CommanderQuestStatus
@@ -44,6 +45,7 @@ interface PersistedCommanderQuests {
 
 export interface CreateCommanderQuestInput {
   commanderId: string
+  claimedByConversationId?: string
   createdAt?: string
   status: CommanderQuestStatus
   source: CommanderQuestSource
@@ -55,6 +57,7 @@ export interface CreateCommanderQuestInput {
 }
 
 export interface UpdateCommanderQuestInput {
+  claimedByConversationId?: string | null
   status?: CommanderQuestStatus
   source?: CommanderQuestSource
   instruction?: string
@@ -197,6 +200,7 @@ function parseQuest(
 
   const id = asTrimmedString(raw.id)
   const commanderId = asTrimmedString(raw.commanderId)
+  const claimedByConversationId = asTrimmedString(raw.claimedByConversationId) ?? undefined
   const createdAt = asTrimmedString(raw.createdAt)
   const completedAt = asTrimmedString(raw.completedAt) ?? undefined
   const instruction = asTrimmedString(raw.instruction)
@@ -225,6 +229,7 @@ function parseQuest(
   return {
     id,
     commanderId,
+    ...(claimedByConversationId ? { claimedByConversationId } : {}),
     createdAt,
     ...(completedAt ? { completedAt } : {}),
     status: raw.status,
@@ -257,6 +262,7 @@ function parsePersistedQuests(raw: unknown): ParsedCommanderQuests {
 function cloneQuest(quest: CommanderQuest): CommanderQuest {
   return {
     ...quest,
+    ...(quest.claimedByConversationId ? { claimedByConversationId: quest.claimedByConversationId } : {}),
     ...(quest.completedAt ? { completedAt: quest.completedAt } : {}),
     artifacts: (quest.artifacts ?? []).map((artifact) => ({ ...artifact })),
     contract: {
@@ -314,15 +320,29 @@ export class QuestStore {
     return pending.slice(0, boundedLimit)
   }
 
-  async claimNext(commanderId: string): Promise<CommanderQuest | null> {
+  async claimNext(
+    commanderId: string,
+    conversationId: string,
+  ): Promise<CommanderQuest | null> {
     const safeCommanderId = asTrimmedString(commanderId)
+    const safeConversationId = asTrimmedString(conversationId)
     if (!safeCommanderId) {
       throw new Error('commanderId is required')
+    }
+    if (!safeConversationId) {
+      throw new Error('conversationId is required')
     }
 
     return this.withMutationLock(async () => {
       const quests = await this.readQuestsForCommander(safeCommanderId)
       const ordered = sortQuests(quests)
+      const existingClaim = ordered.find(
+        (quest) => quest.status === 'active' && quest.claimedByConversationId === safeConversationId,
+      )
+      if (existingClaim) {
+        return cloneQuest(existingClaim)
+      }
+
       const nextIndex = ordered.findIndex((quest) => quest.status === 'pending')
       if (nextIndex < 0) {
         return null
@@ -331,6 +351,7 @@ export class QuestStore {
       const claimedQuest: CommanderQuest = {
         ...ordered[nextIndex],
         status: 'active',
+        claimedByConversationId: safeConversationId,
       }
       ordered[nextIndex] = claimedQuest
       await this.writeQuestsForCommander(safeCommanderId, ordered)
@@ -340,6 +361,7 @@ export class QuestStore {
 
   async create(input: CreateCommanderQuestInput): Promise<CommanderQuest> {
     const commanderId = asTrimmedString(input.commanderId)
+    const claimedByConversationId = asTrimmedString(input.claimedByConversationId) ?? undefined
     const instruction = asTrimmedString(input.instruction)
     const createdAt = asTrimmedString(input.createdAt) ?? new Date().toISOString()
     const githubIssueUrl = asTrimmedString(input.githubIssueUrl) ?? undefined
@@ -372,6 +394,7 @@ export class QuestStore {
     const nextQuest: CommanderQuest = {
       id: randomUUID(),
       commanderId,
+      ...(claimedByConversationId ? { claimedByConversationId } : {}),
       createdAt,
       status: input.status,
       source: input.source,
@@ -426,6 +449,17 @@ export class QuestStore {
           }
         } else {
           delete nextQuest.completedAt
+        }
+      }
+      if (update.claimedByConversationId !== undefined) {
+        const claimedByConversationId = asTrimmedString(update.claimedByConversationId)
+        if (update.claimedByConversationId !== null && !claimedByConversationId) {
+          throw new Error('claimedByConversationId must be a non-empty string or null')
+        }
+        if (claimedByConversationId) {
+          nextQuest.claimedByConversationId = claimedByConversationId
+        } else {
+          delete nextQuest.claimedByConversationId
         }
       }
       if (update.source !== undefined) {
@@ -569,6 +603,7 @@ export class QuestStore {
         return {
           ...quest,
           status: 'pending' as const,
+          claimedByConversationId: undefined,
         }
       })
 

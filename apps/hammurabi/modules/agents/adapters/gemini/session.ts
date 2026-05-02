@@ -324,6 +324,7 @@ export async function createGeminiAcpSession(
     name: sessionName,
     sessionType: options.sessionType ?? 'worker',
     creator: options.creator ?? { kind: 'human' },
+    conversationId: options.conversationId,
     agentType: 'gemini',
     mode,
     cwd: sessionCwd,

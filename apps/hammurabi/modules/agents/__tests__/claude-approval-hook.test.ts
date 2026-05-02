@@ -45,15 +45,10 @@ function runHook(env: NodeJS.ProcessEnv, stdin: string): Promise<HookResult> {
   })
 }
 
-async function startApprovalServer(body: Record<string, unknown>): Promise<MockApprovalServer> {
-  const server = http.createServer((req, res) => {
-    req.setEncoding('utf8')
-    req.on('data', () => {})
-    req.on('end', () => {
-      res.writeHead(200, { 'content-type': 'application/json' })
-      res.end(JSON.stringify(body))
-    })
-  })
+async function startApprovalServer(
+  handler: (req: http.IncomingMessage, res: http.ServerResponse) => void,
+): Promise<MockApprovalServer> {
+  const server = http.createServer(handler)
 
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject)
@@ -81,7 +76,10 @@ async function startApprovalServer(body: Record<string, unknown>): Promise<MockA
 
 describe('claude-approval-hook', () => {
   it('emits structured PreToolUse allow output when Hammurabi auto-approves', async () => {
-    const approvalServer = await startApprovalServer({ decision: 'allow' })
+    const approvalServer = await startApprovalServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ decision: 'allow' }))
+    })
 
     try {
       const result = await runHook(
@@ -100,6 +98,54 @@ describe('claude-approval-hook', () => {
           permissionDecision: 'allow',
         },
       })
+    } finally {
+      await approvalServer.close()
+    }
+  })
+
+  it('polls pending approvals until a terminal allow decision arrives', async () => {
+    let pollCount = 0
+    const approvalServer = await startApprovalServer((req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' })
+      if (req.url === '/api/approval/check') {
+        res.end(JSON.stringify({
+          decision: 'pending',
+          request_id: 'req-1',
+          retry_after_ms: 10,
+        }))
+        return
+      }
+
+      pollCount += 1
+      if (pollCount < 2) {
+        res.end(JSON.stringify({
+          decision: 'pending',
+          request_id: 'req-1',
+          retry_after_ms: 10,
+        }))
+        return
+      }
+
+      res.end(JSON.stringify({ decision: 'allow' }))
+    })
+
+    try {
+      const result = await runHook(
+        {
+          HAMMURABI_APPROVAL_BASE_URL: approvalServer.baseUrl,
+          HAMMURABI_APPROVAL_FAIL_OPEN: '',
+        },
+        JSON.stringify({ tool_name: 'Bash', tool_input: { command: 'rm -rf /tmp/example' } }),
+      )
+
+      expect(result.code).toBe(0)
+      expect(JSON.parse(result.stdout)).toEqual({
+        hookSpecificOutput: {
+          hookEventName: 'PreToolUse',
+          permissionDecision: 'allow',
+        },
+      })
+      expect(pollCount).toBeGreaterThanOrEqual(2)
     } finally {
       await approvalServer.close()
     }
@@ -147,5 +193,42 @@ describe('claude-approval-hook', () => {
         permissionDecisionReason: expect.stringContaining('approval service unreachable'),
       },
     })
+  })
+
+  it('fails closed when a pending approval never reaches a terminal decision before the hook deadline', async () => {
+    const approvalServer = await startApprovalServer((req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' })
+      if (req.url?.startsWith('/api/approval/check/')) {
+        res.end(JSON.stringify({
+          decision: 'pending',
+          request_id: 'req-timeout',
+          retry_after_ms: 10,
+        }))
+        return
+      }
+
+      res.end(JSON.stringify({
+        decision: 'pending',
+        request_id: 'req-timeout',
+        retry_after_ms: 10,
+      }))
+    })
+
+    try {
+      const result = await runHook(
+        {
+          HAMMURABI_APPROVAL_BASE_URL: approvalServer.baseUrl,
+          HAMMURABI_APPROVAL_DEADLINE_MS: '75',
+          HAMMURABI_APPROVAL_FAIL_OPEN: '',
+        },
+        JSON.stringify({ tool_name: 'Bash', tool_input: { command: 'git push origin main' } }),
+      )
+
+      expect(result.code).toBe(2)
+      expect(result.stdout).toBe('')
+      expect(result.stderr).toContain('approval review deadline exceeded')
+    } finally {
+      await approvalServer.close()
+    }
   })
 })

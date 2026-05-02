@@ -203,6 +203,7 @@ export interface StreamSession {
   name: string
   sessionType: SessionType
   creator: SessionCreator
+  conversationId?: string
   agentType: AgentType
   effort?: ClaudeEffortLevel
   adaptiveThinking?: ClaudeAdaptiveThinkingMode
@@ -327,6 +328,7 @@ export interface ExitedStreamSessionState {
   hadResult: boolean
   sessionType: SessionType
   creator: SessionCreator
+  conversationId?: string
   agentType: AgentType
   effort?: ClaudeEffortLevel
   adaptiveThinking?: ClaudeAdaptiveThinkingMode
@@ -362,6 +364,7 @@ export interface StreamSessionCreateOptions {
   resumedFrom?: string
   sessionType?: SessionType
   creator?: SessionCreator
+  conversationId?: string
   currentSkillInvocation?: ActiveSkillInvocation
 }
 
@@ -376,6 +379,7 @@ export interface CodexSessionCreateOptions {
   machine?: MachineConfig
   sessionType?: SessionType
   creator?: SessionCreator
+  conversationId?: string
   currentSkillInvocation?: ActiveSkillInvocation
 }
 
@@ -390,6 +394,7 @@ export interface GeminiSessionCreateOptions {
   maxTurns?: number
   sessionType?: SessionType
   creator?: SessionCreator
+  conversationId?: string
   currentSkillInvocation?: ActiveSkillInvocation
 }
 
@@ -500,6 +505,7 @@ export interface CommanderSessionsInterface {
   createCommanderSession(params: {
     name: string
     commanderId?: string
+    conversationId?: string
     systemPrompt: string
     agentType: 'claude' | 'codex' | 'gemini'
     effort?: ClaudeEffortLevel
@@ -568,6 +574,7 @@ export interface PersistedStreamSession {
   name: string
   sessionType?: SessionType
   creator?: SessionCreator
+  conversationId?: string
   agentType: AgentType
   effort?: ClaudeEffortLevel
   adaptiveThinking?: ClaudeAdaptiveThinkingMode

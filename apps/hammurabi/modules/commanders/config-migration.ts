@@ -1,5 +1,6 @@
 import { readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
+import { ConversationStore } from './conversation-store.js'
 import {
   createDefaultHeartbeatState,
   mergeHeartbeatState,
@@ -85,9 +86,14 @@ export async function migrateLegacyCommanderConfigForSession(
   const workflow = parseCommanderWorkflowContent(workflowFile.content)
   const strippedFrontmatter = stripDeprecatedCommanderWorkflowFrontmatter(workflowFile.content)
   const defaultHeartbeat = createDefaultHeartbeatState()
+  const conversationStore = new ConversationStore(options.commanderBasePath)
+  const legacyConversation = await conversationStore.ensureLegacyConversation({
+    commanderId: session.id,
+    createdAt: session.created,
+  })
   const migratedFields: string[] = []
 
-  let nextHeartbeat = session.heartbeat
+  let nextHeartbeat = legacyConversation.heartbeat
   const legacyIntervalMs = resolveWorkflowHeartbeatIntervalMs(workflow.heartbeatInterval)
   if (workflow.heartbeatInterval !== undefined && legacyIntervalMs === undefined) {
     logger.warn(
@@ -97,7 +103,7 @@ export async function migrateLegacyCommanderConfigForSession(
 
   if (
     legacyIntervalMs !== undefined &&
-    session.heartbeat.intervalMs === defaultHeartbeat.intervalMs &&
+    legacyConversation.heartbeat.intervalMs === defaultHeartbeat.intervalMs &&
     legacyIntervalMs !== defaultHeartbeat.intervalMs
   ) {
     nextHeartbeat = mergeHeartbeatState(nextHeartbeat, { intervalMs: legacyIntervalMs })
@@ -107,7 +113,7 @@ export async function migrateLegacyCommanderConfigForSession(
   const legacyMessage = workflow.heartbeatMessage?.trim()
   if (
     legacyMessage &&
-    session.heartbeat.messageTemplate.trim() === defaultHeartbeat.messageTemplate.trim() &&
+    legacyConversation.heartbeat.messageTemplate.trim() === defaultHeartbeat.messageTemplate.trim() &&
     legacyMessage !== defaultHeartbeat.messageTemplate.trim()
   ) {
     nextHeartbeat = mergeHeartbeatState(nextHeartbeat, { messageTemplate: legacyMessage })
@@ -151,9 +157,12 @@ export async function migrateLegacyCommanderConfigForSession(
       `[commanders][migration] Commander "${session.id}" adopted legacy COMMANDER.md config into sessions.json: ${formatFields(migratedFields)}`,
     )
     if (!options.dryRun) {
-      await sessionStore.update(session.id, (current) => ({
+      await conversationStore.update(legacyConversation.id, (current) => ({
         ...current,
         heartbeat: nextHeartbeat,
+      }))
+      await sessionStore.update(session.id, (current) => ({
+        ...current,
         maxTurns: nextMaxTurns,
         contextMode: nextContextMode,
         contextConfig: nextContextConfig,

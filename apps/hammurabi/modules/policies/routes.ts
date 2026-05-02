@@ -7,10 +7,12 @@ import {
   claudeApprovalAdapter,
 } from '../agents/adapters/claude/approval-adapter.js'
 import type { ApprovalSessionsInterface } from '../agents/routes.js'
-import { ActionPolicyGate } from './action-policy-gate.js'
+import {
+  ActionPolicyGate,
+  DEFAULT_REVIEW_RETRY_AFTER_MS,
+} from './action-policy-gate.js'
 import { getBuiltInAction } from './registry.js'
 import { ApprovalCoordinator } from './pending-store.js'
-import { handleProviderApproval } from './provider-approval-adapter.js'
 import { PolicyStore } from './store.js'
 import {
   FALLBACK_ACTION_POLICY_ID,
@@ -147,6 +149,26 @@ function toPolicyResponse(
     targetLabel: metadata.primaryTargetLabel,
     scope: serializeActionPolicyScope(scope),
     sourceScope,
+  }
+}
+
+function toApprovalDecisionResponse(result: {
+  decision: 'allow' | 'deny' | 'pending'
+  approvalId?: string
+  retryAfterMs?: number
+  reason?: string
+}) {
+  if (result.decision === 'pending') {
+    return {
+      decision: 'pending',
+      request_id: result.approvalId,
+      retry_after_ms: result.retryAfterMs ?? DEFAULT_REVIEW_RETRY_AFTER_MS,
+    }
+  }
+
+  return {
+    decision: result.decision,
+    ...(result.reason ? { reason: result.reason } : {}),
   }
 }
 
@@ -302,18 +324,46 @@ export function createPoliciesRouter(options: PoliciesRouterOptions): { router: 
         ? options.approvalSessionsInterface.findLiveSessionByClaudeSessionId(resolvedClaudeSessionId)
         : null
     ) ?? buildFallbackClaudeApprovalSession(resolvedSessionName ?? 'claude-hook')
-
-    await handleProviderApproval(
-      claudeApprovalAdapter,
+    const request = claudeApprovalAdapter.toUnifiedRequest(
       {
         payload: payload ?? {},
-        respond(body) {
-          res.json(body)
-        },
+        respond() {},
       },
       liveSession,
-      { actionPolicyGate: options.actionPolicyGate },
     )
+    const result = await options.actionPolicyGate.enforce(request, { waitForReview: false })
+    res.json(toApprovalDecisionResponse(result))
+  })
+
+  router.get('/approval/check/:requestId', requireWriteAccess, async (req, res) => {
+    const requestId = typeof req.params.requestId === 'string' ? req.params.requestId.trim() : ''
+    if (!requestId) {
+      res.status(400).json({ error: 'requestId is required' })
+      return
+    }
+
+    const status = await options.approvalCoordinator.getStatus(requestId)
+    if (!status) {
+      res.status(404).json({ error: `Pending approval "${requestId}" was not found` })
+      return
+    }
+
+    if (status.state === 'pending') {
+      res.json(toApprovalDecisionResponse({
+        decision: 'pending',
+        approvalId: status.approval.id,
+        retryAfterMs: DEFAULT_REVIEW_RETRY_AFTER_MS,
+      }))
+      return
+    }
+
+    res.once('finish', () => {
+      void options.approvalCoordinator.markDelivered(requestId)
+    })
+    res.json(toApprovalDecisionResponse({
+      decision: status.outcome.allowed ? 'allow' : 'deny',
+      reason: status.outcome.reason,
+    }))
   })
 
   router.post('/approval/decide', requireWriteAccess, async (req, res) => {

@@ -64,7 +64,10 @@ export function WorkspaceModal({ open, onClose, source, onInsertPath }: Workspac
             position="embedded"
             variant="dark"
             onClose={onClose}
-            onInsertPath={onInsertPath}
+            onInsertPath={(path) => {
+              onInsertPath?.(path)
+              onClose()
+            }}
           />
         ) : (
           <div

@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import express from 'express'
 import { createServer, type Server } from 'node:http'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import type { ApiKeyStoreLike } from '../../../server/api-keys/store'
 import type { CommanderSessionsInterface } from '../../agents/routes'
 import {
@@ -11,8 +11,16 @@ import {
   type CommanderChannelReplyDispatchInput,
   type CommandersRouterOptions,
 } from '../routes'
+import {
+  CommanderSessionStore,
+  DEFAULT_COMMANDER_CONTEXT_MODE,
+  DEFAULT_COMMANDER_MAX_TURNS,
+} from '../store'
 
 vi.setConfig({ testTimeout: 60_000 })
+
+const COMMANDER_A = '00000000-0000-4000-a000-0000000000aa'
+const COMMANDER_B = '00000000-0000-4000-a000-0000000000bb'
 
 const AUTH_HEADERS = {
   'x-hammurabi-api-key': 'test-key',
@@ -24,8 +32,22 @@ interface RunningServer {
   close: () => Promise<void>
 }
 
+interface ActiveSessionState {
+  agentType: 'claude' | 'codex' | 'gemini'
+  conversationId?: string
+  claudeSessionId?: string
+  codexThreadId?: string
+  geminiSessionId?: string
+  usage: {
+    inputTokens: number
+    outputTokens: number
+    costUsd: number
+  }
+}
+
 interface MockSessionsInterface {
   interface: CommanderSessionsInterface
+  createCalls: Array<Parameters<CommanderSessionsInterface['createCommanderSession']>[0]>
   sendCalls: Array<{ name: string; text: string }>
 }
 
@@ -91,12 +113,31 @@ function createTestApiKeyStore(): ApiKeyStoreLike {
 }
 
 function createMockSessionsInterface(): MockSessionsInterface {
+  const createCalls: Array<Parameters<CommanderSessionsInterface['createCommanderSession']>[0]> = []
   const sendCalls: Array<{ name: string; text: string }> = []
-  const activeSessions = new Set<string>()
+  const activeSessions = new Map<string, ActiveSessionState>()
 
   const sessionsInterface: CommanderSessionsInterface = {
     async createCommanderSession(params) {
-      activeSessions.add(params.name)
+      createCalls.push(params)
+      activeSessions.set(params.name, {
+        agentType: params.agentType,
+        conversationId: params.conversationId,
+        claudeSessionId: params.agentType === 'claude'
+          ? `claude-${params.conversationId ?? params.name}`
+          : undefined,
+        codexThreadId: params.agentType === 'codex'
+          ? `codex-${params.conversationId ?? params.name}`
+          : undefined,
+        geminiSessionId: params.agentType === 'gemini'
+          ? `gemini-${params.conversationId ?? params.name}`
+          : undefined,
+        usage: {
+          inputTokens: 0,
+          outputTokens: 0,
+          costUsd: 0,
+        },
+      })
       return { kind: 'stream', name: params.name } as unknown as Awaited<ReturnType<
         CommanderSessionsInterface['createCommanderSession']
       >>
@@ -115,19 +156,20 @@ function createMockSessionsInterface(): MockSessionsInterface {
       activeSessions.delete(name)
     },
     getSession(name) {
-      if (!activeSessions.has(name)) {
+      const active = activeSessions.get(name)
+      if (!active) {
         return undefined
       }
 
       return {
         kind: 'stream',
         name,
-        agentType: 'claude',
-        usage: {
-          inputTokens: 0,
-          outputTokens: 0,
-          costUsd: 0,
-        },
+        agentType: active.agentType,
+        conversationId: active.conversationId,
+        claudeSessionId: active.claudeSessionId,
+        codexThreadId: active.codexThreadId,
+        geminiSessionId: active.geminiSessionId,
+        usage: { ...active.usage },
       } as unknown as ReturnType<CommanderSessionsInterface['getSession']>
     },
     subscribeToEvents() {
@@ -137,6 +179,7 @@ function createMockSessionsInterface(): MockSessionsInterface {
 
   return {
     interface: sessionsInterface,
+    createCalls,
     sendCalls,
   }
 }
@@ -162,6 +205,27 @@ function createMockChannelReplyDispatchers(): MockChannelReplyDispatchers {
   }
 }
 
+async function seedCommander(
+  storePath: string,
+  commanderId: string,
+  options: {
+    host?: string
+  } = {},
+): Promise<void> {
+  const store = new CommanderSessionStore(storePath)
+  await store.create({
+    id: commanderId,
+    host: options.host ?? `host-${commanderId.slice(-4)}`,
+    state: 'idle',
+    created: '2026-05-01T00:00:00.000Z',
+    agentType: 'claude',
+    cwd: '/tmp',
+    maxTurns: DEFAULT_COMMANDER_MAX_TURNS,
+    contextMode: DEFAULT_COMMANDER_CONTEXT_MODE,
+    taskSource: null,
+  })
+}
+
 async function startServer(options: {
   sessionStorePath: string
   sessionsInterface: CommanderSessionsInterface
@@ -170,9 +234,13 @@ async function startServer(options: {
   const app = express()
   app.use(express.json())
 
+  const memoryBasePath = join(dirname(options.sessionStorePath), 'memory')
+  await mkdir(memoryBasePath, { recursive: true })
+
   const commanders = createCommandersRouter({
     apiKeyStore: createTestApiKeyStore(),
     sessionStorePath: options.sessionStorePath,
+    memoryBasePath,
     sessionsInterface: options.sessionsInterface,
     channelReplyDispatchers: options.channelReplyDispatchers,
   })
@@ -239,16 +307,20 @@ async function postChannelReply(
 }
 
 describe('POST /api/commanders/channel-message', () => {
-  it('maps WhatsApp direct chats per account and reuses the same commander on key hit', async () => {
+  it('upserts WhatsApp conversations under one commander instead of forking identities', async () => {
     const dir = await createTempDir('hammurabi-channel-whatsapp-')
+    const storePath = join(dir, 'sessions.json')
+    await seedCommander(storePath, COMMANDER_A)
+
     const mock = createMockSessionsInterface()
     const server = await startServer({
-      sessionStorePath: join(dir, 'sessions.json'),
+      sessionStorePath: storePath,
       sessionsInterface: mock.interface,
     })
 
     try {
       const firstResponse = await postChannelMessage(server.baseUrl, {
+        commanderId: COMMANDER_A,
         provider: 'whatsapp',
         accountId: 'default',
         chatType: 'direct',
@@ -261,15 +333,20 @@ describe('POST /api/commanders/channel-message', () => {
         accepted: boolean
         delivered: boolean
         created: boolean
+        createdSession: boolean
         commanderId: string
+        conversationId: string
         sessionKey: string
       }
       expect(firstBody.accepted).toBe(true)
-      expect(firstBody.delivered).toBe(false)
+      expect(firstBody.delivered).toBe(true)
       expect(firstBody.created).toBe(true)
+      expect(firstBody.createdSession).toBe(true)
+      expect(firstBody.commanderId).toBe(COMMANDER_A)
       expect(firstBody.sessionKey).toBe('whatsapp:default:direct:15551234567')
 
       const secondResponse = await postChannelMessage(server.baseUrl, {
+        commanderId: COMMANDER_A,
         provider: 'whatsapp',
         accountId: 'default',
         chatType: 'direct',
@@ -282,14 +359,19 @@ describe('POST /api/commanders/channel-message', () => {
         accepted: boolean
         delivered: boolean
         created: boolean
+        createdSession: boolean
         commanderId: string
+        conversationId: string
       }
       expect(secondBody.accepted).toBe(true)
-      expect(secondBody.delivered).toBe(false)
+      expect(secondBody.delivered).toBe(true)
       expect(secondBody.created).toBe(false)
+      expect(secondBody.createdSession).toBe(false)
       expect(secondBody.commanderId).toBe(firstBody.commanderId)
+      expect(secondBody.conversationId).toBe(firstBody.conversationId)
 
       const thirdResponse = await postChannelMessage(server.baseUrl, {
+        commanderId: COMMANDER_A,
         provider: 'whatsapp',
         accountId: 'work',
         chatType: 'direct',
@@ -303,42 +385,59 @@ describe('POST /api/commanders/channel-message', () => {
         delivered: boolean
         created: boolean
         commanderId: string
+        conversationId: string
         sessionKey: string
       }
       expect(thirdBody.accepted).toBe(true)
-      expect(thirdBody.delivered).toBe(false)
+      expect(thirdBody.delivered).toBe(true)
       expect(thirdBody.created).toBe(true)
-      expect(thirdBody.commanderId).not.toBe(firstBody.commanderId)
+      expect(thirdBody.commanderId).toBe(firstBody.commanderId)
+      expect(thirdBody.conversationId).not.toBe(firstBody.conversationId)
       expect(thirdBody.sessionKey).toBe('whatsapp:work:direct:15551234567')
 
       const listResponse = await fetch(`${server.baseUrl}/api/commanders`, {
         headers: AUTH_HEADERS,
       })
       expect(listResponse.status).toBe(200)
-      const sessions = await listResponse.json() as Array<{
+      const sessions = await listResponse.json() as Array<{ id: string }>
+      expect(sessions.map((session) => session.id)).toEqual([COMMANDER_A])
+
+      const conversationsResponse = await fetch(
+        `${server.baseUrl}/api/commanders/${COMMANDER_A}/conversations`,
+        { headers: AUTH_HEADERS },
+      )
+      expect(conversationsResponse.status).toBe(200)
+      const conversations = await conversationsResponse.json() as Array<{
         id: string
         channelMeta?: { sessionKey?: string }
       }>
-      expect(sessions).toHaveLength(2)
-      expect(sessions.map((session) => session.channelMeta?.sessionKey).sort()).toEqual([
+      expect(conversations).toHaveLength(2)
+      expect(conversations.map((conversation) => conversation.channelMeta?.sessionKey).sort()).toEqual([
         'whatsapp:default:direct:15551234567',
         'whatsapp:work:direct:15551234567',
       ])
+      expect(mock.createCalls.map((call) => call.conversationId).sort()).toEqual(
+        [firstBody.conversationId, thirdBody.conversationId].sort(),
+      )
     } finally {
       await server.close()
     }
   })
 
-  it('maps Telegram forum topics per thread and group chats per chat id', async () => {
+  it('upserts Telegram groups and forum topics as separate conversations under the same commander', async () => {
     const dir = await createTempDir('hammurabi-channel-telegram-')
+    const storePath = join(dir, 'sessions.json')
+    await seedCommander(storePath, COMMANDER_A)
+
     const mock = createMockSessionsInterface()
     const server = await startServer({
-      sessionStorePath: join(dir, 'sessions.json'),
+      sessionStorePath: storePath,
       sessionsInterface: mock.interface,
     })
 
     try {
       const groupResponse = await postChannelMessage(server.baseUrl, {
+        commanderId: COMMANDER_A,
         provider: 'telegram',
         accountId: 'default',
         chatType: 'group',
@@ -349,6 +448,7 @@ describe('POST /api/commanders/channel-message', () => {
       expect(groupResponse.status).toBe(201)
 
       const topicOne = await postChannelMessage(server.baseUrl, {
+        commanderId: COMMANDER_A,
         provider: 'telegram',
         accountId: 'default',
         chatType: 'forum-topic',
@@ -358,11 +458,18 @@ describe('POST /api/commanders/channel-message', () => {
         message: 'topic one',
       })
       expect(topicOne.status).toBe(201)
-      const topicOneBody = await topicOne.json() as { created: boolean; commanderId: string; sessionKey: string }
+      const topicOneBody = await topicOne.json() as {
+        created: boolean
+        commanderId: string
+        conversationId: string
+        sessionKey: string
+      }
       expect(topicOneBody.created).toBe(true)
+      expect(topicOneBody.commanderId).toBe(COMMANDER_A)
       expect(topicOneBody.sessionKey).toBe('telegram:default:forum-topic:supergroup-9876543:thread:42')
 
       const topicOneRepeat = await postChannelMessage(server.baseUrl, {
+        commanderId: COMMANDER_A,
         provider: 'telegram',
         accountId: 'default',
         chatType: 'forum-topic',
@@ -372,11 +479,17 @@ describe('POST /api/commanders/channel-message', () => {
         message: 'topic one repeat',
       })
       expect(topicOneRepeat.status).toBe(200)
-      const topicOneRepeatBody = await topicOneRepeat.json() as { created: boolean; commanderId: string }
+      const topicOneRepeatBody = await topicOneRepeat.json() as {
+        created: boolean
+        commanderId: string
+        conversationId: string
+      }
       expect(topicOneRepeatBody.created).toBe(false)
       expect(topicOneRepeatBody.commanderId).toBe(topicOneBody.commanderId)
+      expect(topicOneRepeatBody.conversationId).toBe(topicOneBody.conversationId)
 
       const topicTwo = await postChannelMessage(server.baseUrl, {
+        commanderId: COMMANDER_A,
         provider: 'telegram',
         accountId: 'default',
         chatType: 'forum-topic',
@@ -393,11 +506,18 @@ describe('POST /api/commanders/channel-message', () => {
       const listResponse = await fetch(`${server.baseUrl}/api/commanders`, {
         headers: AUTH_HEADERS,
       })
-      const sessions = await listResponse.json() as Array<{
+      const sessions = await listResponse.json() as Array<{ id: string }>
+      expect(sessions.map((session) => session.id)).toEqual([COMMANDER_A])
+
+      const conversationsResponse = await fetch(
+        `${server.baseUrl}/api/commanders/${COMMANDER_A}/conversations`,
+        { headers: AUTH_HEADERS },
+      )
+      const conversations = await conversationsResponse.json() as Array<{
         channelMeta?: { sessionKey?: string }
       }>
-      expect(sessions).toHaveLength(3)
-      expect(sessions.map((session) => session.channelMeta?.sessionKey).sort()).toEqual([
+      expect(conversations).toHaveLength(3)
+      expect(conversations.map((conversation) => conversation.channelMeta?.sessionKey).sort()).toEqual([
         'telegram:default:forum-topic:supergroup-9876543:thread:42',
         'telegram:default:forum-topic:supergroup-9876543:thread:43',
         'telegram:default:group:supergroup-9876543',
@@ -407,89 +527,159 @@ describe('POST /api/commanders/channel-message', () => {
     }
   })
 
-  it('maps Discord threads to the parent channel commander and updates lastRoute.threadId', async () => {
+  it('upserts Discord threads as distinct conversations under the same commander', async () => {
     const dir = await createTempDir('hammurabi-channel-discord-')
+    const storePath = join(dir, 'sessions.json')
+    await seedCommander(storePath, COMMANDER_A)
+
     const mock = createMockSessionsInterface()
     const server = await startServer({
-      sessionStorePath: join(dir, 'sessions.json'),
+      sessionStorePath: storePath,
       sessionsInterface: mock.interface,
     })
 
     try {
-      const seedResponse = await postChannelMessage(server.baseUrl, {
-        provider: 'discord',
-        accountId: 'default',
-        chatType: 'channel',
-        peerId: 'chan-ops',
-        displayName: '#partner-support',
-        message: 'seed channel',
-      })
-      expect(seedResponse.status).toBe(201)
-      const seedBody = await seedResponse.json() as { commanderId: string; created: boolean }
-      expect(seedBody.created).toBe(true)
-
-      const startResponse = await fetch(`${server.baseUrl}/api/commanders/${seedBody.commanderId}/start`, {
-        method: 'POST',
-        headers: {
-          ...AUTH_HEADERS,
-          'content-type': 'application/json',
-        },
-        body: JSON.stringify({}),
-      })
-      expect(startResponse.status).toBe(200)
-
       const threadOneResponse = await postChannelMessage(server.baseUrl, {
+        commanderId: COMMANDER_A,
         provider: 'discord',
         accountId: 'default',
         chatType: 'channel',
         peerId: 'thread-111',
         parentPeerId: 'chan-ops',
         threadId: 'thread-111',
-        displayName: '#partner-support',
+        displayName: '#partner-support / Engineering',
         message: 'thread one message',
       })
-      expect(threadOneResponse.status).toBe(200)
+      expect(threadOneResponse.status).toBe(201)
       const threadOneBody = await threadOneResponse.json() as {
         created: boolean
         delivered: boolean
         commanderId: string
+        conversationId: string
         sessionKey: string
       }
-      expect(threadOneBody.created).toBe(false)
+      expect(threadOneBody.created).toBe(true)
       expect(threadOneBody.delivered).toBe(true)
-      expect(threadOneBody.commanderId).toBe(seedBody.commanderId)
-      expect(threadOneBody.sessionKey).toBe('discord:default:channel:chan-ops')
+      expect(threadOneBody.commanderId).toBe(COMMANDER_A)
+      expect(threadOneBody.sessionKey).toBe('discord:default:channel:chan-ops:thread:thread-111')
+
+      const threadOneRepeat = await postChannelMessage(server.baseUrl, {
+        commanderId: COMMANDER_A,
+        provider: 'discord',
+        accountId: 'default',
+        chatType: 'channel',
+        peerId: 'thread-111',
+        parentPeerId: 'chan-ops',
+        threadId: 'thread-111',
+        displayName: '#partner-support / Engineering',
+        message: 'thread one repeat',
+      })
+      expect(threadOneRepeat.status).toBe(200)
+      const threadOneRepeatBody = await threadOneRepeat.json() as {
+        created: boolean
+        conversationId: string
+      }
+      expect(threadOneRepeatBody.created).toBe(false)
+      expect(threadOneRepeatBody.conversationId).toBe(threadOneBody.conversationId)
 
       const threadTwoResponse = await postChannelMessage(server.baseUrl, {
+        commanderId: COMMANDER_A,
         provider: 'discord',
         accountId: 'default',
         chatType: 'channel',
         peerId: 'thread-222',
         parentPeerId: 'chan-ops',
         threadId: 'thread-222',
-        displayName: '#partner-support',
+        displayName: '#partner-support / Engineering',
         message: 'thread two message',
       })
-      expect(threadTwoResponse.status).toBe(200)
-
-      expect(mock.sendCalls.some((call) => call.text === 'thread one message')).toBe(true)
-      expect(mock.sendCalls.some((call) => call.text === 'thread two message')).toBe(true)
-
-      const detailResponse = await fetch(`${server.baseUrl}/api/commanders/${seedBody.commanderId}`, {
-        headers: AUTH_HEADERS,
-      })
-      expect(detailResponse.status).toBe(200)
-      const detail = await detailResponse.json() as {
-        channelMeta?: { peerId?: string }
-        lastRoute?: { to?: string; threadId?: string }
+      expect(threadTwoResponse.status).toBe(201)
+      const threadTwoBody = await threadTwoResponse.json() as {
+        created: boolean
+        commanderId: string
+        conversationId: string
+        sessionKey: string
       }
-      expect(detail.channelMeta?.peerId).toBe('chan-ops')
-      expect(detail.lastRoute).toEqual({
-        channel: 'discord',
-        to: 'chan-ops',
+      expect(threadTwoBody.created).toBe(true)
+      expect(threadTwoBody.commanderId).toBe(COMMANDER_A)
+      expect(threadTwoBody.conversationId).not.toBe(threadOneBody.conversationId)
+      expect(threadTwoBody.sessionKey).toBe('discord:default:channel:chan-ops:thread:thread-222')
+
+      const conversationsResponse = await fetch(
+        `${server.baseUrl}/api/commanders/${COMMANDER_A}/conversations`,
+        { headers: AUTH_HEADERS },
+      )
+      expect(conversationsResponse.status).toBe(200)
+      const conversations = await conversationsResponse.json() as Array<{
+        channelMeta?: { sessionKey?: string }
+      }>
+      expect(conversations).toHaveLength(2)
+      expect(conversations.map((conversation) => conversation.channelMeta?.sessionKey).sort()).toEqual([
+        'discord:default:channel:chan-ops:thread:thread-111',
+        'discord:default:channel:chan-ops:thread:thread-222',
+      ])
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('resolves a new channel conversation by commander name when exactly one commander matches', async () => {
+    const dir = await createTempDir('hammurabi-channel-name-match-')
+    const storePath = join(dir, 'sessions.json')
+    await seedCommander(storePath, COMMANDER_A, { host: 'athena' })
+
+    const mock = createMockSessionsInterface()
+    const server = await startServer({
+      sessionStorePath: storePath,
+      sessionsInterface: mock.interface,
+    })
+
+    try {
+      const response = await postChannelMessage(server.baseUrl, {
+        provider: 'discord',
         accountId: 'default',
-        threadId: 'thread-222',
+        chatType: 'channel',
+        peerId: 'thread-333',
+        parentPeerId: 'chan-ops',
+        threadId: 'thread-333',
+        displayName: '#partner-support / Engineering',
+        message: '@athena please take this thread',
       })
+      expect(response.status).toBe(201)
+      const body = await response.json() as { commanderId: string; created: boolean }
+      expect(body.created).toBe(true)
+      expect(body.commanderId).toBe(COMMANDER_A)
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('returns 409 when a new channel conversation matches multiple commanders', async () => {
+    const dir = await createTempDir('hammurabi-channel-name-ambiguous-')
+    const storePath = join(dir, 'sessions.json')
+    await seedCommander(storePath, COMMANDER_A, { host: 'athena' })
+    await seedCommander(storePath, COMMANDER_B, { host: 'athena' })
+
+    const mock = createMockSessionsInterface()
+    const server = await startServer({
+      sessionStorePath: storePath,
+      sessionsInterface: mock.interface,
+    })
+
+    try {
+      const response = await postChannelMessage(server.baseUrl, {
+        provider: 'discord',
+        accountId: 'default',
+        chatType: 'channel',
+        peerId: 'thread-444',
+        parentPeerId: 'chan-ops',
+        threadId: 'thread-444',
+        displayName: '#partner-support / Engineering',
+        message: '@athena please take this thread',
+      })
+      expect(response.status).toBe(409)
+      const body = await response.json() as { error: string }
+      expect(body.error).toContain('specify commanderId')
     } finally {
       await server.close()
     }
@@ -497,19 +687,22 @@ describe('POST /api/commanders/channel-message', () => {
 })
 
 describe('POST /api/commanders/:id/channel-reply', () => {
-  it('delivers replies using persisted lastRoute after restart', async () => {
+  it('delivers replies using the persisted conversation route after restart', async () => {
     const dir = await createTempDir('hammurabi-channel-reply-restart-')
+    const storePath = join(dir, 'sessions.json')
+    await seedCommander(storePath, COMMANDER_A)
+
     const initialSessions = createMockSessionsInterface()
     const outbound = createMockChannelReplyDispatchers()
     const firstServer = await startServer({
-      sessionStorePath: join(dir, 'sessions.json'),
+      sessionStorePath: storePath,
       sessionsInterface: initialSessions.interface,
       channelReplyDispatchers: outbound.dispatchers,
     })
 
-    let commanderId = ''
     try {
       const inbound = await postChannelMessage(firstServer.baseUrl, {
+        commanderId: COMMANDER_A,
         provider: 'telegram',
         accountId: 'default',
         chatType: 'group',
@@ -518,18 +711,13 @@ describe('POST /api/commanders/:id/channel-reply', () => {
         message: 'inbound before restart',
       })
       expect(inbound.status).toBe(201)
-      const inboundBody = await inbound.json() as { commanderId: string; created: boolean }
-      expect(inboundBody.created).toBe(true)
-      commanderId = inboundBody.commanderId
     } finally {
       await firstServer.close()
     }
 
-    expect(commanderId).not.toHaveLength(0)
-
     const restartedSessions = createMockSessionsInterface()
     const restartedServer = await startServer({
-      sessionStorePath: join(dir, 'sessions.json'),
+      sessionStorePath: storePath,
       sessionsInterface: restartedSessions.interface,
       channelReplyDispatchers: outbound.dispatchers,
     })
@@ -537,7 +725,7 @@ describe('POST /api/commanders/:id/channel-reply', () => {
     try {
       const reply = await postChannelReply(
         restartedServer.baseUrl,
-        commanderId,
+        COMMANDER_A,
         'reply after restart',
       )
       expect(reply.status).toBe(200)
@@ -552,7 +740,7 @@ describe('POST /api/commanders/:id/channel-reply', () => {
 
       expect(outbound.calls).toHaveLength(1)
       expect(outbound.calls[0]).toEqual({
-        commanderId,
+        commanderId: COMMANDER_A,
         message: 'reply after restart',
         channelMeta: {
           provider: 'telegram',
@@ -573,55 +761,49 @@ describe('POST /api/commanders/:id/channel-reply', () => {
     }
   })
 
-  it('routes replies to the latest Discord thread via lastRoute.threadId', async () => {
+  it('routes replies to the most recent Discord thread conversation', async () => {
     const dir = await createTempDir('hammurabi-channel-reply-discord-thread-')
+    const storePath = join(dir, 'sessions.json')
+    await seedCommander(storePath, COMMANDER_A)
+
     const mock = createMockSessionsInterface()
     const outbound = createMockChannelReplyDispatchers()
     const server = await startServer({
-      sessionStorePath: join(dir, 'sessions.json'),
+      sessionStorePath: storePath,
       sessionsInterface: mock.interface,
       channelReplyDispatchers: outbound.dispatchers,
     })
 
     try {
-      const seedResponse = await postChannelMessage(server.baseUrl, {
-        provider: 'discord',
-        accountId: 'default',
-        chatType: 'channel',
-        peerId: 'chan-ops',
-        displayName: '#partner-support',
-        message: 'seed channel',
-      })
-      expect(seedResponse.status).toBe(201)
-      const seedBody = await seedResponse.json() as { commanderId: string }
-
       const threadOneResponse = await postChannelMessage(server.baseUrl, {
+        commanderId: COMMANDER_A,
         provider: 'discord',
         accountId: 'default',
         chatType: 'channel',
         peerId: 'thread-111',
         parentPeerId: 'chan-ops',
         threadId: 'thread-111',
-        displayName: '#partner-support',
+        displayName: '#partner-support / Engineering',
         message: 'thread one message',
       })
-      expect(threadOneResponse.status).toBe(200)
+      expect(threadOneResponse.status).toBe(201)
 
       const threadTwoResponse = await postChannelMessage(server.baseUrl, {
+        commanderId: COMMANDER_A,
         provider: 'discord',
         accountId: 'default',
         chatType: 'channel',
         peerId: 'thread-222',
         parentPeerId: 'chan-ops',
         threadId: 'thread-222',
-        displayName: '#partner-support',
+        displayName: '#partner-support / Engineering',
         message: 'thread two message',
       })
-      expect(threadTwoResponse.status).toBe(200)
+      expect(threadTwoResponse.status).toBe(201)
 
       const replyResponse = await postChannelReply(
         server.baseUrl,
-        seedBody.commanderId,
+        COMMANDER_A,
         'threaded reply',
       )
       expect(replyResponse.status).toBe(200)
@@ -638,18 +820,22 @@ describe('POST /api/commanders/:id/channel-reply', () => {
     }
   })
 
-  it('routes replies to WhatsApp groups using group JID + accountId', async () => {
+  it('routes replies to WhatsApp groups using the conversation channel binding', async () => {
     const dir = await createTempDir('hammurabi-channel-reply-whatsapp-group-')
+    const storePath = join(dir, 'sessions.json')
+    await seedCommander(storePath, COMMANDER_A)
+
     const mock = createMockSessionsInterface()
     const outbound = createMockChannelReplyDispatchers()
     const server = await startServer({
-      sessionStorePath: join(dir, 'sessions.json'),
+      sessionStorePath: storePath,
       sessionsInterface: mock.interface,
       channelReplyDispatchers: outbound.dispatchers,
     })
 
     try {
       const inbound = await postChannelMessage(server.baseUrl, {
+        commanderId: COMMANDER_A,
         provider: 'whatsapp',
         accountId: 'default',
         chatType: 'group',
@@ -658,11 +844,10 @@ describe('POST /api/commanders/:id/channel-reply', () => {
         message: 'group inbound',
       })
       expect(inbound.status).toBe(201)
-      const inboundBody = await inbound.json() as { commanderId: string }
 
       const reply = await postChannelReply(
         server.baseUrl,
-        inboundBody.commanderId,
+        COMMANDER_A,
         'group reply',
       )
       expect(reply.status).toBe(200)

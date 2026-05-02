@@ -175,22 +175,26 @@ export interface CommanderHeartbeatManagerOptions {
   now?: () => Date
   sendHeartbeat(input: {
     commanderId: string
+    conversationId: string
     renderedMessage: string
     timestamp: string
     config: HeartbeatConfig
   }): Promise<boolean | 'retryable'>
   onHeartbeatSent?(input: {
     commanderId: string
+    conversationId: string
     timestamp: string
     config: HeartbeatConfig
   }): Promise<void> | void
   onHeartbeatError?(input: {
     commanderId: string
+    conversationId: string
     error: unknown
   }): void
 }
 
 interface HeartbeatLoop {
+  commanderId: string
   timer: ReturnType<typeof setInterval>
   config: HeartbeatConfig
   inFlight: boolean
@@ -211,82 +215,91 @@ export class CommanderHeartbeatManager {
     this.now = options.now ?? (() => new Date())
   }
 
-  start(commanderId: string, config: HeartbeatConfig): void {
-    this.stop(commanderId)
+  start(conversationId: string, commanderId: string, config: HeartbeatConfig): void {
+    this.stop(conversationId)
 
     const normalized = normalizeHeartbeatConfig(config)
     const timer = setInterval(() => {
-      void this.tick(commanderId)
+      void this.tick(conversationId)
     }, normalized.intervalMs)
     if (typeof timer.unref === 'function') {
       timer.unref()
     }
 
     const loop: HeartbeatLoop = {
+      commanderId,
       config: normalized,
       inFlight: false,
       timer,
     }
 
-    this.loops.set(commanderId, loop)
+    this.loops.set(conversationId, loop)
   }
 
-  updateConfig(commanderId: string, config: HeartbeatConfig): void {
-    if (!this.isRunning(commanderId)) {
+  updateConfig(conversationId: string, commanderId: string, config: HeartbeatConfig): void {
+    if (!this.isRunning(conversationId)) {
       return
     }
 
-    this.start(commanderId, config)
+    this.start(conversationId, commanderId, config)
   }
 
-  stop(commanderId: string): void {
-    const loop = this.loops.get(commanderId)
+  stop(conversationId: string): void {
+    const loop = this.loops.get(conversationId)
     if (!loop) {
       return
     }
 
     clearInterval(loop.timer)
-    this.loops.delete(commanderId)
+    this.loops.delete(conversationId)
   }
 
-  stopAll(): void {
-    for (const commanderId of this.loops.keys()) {
-      this.stop(commanderId)
+  stopForCommander(commanderId: string): void {
+    for (const [conversationId, loop] of [...this.loops.entries()]) {
+      if (loop.commanderId === commanderId) {
+        this.stop(conversationId)
+      }
     }
   }
 
-  isRunning(commanderId: string): boolean {
-    return this.loops.has(commanderId)
+  stopAll(): void {
+    for (const conversationId of [...this.loops.keys()]) {
+      this.stop(conversationId)
+    }
   }
 
-  isInFlight(commanderId: string): boolean {
-    return this.loops.get(commanderId)?.inFlight ?? false
+  isRunning(conversationId: string): boolean {
+    return this.loops.has(conversationId)
   }
 
-  fireManual(commanderId: string, timestamp: string = this.now().toISOString()): boolean {
-    const loop = this.loops.get(commanderId)
+  isInFlight(conversationId: string): boolean {
+    return this.loops.get(conversationId)?.inFlight ?? false
+  }
+
+  fireManual(conversationId: string, timestamp: string = this.now().toISOString()): boolean {
+    const loop = this.loops.get(conversationId)
     if (!loop || loop.inFlight) {
       return false
     }
 
-    this.launchHeartbeat(commanderId, loop, timestamp)
+    this.launchHeartbeat(conversationId, loop, timestamp)
     return true
   }
 
-  private tick(commanderId: string): void {
-    const loop = this.loops.get(commanderId)
+  private tick(conversationId: string): void {
+    const loop = this.loops.get(conversationId)
     if (!loop || loop.inFlight) {
       return
     }
 
     const timestamp = this.now().toISOString()
-    this.launchHeartbeat(commanderId, loop, timestamp)
+    this.launchHeartbeat(conversationId, loop, timestamp)
   }
 
-  private launchHeartbeat(commanderId: string, loop: HeartbeatLoop, timestamp: string): void {
+  private launchHeartbeat(conversationId: string, loop: HeartbeatLoop, timestamp: string): void {
     loop.inFlight = true
-    void this.dispatchHeartbeat(commanderId, loop, timestamp).finally(() => {
-      const current = this.loops.get(commanderId)
+    void this.dispatchHeartbeat(conversationId, loop, timestamp).finally(() => {
+      const current = this.loops.get(conversationId)
       if (current === loop) {
         current.inFlight = false
       }
@@ -294,21 +307,22 @@ export class CommanderHeartbeatManager {
   }
 
   private async dispatchHeartbeat(
-    commanderId: string,
+    conversationId: string,
     loop: HeartbeatLoop,
     timestamp: string,
   ): Promise<void> {
     const renderedMessage = renderHeartbeatMessage(loop.config.messageTemplate, timestamp)
     try {
       const sent = await this.options.sendHeartbeat({
-        commanderId,
+        commanderId: loop.commanderId,
+        conversationId,
         renderedMessage,
         timestamp,
         config: loop.config,
       })
 
       if (sent === false) {
-        this.stop(commanderId)
+        this.stop(conversationId)
         return
       }
       if (sent === 'retryable') {
@@ -316,12 +330,17 @@ export class CommanderHeartbeatManager {
       }
 
       await this.options.onHeartbeatSent?.({
-        commanderId,
+        commanderId: loop.commanderId,
+        conversationId,
         timestamp,
         config: loop.config,
       })
     } catch (error) {
-      this.options.onHeartbeatError?.({ commanderId, error })
+      this.options.onHeartbeatError?.({
+        commanderId: loop.commanderId,
+        conversationId,
+        error,
+      })
     }
   }
 }

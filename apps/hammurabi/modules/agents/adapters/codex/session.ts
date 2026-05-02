@@ -733,6 +733,7 @@ async function createCodexSessionFromThread(
     name: sessionName,
     sessionType: options.sessionType ?? 'worker',
     creator: options.creator ?? { kind: 'human' },
+    conversationId: options.conversationId,
     agentType: 'codex',
     mode,
     cwd: sessionCwd,

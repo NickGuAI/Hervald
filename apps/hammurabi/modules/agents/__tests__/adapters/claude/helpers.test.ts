@@ -13,12 +13,9 @@ import {
 
 const UNSET_CLAUDE_CHILD_ENV = 'unset CLAUDECODE ANTHROPIC_MODEL ANTHROPIC_DEFAULT_OPUS_MODEL ANTHROPIC_DEFAULT_SONNET_MODEL'
 
-function startApprovalServer(decision: 'allow' | 'deny') {
+function startApprovalServer(handler: (req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse) => void) {
   return new Promise<{ baseUrl: string; close(): Promise<void> }>((resolve, reject) => {
-    const server = createServer((req, res) => {
-      res.writeHead(200, { 'content-type': 'application/json' })
-      res.end(JSON.stringify({ decision }))
-    })
+    const server = createServer(handler)
 
     server.listen(0, '127.0.0.1', () => {
       const address = server.address()
@@ -94,7 +91,10 @@ describe('agents/adapters/claude/helpers', () => {
   })
 
   it('shell-escapes the inline approval hook command so sh does not mangle template literals', async () => {
-    const approvalServer = await startApprovalServer('allow')
+    const approvalServer = await startApprovalServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ decision: 'allow' }))
+    })
 
     try {
       const result = await runHookThroughShell(
@@ -114,6 +114,55 @@ describe('agents/adapters/claude/helpers', () => {
           permissionDecision: 'allow',
         },
       })
+    } finally {
+      await approvalServer.close()
+    }
+  })
+
+  it('polls pending approvals in the inline hook shim until a terminal decision arrives', async () => {
+    let pollCount = 0
+    const approvalServer = await startApprovalServer((req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' })
+      if (req.url === '/api/approval/check') {
+        res.end(JSON.stringify({
+          decision: 'pending',
+          request_id: 'inline-req-1',
+          retry_after_ms: 10,
+        }))
+        return
+      }
+
+      pollCount += 1
+      if (pollCount < 2) {
+        res.end(JSON.stringify({
+          decision: 'pending',
+          request_id: 'inline-req-1',
+          retry_after_ms: 10,
+        }))
+        return
+      }
+
+      res.end(JSON.stringify({ decision: 'allow' }))
+    })
+
+    try {
+      const result = await runHookThroughShell(
+        buildClaudeApprovalHookCommand(),
+        {
+          HAMMURABI_APPROVAL_BASE_URL: approvalServer.baseUrl,
+          HAMMURABI_APPROVAL_FAIL_OPEN: '',
+        },
+        JSON.stringify({ tool_name: 'Bash', tool_input: { command: 'git status' } }),
+      )
+
+      expect(result.code).toBe(0)
+      expect(JSON.parse(result.stdout)).toEqual({
+        hookSpecificOutput: {
+          hookEventName: 'PreToolUse',
+          permissionDecision: 'allow',
+        },
+      })
+      expect(pollCount).toBeGreaterThanOrEqual(2)
     } finally {
       await approvalServer.close()
     }

@@ -460,8 +460,9 @@ export class PolicyStore {
 
   private buildView(scope: ActionPolicyScope, storedScope: StoredPolicyScope): EffectiveActionPolicyView {
     const merged = new Map<string, ActionPolicyRecord>()
+    const synthesizedDefault = storedScope.fallbackPolicy ?? this.defaultPolicy
     for (const action of this.builtInActions) {
-      merged.set(action.id, createDefaultRecord(action.id, this.defaultPolicy))
+      merged.set(action.id, createDefaultRecord(action.id, synthesizedDefault))
     }
     for (const record of storedScope.records) {
       merged.set(record.actionId, {

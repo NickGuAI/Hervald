@@ -7,9 +7,8 @@
  *  - Italic description (first sentence, truncated)
  *  - Pending count badge when pendingCount > 0
  *  - Selected state: ink-wash-02 bg + 2px solid foreground left border
- *  - When selected: nested sub-agent list (up to 5 workers)
+ *  - When selected: inline New Chat action for the selected commander
  */
-import type { CSSProperties } from 'react'
 import type { SessionCreator } from '@/types'
 import { AgentAvatar, Icon, STATE_COLOR } from '@/surfaces/hervald'
 
@@ -63,7 +62,7 @@ interface SessionRowProps {
   commander: Commander
   selected: boolean
   onClick: () => void
-  workers?: Worker[]
+  onCreateChat?: () => void
   approvals?: Approval[]
 }
 
@@ -71,15 +70,15 @@ export function SessionRow({
   commander,
   selected,
   onClick,
-  workers = [],
+  onCreateChat,
   approvals = [],
 }: SessionRowProps) {
-  const subAgents = workers.slice(0, 5)
   const pendingCount = approvals.length
 
   return (
-    <div>
+    <div data-testid="commander-row" data-commander-id={commander.id}>
       <button
+        data-testid="commander-row-button"
         onClick={onClick}
         style={{
           width: '100%',
@@ -190,48 +189,33 @@ export function SessionRow({
         </div>
       </button>
 
-      {/* Nested sub-agent list when selected */}
-      {selected && subAgents.length > 0 && (
+      {selected && onCreateChat && (
         <div style={{ padding: '2px 0 8px' }}>
-          {subAgents.map((w) => {
-            const hasPending = approvals.some((a) => a.workerId === w.id)
-            return (
-              <div
-                key={w.id}
-                style={{
-                  padding: '3px 20px 3px 36px',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 8,
-                  fontFamily: 'var(--hv-font-mono)',
-                  fontSize: 12,
-                  color: 'var(--hv-fg-muted)',
-                } as CSSProperties}
-              >
-                <span
-                  style={{
-                    width: 5,
-                    height: 5,
-                    borderRadius: '50%',
-                    background: STATE_COLOR[w.state ?? 'idle'] ?? STATE_COLOR.idle,
-                    flexShrink: 0,
-                  }}
-                />
-                <span style={{ flex: 1 }}>{w.name}</span>
-                {hasPending && (
-                  <span
-                    style={{
-                      fontSize: 10,
-                      color: 'var(--vermillion-seal)',
-                      fontFamily: 'var(--hv-font-mono)',
-                    }}
-                  >
-                    1
-                  </span>
-                )}
-              </div>
-            )
-          })}
+          <div style={{ padding: '0 20px 6px 36px' }}>
+            <button
+              type="button"
+              data-testid="commander-new-chat-button"
+              onClick={onCreateChat}
+              aria-label={`New chat for ${commander.name}`}
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 6,
+                background: 'transparent',
+                border: '1px solid var(--hv-border-hair)',
+                borderRadius: 999,
+                color: 'var(--hv-fg-subtle)',
+                cursor: 'pointer',
+                padding: '3px 8px',
+                fontFamily: 'var(--hv-font-mono)',
+                fontSize: 11,
+                letterSpacing: '0.04em',
+              }}
+            >
+              <Icon name="plus" size={10} />
+              <span>New Chat</span>
+            </button>
+          </div>
         </div>
       )}
     </div>

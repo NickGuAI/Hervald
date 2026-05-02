@@ -1,5 +1,6 @@
 import {
   isObject,
+  parseTrimmedString,
   parseGitHubIssueUrl,
   parseMessage,
   parseQuestArtifacts,
@@ -18,6 +19,7 @@ import type {
 import {
   buildQuestInstructionFromGitHubIssue,
 } from './context.js'
+import { buildLegacyCommanderConversationId } from '../store.js'
 import type { CommanderRoutesContext } from './types.js'
 
 export function registerQuestRoutes(
@@ -64,7 +66,9 @@ export function registerQuestRoutes(
     }
 
     try {
-      const quest = await context.questStore.claimNext(commanderId)
+      const conversationId = parseTrimmedString(req.query.conversationId)
+        ?? buildLegacyCommanderConversationId(commanderId)
+      const quest = await context.questStore.claimNext(commanderId, conversationId)
       res.json({ quest })
     } catch (error) {
       res.status(500).json({

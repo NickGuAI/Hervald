@@ -14,14 +14,6 @@ export const ICONS: Record<string, ReactNode> = {
       <circle cx="12" cy="12" r="3" />
     </>
   ),
-  fleet: (
-    <>
-      <path d="M3 18h18M3 13h18M3 8h18" />
-      <circle cx="6" cy="8" r="1.2" />
-      <circle cx="12" cy="13" r="1.2" />
-      <circle cx="16" cy="18" r="1.2" />
-    </>
-  ),
   sessions: (
     <>
       <path d="M4 5h16v12H4z" />

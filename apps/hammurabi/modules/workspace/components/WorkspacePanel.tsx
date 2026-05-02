@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { FolderOpen, GitBranch, Loader2, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { WorkspaceTreeNode } from '../types'
@@ -68,12 +68,14 @@ export function WorkspacePanel({
   const [nodesByParent, setNodesByParent] = useState<Record<string, WorkspaceTreeNode[]>>({})
   const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set())
   const [loadingPaths, setLoadingPaths] = useState<Set<string>>(new Set())
+  const [addedPaths, setAddedPaths] = useState<Set<string>>(new Set())
   const [selectedPath, setSelectedPath] = useState<string | null>(null)
   const [busyLabel, setBusyLabel] = useState<string | null>(null)
   const [panelError, setPanelError] = useState<string | null>(null)
   const [draftContent, setDraftContent] = useState('')
   const [isInitializingGit, setIsInitializingGit] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const addFeedbackTimersRef = useRef<number[]>([])
 
   const previewQuery = useWorkspaceFilePreview(
     source,
@@ -93,15 +95,26 @@ export function WorkspacePanel({
       : getParentPath(selectedNode.path)
   }, [selectedNode])
 
+  const clearAddFeedbackTimers = useCallback(() => {
+    for (const timerId of addFeedbackTimersRef.current) {
+      window.clearTimeout(timerId)
+    }
+    addFeedbackTimersRef.current = []
+  }, [])
+
   useEffect(() => {
     setNodesByParent({})
     setExpandedPaths(new Set())
     setLoadingPaths(new Set())
+    setAddedPaths(new Set())
     setSelectedPath(null)
     setDraftContent('')
     setPanelError(null)
     setActiveTab('files')
-  }, [sourceKey])
+    clearAddFeedbackTimers()
+  }, [clearAddFeedbackTimers, sourceKey])
+
+  useEffect(() => () => clearAddFeedbackTimers(), [clearAddFeedbackTimers])
 
   useEffect(() => {
     const nextContent = previewQuery.data?.kind === 'text'
@@ -292,6 +305,26 @@ export function WorkspacePanel({
     }
   }
 
+  const handleAddPath = useCallback((path: string, knownType?: WorkspaceTreeNode['type']) => {
+    if (!onInsertPath) {
+      return
+    }
+
+    const node = knownType ? { type: knownType } : findNode(nodesByParent, path)
+    const nextPath = node?.type === 'directory' ? `${path}/` : path
+    onInsertPath(nextPath)
+    setAddedPaths((prev) => new Set(prev).add(path))
+
+    const timerId = window.setTimeout(() => {
+      setAddedPaths((prev) => {
+        const next = new Set(prev)
+        next.delete(path)
+        return next
+      })
+    }, 1200)
+    addFeedbackTimersRef.current.push(timerId)
+  }, [nodesByParent, onInsertPath])
+
   const compactHeader = (
     <button
       type="button"
@@ -379,9 +412,11 @@ export function WorkspacePanel({
                     nodesByParent={nodesByParent}
                     expandedPaths={expandedPaths}
                     loadingPaths={loadingPaths}
+                    addedPaths={addedPaths}
                     selectedPath={selectedPath}
                     onSelectPath={setSelectedPath}
                     onToggleDirectory={(path) => void handleToggleDirectory(path)}
+                    onAddPath={onInsertPath ? handleAddPath : undefined}
                     variant={variant}
                   />
                 </div>
@@ -405,7 +440,7 @@ export function WorkspacePanel({
                 onSave={() => void handleSave()}
                 onRename={() => void handleRename()}
                 onDelete={() => void handleDelete()}
-                onInsertPath={onInsertPath}
+                onInsertPath={onInsertPath ? handleAddPath : undefined}
                 variant={variant}
               />
             </div>

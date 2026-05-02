@@ -21,6 +21,7 @@ import { readFile } from 'node:fs/promises'
 import {
   COMMAND_ROOM_COMPLETED_SESSION_TTL_MS,
 } from './constants.js'
+import { buildLegacyCommanderConversationId } from '../commanders/store.js'
 import {
   buildPersistedEntryFromExitedSession,
   getWorldAgentStatus,
@@ -186,19 +187,34 @@ export function createPersistenceHelpers(
       const migrationEntry = legacySpawnSource
         ? { ...entry, [LEGACY_PARENT_SESSION_KEY]: legacySpawnSource }
         : entry
-      if (entry.creator && entry.sessionType) {
-        return entry
+      const base = entry.creator && entry.sessionType
+        ? { ...entry }
+        : backfillPersistedSession(
+            migrationEntry as PersistedStreamSession & Record<string, unknown>,
+          )
+
+      if (
+        !base.conversationId &&
+        base.sessionType === 'commander' &&
+        base.creator?.kind === 'commander' &&
+        typeof base.creator.id === 'string' &&
+        base.creator.id.trim().length > 0
+      ) {
+        base.conversationId = buildLegacyCommanderConversationId(base.creator.id.trim())
+        console.info(
+          `[agents] Backfilled persisted session "${entry.name}" conversationId=${base.conversationId}`,
+        )
       }
 
-      const backfilled = backfillPersistedSession(
-        migrationEntry as PersistedStreamSession & Record<string, unknown>,
-      )
-      console.info(
-        `[agents] Backfilled persisted session "${entry.name}" creator=${backfilled.creator.kind}${
-          backfilled.creator.id ? `/${backfilled.creator.id}` : ''
-        } sessionType=${backfilled.sessionType}`,
-      )
-      return backfilled
+      if (!entry.creator || !entry.sessionType) {
+        const creatorKind = base.creator?.kind ?? 'unknown'
+        const creatorId = base.creator?.id ? `/${base.creator.id}` : ''
+        console.info(
+          `[agents] Backfilled persisted session "${entry.name}" creator=${creatorKind}${creatorId} sessionType=${base.sessionType}`,
+        )
+      }
+
+      return base
     })
     const backfilledState = { sessions: backfilledSessions }
     const changed = JSON.stringify(backfilledState) !== JSON.stringify(persisted)

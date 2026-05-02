@@ -18,9 +18,11 @@ import type {
 import type { EmailPoller, CommanderEmailClient } from '../email-poller.js'
 import type {
   CommanderHeartbeatManager,
+  CommanderHeartbeatState,
 } from '../heartbeat.js'
 import type { HeartbeatLog } from '../heartbeat-log.js'
 import type { CommanderSubagentLifecycleEvent, CommanderManager } from '../manager.js'
+import type { Conversation, ConversationStore } from '../conversation-store.js'
 import type { QuestStore } from '../quest-store.js'
 import type { ResolvedWorkspace } from '../../workspace/types.js'
 import type {
@@ -48,6 +50,7 @@ export type CommanderChannelReplyDispatcher = (
 export interface CommandersRouterOptions {
   sessionStore?: CommanderSessionStore
   sessionStorePath?: string
+  conversationStore?: ConversationStore
   runtimeConfig?: CommanderRuntimeConfig
   runtimeConfigPath?: string
   questStore?: QuestStore
@@ -81,6 +84,7 @@ export interface CommandersRouterOptions {
 
 export interface CommandersRouterResult {
   router: Router
+  conversationRouter: Router
   dispose: () => void
 }
 
@@ -143,7 +147,21 @@ export interface CommanderSessionStats {
   scheduleCount: number
 }
 
-export type CommanderSessionResponseBase = Omit<CommanderSession, 'remoteOrigin'> & {
+export interface CommanderConversationRuntimeView {
+  heartbeat: CommanderHeartbeatState
+  lastHeartbeat: string | null
+  heartbeatTickCount: number
+  currentTask: CommanderCurrentTask | null
+  completedTasks: number
+  totalCostUsd: number
+  channelMeta?: CommanderChannelMeta
+  lastRoute?: CommanderLastRoute
+  claudeSessionId?: string
+  codexThreadId?: string
+  geminiSessionId?: string
+}
+
+export type CommanderSessionResponseBase = Omit<CommanderSession, 'remoteOrigin'> & CommanderConversationRuntimeView & {
   name: string
   remoteOrigin?: {
     machineId: string
@@ -216,6 +234,7 @@ export interface CommanderRoutesContext {
   githubToken: string | null
   runtimeConfig: CommanderRuntimeConfig
   sessionStore: CommanderSessionStore
+  conversationStore: ConversationStore
   questStore: QuestStore
   emailConfigStore: CommanderEmailConfigStore
   emailStateStore: CommanderEmailStateStore
@@ -234,7 +253,7 @@ export interface CommanderRoutesContext {
   heartbeatManager: CommanderHeartbeatManager
   runtimes: Map<string, CommanderRuntime>
   activeCommanderSessions: Map<string, { sessionName: string; startedAt: string }>
-  heartbeatFiredAtByCommander: Map<string, string>
+  heartbeatFiredAtByConversation: Map<string, string>
   avatarUpload: { single(fieldname: string): RequestHandler }
   commandRoomScheduler?: CommanderCronScheduler
   commandRoomSchedulerInitialized: Promise<void>
@@ -294,6 +313,20 @@ export interface CommanderRoutesContext {
       }
     }
   >
+  resolveHeartbeatConversation: (
+    commanderId: string,
+    conversationId?: string,
+  ) => Promise<Conversation | null>
+  resolveLegacyConversation: (commanderId: string) => Promise<Conversation | null>
+  resolveCommanderRuntimeView: (commanderId: string) => Promise<CommanderConversationRuntimeView>
+  ensureLegacyConversation: (
+    session: CommanderSession,
+    options?: {
+      surface?: Conversation['surface']
+      heartbeat?: CommanderHeartbeatState
+      currentTask?: CommanderCurrentTask | null
+    },
+  ) => Promise<Conversation>
   migrateCommanderConfigSource: (commanderId: string) => Promise<void>
   migrateLegacyCommanderConfig: () => Promise<void>
   reconcileCommanderSessions: () => Promise<void>

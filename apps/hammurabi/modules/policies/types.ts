@@ -99,7 +99,24 @@ export interface PendingApproval {
   resolverRef?: PendingApprovalResolverRef
   currentSkillId?: string
   currentSkillName?: string
+  expiresAt?: string
+  timeoutAction?: PendingApprovalResolution
+  resolvedAt?: string
+  resolution?: ApprovalResolutionOutcome
+  deliveredAt?: string
 }
+
+export type PendingApprovalStatus =
+  | {
+    state: 'pending'
+    approval: PendingApproval
+  }
+  | {
+    state: 'resolved'
+    approval: PendingApproval
+    outcome: ApprovalResolutionOutcome
+    delivered: boolean
+  }
 
 export interface ApprovalCoordinatorEvent {
   type: 'enqueued' | 'resolved'

@@ -32,7 +32,6 @@ interface TopBarProps {
 /** Short uppercase labels for top bar tab nav */
 const TAB_LABELS: Record<string, string> = {
   'command-room': 'Command Room',
-  fleet: 'Fleet',
   'api-keys': 'Settings',
   telemetry: 'Telemetry',
   services: 'Services',
@@ -42,7 +41,6 @@ const TAB_LABELS: Record<string, string> = {
 /** Breadcrumb labels (full names) */
 const BREADCRUMB_LABELS: Record<string, string> = {
   'command-room': 'COMMAND ROOM',
-  fleet: 'FLEET',
   telemetry: 'TELEMETRY',
   services: 'SERVICES',
   policies: 'POLICIES',
@@ -101,7 +99,8 @@ const tabBase: CSSProperties = {
   cursor: 'pointer',
   padding: '4px 10px',
   fontFamily: 'var(--hv-font-body)',
-  fontSize: 10.5,
+  fontSize: 13,
+  color: 'var(--washi-white)',
   letterSpacing: '0.14em',
   textTransform: 'uppercase',
   textDecoration: 'none',
@@ -215,7 +214,7 @@ export function TopBar({ modules, counts }: TopBarProps) {
             to={mod.path}
             style={({ isActive }) => ({
               ...tabBase,
-              color: isActive ? 'var(--washi-white)' : '#6f6c67',
+              color: isActive ? 'var(--washi-white)' : 'var(--washi-white)',
               borderBottom: isActive
                 ? '1px solid var(--washi-white)'
                 : '1px solid transparent',
@@ -230,7 +229,7 @@ export function TopBar({ modules, counts }: TopBarProps) {
               type="button"
               style={{
                 ...overflowButtonStyle,
-                color: activeSecondary || showOverflow ? 'var(--washi-white)' : '#6f6c67',
+                color: activeSecondary || showOverflow ? 'var(--washi-white)' : 'var(--washi-white)',
                 borderBottom:
                   activeSecondary || showOverflow
                     ? '1px solid var(--washi-white)'
@@ -249,7 +248,7 @@ export function TopBar({ modules, counts }: TopBarProps) {
                     onClick={() => setShowOverflow(false)}
                     style={({ isActive }) => ({
                       ...tabBase,
-                      color: isActive ? 'var(--washi-white)' : '#a09d96',
+                      color: isActive ? 'var(--washi-white)' : 'var(--washi-white)',
                       borderBottom: 'none',
                       padding: '8px 10px',
                       borderRadius: 8,

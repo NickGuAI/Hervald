@@ -1,0 +1,470 @@
+<svg viewBox="0 0 1800 2240" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Hammurabi commander system architecture — identity, memory, quest, automation, agent-side reads">
+  <defs>
+    <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#34495E"/>
+    </marker>
+    <marker id="ar-rose" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#a04848"/>
+    </marker>
+    <marker id="ar-gold" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#8a6a18"/>
+    </marker>
+    <marker id="ar-grey" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#6f6c67"/>
+    </marker>
+  </defs>
+
+  <rect width="1800" height="2240" fill="#f7f2ea"/>
+
+  <!-- ═══════ Title bar ═══════ -->
+  <rect x="20" y="20" width="1760" height="60" rx="6" fill="#2d3748"/>
+  <text x="40" y="48" font-family="Georgia, serif" font-size="22" fill="#f7f2ea">Hammurabi Commander — System Architecture</text>
+  <text x="40" y="70" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="12" fill="#cdcac4">How identity, memory, quests, automations, and agent-side knowledge are loaded, written, and triggered</text>
+  <text x="1768" y="48" text-anchor="end" font-family="Georgia, serif" font-size="14" fill="#cdcac4" font-style="italic">apps/hammurabi/docs/diagrams</text>
+  <text x="1768" y="68" text-anchor="end" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" fill="#cdcac4">commander-system-architecture.svg</text>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════════════
+       §1 BOOT — Session-start system prompt assembly
+       y = 92 – 472   (header 92-130, body 130-472)
+       ═══════════════════════════════════════════════════════════════════════════════ -->
+  <rect x="20" y="92" width="1760" height="380" rx="8" fill="none" stroke="#cdc6b9" stroke-width="1"/>
+  <rect x="20" y="92" width="1760" height="38" rx="6" fill="#cfdef0" stroke="#34495E" stroke-width="1"/>
+  <text x="40" y="118" font-family="Georgia, serif" font-size="16" fill="#1f2933">§1   BOOT — system prompt assembly  (loaded ONCE at session start)</text>
+  <text x="1758" y="118" text-anchor="end" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" fill="#34495E">session-seed.ts:46-70  ·  prompt.ts:101-120  ·  workflow-resolution.ts:40-70</text>
+
+  <!-- Sources column (LEFT) -->
+  <text x="40" y="156" font-family="Georgia, serif" font-size="13" fill="#1f2933">SOURCES on disk  ·  ~/.hammurabi/commander/&lt;id&gt;/</text>
+
+  <!-- COMMANDER.md -->
+  <rect x="40" y="166" width="320" height="52" rx="5" fill="#ffffff" stroke="#34495E" stroke-width="1"/>
+  <text x="56" y="186" font-family="Georgia, serif" font-size="13" fill="#1f2933">★  COMMANDER.md</text>
+  <text x="56" y="202" font-family="ui-monospace, monospace" font-size="10" fill="#52606d">commander/&lt;id&gt;/COMMANDER.md</text>
+  <text x="56" y="214" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="9.5" fill="#3a6b3f">→ becomes Layer 0 (base prompt body)</text>
+
+  <!-- MEMORY.md -->
+  <rect x="40" y="226" width="320" height="52" rx="5" fill="#ffffff" stroke="#34495E" stroke-width="1"/>
+  <text x="56" y="246" font-family="Georgia, serif" font-size="13" fill="#1f2933">★  MEMORY.md</text>
+  <text x="56" y="262" font-family="ui-monospace, monospace" font-size="10" fill="#52606d">.memory/MEMORY.md  · durable facts</text>
+  <text x="56" y="274" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="9.5" fill="#3a6b3f">→ Layer 2 of MemoryContext</text>
+
+  <!-- LONG_TERM_MEM.md -->
+  <rect x="40" y="286" width="320" height="52" rx="5" fill="#ffffff" stroke="#34495E" stroke-width="1"/>
+  <text x="56" y="306" font-family="Georgia, serif" font-size="13" fill="#1f2933">★  LONG_TERM_MEM.md</text>
+  <text x="56" y="322" font-family="ui-monospace, monospace" font-size="10" fill="#52606d">.memory/LONG_TERM_MEM.md  · narrative</text>
+  <text x="56" y="334" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="9.5" fill="#3a6b3f">→ Layer 2 of MemoryContext</text>
+
+  <!-- working-memory -->
+  <rect x="40" y="346" width="320" height="52" rx="5" fill="#ffffff" stroke="#34495E" stroke-width="1"/>
+  <text x="56" y="366" font-family="Georgia, serif" font-size="13" fill="#1f2933">★  working-memory.{json,md}</text>
+  <text x="56" y="382" font-family="ui-monospace, monospace" font-size="10" fill="#52606d">.memory/working-memory.json  · scratch</text>
+  <text x="56" y="394" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="9.5" fill="#3a6b3f">→ Layer 3 (rendered last 6 entries)</text>
+
+  <!-- HEARTBEAT.md template -->
+  <rect x="40" y="406" width="320" height="52" rx="5" fill="#ffffff" stroke="#34495E" stroke-width="1" stroke-dasharray="3,2"/>
+  <text x="56" y="426" font-family="Georgia, serif" font-size="13" fill="#1f2933">HEARTBEAT.md  (template)</text>
+  <text x="56" y="442" font-family="ui-monospace, monospace" font-size="10" fill="#52606d">.memory/HEARTBEAT.md  · checklist</text>
+  <text x="56" y="454" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="9.5" fill="#8a6a18">used later by fat heartbeat (§3)</text>
+
+  <!-- ASSEMBLY (CENTER) -->
+  <text x="400" y="156" font-family="Georgia, serif" font-size="13" fill="#1f2933">ASSEMBLY  ·  buildCommanderSessionSeed → buildSystemPrompt</text>
+  <rect x="400" y="166" width="700" height="292" rx="6" fill="#eef4f8" stroke="#34495E" stroke-width="1"/>
+
+  <!-- Layer 0 -->
+  <rect x="416" y="178" width="668" height="56" rx="4" fill="#ffffff" stroke="#34495E" stroke-width="1"/>
+  <text x="430" y="198" font-family="Georgia, serif" font-size="12" fill="#1f2933">Layer 0  ·  Base prompt body</text>
+  <text x="430" y="214" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10.5" fill="#52606d">resolveCommanderWorkflow() reads COMMANDER.md  ·  workflow-resolution.ts:40-70</text>
+  <text x="430" y="228" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10.5" fill="#52606d">precedence:  &lt;id&gt;/COMMANDER.md  →  cwd/COMMANDER.md  →  BASE_SYSTEM_PROMPT fallback</text>
+
+  <!-- Layer 1 -->
+  <rect x="416" y="242" width="668" height="56" rx="4" fill="#ffffff" stroke="#34495E" stroke-width="1"/>
+  <text x="430" y="262" font-family="Georgia, serif" font-size="12" fill="#1f2933">Layer 1  ·  QuestBoardSection</text>
+  <text x="430" y="278" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10.5" fill="#52606d">live snapshot of pending+active quests rendered into prompt  ·  prompt.ts:101-120</text>
+  <text x="430" y="292" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10.5" fill="#52606d">embedded CLI cheat-sheet (claim / note / done)  ·  see §5</text>
+
+  <!-- Layer 2 -->
+  <rect x="416" y="306" width="668" height="56" rx="4" fill="#ffffff" stroke="#34495E" stroke-width="1"/>
+  <text x="430" y="326" font-family="Georgia, serif" font-size="12" fill="#1f2933">Layer 2  ·  MemoryContext (durable)</text>
+  <text x="430" y="342" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10.5" fill="#52606d">MemoryContextBuilder.buildLayer2()  ·  context-builder.ts:186-213</text>
+  <text x="430" y="356" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10.5" fill="#52606d">concatenates MEMORY.md (facts) + LONG_TERM_MEM.md (narrative)</text>
+
+  <!-- Layer 3 -->
+  <rect x="416" y="370" width="668" height="56" rx="4" fill="#ffffff" stroke="#34495E" stroke-width="1"/>
+  <text x="430" y="390" font-family="Georgia, serif" font-size="12" fill="#1f2933">Layer 3  ·  Working memory scratchpad</text>
+  <text x="430" y="406" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10.5" fill="#52606d">WorkingMemoryStore.render(6)  ·  working-memory.ts:201  ·  context-builder.ts:215-221</text>
+  <text x="430" y="420" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10.5" fill="#52606d">last 6 scratch entries; no truncation logic above that</text>
+
+  <text x="416" y="446" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10.5" fill="#3a2f4a" font-style="italic">final = [Layer 0  +  Layer 1  +  Layer 2  +  Layer 3]   joined with double-newline</text>
+
+  <!-- Arrows: sources → assembly -->
+  <path d="M 360 192 L 410 195" stroke="#34495E" stroke-width="1.5" fill="none" marker-end="url(#ar)"/>
+  <path d="M 360 252 L 410 268" stroke="#34495E" stroke-width="1.5" fill="none" marker-end="url(#ar)"/>
+  <path d="M 360 312 L 410 332" stroke="#34495E" stroke-width="1.5" fill="none" marker-end="url(#ar)"/>
+  <path d="M 360 372 L 410 396" stroke="#34495E" stroke-width="1.5" fill="none" marker-end="url(#ar)"/>
+
+  <!-- OUTPUT (RIGHT) -->
+  <text x="1130" y="156" font-family="Georgia, serif" font-size="13" fill="#1f2933">OUTPUT  ·  passed once to provider runtime</text>
+
+  <rect x="1130" y="166" width="630" height="64" rx="5" fill="#ffffff" stroke="#34495E" stroke-width="1"/>
+  <text x="1146" y="186" font-family="Georgia, serif" font-size="13" fill="#1f2933">sessionsInterface.createCommanderSession()</text>
+  <text x="1146" y="204" font-family="ui-monospace, monospace" font-size="10" fill="#52606d">{ systemPrompt, agentType: claude|codex|gemini, mode: 'default' }</text>
+  <text x="1146" y="220" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10.5" fill="#3a6b3f">register-core.ts:730-759  ·  --effort max  ·  CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING=1</text>
+
+  <rect x="1130" y="240" width="630" height="64" rx="5" fill="#ffffff" stroke="#34495E" stroke-width="1"/>
+  <text x="1146" y="260" font-family="Georgia, serif" font-size="13" fill="#1f2933">Provider SDK opens session</text>
+  <text x="1146" y="278" font-family="ui-monospace, monospace" font-size="10" fill="#52606d">~/.claude/projects/&lt;cwd-hash&gt;/&lt;sid&gt;.jsonl       (Claude SDK-owned)</text>
+  <text x="1146" y="292" font-family="ui-monospace, monospace" font-size="10" fill="#52606d">~/.codex/sessions/&lt;date&gt;/rollout-&lt;tid&gt;.jsonl  (Codex)</text>
+
+  <rect x="1130" y="314" width="630" height="64" rx="5" fill="#ffffff" stroke="#34495E" stroke-width="1"/>
+  <text x="1146" y="334" font-family="Georgia, serif" font-size="13" fill="#1f2933">Hammurabi mirror — two-copy invariant</text>
+  <text x="1146" y="352" font-family="ui-monospace, monospace" font-size="10" fill="#52606d">~/.hammurabi/agents/sessions/&lt;name&gt;/transcript.v1.jsonl   ← persistence.ts:109</text>
+  <text x="1146" y="366" font-family="ui-monospace, monospace" font-size="10" fill="#52606d">~/.hammurabi/commander/&lt;id&gt;/sessions/&lt;tid&gt;.jsonl          ← persistence.ts:116</text>
+
+  <rect x="1130" y="388" width="630" height="64" rx="5" fill="#fdf0e6" stroke="#a04848" stroke-width="1"/>
+  <text x="1146" y="408" font-family="Georgia, serif" font-size="13" fill="#a04848">⚠  NOT re-injected mid-turn</text>
+  <text x="1146" y="424" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10.5" fill="#52606d">System prompt is set once. MEMORY.md / LONG_TERM_MEM.md / working-memory NOT</text>
+  <text x="1146" y="440" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10.5" fill="#52606d">re-loaded each turn. Heartbeat re-injection is via user-message body only — see §3.</text>
+
+  <!-- Arrow: assembly → output -->
+  <path d="M 1100 195 L 1126 195" stroke="#34495E" stroke-width="2" fill="none" marker-end="url(#ar)"/>
+  <path d="M 1100 270 L 1126 270" stroke="#34495E" stroke-width="2" fill="none" marker-end="url(#ar)"/>
+  <path d="M 1100 340 L 1126 340" stroke="#34495E" stroke-width="2" fill="none" marker-end="url(#ar)"/>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════════════
+       §2 LIVE TURN — chat I/O while session is running
+       y = 484 – 704
+       ═══════════════════════════════════════════════════════════════════════════════ -->
+  <rect x="20" y="484" width="1760" height="220" rx="8" fill="none" stroke="#cdc6b9" stroke-width="1"/>
+  <rect x="20" y="484" width="1760" height="38" rx="6" fill="#d4e6c5" stroke="#3a6b3f" stroke-width="1"/>
+  <text x="40" y="510" font-family="Georgia, serif" font-size="16" fill="#1f2933">§2   LIVE TURN — provider I/O during chat  (Hammurabi only mirrors transcripts)</text>
+  <text x="1758" y="510" text-anchor="end" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" fill="#3a6b3f">routes/context.ts  ·  modules/agents/persistence.ts  ·  transcript-store.ts</text>
+
+  <!-- User message -->
+  <rect x="40" y="540" width="240" height="64" rx="5" fill="#ffffff" stroke="#3a6b3f" stroke-width="1"/>
+  <text x="56" y="560" font-family="Georgia, serif" font-size="13" fill="#1f2933">User message</text>
+  <text x="56" y="578" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10.5" fill="#52606d">Hervald composer · CLI</text>
+  <text x="56" y="594" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10.5" fill="#52606d">workers send · /channel-message</text>
+
+  <path d="M 280 572 L 320 572" stroke="#34495E" stroke-width="2" fill="none" marker-end="url(#ar)"/>
+
+  <!-- POST /send -->
+  <rect x="320" y="540" width="240" height="64" rx="5" fill="#ffffff" stroke="#3a6b3f" stroke-width="1"/>
+  <text x="336" y="560" font-family="Georgia, serif" font-size="13" fill="#1f2933">POST /agents/sessions/:n/send</text>
+  <text x="336" y="578" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10.5" fill="#52606d">unified send contract:</text>
+  <text x="336" y="594" font-family="ui-monospace, monospace" font-size="10" fill="#52606d">live  |  ?queue=true (deferred)</text>
+
+  <path d="M 560 572 L 600 572" stroke="#34495E" stroke-width="2" fill="none" marker-end="url(#ar)"/>
+
+  <!-- Provider runtime -->
+  <rect x="600" y="540" width="280" height="64" rx="5" fill="#ffffff" stroke="#3a6b3f" stroke-width="1"/>
+  <text x="616" y="560" font-family="Georgia, serif" font-size="13" fill="#1f2933">Provider runtime emits events</text>
+  <text x="616" y="578" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10.5" fill="#52606d">Claude stream-json envelope · Codex</text>
+  <text x="616" y="594" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10.5" fill="#52606d">JSON-RPC · Gemini ACP / stream</text>
+
+  <path d="M 880 572 L 920 572" stroke="#34495E" stroke-width="2" fill="none" marker-end="url(#ar)"/>
+
+  <!-- Normalize -->
+  <rect x="920" y="540" width="280" height="64" rx="5" fill="#ffffff" stroke="#3a6b3f" stroke-width="1"/>
+  <text x="936" y="560" font-family="Georgia, serif" font-size="13" fill="#1f2933">Normalize → HammurabiEvent</text>
+  <text x="936" y="578" font-family="ui-monospace, monospace" font-size="10" fill="#52606d">event-normalizers/&lt;provider&gt;.ts</text>
+  <text x="936" y="594" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10.5" fill="#52606d">discriminated `type` + `source`</text>
+
+  <path d="M 1200 572 L 1240 572" stroke="#34495E" stroke-width="2" fill="none" marker-end="url(#ar)"/>
+
+  <!-- Persist + broadcast -->
+  <rect x="1240" y="540" width="520" height="64" rx="5" fill="#ffffff" stroke="#3a6b3f" stroke-width="1"/>
+  <text x="1256" y="560" font-family="Georgia, serif" font-size="13" fill="#1f2933">Persist + broadcast</text>
+  <text x="1256" y="578" font-family="ui-monospace, monospace" font-size="10" fill="#52606d">appendTranscriptEvent() → transcript.v1.jsonl   +   commander/&lt;id&gt;/sessions/&lt;tid&gt;.jsonl</text>
+  <text x="1256" y="594" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10.5" fill="#52606d">WebSocket broadcast → UI listeners (Hervald + Agents Monitor)</text>
+
+  <!-- Approval gate (sub-flow) -->
+  <rect x="40" y="624" width="1720" height="68" rx="5" fill="#fef6e8" stroke="#8a6a18" stroke-width="1"/>
+  <text x="56" y="644" font-family="Georgia, serif" font-size="13" fill="#1f2933">Outbound action / tool call → ProviderApprovalAdapter (claude | codex | gemini) → ActionPolicyGate</text>
+  <text x="56" y="662" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10.5" fill="#52606d">unified approval architecture (#1186) ·  policy auto-allows safe internal actions  ·  outbound queues at `/api/approvals/pending` for human review</text>
+  <text x="56" y="680" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10.5" fill="#52606d">workers run in single approval-on `default` mode  ·  no provider bypass  ·  see also docs/diagrams/approval-routing-overview.svg</text>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════════════
+       §3 HEARTBEAT — periodic re-injection
+       y = 716 – 1036
+       ═══════════════════════════════════════════════════════════════════════════════ -->
+  <rect x="20" y="716" width="1760" height="320" rx="8" fill="none" stroke="#cdc6b9" stroke-width="1"/>
+  <rect x="20" y="716" width="1760" height="38" rx="6" fill="#f0e8c8" stroke="#8a6a18" stroke-width="1"/>
+  <text x="40" y="742" font-family="Georgia, serif" font-size="16" fill="#1f2933">§3   HEARTBEAT — every 15 min, fat every 4th tick  (the only Hammurabi-side mid-turn injection)</text>
+  <text x="1758" y="742" text-anchor="end" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" fill="#8a6a18">heartbeat.ts:206  ·  choose-heartbeat-mode.ts:48-72  ·  routes/context.ts:914-1048</text>
+
+  <!-- Scheduler -->
+  <rect x="40" y="770" width="280" height="80" rx="5" fill="#ffffff" stroke="#8a6a18" stroke-width="1"/>
+  <text x="56" y="790" font-family="Georgia, serif" font-size="13" fill="#1f2933">CommanderHeartbeatManager</text>
+  <text x="56" y="808" font-family="ui-monospace, monospace" font-size="10" fill="#52606d">heartbeat.ts:206</text>
+  <text x="56" y="824" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10.5" fill="#52606d">DEFAULT_HEARTBEAT_INTERVAL_MS = 15min</text>
+  <text x="56" y="840" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10.5" fill="#52606d">DEFAULT_FAT_PIN_INTERVAL = 4</text>
+
+  <!-- Decision diamond -->
+  <polygon points="400,810 460,780 520,810 460,840" fill="#fef6e8" stroke="#8a6a18" stroke-width="1.2"/>
+  <text x="460" y="806" text-anchor="middle" font-family="Georgia, serif" font-size="11" fill="#1f2933">tick % 4</text>
+  <text x="460" y="820" text-anchor="middle" font-family="Georgia, serif" font-size="11" fill="#1f2933">== 0 ?</text>
+
+  <path d="M 320 810 L 398 810" stroke="#34495E" stroke-width="1.5" fill="none" marker-end="url(#ar)"/>
+
+  <!-- THIN branch (top right) -->
+  <rect x="580" y="770" width="540" height="48" rx="5" fill="#ffffff" stroke="#8a6a18" stroke-width="1"/>
+  <text x="596" y="790" font-family="Georgia, serif" font-size="13" fill="#1f2933">THIN tick  (3 of 4)  ·  contextMode = thin</text>
+  <text x="596" y="808" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10.5" fill="#52606d">render stored heartbeatMessageTemplate → enqueue as user message  ·  no re-loads</text>
+
+  <path d="M 522 800 L 576 786" stroke="#8a6a18" stroke-width="1.5" fill="none" marker-end="url(#ar-gold)"/>
+  <text x="540" y="780" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10" fill="#8a6a18" font-style="italic">no</text>
+
+  <!-- FAT branch (bottom right) -->
+  <rect x="580" y="838" width="1180" height="172" rx="5" fill="#ffffff" stroke="#8a6a18" stroke-width="1"/>
+  <text x="596" y="858" font-family="Georgia, serif" font-size="13" fill="#1f2933">FAT tick  (1 of 4)  ·  contextMode = fat  ·  buildFatHeartbeatMessage</text>
+
+  <rect x="600" y="868" width="270" height="42" rx="4" fill="#fef6e8" stroke="#8a6a18" stroke-width="0.8"/>
+  <text x="612" y="886" font-family="Georgia, serif" font-size="12" fill="#1f2933">①  re-resolve COMMANDER.md</text>
+  <text x="612" y="900" font-family="ui-monospace, monospace" font-size="9.5" fill="#52606d">resolveCommanderWorkflow(...)</text>
+
+  <rect x="880" y="868" width="270" height="42" rx="4" fill="#fef6e8" stroke="#8a6a18" stroke-width="0.8"/>
+  <text x="892" y="886" font-family="Georgia, serif" font-size="12" fill="#1f2933">②  fetch pending quests</text>
+  <text x="892" y="900" font-family="ui-monospace, monospace" font-size="9.5" fill="#52606d">QuestStore.list({ status: pending|active })</text>
+
+  <rect x="1160" y="868" width="270" height="42" rx="4" fill="#fef6e8" stroke="#8a6a18" stroke-width="0.8"/>
+  <text x="1172" y="886" font-family="Georgia, serif" font-size="12" fill="#1f2933">③  load HEARTBEAT.md checklist</text>
+  <text x="1172" y="900" font-family="ui-monospace, monospace" font-size="9.5" fill="#52606d">.memory/HEARTBEAT.md</text>
+
+  <rect x="1440" y="868" width="300" height="42" rx="4" fill="#fef6e8" stroke="#8a6a18" stroke-width="0.8"/>
+  <text x="1452" y="886" font-family="Georgia, serif" font-size="12" fill="#1f2933">④  collect sub-agent results</text>
+  <text x="1452" y="900" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10" fill="#52606d">background work since last heartbeat</text>
+
+  <rect x="600" y="924" width="1140" height="42" rx="4" fill="#ffffff" stroke="#8a6a18" stroke-width="0.8"/>
+  <text x="612" y="942" font-family="Georgia, serif" font-size="12" fill="#1f2933">⑤  assemble  →  enqueue as queued internal user message  →  consumed on next turn</text>
+  <text x="612" y="958" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10" fill="#52606d">sendQueuedInternalUserMessage()  ·  routes/context.ts:1050-1053  ·  delivered as user-role, NOT system-prompt re-injection</text>
+
+  <rect x="600" y="976" width="1140" height="28" rx="4" fill="#fdf0e6" stroke="#a04848" stroke-width="0.8"/>
+  <text x="612" y="994" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" fill="#a04848">⚠  Fat heartbeats do NOT re-inject MemoryContext (Layer 2/3). README §32: "Fat heartbeats no longer inject assembled memory layers."</text>
+
+  <path d="M 462 842 L 462 880 L 596 880" stroke="#8a6a18" stroke-width="1.5" fill="none" marker-end="url(#ar-gold)"/>
+  <text x="476" y="862" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10" fill="#8a6a18" font-style="italic">yes</text>
+
+  <!-- Sources note -->
+  <rect x="40" y="868" width="280" height="148" rx="5" fill="#f7f0d8" stroke="#8a6a18" stroke-width="1" stroke-dasharray="3,2"/>
+  <text x="56" y="888" font-family="Georgia, serif" font-size="12" fill="#1f2933">Configurable via</text>
+  <text x="56" y="906" font-family="ui-monospace, monospace" font-size="10" fill="#52606d">~/.hammurabi/config.yaml</text>
+  <text x="56" y="922" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10" fill="#52606d">commanders.runtime.defaults.heartbeat</text>
+  <text x="56" y="940" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10" fill="#52606d">+ per-commander overrides in</text>
+  <text x="56" y="956" font-family="ui-monospace, monospace" font-size="10" fill="#52606d">commander/sessions.json</text>
+  <text x="56" y="976" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10" fill="#52606d">heartbeat.intervalMs · messageTemplate</text>
+  <text x="56" y="992" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10" fill="#52606d">contextMode · contextConfig.fatPinInterval</text>
+  <text x="56" y="1010" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10" fill="#52606d">maxTurns</text>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════════════
+       §4 MEMORY WRITE PATHS
+       y = 1048 – 1328
+       ═══════════════════════════════════════════════════════════════════════════════ -->
+  <rect x="20" y="1048" width="1760" height="280" rx="8" fill="none" stroke="#cdc6b9" stroke-width="1"/>
+  <rect x="20" y="1048" width="1760" height="38" rx="6" fill="#f0d4d4" stroke="#a04848" stroke-width="1"/>
+  <text x="40" y="1074" font-family="Georgia, serif" font-size="16" fill="#1f2933">§4   MEMORY WRITES — three paths, three writers, ONE invariant: agent reads only at session start</text>
+  <text x="1758" y="1074" text-anchor="end" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" fill="#a04848">memory-md-writer.ts  ·  working-memory.ts  ·  cleanup-commander-memory.py  ·  transcript-index.ts</text>
+
+  <!-- Column 1: MEMORY.md -->
+  <rect x="40" y="1100" width="420" height="216" rx="6" fill="#ffffff" stroke="#a04848" stroke-width="1"/>
+  <text x="60" y="1120" font-family="Georgia, serif" font-size="13" fill="#1f2933">MEMORY.md  ·  durable facts</text>
+  <line x1="60" y1="1128" x2="440" y2="1128" stroke="#cdc6b9" stroke-width="0.8"/>
+  <text x="60" y="1148" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" fill="#52606d">WRITER (server-side, single source):</text>
+  <text x="60" y="1164" font-family="ui-monospace, monospace" font-size="10" fill="#52606d">MemoryMdWriter.append()</text>
+  <text x="60" y="1178" font-family="ui-monospace, monospace" font-size="10" fill="#52606d">memory-md-writer.ts:33,65</text>
+  <text x="60" y="1198" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" fill="#52606d">via REST:</text>
+  <text x="60" y="1214" font-family="ui-monospace, monospace" font-size="10" fill="#52606d">POST /commanders/:id/memory/facts</text>
+  <text x="60" y="1234" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" fill="#52606d">via CLI:</text>
+  <text x="60" y="1250" font-family="ui-monospace, monospace" font-size="10" fill="#52606d">hammurabi memory save "&lt;fact&gt;"</text>
+  <text x="60" y="1272" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10.5" fill="#3a6b3f">de-duped append-only · per-commander mutex · bumps remote-sync revision</text>
+  <text x="60" y="1300" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10.5" fill="#a04848">⚠ NEVER overwrite. Bullet-list grows over time; cleanup is external (§6).</text>
+
+  <!-- Column 2: LONG_TERM_MEM.md -->
+  <rect x="480" y="1100" width="420" height="216" rx="6" fill="#ffffff" stroke="#a04848" stroke-width="1"/>
+  <text x="500" y="1120" font-family="Georgia, serif" font-size="13" fill="#1f2933">LONG_TERM_MEM.md  ·  narrative</text>
+  <line x1="500" y1="1128" x2="880" y2="1128" stroke="#cdc6b9" stroke-width="0.8"/>
+  <text x="500" y="1148" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" fill="#52606d">WRITER:  agent itself (no server writer)</text>
+  <text x="500" y="1164" font-family="ui-monospace, monospace" font-size="10" fill="#52606d">via Edit/Write tool against the file</text>
+  <text x="500" y="1184" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" fill="#52606d">Triggered by:</text>
+  <text x="500" y="1200" font-family="ui-monospace, monospace" font-size="10" fill="#52606d">cron memory-consolidation @ 0 0 * * *</text>
+  <text x="500" y="1214" font-family="ui-monospace, monospace" font-size="10" fill="#52606d">command-room/tasks.json</text>
+  <text x="500" y="1234" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" fill="#52606d">Hygiene:</text>
+  <text x="500" y="1250" font-family="ui-monospace, monospace" font-size="10" fill="#52606d">operations/scripts/</text>
+  <text x="500" y="1264" font-family="ui-monospace, monospace" font-size="10" fill="#52606d">cleanup-commander-memory.py:272</text>
+  <text x="500" y="1284" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10.5" fill="#3a6b3f">distilled per-day journal narrative; rolled forward by external cron skill</text>
+  <text x="500" y="1304" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10.5" fill="#a04848">⚠ no `hammurabi memory compact` CLI exists; cron reads .jsonl and writes file directly</text>
+
+  <!-- Column 3: working-memory -->
+  <rect x="920" y="1100" width="420" height="216" rx="6" fill="#ffffff" stroke="#a04848" stroke-width="1"/>
+  <text x="940" y="1120" font-family="Georgia, serif" font-size="13" fill="#1f2933">working-memory  ·  scratchpad</text>
+  <line x1="940" y1="1128" x2="1320" y2="1128" stroke="#cdc6b9" stroke-width="0.8"/>
+  <text x="940" y="1148" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" fill="#52606d">WRITER (server-side):</text>
+  <text x="940" y="1164" font-family="ui-monospace, monospace" font-size="10" fill="#52606d">WorkingMemoryStore.update()</text>
+  <text x="940" y="1178" font-family="ui-monospace, monospace" font-size="10" fill="#52606d">working-memory.ts:198,225</text>
+  <text x="940" y="1198" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" fill="#52606d">via REST:</text>
+  <text x="940" y="1214" font-family="ui-monospace, monospace" font-size="10" fill="#52606d">GET/POST/DELETE /memory/working-memory</text>
+  <text x="940" y="1234" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" fill="#52606d">via CLI:</text>
+  <text x="940" y="1250" font-family="ui-monospace, monospace" font-size="10" fill="#52606d">hammurabi memory --type=working_memory</text>
+  <text x="940" y="1266" font-family="ui-monospace, monospace" font-size="10" fill="#52606d">  append | read | clear</text>
+  <text x="940" y="1290" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10.5" fill="#3a6b3f">JSON store + rendered .md mirror; both files written atomically</text>
+  <text x="940" y="1308" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10.5" fill="#a04848">⚠ scratch only — do not promote durable conclusions here</text>
+
+  <!-- Column 4: LanceDB -->
+  <rect x="1360" y="1100" width="400" height="216" rx="6" fill="#ffffff" stroke="#a04848" stroke-width="1"/>
+  <text x="1380" y="1120" font-family="Georgia, serif" font-size="13" fill="#1f2933">LanceDB transcript-index</text>
+  <line x1="1380" y1="1128" x2="1740" y2="1128" stroke="#cdc6b9" stroke-width="0.8"/>
+  <text x="1380" y="1148" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" fill="#52606d">PATH:</text>
+  <text x="1380" y="1164" font-family="ui-monospace, monospace" font-size="10" fill="#52606d">~/.ginsights/transcript-index/&lt;id&gt;/</text>
+  <text x="1380" y="1184" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" fill="#52606d">WRITER (nightly):</text>
+  <text x="1380" y="1200" font-family="ui-monospace, monospace" font-size="10" fill="#52606d">syncCommanderTranscriptIndex()</text>
+  <text x="1380" y="1214" font-family="ui-monospace, monospace" font-size="10" fill="#52606d">cron 20 2 * * * — cron.ts:7,89</text>
+  <text x="1380" y="1234" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" fill="#52606d">READER (on-demand):</text>
+  <text x="1380" y="1250" font-family="ui-monospace, monospace" font-size="10" fill="#52606d">POST /commanders/:id/transcripts/search</text>
+  <text x="1380" y="1264" font-family="ui-monospace, monospace" font-size="10" fill="#52606d">hammurabi commander transcripts search</text>
+  <text x="1380" y="1290" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10.5" fill="#a04848">⚠ NOT auto-RAG into prompt — search only when explicitly invoked</text>
+  <text x="1380" y="1308" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10.5" fill="#3a6b3f">indexes commander/&lt;id&gt;/sessions/*.jsonl</text>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════════════
+       §5 QUEST BOARD
+       y = 1340 – 1580
+       ═══════════════════════════════════════════════════════════════════════════════ -->
+  <rect x="20" y="1340" width="1760" height="240" rx="8" fill="none" stroke="#cdc6b9" stroke-width="1"/>
+  <rect x="20" y="1340" width="1760" height="38" rx="6" fill="#f0e0c0" stroke="#8a6a18" stroke-width="1"/>
+  <text x="40" y="1366" font-family="Georgia, serif" font-size="16" fill="#1f2933">§5   QUEST BOARD — work queue surfaced into the prompt at boot, refreshed at each fat heartbeat</text>
+  <text x="1758" y="1366" text-anchor="end" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" fill="#8a6a18">quest-store.ts  ·  routes/register-quests.ts  ·  /create-quests skill</text>
+
+  <!-- Inputs -->
+  <rect x="40" y="1394" width="380" height="172" rx="6" fill="#ffffff" stroke="#8a6a18" stroke-width="1"/>
+  <text x="56" y="1414" font-family="Georgia, serif" font-size="13" fill="#1f2933">Inputs (write paths)</text>
+  <line x1="56" y1="1422" x2="404" y2="1422" stroke="#cdc6b9" stroke-width="0.8"/>
+  <text x="56" y="1440" font-family="ui-monospace, monospace" font-size="10" fill="#52606d">hammurabi quests create  →  POST /quests</text>
+  <text x="56" y="1456" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10.5" fill="#52606d">  source: 'manual'  (default)</text>
+  <text x="56" y="1476" font-family="ui-monospace, monospace" font-size="10" fill="#52606d">/create-quests skill (filesystem only)</text>
+  <text x="56" y="1492" font-family="ui-monospace, monospace" font-size="10" fill="#52606d">~/.hammurabi/quests/&lt;pkg&gt;/Q&lt;N&gt;-*.md</text>
+  <text x="56" y="1506" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10.5" fill="#a04848">  ⚠ NOT registered until explicit `quests create`</text>
+  <text x="56" y="1526" font-family="ui-monospace, monospace" font-size="10" fill="#52606d">GitHub issue auto-import (per-commander cron)</text>
+  <text x="56" y="1542" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10.5" fill="#52606d">  source: 'github-issue' | 'idea' | 'voice-log'</text>
+  <text x="56" y="1556" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10.5" fill="#3a6b3f">closed enum — see register-quests.ts:122-168</text>
+
+  <!-- Store -->
+  <rect x="440" y="1394" width="380" height="172" rx="6" fill="#fef6e8" stroke="#8a6a18" stroke-width="1"/>
+  <text x="456" y="1414" font-family="Georgia, serif" font-size="13" fill="#1f2933">QuestStore  (per-commander)</text>
+  <line x1="456" y1="1422" x2="804" y2="1422" stroke="#cdc6b9" stroke-width="0.8"/>
+  <text x="456" y="1440" font-family="ui-monospace, monospace" font-size="10" fill="#52606d">commander/&lt;id&gt;/quests.json</text>
+  <text x="456" y="1456" font-family="ui-monospace, monospace" font-size="10" fill="#52606d">quest-store.ts:588</text>
+  <text x="456" y="1476" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" fill="#52606d">States:</text>
+  <text x="456" y="1492" font-family="ui-monospace, monospace" font-size="10" fill="#52606d">pending → active → done | failed</text>
+  <text x="456" y="1512" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" fill="#52606d">Operations (mutationQueue serialized):</text>
+  <text x="456" y="1528" font-family="ui-monospace, monospace" font-size="10" fill="#52606d">create · list · claimNext · update · note · del</text>
+  <text x="456" y="1548" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10.5" fill="#3a6b3f">contract: cwd · permissionMode · agentType · skillsToUse</text>
+
+  <!-- Read paths -->
+  <rect x="840" y="1394" width="920" height="172" rx="6" fill="#ffffff" stroke="#8a6a18" stroke-width="1"/>
+  <text x="856" y="1414" font-family="Georgia, serif" font-size="13" fill="#1f2933">Read paths (how the agent finds out what to do next)</text>
+  <line x1="856" y1="1422" x2="1744" y2="1422" stroke="#cdc6b9" stroke-width="0.8"/>
+
+  <text x="856" y="1442" font-family="Georgia, serif" font-size="12" fill="#1f2933">①  At session start  →  Layer 1 of system prompt (QuestBoardSection in §1)</text>
+  <text x="856" y="1462" font-family="Georgia, serif" font-size="12" fill="#1f2933">②  At each fat heartbeat  →  injected into user message body (step ② in §3)</text>
+  <text x="856" y="1482" font-family="Georgia, serif" font-size="12" fill="#1f2933">③  Mid-turn, on demand  →  agent runs `hammurabi quests list` itself</text>
+
+  <rect x="856" y="1502" width="888" height="60" rx="4" fill="#fdf0e6" stroke="#a04848" stroke-width="0.8"/>
+  <text x="868" y="1520" font-family="Georgia, serif" font-size="12" fill="#a04848">⚠  No mid-turn system-reminder injection on quest mutation</text>
+  <text x="868" y="1538" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10.5" fill="#52606d">A `quests claim`/`note`/`done` from another process or commander does NOT push a notification into the running session.</text>
+  <text x="868" y="1554" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10.5" fill="#52606d">The commander discovers the new state via path ② or ③. Live state propagation is heartbeat-bounded (≤15 min).</text>
+
+  <!-- Arrows -->
+  <path d="M 420 1480 L 438 1480" stroke="#34495E" stroke-width="2" fill="none" marker-end="url(#ar)"/>
+  <path d="M 820 1480 L 838 1480" stroke="#34495E" stroke-width="2" fill="none" marker-end="url(#ar)"/>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════════════
+       §6 AUTOMATIONS — cron tasks + sentinels (separate sessions)
+       y = 1592 – 1872
+       ═══════════════════════════════════════════════════════════════════════════════ -->
+  <rect x="20" y="1592" width="1760" height="280" rx="8" fill="none" stroke="#cdc6b9" stroke-width="1"/>
+  <rect x="20" y="1592" width="1760" height="38" rx="6" fill="#e0d4f0" stroke="#7c5e8e" stroke-width="1"/>
+  <text x="40" y="1618" font-family="Georgia, serif" font-size="16" fill="#1f2933">§6   AUTOMATIONS — cron tasks + sentinels  (run as their OWN sessions, do NOT inject into commander chat)</text>
+  <text x="1758" y="1618" text-anchor="end" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" fill="#7c5e8e">command-room/scheduler.ts · executor.ts · sentinels/scheduler.ts · executor.ts</text>
+
+  <!-- Cron tasks -->
+  <rect x="40" y="1646" width="860" height="216" rx="6" fill="#ffffff" stroke="#7c5e8e" stroke-width="1"/>
+  <text x="60" y="1666" font-family="Georgia, serif" font-size="13" fill="#1f2933">Cron tasks  ·  CommandRoomScheduler  (node-cron, registered on initialize)</text>
+  <line x1="60" y1="1674" x2="880" y2="1674" stroke="#cdc6b9" stroke-width="0.8"/>
+
+  <text x="60" y="1694" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" fill="#52606d">STORAGE (3 tiers, all read by task-store.ts):</text>
+  <text x="60" y="1710" font-family="ui-monospace, monospace" font-size="10" fill="#52606d">~/.hammurabi/automation/tasks.json                  (canonical · global)</text>
+  <text x="60" y="1724" font-family="ui-monospace, monospace" font-size="10" fill="#52606d">~/.hammurabi/command-room/tasks.json                (legacy · still read for compat)</text>
+  <text x="60" y="1738" font-family="ui-monospace, monospace" font-size="10" fill="#52606d">~/.hammurabi/commander/&lt;id&gt;/cron/tasks.json         (per-commander)</text>
+
+  <text x="60" y="1762" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" fill="#52606d">FIRE  (CommandRoomExecutor.executeTask):</text>
+  <text x="60" y="1778" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10.5" fill="#52606d">spawn fresh stream session named  command-room-&lt;taskId&gt;-&lt;ts&gt;</text>
+  <text x="60" y="1792" font-family="ui-monospace, monospace" font-size="10" fill="#52606d">creator: { kind: 'cron', id: task.id }   sessionType: 'cron'</text>
+  <text x="60" y="1806" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10.5" fill="#52606d">instruction = slash-command  (e.g.  /daily-briefing,  /trend-review --week)</text>
+
+  <text x="60" y="1828" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" fill="#52606d">OUTPUT:  ~/.hammurabi/agents/sessions/command-room-&lt;...&gt;/transcript.v1.jsonl</text>
+  <text x="60" y="1846" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10.5" fill="#3a6b3f">Run history → ~/.hammurabi/{automation,command-room}/runs.json (CommandRoomRunStore)</text>
+
+  <!-- Sentinels -->
+  <rect x="920" y="1646" width="840" height="216" rx="6" fill="#ffffff" stroke="#7c5e8e" stroke-width="1"/>
+  <text x="940" y="1666" font-family="Georgia, serif" font-size="13" fill="#1f2933">Sentinels  ·  SentinelScheduler  (parentCommanderId-bound, stateful)</text>
+  <line x1="940" y1="1674" x2="1740" y2="1674" stroke="#cdc6b9" stroke-width="0.8"/>
+
+  <text x="940" y="1694" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" fill="#52606d">STORAGE:</text>
+  <text x="940" y="1710" font-family="ui-monospace, monospace" font-size="10" fill="#52606d">~/.hammurabi/sentinels/sentinels.json   (registry · scheduler config)</text>
+  <text x="940" y="1724" font-family="ui-monospace, monospace" font-size="10" fill="#52606d">~/.hammurabi/sentinels/&lt;id&gt;/memory.md   (sentinel-owned durable memory)</text>
+  <text x="940" y="1738" font-family="ui-monospace, monospace" font-size="10" fill="#52606d">~/.hammurabi/sentinels/&lt;id&gt;/{doc.md, runs/}   (config + run history, cap 50)</text>
+
+  <text x="940" y="1762" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" fill="#52606d">FIRE:</text>
+  <text x="940" y="1778" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10.5" fill="#52606d">spawn stream session  ·  sessionType: 'sentinel'  ·  parentCommanderId set</text>
+  <text x="940" y="1792" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10.5" fill="#52606d">prompt seeded by seed-memory.ts  ·  reads its own memory.md, doc.md</text>
+
+  <text x="940" y="1814" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" fill="#52606d">DIFF vs cron:</text>
+  <text x="940" y="1830" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10.5" fill="#3a6b3f">cron = stateless one-shot   ·   sentinel = stateful long-lived monitor with own memory</text>
+  <text x="940" y="1846" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10.5" fill="#a04848">⚠ Neither lands in the parent commander's chat. Communication is via shared files (MEMORY.md, quest board).</text>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════════════
+       §7 AGENT-SIDE READS — NOT runtime-loaded
+       y = 1884 – 2104
+       ═══════════════════════════════════════════════════════════════════════════════ -->
+  <rect x="20" y="1884" width="1760" height="220" rx="8" fill="none" stroke="#cdc6b9" stroke-width="1"/>
+  <rect x="20" y="1884" width="1760" height="38" rx="6" fill="#dcdcd2" stroke="#6f6c67" stroke-width="1"/>
+  <text x="40" y="1910" font-family="Georgia, serif" font-size="16" fill="#1f2933">§7   AGENT-SIDE READS — Hammurabi runtime never loads these; the agent reads them itself via Read tool</text>
+  <text x="1758" y="1910" text-anchor="end" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" fill="#6f6c67">behavioral instructions in CLAUDE.md / COMMANDER.md — fulfilled by agent at runtime</text>
+
+  <!-- ~/CLAUDE.md (SDK-loaded) -->
+  <rect x="40" y="1938" width="560" height="156" rx="6" fill="#ffffff" stroke="#6f6c67" stroke-width="1"/>
+  <text x="60" y="1958" font-family="Georgia, serif" font-size="13" fill="#1f2933">~/CLAUDE.md  ·  ~/App/CLAUDE.md  ·  apps/&lt;app&gt;/CLAUDE.md</text>
+  <line x1="60" y1="1966" x2="580" y2="1966" stroke="#cdc6b9" stroke-width="0.8"/>
+  <text x="60" y="1986" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" fill="#52606d">LOADED BY:  Claude Agent SDK itself  (NOT Hammurabi)</text>
+  <text x="60" y="2004" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10.5" fill="#52606d">SDK walks directory tree from project root → cwd, auto-injects each CLAUDE.md as project file</text>
+  <text x="60" y="2024" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" fill="#52606d">Codex equivalent:  AGENTS.md  (same hierarchical walk, 32 KiB cap)</text>
+  <text x="60" y="2044" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10.5" fill="#52606d">Path-scoped rules under .claude/rules/&lt;file&gt;.md (overall, agent-tooling, hammurabi, hervald, …)</text>
+  <text x="60" y="2064" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10.5" fill="#3a6b3f">Hammurabi server has zero direct reads of these files</text>
+  <text x="60" y="2082" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10.5" fill="#a04848">⚠ Mutating these files mid-session does NOT reach an already-running agent</text>
+
+  <!-- shared-knowledge -->
+  <rect x="620" y="1938" width="560" height="156" rx="6" fill="#ffffff" stroke="#6f6c67" stroke-width="1"/>
+  <text x="640" y="1958" font-family="Georgia, serif" font-size="13" fill="#1f2933">~/.hammurabi/shared-knowledge/</text>
+  <line x1="640" y1="1966" x2="1160" y2="1966" stroke="#cdc6b9" stroke-width="0.8"/>
+  <text x="640" y="1986" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" fill="#52606d">LOADED BY:  agent itself, on demand, via Read tool</text>
+  <text x="640" y="2004" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10.5" fill="#52606d">Behavioral instruction in ~/CLAUDE.md "Every Session" section directs agent to read these:</text>
+  <text x="640" y="2024" font-family="ui-monospace, monospace" font-size="10" fill="#52606d">DOCTRINES.md         hard operational constraints (SIMPLED)</text>
+  <text x="640" y="2040" font-family="ui-monospace, monospace" font-size="10" fill="#52606d">COMMANDER_GUIDE.md   CLI / worker / memory / quest-board procedures</text>
+  <text x="640" y="2056" font-family="ui-monospace, monospace" font-size="10" fill="#52606d">LEARNINGS.md         curated reusable lessons</text>
+  <text x="640" y="2078" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10.5" fill="#3a6b3f">Shared across ALL commanders. Edit promotes one fact across the fleet.</text>
+
+  <!-- global-rules -->
+  <rect x="1200" y="1938" width="560" height="156" rx="6" fill="#ffffff" stroke="#6f6c67" stroke-width="1"/>
+  <text x="1220" y="1958" font-family="Georgia, serif" font-size="13" fill="#1f2933">~/.hammurabi/global-rules/</text>
+  <line x1="1220" y1="1966" x2="1740" y2="1966" stroke="#cdc6b9" stroke-width="0.8"/>
+  <text x="1220" y="1986" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" fill="#52606d">LOADED BY:  agent itself, on demand, via Read tool</text>
+  <text x="1220" y="2004" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10.5" fill="#52606d">Routing tables — "where does file X live?" / "which skill should I invoke?"</text>
+  <text x="1220" y="2024" font-family="ui-monospace, monospace" font-size="10" fill="#52606d">WORKSPACE.md     /home/builder routing → which dir owns what</text>
+  <text x="1220" y="2040" font-family="ui-monospace, monospace" font-size="10" fill="#52606d">SKILLS_INDEX.md  available skills + when to use each</text>
+  <text x="1220" y="2062" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10.5" fill="#52606d">Discovered new dir? Update WORKSPACE.md so future agents skip blind global search.</text>
+  <text x="1220" y="2082" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10.5" fill="#3a6b3f">Zero matches in apps/hammurabi/ — confirmed agent-side only</text>
+
+  <!-- ═══════ Footer / legend ═══════ -->
+  <rect x="20" y="2148" width="1760" height="76" rx="6" fill="#ECE3F0" stroke="#7c5e8e" stroke-width="1"/>
+  <text x="40" y="2170" font-family="Georgia, serif" font-size="13" fill="#1f2933">Legend</text>
+  <text x="40" y="2188" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" fill="#52606d">★ marker = file is loaded into commander system prompt at session start (§1)   ·   ⚠ marker = invariant or anti-pattern to keep in mind   ·   dashed border = read-later artifact</text>
+  <text x="40" y="2206" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" fill="#52606d">Color sections: §1 boot (blue) · §2 live turn (green) · §3 heartbeat (amber) · §4 memory writes (rose) · §5 quest board (peach) · §6 automations (lavender) · §7 agent-side reads (grey)</text>
+  <text x="1758" y="2218" text-anchor="end" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10" fill="#6f6c67" font-style="italic">drawn 2026-05-01  ·  Athena</text>
+</svg>

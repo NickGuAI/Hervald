@@ -16,11 +16,10 @@
  * └──────────┴────────────────────────────┴───────────┘
  */
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import type { CSSProperties, FormEvent } from 'react'
+import type { CSSProperties } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import {
-  createSession,
   getDebriefStatus,
   killSession,
   resumeSession as resumeAgentSession,
@@ -41,17 +40,7 @@ import type {
   AgentSession,
   AgentType,
   SessionQueueSnapshot,
-  SessionTransportType,
 } from '@/types'
-import {
-  DEFAULT_CLAUDE_ADAPTIVE_THINKING_MODE,
-  type ClaudeAdaptiveThinkingMode,
-} from '@modules/claude-adaptive-thinking.js'
-import {
-  DEFAULT_CLAUDE_EFFORT_LEVEL,
-  type ClaudeEffortLevel,
-} from '@modules/claude-effort.js'
-import { NewSessionForm } from '@modules/agents/components/NewSessionForm'
 import { AddWorkerWizard } from '@modules/agents/components/AddWorkerWizard'
 import {
   formatError,
@@ -78,6 +67,13 @@ import {
   type CommanderAgentType,
   type CommanderSession,
 } from '@modules/commanders/hooks/useCommander'
+import {
+  useCreateConversation,
+  useConversationMessage,
+  useConversations,
+  useStartConversation,
+  useStopConversation,
+} from '@modules/conversation/hooks/use-conversations'
 import { CreateCommanderWizard } from '@modules/commanders/components/CreateCommanderWizard'
 import { SessionsColumn } from './SessionsColumn'
 import type { ChatSession } from './SessionsColumn'
@@ -229,6 +225,48 @@ interface HervaldAgentSession extends AgentSession {
   lastActivityAt?: string
 }
 
+function mapAgentSessionToChatSession(session: HervaldAgentSession): ChatSession {
+  const spawnedBy = typeof session.spawnedBy === 'string'
+    ? session.spawnedBy
+    : null
+  const processAlive = typeof session.processAlive === 'boolean'
+    ? session.processAlive
+    : undefined
+  const sessionName = String(session.name || session.id || '')
+
+  return {
+    id: sessionName,
+    name: sessionName,
+    label: typeof session.label === 'string' ? session.label : undefined,
+    created: typeof session.created === 'string' ? session.created : new Date(0).toISOString(),
+    pid: typeof session.pid === 'number' ? session.pid : 0,
+    age: formatSessionAge(session.lastActivityAt),
+    status: typeof session.status === 'string' ? session.status : undefined,
+    agentType: typeof session.agentType === 'string' ? session.agentType : undefined,
+    sessionType: typeof session.sessionType === 'string' ? session.sessionType : undefined,
+    transportType: session.transportType === 'pty' || session.transportType === 'stream'
+      ? session.transportType
+      : undefined,
+    lastActivityAt: typeof session.lastActivityAt === 'string' ? session.lastActivityAt : undefined,
+    cwd: typeof session.cwd === 'string' ? session.cwd : undefined,
+    host: typeof session.host === 'string' ? session.host : undefined,
+    spawnedBy: spawnedBy ?? undefined,
+    spawnedWorkers: Array.isArray(session.spawnedWorkers)
+      ? session.spawnedWorkers.filter((worker): worker is string => typeof worker === 'string')
+      : undefined,
+    workerSummary: session.workerSummary,
+    processAlive,
+    hadResult: typeof session.hadResult === 'boolean' ? session.hadResult : undefined,
+    resumedFrom: typeof session.resumedFrom === 'string' ? session.resumedFrom : undefined,
+    resumeAvailable: typeof session.resumeAvailable === 'boolean' ? session.resumeAvailable : undefined,
+    queuedMessageCount: typeof session.queuedMessageCount === 'number'
+      ? session.queuedMessageCount
+      : undefined,
+    effort: session.effort,
+    adaptiveThinking: session.adaptiveThinking,
+  }
+}
+
 export function CommandRoom() {
   const [searchParams, setSearchParams] = useSearchParams()
   const isMobile = useIsMobile()
@@ -241,6 +279,7 @@ export function CommandRoom() {
 
   /* ---- Live data ---- */
   const [selectedChatSessionId, setSelectedChatSessionId] = useState<string | null>(null)
+  const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null)
   const [theme, setTheme] = useState<'light' | 'dark'>(readStoredTheme)
   const [queueSnapshot, setQueueSnapshot] = useState<SessionQueueSnapshot>(EMPTY_QUEUE_SNAPSHOT)
   const [queueError, setQueueError] = useState<string | null>(null)
@@ -253,20 +292,6 @@ export function CommandRoom() {
   const [contextFilePaths, setContextFilePaths] = useState<string[]>([])
   const [showCreateCommanderForm, setShowCreateCommanderForm] = useState(false)
   const [showAddWorkerForm, setShowAddWorkerForm] = useState(false)
-  const [showNewSessionForm, setShowNewSessionForm] = useState(false)
-  const [name, setName] = useState('')
-  const [task, setTask] = useState('')
-  const [effort, setEffort] = useState<ClaudeEffortLevel>(DEFAULT_CLAUDE_EFFORT_LEVEL)
-  const [adaptiveThinking, setAdaptiveThinking] = useState<ClaudeAdaptiveThinkingMode>(
-    DEFAULT_CLAUDE_ADAPTIVE_THINKING_MODE,
-  )
-  const [cwd, setCwd] = useState('')
-  const [resumeFromSession, setResumeFromSession] = useState('')
-  const [agentType, setAgentType] = useState<AgentType>('claude')
-  const [transportType, setTransportType] = useState<Exclude<SessionTransportType, 'external'>>('stream')
-  const [selectedHost, setSelectedHost] = useState('')
-  const [isCreating, setIsCreating] = useState(false)
-  const [createError, setCreateError] = useState<string | null>(null)
   const [sessionActionError, setSessionActionError] = useState<string | null>(null)
 
   /* ---- Derived ---- */
@@ -275,6 +300,17 @@ export function CommandRoom() {
   const selectedCommander = commanderState.selectedCommander as HervaldCommanderSession | null
   const isGlobalScope = !selectedChatSessionId && isGlobalCommanderId(selectedCommanderId)
   const agentSessions = rawAgentSessions as HervaldAgentSession[]
+  const {
+    conversations,
+    selectedConversation,
+  } = useConversations(
+    !selectedCommanderId || isGlobalScope ? null : selectedCommanderId,
+    selectedConversationId,
+  )
+  const createConversation = useCreateConversation()
+  const startConversation = useStartConversation()
+  const stopConversation = useStopConversation()
+  const conversationMessageMutation = useConversationMessage()
   const {
     workers,
     workerSessions,
@@ -308,37 +344,7 @@ export function CommandRoom() {
         processAlive,
       })
       const sessionName = String(session.name || session.id || '')
-      const nextSession: ChatSession = {
-        id: sessionName,
-        name: sessionName,
-        label: typeof session.label === 'string' ? session.label : undefined,
-        created: typeof session.created === 'string' ? session.created : new Date(0).toISOString(),
-        pid: typeof session.pid === 'number' ? session.pid : 0,
-        age: formatSessionAge(session.lastActivityAt),
-        status: typeof session.status === 'string' ? session.status : undefined,
-        agentType: typeof session.agentType === 'string' ? session.agentType : undefined,
-        sessionType: semanticSessionType ?? undefined,
-        transportType: session.transportType === 'pty' || session.transportType === 'stream'
-          ? session.transportType
-          : undefined,
-        lastActivityAt: typeof session.lastActivityAt === 'string' ? session.lastActivityAt : undefined,
-        cwd: typeof session.cwd === 'string' ? session.cwd : undefined,
-        host: typeof session.host === 'string' ? session.host : undefined,
-        spawnedBy: spawnedBy ?? undefined,
-        spawnedWorkers: Array.isArray(session.spawnedWorkers)
-          ? session.spawnedWorkers.filter((worker): worker is string => typeof worker === 'string')
-          : undefined,
-        workerSummary: session.workerSummary,
-        processAlive,
-        hadResult: typeof session.hadResult === 'boolean' ? session.hadResult : undefined,
-        resumedFrom: typeof session.resumedFrom === 'string' ? session.resumedFrom : undefined,
-        resumeAvailable: typeof session.resumeAvailable === 'boolean' ? session.resumeAvailable : undefined,
-        queuedMessageCount: typeof session.queuedMessageCount === 'number'
-          ? session.queuedMessageCount
-          : undefined,
-        effort: session.effort,
-        adaptiveThinking: session.adaptiveThinking,
-      }
+      const nextSession = mapAgentSessionToChatSession(session)
 
       if (creator?.kind === 'commander') {
         nextWorkers.push({
@@ -398,51 +404,61 @@ export function CommandRoom() {
     () => [...workerSessions, ...cronSessions, ...sentinelSessions],
     [cronSessions, sentinelSessions, workerSessions],
   )
-  const selectedChatSession = availableSessions.find((session) => session.id === selectedChatSessionId) ?? null
-  const activeChatSession = activeTab === 'chat' ? selectedChatSession : null
-  const selectedSessionName = activeChatSession?.id
-    ?? (!isGlobalScope && selectedCommanderId
+  const selectedStandaloneSession = availableSessions.find((session) => session.id === selectedChatSessionId) ?? null
+  const selectedConversationSession = selectedConversation?.liveSession
+    ? mapAgentSessionToChatSession(selectedConversation.liveSession as HervaldAgentSession)
+    : null
+  const activeStandaloneSession = activeTab === 'chat' ? selectedStandaloneSession : null
+  const activeConversationSession = activeTab === 'chat' ? selectedConversationSession : null
+  const activeChatSession = activeStandaloneSession ?? activeConversationSession
+  const streamSessionName = activeStandaloneSession?.id
+    ?? (activeTab === 'chat' ? selectedConversation?.liveSession?.name : undefined)
+    ?? (!selectedConversation && !isGlobalScope && selectedCommanderId
       ? buildCommanderSessionName(selectedCommanderId)
       : undefined)
+  const composerSessionName = activeStandaloneSession?.id
+    ?? (selectedConversation ? `conversation-${selectedConversation.id}` : streamSessionName ?? 'hervald-command-room')
   const workspaceSource = resolveWorkspaceSource({
-    activeSessionName: activeChatSession?.id,
+    activeSessionName: activeStandaloneSession?.id,
     selectedCommanderId: isGlobalScope ? null : selectedCommanderId,
   })
   const workspaceSelectionKey = useMemo(
-    () => workspaceSource ? getWorkspaceSourceKey(workspaceSource) : `none:${selectedSessionName ?? 'hervald-command-room'}`,
-    [selectedSessionName, workspaceSource],
+    () => workspaceSource ? getWorkspaceSourceKey(workspaceSource) : `none:${composerSessionName}`,
+    [composerSessionName, workspaceSource],
   )
   const commanderSessionRunning = selectedCommander?.state === 'running'
   const activeChatIsStream = activeChatSession ? activeChatSession.transportType !== 'pty' : true
-  const selectedConversationRunning = activeChatSession
-    ? activeChatIsStream && activeChatSession.processAlive !== false
+  const selectedConversationRunning = activeStandaloneSession
+    ? activeChatIsStream && activeStandaloneSession.processAlive !== false
+    : selectedConversationSession
+      ? selectedConversationSession.transportType !== 'pty' && selectedConversationSession.processAlive !== false
     : commanderSessionRunning
-  const selectedConversationAgentType = activeChatSession?.agentType ?? selectedCommander?.agentType
-  const canQueueDraft = activeChatIsStream && supportsQueuedDrafts(selectedConversationAgentType)
-  const resumableSessions = agentSessions
-    .filter((session) => session.resumeAvailable)
-    .sort((left, right) => Date.parse(right.created) - Date.parse(left.created))
-  const resumeSource = resumableSessions.find((session) => session.name === resumeFromSession) ?? null
+  const selectedConversationAgentType = activeStandaloneSession?.agentType
+    ?? selectedConversationSession?.agentType
+    ?? selectedCommander?.agentType
+  const canQueueDraft = selectedConversation
+    ? Boolean(selectedConversationSession?.transportType !== 'pty')
+        && supportsQueuedDrafts(selectedConversationAgentType)
+    : activeChatIsStream && supportsQueuedDrafts(selectedConversationAgentType)
+  const showCommanderRuntimeControls = !activeStandaloneSession && !selectedConversation
   const {
     messages: sessionMessages,
     sendInput,
     answerQuestion,
     isStreaming,
     status: streamStatus,
-  } = useAgentSessionStream(selectedSessionName, {
+  } = useAgentSessionStream(streamSessionName, {
     enabled: selectedConversationRunning,
     onQueueUpdate: setQueueSnapshot,
   })
-  // Composer is only enabled when the live WebSocket is connected AND the
-  // underlying session is running. Gating on streamStatus (not just session
-  // list `processAlive`) matches the /agents MobileSessionView pattern and
-  // prevents the composer from accepting a submit while the WS is
-  // reconnecting — which previously caused follow-up sends to silently drop.
-  const composerEnabled = streamStatus === 'connected' && (
-    activeChatSession
-      ? activeChatIsStream && activeChatSession.processAlive !== false
-      : commanderSessionRunning
-  )
+  const composerEnabled = isGlobalScope
+    ? false
+    : activeStandaloneSession
+      ? streamStatus === 'connected' && activeChatIsStream && activeStandaloneSession.processAlive !== false
+      : selectedConversation
+        ? selectedConversation.status !== 'archived'
+        : streamStatus === 'connected' && commanderSessionRunning
+  const composerSendReady = selectedConversation ? true : streamStatus === 'connected'
   const transcript = mapSessionMessagesToTranscript(sessionMessages)
   const sessionCommanders: Commander[] = useMemo(() => [
     GLOBAL_COMMANDER_ROW,
@@ -521,48 +537,20 @@ export function CommandRoom() {
   }, [availableSessions, selectedChatSessionId])
 
   useEffect(() => {
-    if (!resumeFromSession) {
-      return
-    }
-    if (resumableSessions.some((session) => session.name === resumeFromSession)) {
-      return
-    }
-    setResumeFromSession('')
-  }, [resumeFromSession, resumableSessions])
-
-  useEffect(() => {
-    if (!resumeSource) {
-      return
-    }
-
-    if (resumeSource.agentType && resumeSource.agentType !== agentType) {
-      setAgentType(resumeSource.agentType)
-    }
-    if (transportType !== 'stream') {
-      setTransportType('stream')
-    }
-
-    const nextCwd = resumeSource.cwd ?? ''
-    if (cwd !== nextCwd) {
-      setCwd(nextCwd)
-    }
-
-    if (resumeSource.agentType === 'claude') {
-      const nextEffort = resumeSource.effort ?? DEFAULT_CLAUDE_EFFORT_LEVEL
-      if (effort !== nextEffort) {
-        setEffort(nextEffort)
+    if (!selectedCommanderId || isGlobalCommanderId(selectedCommanderId)) {
+      if (selectedConversationId !== null) {
+        setSelectedConversationId(null)
       }
-      const nextAdaptiveThinking = resumeSource.adaptiveThinking ?? DEFAULT_CLAUDE_ADAPTIVE_THINKING_MODE
-      if (adaptiveThinking !== nextAdaptiveThinking) {
-        setAdaptiveThinking(nextAdaptiveThinking)
-      }
+      return
     }
 
-    const nextHost = resumeSource.host ?? ''
-    if (selectedHost !== nextHost) {
-      setSelectedHost(nextHost)
+    if (
+      selectedConversationId &&
+      !conversations.some((conversation) => conversation.id === selectedConversationId)
+    ) {
+      setSelectedConversationId(null)
     }
-  }, [adaptiveThinking, agentType, cwd, effort, resumeSource, selectedHost, transportType])
+  }, [conversations, selectedCommanderId, selectedConversationId])
 
   /* ---- Workspace modal keyboard shortcut ---- */
   const handleWorkspaceKey = useCallback(
@@ -652,28 +640,28 @@ export function CommandRoom() {
   }, [refreshSessions])
 
   const fetchQueueSnapshot = useCallback(async (): Promise<SessionQueueSnapshot> => {
-    if (!selectedSessionName) {
+    if (!streamSessionName) {
       return EMPTY_QUEUE_SNAPSHOT
     }
 
-    const nextQueue = await fetchSessionQueueSnapshot(selectedSessionName)
+    const nextQueue = await fetchSessionQueueSnapshot(streamSessionName)
     return normalizeQueueSnapshot(nextQueue)
-  }, [selectedSessionName])
+  }, [streamSessionName])
 
   const refreshQueueSnapshot = useCallback(async (): Promise<void> => {
-    if (!selectedSessionName || !canQueueDraft || !selectedConversationRunning) {
+    if (!streamSessionName || !canQueueDraft || !selectedConversationRunning) {
       setQueueSnapshot(EMPTY_QUEUE_SNAPSHOT)
       return
     }
 
     setQueueSnapshot(await fetchQueueSnapshot())
-  }, [canQueueDraft, fetchQueueSnapshot, selectedConversationRunning, selectedSessionName])
+  }, [canQueueDraft, fetchQueueSnapshot, selectedConversationRunning, streamSessionName])
 
   useEffect(() => {
     let cancelled = false
     setQueueError(null)
 
-    if (!selectedSessionName || !canQueueDraft || !selectedConversationRunning) {
+    if (!streamSessionName || !canQueueDraft || !selectedConversationRunning) {
       setQueueSnapshot(EMPTY_QUEUE_SNAPSHOT)
       return
     }
@@ -694,18 +682,18 @@ export function CommandRoom() {
     return () => {
       cancelled = true
     }
-  }, [canQueueDraft, fetchQueueSnapshot, selectedConversationRunning, selectedSessionName])
+  }, [canQueueDraft, fetchQueueSnapshot, selectedConversationRunning, streamSessionName])
 
   /* ---- Build CenterColumn commander shape ---- */
-  const centerCommander: HervaldCommander = activeChatSession
+  const centerCommander: HervaldCommander = activeStandaloneSession
     ? {
         id: '',
-        name: activeChatSession.label ?? activeChatSession.name,
-        status: activeChatSession.status ?? 'active',
-        description: activeChatSession.transportType === 'pty'
+        name: activeStandaloneSession.label ?? activeStandaloneSession.name,
+        status: activeStandaloneSession.status ?? 'active',
+        description: activeStandaloneSession.transportType === 'pty'
           ? 'interactive terminal session'
           : 'standalone chat session',
-        agentType: activeChatSession.agentType,
+        agentType: activeStandaloneSession.agentType,
       }
     : isGlobalScope
       ? {
@@ -719,9 +707,12 @@ export function CommandRoom() {
           ...selectedCommander,
           id: selectedCommander.id,
           name: selectedCommander.displayName?.trim() || selectedCommander.host,
-          status: selectedCommander.state,
-          description: selectedCommander.persona?.trim() || selectedCommander.currentTask?.title,
-          cost: selectedCommander.totalCostUsd,
+          status: selectedConversation?.status ?? selectedCommander.state,
+          description: selectedConversation?.currentTask?.title
+            ?? selectedCommander.persona?.trim()
+            ?? selectedCommander.currentTask?.title,
+          cost: selectedConversation?.totalCostUsd ?? selectedCommander.totalCostUsd,
+          agentType: selectedConversationSession?.agentType ?? selectedCommander.agentType,
         }
       : { id: '', name: 'No commander', status: 'offline' }
 
@@ -732,26 +723,57 @@ export function CommandRoom() {
   const commanderApprovals = approvals.filter(
     (a) => a.commanderId === selectedCommanderId,
   )
-  const teamCommander = activeChatSession
+  const teamCommander = activeStandaloneSession
     ? {
         id: '',
-        name: activeChatSession.name,
-        status: activeChatSession.status ?? 'active',
+        name: activeStandaloneSession.name,
+        status: activeStandaloneSession.status ?? 'active',
       }
     : {
         id: centerCommander.id,
         name: centerCommander.name,
         status: centerCommander.status,
       }
-  const teamWorkers = activeChatSession ? [] : commanderWorkers
-  const teamApprovals = activeChatSession ? [] : commanderApprovals
+  const teamWorkers = activeStandaloneSession ? [] : commanderWorkers
+  const teamApprovals = activeStandaloneSession ? [] : commanderApprovals
+
+  const submitConversationMessage = useCallback(async ({
+    message,
+    queue = false,
+  }: {
+    message: string
+    queue?: boolean
+  }): Promise<boolean> => {
+    if (!selectedConversation) {
+      return false
+    }
+
+    setSessionActionError(null)
+
+    try {
+      const response = await conversationMessageMutation.mutateAsync({
+        conversationId: selectedConversation.id,
+        message,
+        queue,
+      })
+      return response.accepted
+    } catch (caughtError) {
+      setSessionActionError(
+        formatError(
+          caughtError,
+          queue ? 'Failed to queue conversation message' : 'Failed to send conversation message',
+        ),
+      )
+      return false
+    }
+  }, [conversationMessageMutation, selectedConversation])
 
   const applyQueueMutation = useCallback(async (
     request: () => Promise<unknown>,
     mutationErrorFallback: string,
     refreshErrorFallback: string,
   ): Promise<boolean> => {
-    if (!selectedSessionName || !canQueueDraft) {
+    if (!streamSessionName || !canQueueDraft) {
       return false
     }
 
@@ -770,10 +792,29 @@ export function CommandRoom() {
     } finally {
       setIsQueueMutating(false)
     }
-  }, [canQueueDraft, refreshQueueSnapshot, selectedSessionName])
+  }, [canQueueDraft, refreshQueueSnapshot, streamSessionName])
 
   const handleSend = useCallback(async ({ text, images }: { text: string; images?: { mediaType: string; data: string }[] }) => {
-    if (!selectedSessionName) {
+    const trimmed = text.trim()
+    const attachedImages = images && images.length > 0 ? images : undefined
+
+    if (selectedConversation) {
+      if (attachedImages?.length) {
+        if (!streamSessionName) {
+          setSessionActionError('Start or resume the conversation before sending images.')
+          return false
+        }
+        return sendInput({ text: trimmed, images: attachedImages })
+      }
+
+      if (!trimmed) {
+        return false
+      }
+
+      return submitConversationMessage({ message: trimmed })
+    }
+
+    if (!streamSessionName) {
       return false
     }
 
@@ -785,19 +826,50 @@ export function CommandRoom() {
       return false
     }
 
-    return sendInput({ text, images })
+    return sendInput({ text: trimmed, images: attachedImages })
   }, [
     commanderSessionRunning,
     activeChatSession,
+    selectedConversation,
     selectedCommanderId,
-    selectedSessionName,
+    streamSessionName,
     sendInput,
+    submitConversationMessage,
   ])
 
   const handleQueue = useCallback(async ({ text, images }: { text: string; images?: { mediaType: string; data: string }[] }) => {
     const trimmed = text.trim()
     const queuedImages = images && images.length > 0 ? images : undefined
-    if ((!trimmed && !queuedImages) || !selectedSessionName) {
+    if (!trimmed && !queuedImages) {
+      return
+    }
+
+    if (selectedConversation) {
+      if (queuedImages?.length) {
+        if (!streamSessionName) {
+          setSessionActionError('Start or resume the conversation before queueing images.')
+          return
+        }
+        await applyQueueMutation(
+          () => queueSessionMessage(streamSessionName, {
+            text: trimmed,
+            images: queuedImages,
+          }),
+          'Failed to queue message',
+          'Queue updated, but failed to refresh queue',
+        )
+        return
+      }
+
+      if (!trimmed) {
+        return
+      }
+
+      await submitConversationMessage({ message: trimmed, queue: true })
+      return
+    }
+
+    if (!streamSessionName) {
       return
     }
 
@@ -810,7 +882,7 @@ export function CommandRoom() {
     }
 
     await applyQueueMutation(
-      () => queueSessionMessage(selectedSessionName, {
+      () => queueSessionMessage(streamSessionName, {
         text: trimmed,
         images: queuedImages,
       }),
@@ -821,8 +893,10 @@ export function CommandRoom() {
     applyQueueMutation,
     commanderSessionRunning,
     activeChatSession,
+    selectedConversation,
     selectedCommanderId,
-    selectedSessionName,
+    streamSessionName,
+    submitConversationMessage,
   ])
 
   const handleStartCommander = useCallback(async (agentType?: CommanderAgentType) => {
@@ -845,7 +919,7 @@ export function CommandRoom() {
   }, [commanderState, isGlobalScope, selectedCommanderId])
 
   const handleMoveQueuedMessage = useCallback(async (messageId: string, offset: number) => {
-    if (!selectedSessionName || !canQueueDraft) {
+    if (!streamSessionName || !canQueueDraft) {
       return
     }
 
@@ -863,44 +937,86 @@ export function CommandRoom() {
     reordered.splice(nextIndex, 0, moved)
 
     await applyQueueMutation(
-      () => reorderSessionQueue(selectedSessionName, reordered.map((message) => message.id)),
+      () => reorderSessionQueue(streamSessionName, reordered.map((message) => message.id)),
       'Failed to reorder queued messages',
       'Queue reordered, but failed to refresh queue',
     )
-  }, [applyQueueMutation, canQueueDraft, queueSnapshot.items, selectedSessionName])
+  }, [applyQueueMutation, canQueueDraft, queueSnapshot.items, streamSessionName])
 
   const handleRemoveQueuedMessage = useCallback(async (messageId: string) => {
-    if (!selectedSessionName || !canQueueDraft) {
+    if (!streamSessionName || !canQueueDraft) {
       return
     }
 
     await applyQueueMutation(
-      () => removeQueuedSessionMessage(selectedSessionName, messageId),
+      () => removeQueuedSessionMessage(streamSessionName, messageId),
       'Failed to remove queued message',
       'Queue updated, but failed to refresh queue',
     )
-  }, [applyQueueMutation, canQueueDraft, selectedSessionName])
+  }, [applyQueueMutation, canQueueDraft, streamSessionName])
 
   const handleClearQueue = useCallback(async () => {
-    if (!selectedSessionName || !canQueueDraft) {
+    if (!streamSessionName || !canQueueDraft) {
       return
     }
 
     await applyQueueMutation(
-      () => clearSessionQueue(selectedSessionName),
+      () => clearSessionQueue(streamSessionName),
       'Failed to clear queued messages',
       'Queue cleared, but failed to refresh queue',
     )
-  }, [applyQueueMutation, canQueueDraft, selectedSessionName])
-
-  const handleOpenNewSession = useCallback(() => {
-    setCreateError(null)
-    setShowNewSessionForm(true)
-  }, [])
+  }, [applyQueueMutation, canQueueDraft, streamSessionName])
 
   const handleOpenAddWorker = useCallback(() => {
     setShowAddWorkerForm(true)
   }, [])
+
+  const handleCreateChatForCommander = useCallback(async (commanderId: string) => {
+    setSessionActionError(null)
+
+    try {
+      const created = await createConversation.mutateAsync({
+        commanderId,
+        surface: 'ui',
+      })
+      setSelectedConversationId(created.id)
+      setSelectedChatSessionId(null)
+      handleActiveTabChange('chat')
+    } catch (error) {
+      setSessionActionError(formatError(error, 'Failed to create chat'))
+    }
+  }, [createConversation, handleActiveTabChange])
+
+  const handleStartConversation = useCallback(async (conversationId: string) => {
+    setSessionActionError(null)
+
+    const conversation = conversations.find((entry) => entry.id === conversationId)
+    const persistedAgentType = conversation?.agentType
+    const targetAgentType: AgentType = (persistedAgentType ?? selectedCommander?.agentType ?? 'claude') as AgentType
+
+    try {
+      const started = await startConversation.mutateAsync({
+        conversationId,
+        agentType: targetAgentType,
+      })
+      setSelectedConversationId(started.id)
+      setSelectedChatSessionId(null)
+      handleActiveTabChange('chat')
+    } catch (error) {
+      setSessionActionError(formatError(error, 'Failed to start conversation'))
+    }
+  }, [conversations, handleActiveTabChange, selectedCommander?.agentType, startConversation])
+
+  const handleStopConversation = useCallback(async (conversationId: string) => {
+    setSessionActionError(null)
+
+    try {
+      await stopConversation.mutateAsync({ conversationId })
+    } catch (error) {
+      setSessionActionError(formatError(error, 'Failed to stop conversation'))
+      throw error
+    }
+  }, [stopConversation])
 
   const handleOpenCreateCommander = useCallback(() => {
     setShowCreateCommanderForm(true)
@@ -914,74 +1030,14 @@ export function CommandRoom() {
     setShowCreateCommanderForm(false)
   }, [])
 
-  const handleCloseNewSession = useCallback(() => {
-    setCreateError(null)
-    setShowNewSessionForm(false)
-  }, [])
-
   const handleCreateCommander = useCallback(async (
     input: Parameters<typeof commanderState.createCommander>[0],
   ) => {
     const createdCommander = await commanderState.createCommander(input)
     setSelectedChatSessionId(null)
+    setSelectedConversationId(null)
     commanderState.setSelectedCommanderId(createdCommander.id)
   }, [commanderState])
-
-  const handleCreateSession = useCallback(async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault()
-    if (isCreating) {
-      return
-    }
-
-    setIsCreating(true)
-    setCreateError(null)
-
-    try {
-      const result = await createSession({
-        name: name.trim(),
-        task: task.trim() || undefined,
-        effort,
-        adaptiveThinking,
-        cwd: cwd.trim() || undefined,
-        resumeFromSession: resumeFromSession || undefined,
-        transportType,
-        agentType,
-        host: selectedHost || undefined,
-      })
-
-      setName('')
-      setTask('')
-      setEffort(DEFAULT_CLAUDE_EFFORT_LEVEL)
-      setAdaptiveThinking(DEFAULT_CLAUDE_ADAPTIVE_THINKING_MODE)
-      setCwd('')
-      setResumeFromSession('')
-      setAgentType('claude')
-      setTransportType('stream')
-      setSelectedHost('')
-      setShowNewSessionForm(false)
-
-      await refetchAgentSessions()
-      setSelectedChatSessionId(result.sessionName)
-      handleActiveTabChange('chat')
-    } catch (caughtError) {
-      setCreateError(caughtError instanceof Error ? caughtError.message : 'Failed to create session')
-    } finally {
-      setIsCreating(false)
-    }
-  }, [
-    adaptiveThinking,
-    agentType,
-    cwd,
-    effort,
-    handleActiveTabChange,
-    isCreating,
-    name,
-    refetchAgentSessions,
-    resumeFromSession,
-    selectedHost,
-    transportType,
-    task,
-  ])
 
   if (isMobile) {
     return (
@@ -993,6 +1049,7 @@ export function CommandRoom() {
         selectedCommanderId={selectedCommanderId || null}
         onSelectCommanderId={(id) => {
           setSelectedChatSessionId(null)
+          setSelectedConversationId(null)
           commanderState.setSelectedCommanderId(id)
         }}
         selectedCommanderRunning={selectedCommanderRunning}
@@ -1001,9 +1058,9 @@ export function CommandRoom() {
         onAnswer={(toolId, answers) => {
           answerQuestion(toolId, answers)
         }}
-        composerSessionName={selectedSessionName ?? 'hervald-command-room'}
+        composerSessionName={composerSessionName}
         composerEnabled={composerEnabled}
-        composerSendReady={streamStatus === 'connected'}
+        composerSendReady={composerSendReady}
         canQueueDraft={canQueueDraft}
         isStreaming={isStreaming}
         streamStatus={streamStatus}
@@ -1016,8 +1073,8 @@ export function CommandRoom() {
         onQueue={handleQueue}
         onSend={handleSend}
         workspaceSource={workspaceSource}
-        onStartCommander={!activeChatSession ? (agentType) => { void handleStartCommander(agentType) } : undefined}
-        onStopCommander={!activeChatSession ? () => { void handleStopCommander() } : undefined}
+        onStartCommander={showCommanderRuntimeControls ? (agentType) => { void handleStartCommander(agentType) } : undefined}
+        onStopCommander={showCommanderRuntimeControls ? () => { void handleStopCommander() } : undefined}
         crons={commanderState.crons}
         cronsLoading={commanderState.cronsLoading}
         cronsError={commanderState.cronsError}
@@ -1047,9 +1104,10 @@ export function CommandRoom() {
     >
       <div style={gridStyle}>
         <SessionsColumn
-          selectedCommanderId={activeChatSession ? '' : selectedCommanderId}
+          selectedCommanderId={selectedCommanderId}
           onSelectCommander={(id) => {
             setSelectedChatSessionId(null)
+            setSelectedConversationId(null)
             commanderState.setSelectedCommanderId(id)
             if (id === GLOBAL_COMMANDER_ID) {
               handleActiveTabChange('cron')
@@ -1057,13 +1115,22 @@ export function CommandRoom() {
           }}
           onCreateCommander={handleOpenCreateCommander}
           onCreateWorker={handleOpenAddWorker}
-          onCreateSession={handleOpenNewSession}
-          selectedChatId={activeChatSession?.id ?? null}
+          onCreateSession={() => undefined}
+          onCreateChatForCommander={handleCreateChatForCommander}
+          selectedChatId={selectedStandaloneSession?.id ?? selectedConversation?.id ?? null}
           onSelectChat={(id) => {
             setSelectedChatSessionId(id)
             handleActiveTabChange('chat')
           }}
+          onSelectConversation={(id) => {
+            setSelectedConversationId(id)
+            setSelectedChatSessionId(null)
+            handleActiveTabChange('chat')
+          }}
+          onStartConversation={handleStartConversation}
+          onStopConversation={handleStopConversation}
           commanders={sessionCommanders}
+          conversations={conversations}
           workers={workers}
           approvals={approvals}
           workerSessions={workerSessions}
@@ -1077,6 +1144,7 @@ export function CommandRoom() {
         <CenterColumn
           commander={centerCommander}
           isGlobalScope={isGlobalScope}
+          hasSelectedConversation={Boolean(selectedConversation)}
           activeChatSession={activeChatSession}
           transcript={transcript}
           workers={commanderWorkers.map((w) => ({
@@ -1108,14 +1176,14 @@ export function CommandRoom() {
             handleKillSession(sessionName, agentType, activeChatSession?.transportType)
           }
           onOpenWorkspace={workspaceSource ? () => setWorkspaceOpen(true) : undefined}
-          onStartCommander={!activeChatSession ? (agentType) => { void handleStartCommander(agentType) } : undefined}
-          onStopCommander={!activeChatSession ? () => { void handleStopCommander() } : undefined}
+          onStartCommander={showCommanderRuntimeControls ? (agentType) => { void handleStartCommander(agentType) } : undefined}
+          onStopCommander={showCommanderRuntimeControls ? () => { void handleStopCommander() } : undefined}
           onAnswer={(toolId, answers) => {
             answerQuestion(toolId, answers)
           }}
-          composerSessionName={selectedSessionName ?? 'hervald-command-room'}
+          composerSessionName={composerSessionName}
           composerEnabled={composerEnabled}
-          composerSendReady={streamStatus === 'connected'}
+          composerSendReady={composerSendReady}
           canQueueDraft={canQueueDraft}
           contextFilePaths={contextFilePaths}
           onRemoveContextFilePath={handleRemoveContextFilePath}
@@ -1141,7 +1209,7 @@ export function CommandRoom() {
             workerId: a.workerId || '',
             action: a.action || '',
           }))}
-          selectedWorkerId={activeChatSession ? undefined : selectedWorkerId}
+          selectedWorkerId={activeStandaloneSession ? undefined : selectedWorkerId}
           onSelectWorker={setSelectedWorkerId}
           onOpenWorkspace={workspaceSource ? () => setWorkspaceOpen(true) : () => undefined}
           onDismissWorker={(worker) => { void handleDismissWorker(worker) }}
@@ -1180,38 +1248,6 @@ export function CommandRoom() {
           onCreated={async () => {
             handleCloseAddWorker()
           }}
-        />
-      </ModalFormContainer>
-      <ModalFormContainer
-        open={showNewSessionForm}
-        title="New Session"
-        onClose={handleCloseNewSession}
-      >
-        <NewSessionForm
-          name={name}
-          setName={setName}
-          cwd={cwd}
-          setCwd={setCwd}
-          resumeOptions={resumableSessions}
-          resumeSource={resumeSource}
-          resumeSourceName={resumeFromSession}
-          setResumeSourceName={setResumeFromSession}
-          task={task}
-          setTask={setTask}
-          effort={effort}
-          setEffort={setEffort}
-          adaptiveThinking={adaptiveThinking}
-          setAdaptiveThinking={setAdaptiveThinking}
-          agentType={agentType}
-          setAgentType={setAgentType}
-          transportType={transportType}
-          setTransportType={setTransportType}
-          machines={machineList}
-          selectedHost={selectedHost}
-          setSelectedHost={setSelectedHost}
-          isCreating={isCreating}
-          createError={createError}
-          onSubmit={handleCreateSession}
         />
       </ModalFormContainer>
     </div>

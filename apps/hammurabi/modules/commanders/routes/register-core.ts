@@ -50,6 +50,7 @@ import {
 } from '../templates/workflow.js'
 import {
   STARTUP_PROMPT,
+  buildConversationSessionName,
   consumeInternalUserMessage,
   createContextPressureBridge,
   isInputTokenContextPressureEvent,
@@ -65,9 +66,17 @@ import {
 import { buildCommanderSessionSeedFromResolvedWorkflow } from '../memory/module.js'
 import type { CommanderRoutesContext, CommanderRuntime, StreamEvent } from './types.js'
 import { resolveCommanderWorkflow } from '../workflow-resolution.js'
+import { stopConversationSession } from './conversation-runtime.js'
 
 const WIZARD_SESSION_PREFIX = 'commander-wizard-'
 const WIZARD_SESSION_NAME_PATTERN = /^commander-wizard-[a-zA-Z0-9_-]+$/
+const CONVERSATION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+function parseConversationId(raw: unknown): string | null {
+  return typeof raw === 'string' && CONVERSATION_ID_PATTERN.test(raw.trim())
+    ? raw.trim()
+    : null
+}
 
 function normalizeUserMessageText(content: unknown): string | null {
   if (typeof content === 'string') {
@@ -120,6 +129,11 @@ export function registerCoreRoutes(
   router: import('express').Router,
   context: CommanderRoutesContext,
 ): void {
+  /**
+   * Manually fire the heartbeat loop for one conversation. When `conversationId`
+   * is omitted from the request body, the most recently active conversation for
+   * the commander is targeted.
+   */
   const triggerHeartbeatRoute = async (
     req: import('express').Request,
     res: import('express').Response,
@@ -143,33 +157,58 @@ export function registerCoreRoutes(
       return
     }
 
-    if (!context.heartbeatManager.isRunning(commanderId)) {
-      const restartSessionName = toCommanderSessionName(commanderId)
-      const liveSession = context.sessionsInterface?.getSession(restartSessionName)
+    const parsedConversationId = req.body?.conversationId === undefined
+      ? undefined
+      : parseConversationId(req.body?.conversationId)
+    if (req.body?.conversationId !== undefined && !parsedConversationId) {
+      res.status(400).json({ error: 'conversationId must be a UUID when provided' })
+      return
+    }
+    const requestedConversationId = parsedConversationId ?? undefined
+
+    const conversation = await context.resolveHeartbeatConversation(
+      commanderId,
+      requestedConversationId,
+    )
+    if (!conversation) {
+      res.status(404).json({
+        error: requestedConversationId
+          ? `Conversation "${requestedConversationId}" not found for commander "${commanderId}"`
+          : `Commander "${commanderId}" has no conversation available for heartbeat`,
+      })
+      return
+    }
+
+    const sessionName = buildConversationSessionName(conversation)
+    if (!context.heartbeatManager.isRunning(conversation.id)) {
+      const liveSession = context.sessionsInterface?.getSession(sessionName)
       if (liveSession) {
-        context.heartbeatManager.start(commanderId, resolveEffectiveHeartbeat(session.heartbeat))
+        context.heartbeatManager.start(
+          conversation.id,
+          commanderId,
+          resolveEffectiveHeartbeat(conversation.heartbeat),
+        )
         // fall through to fire manual heartbeat below
       } else {
         res.status(409).json({
-          error: 'No live session to restart heartbeat against',
+          error: `Conversation "${conversation.id}" has no live session to restart heartbeat against`,
         })
         return
       }
     }
 
-    if (context.heartbeatManager.isInFlight(commanderId)) {
+    if (context.heartbeatManager.isInFlight(conversation.id)) {
       res.status(409).json({
-        error: `Commander "${commanderId}" heartbeat is already in flight`,
+        error: `Conversation "${conversation.id}" heartbeat is already in flight`,
       })
       return
     }
 
     const timestamp = context.now().toISOString()
-    const sessionName = toCommanderSessionName(commanderId)
-    const triggered = context.heartbeatManager.fireManual(commanderId, timestamp)
+    const triggered = context.heartbeatManager.fireManual(conversation.id, timestamp)
     if (!triggered) {
       res.status(409).json({
-        error: `Commander "${commanderId}" heartbeat could not be triggered`,
+        error: `Conversation "${conversation.id}" heartbeat could not be triggered`,
       })
       return
     }
@@ -178,6 +217,7 @@ export function registerCoreRoutes(
       runId: timestamp,
       timestamp,
       sessionName,
+      conversationId: conversation.id,
       triggered: true,
     })
   }
@@ -246,7 +286,7 @@ export function registerCoreRoutes(
     const response = await Promise.all(
       sessions.map(async (session) => {
         const stats = await context.getCommanderSessionStats(session.id)
-        const base = toCommanderSessionResponse(session, undefined, stats)
+        const base = await toCommanderSessionResponse(session, context.conversationStore, undefined, stats)
         const withUi = await context.attachCommanderPublicUi(session.id, base)
         const displayName = displayNames[session.id]
         return displayName && displayName !== session.host
@@ -402,7 +442,7 @@ export function registerCoreRoutes(
     const commanderMd = await readCommanderWorkflowMarkdown(commanderId, context.commanderBasePath)
     const { commanderRoot, memoryRoot } = resolveCommanderPaths(commanderId, context.commanderBasePath)
     const stats = await context.getCommanderSessionStats(commanderId)
-    const base = toCommanderSessionResponse(session, runtime, stats)
+    const base = await toCommanderSessionResponse(session, context.conversationStore, runtime, stats)
     res.json({
       ...(await context.attachCommanderPublicUi(commanderId, base)),
       subAgents: listSubAgentEntries(runtime),
@@ -578,26 +618,24 @@ export function registerCoreRoutes(
       host,
       avatarSeed,
       persona,
-      pid: null,
       state: 'idle',
       created: context.now().toISOString(),
       agentType: parsedAgentTypeCreate ?? 'claude',
       effort: parsedEffortCreate ?? DEFAULT_CLAUDE_EFFORT_LEVEL,
       maxTurns: parsedMaxTurns.value ?? context.runtimeConfig.defaults.maxTurns,
       contextMode: parsedContextMode.value ?? DEFAULT_COMMANDER_CONTEXT_MODE,
-      heartbeat,
-      lastHeartbeat: null,
-      heartbeatTickCount: 0,
       contextConfig: parsedContextConfig.value,
       taskSource,
-      currentTask: null,
-      completedTasks: 0,
-      totalCostUsd: 0,
       cwd,
     }
 
     try {
       const created = await context.sessionStore.create(session)
+      await context.ensureLegacyConversation(created, {
+        surface: 'ui',
+        heartbeat,
+        currentTask: null,
+      })
       try {
         await scaffoldCommanderWorkflow(
           created.id,
@@ -659,15 +697,13 @@ export function registerCoreRoutes(
     }
     const selectedAgentType = parsedAgentType ?? resolveCommanderAgentType(session)
     const previousState = session.state
-    const previousPid = session.pid
-    const previousHeartbeatTickCount = session.heartbeatTickCount
+    const legacyConversation = await context.ensureLegacyConversation(session, { surface: 'ui' })
     const sessionName = toCommanderSessionName(commanderId)
     let runtime: CommanderRuntime | null = null
     let startStateUpdated = false
 
     const rollbackCommanderStart = async (): Promise<void> => {
-      context.heartbeatManager.stop(commanderId)
-      context.heartbeatFiredAtByCommander.delete(commanderId)
+      context.heartbeatManager.stopForCommander(commanderId)
 
       if (runtime?.collectTimer) {
         clearTimeout(runtime.collectTimer)
@@ -689,8 +725,14 @@ export function registerCoreRoutes(
       await context.sessionStore.update(commanderId, (current) => ({
         ...current,
         state: previousState,
-        pid: previousPid,
-        heartbeatTickCount: previousHeartbeatTickCount,
+      }))
+      await context.conversationStore.update(legacyConversation.id, (current) => ({
+        ...current,
+        status: legacyConversation.status,
+        currentTask: legacyConversation.currentTask,
+        lastHeartbeat: legacyConversation.lastHeartbeat,
+        heartbeat: { ...legacyConversation.heartbeat },
+        heartbeatTickCount: legacyConversation.heartbeatTickCount,
       }))
     }
 
@@ -715,9 +757,6 @@ export function registerCoreRoutes(
         ...current,
         state: 'running',
         agentType: selectedAgentType,
-        pid: null,
-        heartbeatTickCount: 0,
-        currentTask: parsedCurrentTask.value ?? current.currentTask,
       }))
 
       if (!started) {
@@ -726,13 +765,26 @@ export function registerCoreRoutes(
       }
       startStateUpdated = true
 
-      const effectiveHeartbeat = resolveEffectiveHeartbeat(started.heartbeat)
+      const activeConversation = await context.conversationStore.update(legacyConversation.id, (current) => ({
+        ...current,
+        status: 'active',
+        currentTask: parsedCurrentTask.value ?? current.currentTask,
+        lastHeartbeat: null,
+        heartbeat: {
+          ...current.heartbeat,
+          lastSentAt: null,
+        },
+        heartbeatTickCount: 0,
+      }))
+      const effectiveHeartbeat = resolveEffectiveHeartbeat(
+        activeConversation?.heartbeat ?? legacyConversation.heartbeat,
+      )
       const built = await buildCommanderSessionSeedFromResolvedWorkflow(
         {
           commanderId,
           cwd: started.cwd ?? undefined,
           persona: started.persona,
-          currentTask: started.currentTask,
+          currentTask: activeConversation?.currentTask ?? legacyConversation.currentTask,
           taskSource: started.taskSource,
           maxTurns: started.maxTurns,
           memoryBasePath: context.commanderBasePath,
@@ -748,6 +800,7 @@ export function registerCoreRoutes(
       await context.sessionsInterface.createCommanderSession({
         name: sessionName,
         commanderId,
+        conversationId: activeConversation?.id ?? legacyConversation.id,
         systemPrompt: built.systemPrompt,
         agentType: selectedAgentType,
         effort: selectedAgentType === 'claude'
@@ -844,7 +897,11 @@ export function registerCoreRoutes(
         sessionName,
         startedAt: context.now().toISOString(),
       })
-      context.heartbeatManager.start(commanderId, effectiveHeartbeat)
+      context.heartbeatManager.start(
+        activeConversation?.id ?? legacyConversation.id,
+        commanderId,
+        effectiveHeartbeat,
+      )
       if (explicitStartMessage == null) {
         queueInternalUserMessage(runtime, startPrompt)
       }
@@ -894,10 +951,31 @@ export function registerCoreRoutes(
       return
     }
 
-    context.heartbeatManager.stop(commanderId)
-    context.heartbeatFiredAtByCommander.delete(commanderId)
+    context.heartbeatManager.stopForCommander(commanderId)
     const activeSession = context.activeCommanderSessions.get(commanderId)
-    const sessionName = activeSession?.sessionName ?? toCommanderSessionName(commanderId)
+    const legacySessionName = activeSession?.sessionName ?? toCommanderSessionName(commanderId)
+
+    // Sweep every conversation owned by this commander, not just the legacy
+    // single-session path. Per #1216 phase 1 each conversation can have its
+    // own per-conversation stream session under
+    // `commander-${commanderId}-conversation-${convId}`; stopping just the
+    // legacy session left those orphaned and reported `stopped` while live
+    // agent runtimes kept consuming budget. See codex-review P1 on PR #1279
+    // (comment 3174778566).
+    const conversations = await context.conversationStore.listByCommander(commanderId)
+    for (const conversation of conversations) {
+      if (conversation.status === 'archived') {
+        continue
+      }
+      try {
+        await stopConversationSession(context, conversation, 'idle')
+      } catch (error) {
+        console.warn(
+          `[commanders] Failed to stop conversation "${conversation.id}" during commander stop "${commanderId}":`,
+          error,
+        )
+      }
+    }
 
     const runtime = context.runtimes.get(commanderId)
     if (runtime) {
@@ -909,31 +987,19 @@ export function registerCoreRoutes(
       const stopState = parseMessage(req.body?.state) ?? 'Commander stop requested'
       runtime.lastTaskState = stopState
       runtime.unsubscribeEvents?.()
-
-      const agentSession = context.sessionsInterface?.getSession(sessionName)
-      if (agentSession) {
-        const sessionCostUsd = agentSession.usage?.costUsd ?? 0
-        await context.sessionStore.update(commanderId, (current) => ({
-          ...current,
-          agentType: resolveCommanderAgentType(current),
-          claudeSessionId: agentSession.claudeSessionId ?? current.claudeSessionId,
-          codexThreadId: agentSession.codexThreadId ?? current.codexThreadId,
-          geminiSessionId: agentSession.geminiSessionId ?? current.geminiSessionId,
-          totalCostUsd: current.totalCostUsd + sessionCostUsd,
-        }))
-      }
-
       context.runtimes.delete(commanderId)
     }
 
     context.activeCommanderSessions.delete(commanderId)
-    context.sessionsInterface?.deleteSession(sessionName)
+    // Defensive cleanup of the legacy session name in case nothing referenced
+    // the legacy conversation (e.g. the commander never had a legacy
+    // backfilled conversation). The sweep above already covers all real
+    // per-conversation sessions through `stopConversationSession`.
+    context.sessionsInterface?.deleteSession(legacySessionName)
 
     const stopped = await context.sessionStore.update(commanderId, (current) => ({
       ...current,
       state: 'stopped',
-      pid: null,
-      currentTask: null,
     }))
 
     if (!stopped) {
@@ -977,8 +1043,23 @@ export function registerCoreRoutes(
       return
     }
 
-    context.heartbeatManager.stop(commanderId)
-    context.heartbeatFiredAtByCommander.delete(commanderId)
+    context.heartbeatManager.stopForCommander(commanderId)
+
+    // Cascade-archive every conversation owned by this commander BEFORE the
+    // commander row itself is removed. Otherwise inbound channel webhooks can
+    // hit the orphan conversation later and crash on the missing-commander
+    // path. See codex-review P1 on PR #1279 (comment 3174814198).
+    const conversations = await context.conversationStore.listByCommander(commanderId)
+    for (const conversation of conversations) {
+      try {
+        await stopConversationSession(context, conversation, 'archived')
+      } catch (error) {
+        console.warn(
+          `[commanders] Failed to archive conversation "${conversation.id}" during commander delete "${commanderId}":`,
+          error,
+        )
+      }
+    }
 
     const runtime = context.runtimes.get(commanderId)
     if (runtime) {
@@ -1018,7 +1099,14 @@ export function registerCoreRoutes(
       return
     }
 
-    const updated = await context.sessionStore.update(commanderId, (current) => {
+    const session = await context.sessionStore.get(commanderId)
+    if (!session) {
+      res.status(404).json({ error: `Commander "${commanderId}" not found` })
+      return
+    }
+
+    const legacyConversation = await context.ensureLegacyConversation(session)
+    const updated = await context.conversationStore.update(legacyConversation.id, (current) => {
       const heartbeat = mergeHeartbeatState(current.heartbeat, parsed.value)
       return {
         ...current,
@@ -1027,19 +1115,19 @@ export function registerCoreRoutes(
     })
 
     if (!updated) {
-      res.status(404).json({ error: `Commander "${commanderId}" not found` })
+      res.status(404).json({ error: `Conversation "${legacyConversation.id}" not found` })
       return
     }
 
-    if (updated.state === 'running') {
+    if (session.state === 'running') {
       const effectiveHeartbeat = resolveEffectiveHeartbeat(updated.heartbeat)
-      context.heartbeatManager.start(commanderId, effectiveHeartbeat)
+      context.heartbeatManager.start(updated.id, commanderId, effectiveHeartbeat)
     } else {
-      context.heartbeatManager.stop(commanderId)
+      context.heartbeatManager.stop(updated.id)
     }
 
     res.json({
-      id: updated.id,
+      id: session.id,
       heartbeat: {
         intervalMs: updated.heartbeat.intervalMs,
         messageTemplate: updated.heartbeat.messageTemplate,

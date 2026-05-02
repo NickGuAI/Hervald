@@ -12,7 +12,11 @@ import { CommandRoomExecutor } from '../../command-room/executor'
 import { CommandRoomRunStore } from '../../command-room/run-store'
 import { CommandRoomScheduler, type CronScheduler } from '../../command-room/scheduler'
 import { CommandRoomTaskStore } from '../../command-room/task-store'
-import { CommanderSessionStore, DEFAULT_COMMANDER_MAX_TURNS } from '../store'
+import {
+  buildLegacyCommanderConversationId,
+  CommanderSessionStore,
+  DEFAULT_COMMANDER_MAX_TURNS,
+} from '../store'
 import { toCommanderSessionName } from '../routes/context'
 import { HeartbeatLog } from '../heartbeat-log'
 import { QuestStore } from '../quest-store'
@@ -40,10 +44,16 @@ interface MockSessionEntry {
   name: string
   systemPrompt: string
   agentType: 'claude' | 'codex' | 'gemini'
+  conversationId?: string
   effort?: ClaudeEffortLevel
   cwd?: string
   resumeSessionId?: string
   maxTurns?: number
+}
+
+interface ActiveSessionState {
+  agentType: 'claude' | 'codex' | 'gemini'
+  conversationId?: string
 }
 
 interface MockSessionsInterface {
@@ -182,6 +192,12 @@ function createMockSessionsInterface(opts: {
     }
   }> = []
   const activeSessions = new Set<string>(opts.initialActiveSessions ?? [])
+  const activeSessionStates = new Map<string, ActiveSessionState>(
+    (opts.initialActiveSessions ?? []).map((sessionName) => [
+      sessionName,
+      { agentType: 'claude' },
+    ]),
+  )
   const agentTypeBySessionName = new Map<string, 'claude' | 'codex' | 'gemini'>(
     (opts.initialActiveSessions ?? []).map((sessionName) => [sessionName, 'claude']),
   )
@@ -201,6 +217,10 @@ function createMockSessionsInterface(opts: {
         agentType,
       })
       activeSessions.add(params.name)
+      activeSessionStates.set(params.name, {
+        agentType,
+        conversationId: params.conversationId,
+      })
       agentTypeBySessionName.set(params.name, agentType)
       // Return a minimal fake StreamSession (interface uses opaque return type)
       return { kind: 'stream', name: params.name } as unknown as Awaited<ReturnType<
@@ -225,15 +245,18 @@ function createMockSessionsInterface(opts: {
     },
     deleteSession(name) {
       activeSessions.delete(name)
+      activeSessionStates.delete(name)
       agentTypeBySessionName.delete(name)
     },
     getSession(name) {
       if (!activeSessions.has(name)) return undefined
       const agentType = agentTypeBySessionName.get(name) ?? 'claude'
+      const activeState = activeSessionStates.get(name)
       return {
         kind: 'stream',
         name,
         agentType,
+        conversationId: activeState?.conversationId,
         claudeSessionId: agentType === 'claude' ? opts.sessionClaudeSessionId : undefined,
         codexThreadId: agentType === 'codex' ? opts.sessionCodexThreadId : undefined,
         usage: { ...usage },
@@ -311,6 +334,7 @@ async function startServer(
     memoryBasePath,
   })
   app.use('/api/commanders', commanders.router)
+  app.use('/api/conversations', commanders.conversationRouter)
 
   const httpServer = createServer(app)
 
@@ -1245,7 +1269,6 @@ describe('commanders routes', () => {
       memoryBasePath,
       sessionsInterface: mock.interface,
     })
-    let commanderId: string | null = null
 
     try {
       const createResponse = await fetch(`${server.baseUrl}/api/commanders`, {
@@ -1261,7 +1284,6 @@ describe('commanders routes', () => {
       })
       expect(createResponse.status).toBe(201)
       const created = (await createResponse.json()) as { id: string }
-      commanderId = created.id
 
       const patchResponse = await fetch(
         `${server.baseUrl}/api/commanders/${created.id}/heartbeat`,
@@ -1481,12 +1503,13 @@ describe('commanders routes', () => {
       )
 
       expect(triggerResponse.status).toBe(200)
-      expect(await triggerResponse.json()).toEqual({
+      expect(await triggerResponse.json()).toEqual(expect.objectContaining({
         runId: expect.any(String),
         timestamp: expect.any(String),
         sessionName: `commander-${created.id}`,
+        conversationId: buildLegacyCommanderConversationId(created.id),
         triggered: true,
-      })
+      }))
 
       await vi.waitFor(() => {
         expect(
@@ -2242,6 +2265,7 @@ describe('commanders routes', () => {
     const memoryBasePath = join(dir, 'memory')
     const agentsSessionStorePath = join(dir, 'agents-sessions.json')
     const commanderId = '00000000-0000-4000-a000-0000007e4d8a'
+    const legacyConversationId = buildLegacyCommanderConversationId(commanderId)
     const commanderSessionName = `commander-${commanderId}`
 
     await writeFile(
@@ -2319,12 +2343,189 @@ describe('commanders routes', () => {
       }, { timeout: 3000 })
 
       await vi.waitFor(async () => {
-        const persisted = JSON.parse(await readFile(storePath, 'utf8')) as {
-          sessions?: Array<{ id?: string; heartbeatTickCount?: number }>
-        }
-        const updated = persisted.sessions?.find((session) => session.id === commanderId)
+        const conversationsResponse = await fetch(
+          `${server.baseUrl}/api/commanders/${commanderId}/conversations`,
+          { headers: AUTH_HEADERS },
+        )
+        expect(conversationsResponse.status).toBe(200)
+        const conversations = (await conversationsResponse.json()) as Array<{
+          id: string
+          heartbeatTickCount: number
+        }>
+        const updated = conversations.find((conversation) => conversation.id === legacyConversationId)
         expect(updated?.heartbeatTickCount).toBe(2)
       }, { timeout: 3000 })
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('tracks heartbeat clocks independently across conversations for one commander', async () => {
+    const dir = await createTempDir('hammurabi-commanders-heartbeat-per-conversation-')
+    const storePath = join(dir, 'sessions.json')
+    const memoryBasePath = join(dir, 'memory')
+    const mock = createMockSessionsInterface()
+
+    const server = await startServer({
+      sessionStorePath: storePath,
+      memoryBasePath,
+      sessionsInterface: mock.interface,
+    })
+    let commanderId: string | null = null
+
+    try {
+      const createResponse = await fetch(`${server.baseUrl}/api/commanders`, {
+        method: 'POST',
+        headers: {
+          ...AUTH_HEADERS,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          host: 'worker-heartbeat-multi-conversation',
+          taskSource: { owner: 'NickGuAI', repo: 'example-repo', label: 'commander' },
+        }),
+      })
+      expect(createResponse.status).toBe(201)
+      const created = (await createResponse.json()) as { id: string }
+      const commanderId = created.id
+      const legacyConversationId = buildLegacyCommanderConversationId(commanderId)
+      const secondConversationId = '33333333-3333-4333-8333-333333333333'
+
+      const startResponse = await fetch(`${server.baseUrl}/api/commanders/${commanderId}/start`, {
+        method: 'POST',
+        headers: {
+          ...AUTH_HEADERS,
+          'content-type': 'application/json',
+        },
+      })
+      expect(startResponse.status).toBe(200)
+
+      const createConversationResponse = await fetch(
+        `${server.baseUrl}/api/commanders/${commanderId}/conversations`,
+        {
+          method: 'POST',
+          headers: {
+            ...AUTH_HEADERS,
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify({
+            id: secondConversationId,
+            surface: 'ui',
+          }),
+        },
+      )
+      expect(createConversationResponse.status).toBe(201)
+
+      const messageResponse = await fetch(`${server.baseUrl}/api/conversations/${secondConversationId}/message`, {
+        method: 'POST',
+        headers: {
+          ...AUTH_HEADERS,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          message: 'Continue on the parallel thread.',
+        }),
+      })
+      expect(messageResponse.status).toBe(200)
+
+      const firstTriggerResponse = await fetch(`${server.baseUrl}/api/commanders/${commanderId}/heartbeat`, {
+        method: 'POST',
+        headers: {
+          ...AUTH_HEADERS,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          conversationId: legacyConversationId,
+        }),
+      })
+      expect(firstTriggerResponse.status).toBe(200)
+
+      await vi.waitFor(async () => {
+        const conversationsResponse = await fetch(
+          `${server.baseUrl}/api/commanders/${commanderId}/conversations`,
+          { headers: AUTH_HEADERS },
+        )
+        const conversations = (await conversationsResponse.json()) as Array<{
+          id: string
+          heartbeatTickCount: number
+        }>
+        expect(conversations.find((conversation) => conversation.id === legacyConversationId)?.heartbeatTickCount).toBe(1)
+        expect(conversations.find((conversation) => conversation.id === secondConversationId)?.heartbeatTickCount).toBe(0)
+      })
+
+      const defaultTriggerResponse = await fetch(`${server.baseUrl}/api/commanders/${commanderId}/heartbeat`, {
+        method: 'POST',
+        headers: {
+          ...AUTH_HEADERS,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({}),
+      })
+      expect(defaultTriggerResponse.status).toBe(200)
+      expect(await defaultTriggerResponse.json()).toEqual(expect.objectContaining({
+        conversationId: secondConversationId,
+      }))
+
+      await vi.waitFor(async () => {
+        const conversationsResponse = await fetch(
+          `${server.baseUrl}/api/commanders/${commanderId}/conversations`,
+          { headers: AUTH_HEADERS },
+        )
+        expect(conversationsResponse.status).toBe(200)
+        const conversations = (await conversationsResponse.json()) as Array<{
+          id: string
+          heartbeatTickCount: number
+        }>
+        expect(conversations.find((conversation) => conversation.id === secondConversationId)?.heartbeatTickCount).toBe(1)
+      })
+
+      const secondTriggerResponse = await fetch(`${server.baseUrl}/api/commanders/${commanderId}/heartbeat`, {
+        method: 'POST',
+        headers: {
+          ...AUTH_HEADERS,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          conversationId: secondConversationId,
+        }),
+      })
+      expect(secondTriggerResponse.status).toBe(200)
+
+      await vi.waitFor(async () => {
+        const conversationsResponse = await fetch(
+          `${server.baseUrl}/api/commanders/${commanderId}/conversations`,
+          { headers: AUTH_HEADERS },
+        )
+        expect(conversationsResponse.status).toBe(200)
+        const conversations = (await conversationsResponse.json()) as Array<{
+          id: string
+          lastHeartbeat: string | null
+          heartbeat: {
+            lastSentAt: string | null
+          }
+          heartbeatTickCount: number
+        }>
+        const legacyConversation = conversations.find((conversation) => conversation.id === legacyConversationId)
+        const secondConversation = conversations.find((conversation) => conversation.id === secondConversationId)
+        expect(legacyConversation?.heartbeatTickCount).toBe(1)
+        expect(secondConversation?.heartbeatTickCount).toBe(2)
+        expect(legacyConversation?.lastHeartbeat).toBe(legacyConversation?.heartbeat.lastSentAt ?? null)
+        expect(secondConversation?.lastHeartbeat).toBe(secondConversation?.heartbeat.lastSentAt ?? null)
+      })
+
+      const detailResponse = await fetch(`${server.baseUrl}/api/commanders/${commanderId}`, {
+        headers: AUTH_HEADERS,
+      })
+      expect(detailResponse.status).toBe(200)
+      const detail = (await detailResponse.json()) as {
+        heartbeatTickCount: number
+        lastHeartbeat: string | null
+        heartbeat: {
+          lastSentAt: string | null
+        }
+      }
+      expect(detail.heartbeatTickCount).toBe(3)
+      expect(detail.lastHeartbeat).toBe(detail.heartbeat.lastSentAt)
     } finally {
       await server.close()
     }

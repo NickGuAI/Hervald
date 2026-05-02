@@ -1,5 +1,6 @@
 import { Router } from 'express'
 import { registerChannelRoutes } from './register-channels.js'
+import { registerConversationRoutes } from './register-conversations.js'
 import { registerEmailRoutes } from './register-email.js'
 import { buildCommandersContext } from './context.js'
 import { registerCommandRoomRoutes } from './register-command-room.js'
@@ -23,6 +24,7 @@ export function createCommandersRouter(
   options: CommandersRouterOptions = {},
 ): CommandersRouterResult {
   const router = Router()
+  const conversationRouter = Router()
   const context = buildCommandersContext(options)
   let disposed = false
 
@@ -31,6 +33,7 @@ export function createCommandersRouter(
   registerChannelRoutes(router, context)
   registerQuestRoutes(router, context)
   registerWorkerRoutes(router, context)
+  registerConversationRoutes(router, conversationRouter, context)
   registerCoreRoutes(router, context)
   registerWorkspaceRoutes(router, context)
   registerEmailRoutes(router, context)
@@ -64,7 +67,7 @@ export function createCommandersRouter(
 
     context.runtimes.clear()
     context.activeCommanderSessions.clear()
-    context.heartbeatFiredAtByCommander.clear()
+    context.heartbeatFiredAtByConversation.clear()
 
     if (
       context.commandRoomScheduler &&
@@ -75,5 +78,5 @@ export function createCommandersRouter(
     }
   }
 
-  return { router, dispose }
+  return { router, conversationRouter, dispose }
 }

@@ -24,6 +24,7 @@ import {
 } from '../modules/commanders/paths.js'
 import { createCommandersRouter } from '../modules/commanders/routes.js'
 import { CommanderSessionStore } from '../modules/commanders/store.js'
+import { ConversationStore } from '../modules/commanders/conversation-store.js'
 import { createApprovalsRouter } from '../modules/policies/approvals-routes.js'
 import { ActionPolicyGate } from '../modules/policies/action-policy-gate.js'
 import { ApprovalCoordinator } from '../modules/policies/pending-store.js'
@@ -127,7 +128,19 @@ export function createModules(options: ModuleRegistryOptions = {}): ModuleRegist
   })
 
   const commanderSessionStorePath = resolveCommanderSessionStorePath(commanderDataDir)
-  const commanderSessionStore = new CommanderSessionStore(commanderSessionStorePath)
+  // Build ConversationStore BEFORE CommanderSessionStore so the legacy-runtime
+  // backfill in CommanderSessionStore.ensureLoaded() can persist synthetic
+  // Conversation rows derived from pre-#1216 CommanderSession shapes. Without
+  // the persistBackfilledConversation callback wired here, store.ts:670-678
+  // logs a warning and silent-drops the migration — operators upgrading from
+  // pre-#1216 lose historical heartbeat / currentTask / cost / channel data.
+  // See PR #1279 codex review.
+  const commanderConversationStore = new ConversationStore(commanderDataDir)
+  const commanderSessionStore = new CommanderSessionStore(commanderSessionStorePath, {
+    persistBackfilledConversation: async (conversation) => {
+      await commanderConversationStore.upsertBackfilledConversation(conversation)
+    },
+  })
   const emailConfigStore = new CommanderEmailConfigStore(commanderDataDir)
   const emailStateStore = new CommanderEmailStateStore(commanderDataDir)
   const emailPoller = new EmailPoller({
@@ -166,6 +179,9 @@ export function createModules(options: ModuleRegistryOptions = {}): ModuleRegist
     sessionsInterface: agents.sessionsInterface,
     sessionStore: commanderSessionStore,
     sessionStorePath: commanderSessionStorePath,
+    // Share the same ConversationStore instance the sessionStore writes
+    // backfills into, so router-side reads observe the migrated rows.
+    conversationStore: commanderConversationStore,
     questStoreDataDir: commanderDataDir,
     heartbeatBasePath: commanderDataDir,
     memoryBasePath: commanderDataDir,
@@ -283,6 +299,12 @@ export function createModules(options: ModuleRegistryOptions = {}): ModuleRegist
       label: 'Commanders',
       routePrefix: '/api/commanders',
       router: commanders.router,
+    },
+    {
+      name: 'conversations',
+      label: 'Conversations',
+      routePrefix: '/api/conversations',
+      router: commanders.conversationRouter,
     },
     {
       name: 'command-room',

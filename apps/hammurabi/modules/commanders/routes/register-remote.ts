@@ -1,6 +1,5 @@
 import { randomUUID } from 'node:crypto'
 import { DEFAULT_CLAUDE_EFFORT_LEVEL } from '../../claude-effort.js'
-import { createDefaultHeartbeatState } from '../heartbeat.js'
 import {
   setCommanderDisplayName,
   UnknownCommanderError,
@@ -67,20 +66,13 @@ export function registerRemoteRoutes(
     const session: CommanderSession = {
       id: randomUUID(),
       host: label,
-      pid: null,
       state: 'idle',
       created: context.now().toISOString(),
       agentType: 'claude',
       effort: DEFAULT_CLAUDE_EFFORT_LEVEL,
       maxTurns: context.runtimeConfig.defaults.maxTurns,
       contextMode: DEFAULT_COMMANDER_CONTEXT_MODE,
-      heartbeat: createDefaultHeartbeatState(),
-      lastHeartbeat: null,
-      heartbeatTickCount: 0,
       taskSource: null,
-      currentTask: null,
-      completedTasks: 0,
-      totalCostUsd: 0,
       remoteOrigin: {
         machineId,
         label,
@@ -90,6 +82,7 @@ export function registerRemoteRoutes(
 
     try {
       const created = await context.sessionStore.create(session)
+      await context.ensureLegacyConversation(created, { surface: 'api' })
       try {
         await scaffoldCommanderWorkflow(
           created.id,

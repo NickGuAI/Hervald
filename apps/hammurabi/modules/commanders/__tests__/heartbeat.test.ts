@@ -44,7 +44,7 @@ describe('CommanderHeartbeatManager', () => {
       onHeartbeatSent,
     })
 
-    manager.start('cmdr-1', {
+    manager.start('conv-1', 'cmdr-1', {
       intervalMs: 10,
       messageTemplate: '[HB {{timestamp}}]',
     })
@@ -56,6 +56,7 @@ describe('CommanderHeartbeatManager', () => {
       1,
       expect.objectContaining({
         commanderId: 'cmdr-1',
+        conversationId: 'conv-1',
         timestamp: '2026-03-01T12:00:00.000Z',
         renderedMessage: '[HB 2026-03-01T12:00:00.000Z]',
       }),
@@ -73,14 +74,14 @@ describe('CommanderHeartbeatManager', () => {
       sendHeartbeat,
     })
 
-    manager.start('cmdr-2', {
+    manager.start('conv-2', 'cmdr-2', {
       intervalMs: 10,
       messageTemplate: '[HB {{timestamp}}]',
     })
 
     await vi.advanceTimersByTimeAsync(10)
     expect(sendHeartbeat).toHaveBeenCalledTimes(1)
-    expect(manager.isRunning('cmdr-2')).toBe(false)
+    expect(manager.isRunning('conv-2')).toBe(false)
 
     await vi.advanceTimersByTimeAsync(30)
     expect(sendHeartbeat).toHaveBeenCalledTimes(1)
@@ -94,13 +95,43 @@ describe('CommanderHeartbeatManager', () => {
       sendHeartbeat,
     })
 
-    manager.start('cmdr-stable', {
+    manager.start('conv-stable', 'cmdr-stable', {
       intervalMs: 10,
       messageTemplate: '[HB {{timestamp}}]',
     })
 
     await vi.advanceTimersByTimeAsync(30)
     expect(sendHeartbeat).toHaveBeenCalledTimes(3)
+
+    manager.stopAll()
+  })
+
+  it('runs independent loops for multiple conversations under one commander', async () => {
+    vi.useFakeTimers()
+
+    const sendHeartbeat = vi.fn().mockResolvedValue(true)
+    const manager = new CommanderHeartbeatManager({
+      sendHeartbeat,
+    })
+
+    manager.start('conv-a', 'cmdr-shared', {
+      intervalMs: 10,
+      messageTemplate: '[HB A {{timestamp}}]',
+    })
+    manager.start('conv-b', 'cmdr-shared', {
+      intervalMs: 15,
+      messageTemplate: '[HB B {{timestamp}}]',
+    })
+
+    await vi.advanceTimersByTimeAsync(30)
+
+    expect(sendHeartbeat).toHaveBeenCalledTimes(5)
+    expect(
+      sendHeartbeat.mock.calls.filter(([input]) => input.conversationId === 'conv-a'),
+    ).toHaveLength(3)
+    expect(
+      sendHeartbeat.mock.calls.filter(([input]) => input.conversationId === 'conv-b'),
+    ).toHaveLength(2)
 
     manager.stopAll()
   })

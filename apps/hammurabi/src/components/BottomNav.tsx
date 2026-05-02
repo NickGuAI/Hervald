@@ -32,7 +32,6 @@ const iconMap: Record<string, React.ComponentType<LucideProps>> = {
 /** Short labels for mobile bottom nav */
 const SHORT_LABELS: Record<string, string> = {
   'command-room': 'Command',
-  fleet: 'Fleet',
   'api-keys': 'Settings',
 }
 
@@ -68,7 +67,7 @@ export function BottomNav({
             to={mod.path}
             className={({ isActive }) =>
               cn(
-                'flex flex-1 flex-col items-center justify-center gap-1 pt-2.5 pb-2 text-sumi-mist transition-colors duration-300',
+                'flex flex-1 flex-col items-center justify-center gap-1 pt-2.5 pb-2 text-sumi-black/70 transition-colors duration-300',
                 isActive && 'text-sumi-black',
               )
             }
@@ -83,7 +82,7 @@ export function BottomNav({
                     </span>
                   ) : null}
                 </span>
-                <span className="text-[10px] uppercase tracking-wider">
+                <span className="text-[12px] uppercase tracking-wider">
                   {SHORT_LABELS[mod.name] ?? mod.label}
                 </span>
                 <span className={cn('block w-1 h-1 rounded-full', isActive ? 'bg-sumi-black' : 'bg-transparent')} />

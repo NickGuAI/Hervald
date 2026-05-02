@@ -10,14 +10,6 @@ export const modules: FrontendModule[] = [
     component: () => import('@modules/command-room/page'),
   },
   {
-    name: 'fleet',
-    label: 'Fleet',
-    icon: 'BarChart3',
-    path: '/fleet',
-    navGroup: 'primary',
-    component: () => import('@modules/fleet/page'),
-  },
-  {
     name: 'api-keys',
     label: 'Settings',
     icon: 'Settings',

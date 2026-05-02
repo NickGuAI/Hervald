@@ -1,0 +1,293 @@
+<svg viewBox="0 0 1620 1080" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="After #1216 — chat lifecycle flowchart with Conversation aggregate">
+  <defs>
+    <marker id="ca-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#34495E"/>
+    </marker>
+    <marker id="ca-good" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#3a6b3f"/>
+    </marker>
+  </defs>
+
+  <rect width="1620" height="1080" fill="#f7f2ea"/>
+
+  <!-- ═══════ Title bar ═══════ -->
+  <rect x="20" y="20" width="1580" height="56" rx="6" fill="#2d3748"/>
+  <text x="40" y="48" font-family="Georgia, serif" font-size="20" fill="#f7f2ea">Fig.2   After — chat lifecycle with Conversation aggregate</text>
+  <text x="40" y="68" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="12" fill="#d4e6c5">INBOUND → COMMANDER → CONVERSATION (NEW) → DISPATCH → PROVIDER → EVENT LOG → HEARTBEAT → MEMORY → INDEX</text>
+
+  <!-- ═══════ Triggers column (left) ═══════ -->
+  <rect x="20" y="100" width="220" height="480" rx="8" fill="#ECE3F0" stroke="#7c5e8e" stroke-width="1.5"/>
+  <text x="130" y="124" text-anchor="middle" font-family="Georgia, serif" font-size="14" fill="#3a2f4a">Trigger entry</text>
+  <line x1="40" y1="134" x2="220" y2="134" stroke="#cdc6b9" stroke-width="1"/>
+
+  <rect x="40" y="146" width="180" height="68" rx="6" fill="#ffffff" stroke="#7c5e8e" stroke-width="1"/>
+  <text x="130" y="166" text-anchor="middle" font-family="Georgia, serif" font-size="12" fill="#1f2933">Discord thread</text>
+  <text x="130" y="184" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10.5" fill="#3a6b3f">→ Conversation 1</text>
+  <text x="130" y="202" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10" fill="#52606d">surface = discord</text>
+
+  <rect x="40" y="222" width="180" height="68" rx="6" fill="#ffffff" stroke="#7c5e8e" stroke-width="1"/>
+  <text x="130" y="242" text-anchor="middle" font-family="Georgia, serif" font-size="12" fill="#1f2933">Discord thread (2nd)</text>
+  <text x="130" y="260" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10.5" fill="#3a6b3f">→ Conversation 2</text>
+  <text x="130" y="278" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10" fill="#52606d">same commander</text>
+
+  <rect x="40" y="298" width="180" height="68" rx="6" fill="#ffffff" stroke="#7c5e8e" stroke-width="1"/>
+  <text x="130" y="318" text-anchor="middle" font-family="Georgia, serif" font-size="12" fill="#1f2933">UI WebSocket</text>
+  <text x="130" y="336" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10.5" fill="#3a6b3f">→ Conversation 3</text>
+  <text x="130" y="354" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10" fill="#52606d">surface = ui</text>
+
+  <rect x="40" y="374" width="180" height="68" rx="6" fill="#ffffff" stroke="#7c5e8e" stroke-width="1"/>
+  <text x="130" y="394" text-anchor="middle" font-family="Georgia, serif" font-size="12" fill="#1f2933">CLI attach</text>
+  <text x="130" y="412" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10.5" fill="#3a6b3f">→ Conversation 4</text>
+  <text x="130" y="430" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10" fill="#52606d">surface = cli</text>
+
+  <rect x="40" y="450" width="180" height="68" rx="6" fill="#ffffff" stroke="#7c5e8e" stroke-width="1"/>
+  <text x="130" y="470" text-anchor="middle" font-family="Georgia, serif" font-size="12" fill="#1f2933">API caller</text>
+  <text x="130" y="488" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10.5" fill="#3a6b3f">→ Conversation N</text>
+  <text x="130" y="506" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10" fill="#52606d">surface = api</text>
+
+  <text x="130" y="544" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10.5" fill="#3a6b3f" font-style="italic">N surfaces → N Conversations</text>
+  <text x="130" y="560" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10.5" fill="#3a6b3f" font-style="italic">under ONE Commander</text>
+
+  <path d="M 240 280 L 280 280" stroke="#34495E" stroke-width="2" fill="none" marker-end="url(#ca-arrow)"/>
+
+  <!-- ═══════ LANE 1: INBOUND ═══════ -->
+  <g>
+    <rect x="280" y="100" width="160" height="36" rx="4" fill="#cfdef0" stroke="#34495E" stroke-width="1"/>
+    <text x="360" y="124" text-anchor="middle" font-family="Georgia, serif" font-size="13" fill="#1f2933">1.  Inbound</text>
+    <rect x="280" y="136" width="160" height="180" rx="4" fill="#ffffff" stroke="#34495E" stroke-width="1"/>
+    <text x="296" y="160" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" fill="#1f2933">POST /channel-message</text>
+    <text x="296" y="184" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10.5" fill="#52606d">body unchanged:</text>
+    <text x="296" y="198" font-family="ui-monospace, monospace" font-size="9.5" fill="#52606d">{ provider, peerId,</text>
+    <text x="296" y="210" font-family="ui-monospace, monospace" font-size="9.5" fill="#52606d">  threadId, message,</text>
+    <text x="296" y="222" font-family="ui-monospace, monospace" font-size="9.5" fill="#52606d">  ... }</text>
+    <text x="296" y="252" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10.5" fill="#3a6b3f">UNCHANGED — still</text>
+    <text x="296" y="266" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10.5" fill="#3a6b3f">resolves sessionKey</text>
+    <text x="296" y="282" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10.5" fill="#3a6b3f">from channel triple</text>
+    <text x="296" y="304" font-family="ui-monospace, monospace" font-size="9.5" fill="#52606d">register-channels.ts</text>
+  </g>
+
+  <path d="M 440 226 L 472 226" stroke="#34495E" stroke-width="2" fill="none" marker-end="url(#ca-arrow)"/>
+
+  <!-- ═══════ LANE 2: COMMANDER (no fork) ═══════ -->
+  <g>
+    <rect x="472" y="100" width="160" height="36" rx="4" fill="#d4e6c5" stroke="#3a6b3f" stroke-width="1"/>
+    <text x="552" y="124" text-anchor="middle" font-family="Georgia, serif" font-size="13" fill="#1f2933">2.  Commander</text>
+    <rect x="472" y="136" width="160" height="180" rx="4" fill="#ffffff" stroke="#3a6b3f" stroke-width="1"/>
+    <text x="488" y="160" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" fill="#1f2933">resolve identity:</text>
+    <text x="488" y="180" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10.5" fill="#1f2933">·  URL-baked /:id</text>
+    <text x="488" y="194" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10.5" fill="#1f2933">·  addressed by name</text>
+    <text x="488" y="208" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10.5" fill="#1f2933">   in channel</text>
+    <text x="488" y="240" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10.5" fill="#3a6b3f">no fork — operator</text>
+    <text x="488" y="254" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10.5" fill="#3a6b3f">specifies commanderId</text>
+    <text x="488" y="268" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10.5" fill="#3a6b3f">on ambiguity → 409</text>
+    <text x="488" y="298" font-family="ui-monospace, monospace" font-size="9.5" fill="#52606d">findOrCreateConv...</text>
+  </g>
+
+  <path d="M 632 226 L 664 226" stroke="#34495E" stroke-width="2" fill="none" marker-end="url(#ca-arrow)"/>
+
+  <!-- ═══════ LANE 2.5: CONVERSATION (NEW) ═══════ -->
+  <g>
+    <rect x="664" y="100" width="180" height="36" rx="4" fill="#d4e6c5" stroke="#3a6b3f" stroke-width="2"/>
+    <text x="754" y="124" text-anchor="middle" font-family="Georgia, serif" font-size="13" fill="#1f2933">3.  Conversation  ★ NEW</text>
+    <rect x="664" y="136" width="180" height="180" rx="4" fill="#ecf3e6" stroke="#3a6b3f" stroke-width="1.5"/>
+    <text x="680" y="160" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" fill="#3a6b3f">findOrCreateConvers-</text>
+    <text x="680" y="174" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" fill="#3a6b3f">ationBySessionKey(</text>
+    <text x="680" y="188" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" fill="#3a6b3f">  commanderId, key)</text>
+    <text x="680" y="218" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10.5" fill="#1f2933">writes to:</text>
+    <text x="680" y="232" font-family="ui-monospace, monospace" font-size="9" fill="#52606d">~/.hammurabi/commander/</text>
+    <text x="680" y="244" font-family="ui-monospace, monospace" font-size="9" fill="#52606d">  &lt;cmdId&gt;/conversations/</text>
+    <text x="680" y="256" font-family="ui-monospace, monospace" font-size="9" fill="#52606d">  &lt;convId&gt;.json</text>
+    <text x="680" y="280" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10.5" fill="#1f2933">holds: surface, status,</text>
+    <text x="680" y="294" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10.5" fill="#1f2933">channelMeta, currentTask,</text>
+    <text x="680" y="308" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10.5" fill="#1f2933">transcript pointer, cost</text>
+  </g>
+
+  <path d="M 844 226 L 876 226" stroke="#3a6b3f" stroke-width="2" fill="none" marker-end="url(#ca-good)"/>
+
+  <!-- ═══════ LANE 4: DISPATCH (with conversationId) ═══════ -->
+  <g>
+    <rect x="876" y="100" width="160" height="36" rx="4" fill="#d4e6c5" stroke="#3a6b3f" stroke-width="1"/>
+    <text x="956" y="124" text-anchor="middle" font-family="Georgia, serif" font-size="13" fill="#1f2933">4.  Dispatch</text>
+    <rect x="876" y="136" width="160" height="180" rx="4" fill="#ffffff" stroke="#3a6b3f" stroke-width="1"/>
+    <text x="892" y="160" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" fill="#1f2933">StreamSession with:</text>
+    <text x="892" y="184" font-family="ui-monospace, monospace" font-size="10" fill="#1f2933">creator: {</text>
+    <text x="892" y="198" font-family="ui-monospace, monospace" font-size="10" fill="#1f2933">  kind:'commander',id }</text>
+    <text x="892" y="212" font-family="ui-monospace, monospace" font-size="10" fill="#52606d">         (#1189)</text>
+    <text x="892" y="234" font-family="ui-monospace, monospace" font-size="10" fill="#1f2933">sessionType:</text>
+    <text x="892" y="248" font-family="ui-monospace, monospace" font-size="10" fill="#1f2933">  'commander'</text>
+    <text x="892" y="262" font-family="ui-monospace, monospace" font-size="10" fill="#52606d">         (#1189)</text>
+    <text x="892" y="284" font-family="ui-monospace, monospace" font-size="10" fill="#3a6b3f">conversationId   ★</text>
+    <text x="892" y="298" font-family="ui-monospace, monospace" font-size="10" fill="#52606d">    (NEW field)</text>
+  </g>
+
+  <path d="M 1036 226 L 1068 226" stroke="#34495E" stroke-width="2" fill="none" marker-end="url(#ca-arrow)"/>
+
+  <!-- ═══════ LANE 5: PROVIDER ═══════ -->
+  <g>
+    <rect x="1068" y="100" width="160" height="36" rx="4" fill="#f3d3c5" stroke="#9b3d2c" stroke-width="1"/>
+    <text x="1148" y="124" text-anchor="middle" font-family="Georgia, serif" font-size="13" fill="#1f2933">5.  Provider call</text>
+    <rect x="1068" y="136" width="160" height="180" rx="4" fill="#ffffff" stroke="#9b3d2c" stroke-width="1"/>
+    <text x="1148" y="166" text-anchor="middle" font-family="Georgia, serif" font-size="13" fill="#1f2933">Claude SDK</text>
+    <text x="1148" y="200" text-anchor="middle" font-family="Georgia, serif" font-size="13" fill="#1f2933">Codex SDK</text>
+    <text x="1148" y="234" text-anchor="middle" font-family="Georgia, serif" font-size="13" fill="#1f2933">Gemini CLI</text>
+    <line x1="1084" y1="216" x2="1212" y2="216" stroke="#cdc6b9" stroke-width="1"/>
+    <text x="1148" y="266" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10.5" fill="#3a6b3f">UNCHANGED</text>
+    <text x="1148" y="284" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10" fill="#52606d">resume id read from</text>
+    <text x="1148" y="298" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10" fill="#52606d">Conversation, not Commander</text>
+  </g>
+
+  <path d="M 1228 226 L 1260 226" stroke="#34495E" stroke-width="2" fill="none" marker-end="url(#ca-arrow)"/>
+
+  <!-- ═══════ LANE 6: EVENT LOG ═══════ -->
+  <g>
+    <rect x="1260" y="100" width="320" height="36" rx="4" fill="#e0d4c0" stroke="#5e4f3a" stroke-width="1"/>
+    <text x="1420" y="124" text-anchor="middle" font-family="Georgia, serif" font-size="13" fill="#1f2933">6.  Hammurabi event log  ·  UNCHANGED</text>
+    <rect x="1260" y="136" width="320" height="180" rx="4" fill="#ffffff" stroke="#5e4f3a" stroke-width="1"/>
+    <text x="1276" y="160" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" fill="#1f2933">on every stream event (paths identical):</text>
+    <text x="1276" y="186" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10.5" fill="#52606d">A) per StreamSession:</text>
+    <text x="1276" y="200" font-family="ui-monospace, monospace" font-size="9.5" fill="#52606d">~/.hammurabi/agents/sessions/&lt;name&gt;/transcript.v1.jsonl</text>
+    <text x="1276" y="226" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10.5" fill="#52606d">B) per commander (LanceDB src):</text>
+    <text x="1276" y="240" font-family="ui-monospace, monospace" font-size="9.5" fill="#52606d">~/.hammurabi/commander/&lt;id&gt;/sessions/&lt;tid&gt;.jsonl</text>
+    <text x="1276" y="266" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10.5" fill="#3a6b3f">N conversations → N JSONL files</text>
+    <text x="1276" y="282" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10.5" fill="#3a6b3f">all under SAME commander dir → one LanceDB index</text>
+    <text x="1276" y="306" font-family="ui-monospace, monospace" font-size="9.5" fill="#52606d">persistence.ts:109–173 (no change)</text>
+  </g>
+
+  <!-- arrows down to bottom band -->
+  <path d="M 1420 316 L 1420 360" stroke="#34495E" stroke-width="2" fill="none" marker-end="url(#ca-arrow)"/>
+  <path d="M 1148 316 L 1148 360" stroke="#34495E" stroke-width="2" fill="none" marker-end="url(#ca-arrow)"/>
+
+  <!-- ═══════ LANE 7: PROVIDER JSONL ═══════ -->
+  <g>
+    <rect x="1068" y="360" width="160" height="32" rx="4" fill="#dcdcdc" stroke="#3a3a3a" stroke-width="1"/>
+    <text x="1148" y="382" text-anchor="middle" font-family="Georgia, serif" font-size="12" fill="#1f2933">7.  Provider JSONL</text>
+    <rect x="1068" y="392" width="160" height="170" rx="4" fill="#ffffff" stroke="#3a3a3a" stroke-width="1"/>
+    <text x="1148" y="412" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10.5" fill="#3a6b3f">UNCHANGED  provider-owned</text>
+    <text x="1084" y="436" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10.5" fill="#1f2933">Claude:</text>
+    <text x="1084" y="450" font-family="ui-monospace, monospace" font-size="8.5" fill="#52606d">~/.claude/projects/&lt;cwd&gt;/&lt;id&gt;.jsonl</text>
+    <text x="1084" y="474" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10.5" fill="#1f2933">Codex:</text>
+    <text x="1084" y="488" font-family="ui-monospace, monospace" font-size="8.5" fill="#52606d">~/.codex/sessions/&lt;date&gt;/</text>
+    <text x="1084" y="500" font-family="ui-monospace, monospace" font-size="8.5" fill="#52606d">  rollout-*.jsonl</text>
+    <text x="1084" y="524" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10.5" fill="#1f2933">Gemini:</text>
+    <text x="1084" y="538" font-family="ui-monospace, monospace" font-size="8.5" fill="#52606d">~/.gemini/tmp/&lt;proj&gt;/</text>
+    <text x="1084" y="556" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10" fill="#3a6b3f">pointer moves to Conversation</text>
+  </g>
+
+  <!-- ═══════ LANE 8: HEARTBEAT (per Conversation) ═══════ -->
+  <g>
+    <rect x="1260" y="360" width="320" height="32" rx="4" fill="#d9d0e6" stroke="#7c5e8e" stroke-width="1"/>
+    <text x="1420" y="382" text-anchor="middle" font-family="Georgia, serif" font-size="12" fill="#1f2933">8.  Heartbeat  ·  per Conversation  ★</text>
+    <rect x="1260" y="392" width="320" height="170" rx="4" fill="#ffffff" stroke="#7c5e8e" stroke-width="1"/>
+    <text x="1276" y="416" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" fill="#1f2933">Conversation.lastHeartbeat</text>
+    <text x="1276" y="430" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" fill="#1f2933">Conversation.heartbeatTickCount</text>
+    <text x="1276" y="444" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" fill="#1f2933">Conversation.heartbeat.lastSentAt</text>
+    <text x="1276" y="468" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" fill="#1f2933">Conversation.completedTasks</text>
+    <text x="1276" y="482" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" fill="#1f2933">Conversation.totalCostUsd</text>
+    <text x="1276" y="510" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10.5" fill="#3a6b3f">N conversations tick INDEPENDENTLY</text>
+    <text x="1276" y="526" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10.5" fill="#3a6b3f">commander rollup = derived sum at read time</text>
+    <text x="1276" y="546" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10" fill="#52606d" font-style="italic">commander/heartbeat scheduler iterates conversations</text>
+  </g>
+
+  <!-- ═══════ LANE 9: MEMORY (UNCHANGED, commander-level) ═══════ -->
+  <g>
+    <rect x="280" y="360" width="320" height="32" rx="4" fill="#ECE3F0" stroke="#7c5e8e" stroke-width="1"/>
+    <text x="440" y="382" text-anchor="middle" font-family="Georgia, serif" font-size="12" fill="#1f2933">9.  Memory  ·  UNCHANGED commander-level</text>
+    <rect x="280" y="392" width="320" height="170" rx="4" fill="#ffffff" stroke="#7c5e8e" stroke-width="1"/>
+    <text x="296" y="416" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10.5" fill="#1f2933">Durable facts:</text>
+    <text x="296" y="430" font-family="ui-monospace, monospace" font-size="9.5" fill="#52606d">~/.hammurabi/commander/&lt;id&gt;/.memory/MEMORY.md</text>
+    <text x="296" y="454" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10.5" fill="#1f2933">Working memory:</text>
+    <text x="296" y="468" font-family="ui-monospace, monospace" font-size="9.5" fill="#52606d">  .memory/working-memory.json</text>
+    <text x="296" y="480" font-family="ui-monospace, monospace" font-size="9.5" fill="#52606d">  .memory/working-memory.md</text>
+    <text x="296" y="506" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10.5" fill="#3a6b3f">ONE per commander · shared by all conversations</text>
+    <text x="296" y="522" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10.5" fill="#3a6b3f">written by tools/skills (saveFacts, append) — same path</text>
+    <text x="296" y="546" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10" fill="#52606d" font-style="italic">spec: "DO NOT introduce per-conversation memory"</text>
+  </g>
+
+  <!-- ═══════ LANE 10: INDEX (UNCHANGED) ═══════ -->
+  <g>
+    <rect x="620" y="360" width="220" height="32" rx="4" fill="#d4e6c5" stroke="#3a6b3f" stroke-width="1"/>
+    <text x="730" y="382" text-anchor="middle" font-family="Georgia, serif" font-size="12" fill="#1f2933">10.  LanceDB index  ·  UNCHANGED</text>
+    <rect x="620" y="392" width="220" height="170" rx="4" fill="#ffffff" stroke="#3a6b3f" stroke-width="1"/>
+    <text x="636" y="416" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" fill="#1f2933">cron-driven sync, same path</text>
+    <text x="636" y="442" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10.5" fill="#1f2933">reads:</text>
+    <text x="636" y="456" font-family="ui-monospace, monospace" font-size="9" fill="#52606d">commander/&lt;id&gt;/sessions/*</text>
+    <text x="636" y="480" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10.5" fill="#1f2933">writes:</text>
+    <text x="636" y="494" font-family="ui-monospace, monospace" font-size="9" fill="#52606d">~/.ginsights/transcript-index/</text>
+    <text x="636" y="506" font-family="ui-monospace, monospace" font-size="9" fill="#52606d">  &lt;commanderId&gt;/</text>
+    <text x="636" y="530" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10" fill="#3a6b3f">N convs → N transcript files</text>
+    <text x="636" y="544" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="10" fill="#3a6b3f">→ ONE commander index</text>
+  </g>
+
+  <path d="M 600 488 L 620 488" stroke="#34495E" stroke-width="2" fill="none"/>
+  <path d="M 1068 488 L 1040 488" stroke="#34495E" stroke-width="2" fill="none" marker-end="url(#ca-arrow)"/>
+  <path d="M 840 488 L 1040 488" stroke="#34495E" stroke-width="2" fill="none"/>
+
+  <!-- ═══════ Bottom band — FIX visualization ═══════ -->
+  <rect x="20" y="600" width="1580" height="160" rx="6" fill="#eaf3e6" stroke="#3a6b3f" stroke-width="1.5"/>
+  <text x="36" y="624" font-family="Georgia, serif" font-size="14" fill="#3a6b3f">✓   Fix: N surfaces, N conversations, ONE commander, ONE memory dir</text>
+
+  <!-- 4 surface boxes -->
+  <rect x="40" y="640" width="160" height="40" rx="6" fill="#efe7db" stroke="#9b8f7a" stroke-width="1"/>
+  <text x="120" y="664" text-anchor="middle" font-family="Georgia, serif" font-size="12" fill="#1f2933">Discord A</text>
+
+  <rect x="220" y="640" width="160" height="40" rx="6" fill="#efe7db" stroke="#9b8f7a" stroke-width="1"/>
+  <text x="300" y="664" text-anchor="middle" font-family="Georgia, serif" font-size="12" fill="#1f2933">Discord B</text>
+
+  <rect x="400" y="640" width="160" height="40" rx="6" fill="#efe7db" stroke="#9b8f7a" stroke-width="1"/>
+  <text x="480" y="664" text-anchor="middle" font-family="Georgia, serif" font-size="12" fill="#1f2933">UI tab</text>
+
+  <rect x="580" y="640" width="160" height="40" rx="6" fill="#efe7db" stroke="#9b8f7a" stroke-width="1"/>
+  <text x="660" y="664" text-anchor="middle" font-family="Georgia, serif" font-size="12" fill="#1f2933">CLI attach</text>
+
+  <path d="M 120 680 L 120 696" stroke="#3a6b3f" stroke-width="1.5" fill="none" marker-end="url(#ca-good)"/>
+  <path d="M 300 680 L 300 696" stroke="#3a6b3f" stroke-width="1.5" fill="none" marker-end="url(#ca-good)"/>
+  <path d="M 480 680 L 480 696" stroke="#3a6b3f" stroke-width="1.5" fill="none" marker-end="url(#ca-good)"/>
+  <path d="M 660 680 L 660 696" stroke="#3a6b3f" stroke-width="1.5" fill="none" marker-end="url(#ca-good)"/>
+
+  <rect x="40" y="700" width="160" height="40" rx="6" fill="#ffffff" stroke="#3a6b3f" stroke-width="1.5"/>
+  <text x="120" y="724" text-anchor="middle" font-family="Georgia, serif" font-size="12" fill="#1f2933">Conversation 1</text>
+
+  <rect x="220" y="700" width="160" height="40" rx="6" fill="#ffffff" stroke="#3a6b3f" stroke-width="1.5"/>
+  <text x="300" y="724" text-anchor="middle" font-family="Georgia, serif" font-size="12" fill="#1f2933">Conversation 2</text>
+
+  <rect x="400" y="700" width="160" height="40" rx="6" fill="#ffffff" stroke="#3a6b3f" stroke-width="1.5"/>
+  <text x="480" y="724" text-anchor="middle" font-family="Georgia, serif" font-size="12" fill="#1f2933">Conversation 3</text>
+
+  <rect x="580" y="700" width="160" height="40" rx="6" fill="#ffffff" stroke="#3a6b3f" stroke-width="1.5"/>
+  <text x="660" y="724" text-anchor="middle" font-family="Georgia, serif" font-size="12" fill="#1f2933">Conversation 4</text>
+
+  <!-- merge arrows toward Commander -->
+  <path d="M 120 740 Q 120 752, 300 752 L 390 752" stroke="#3a6b3f" stroke-width="1.5" fill="none"/>
+  <path d="M 300 740 L 390 752" stroke="#3a6b3f" stroke-width="1.5" fill="none"/>
+  <path d="M 480 740 L 390 752" stroke="#3a6b3f" stroke-width="1.5" fill="none"/>
+  <path d="M 660 740 Q 660 752, 480 752 L 390 752" stroke="#3a6b3f" stroke-width="1.5" fill="none"/>
+  <path d="M 390 752 L 760 752" stroke="#3a6b3f" stroke-width="1.5" fill="none" marker-end="url(#ca-good)"/>
+
+  <!-- One Commander -->
+  <rect x="780" y="640" width="380" height="100" rx="6" fill="#ffffff" stroke="#3a6b3f" stroke-width="2"/>
+  <text x="970" y="666" text-anchor="middle" font-family="Georgia, serif" font-size="14" fill="#1f2933">Commander  "Athena"</text>
+  <text x="970" y="688" text-anchor="middle" font-family="ui-monospace, monospace" font-size="10.5" fill="#52606d">~/.hammurabi/commander/&lt;Athena's id&gt;/</text>
+  <text x="970" y="708" text-anchor="middle" font-family="ui-monospace, monospace" font-size="10.5" fill="#1f2933">.memory/MEMORY.md  ·  .memory/working-memory  ·  /sessions  ·  /skills</text>
+  <text x="970" y="728" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" fill="#3a6b3f" font-style="italic">ONE brain, shared by all four conversations</text>
+
+  <!-- Side annotation: derived state -->
+  <rect x="1180" y="640" width="400" height="100" rx="6" fill="#ffffff" stroke="#3a6b3f" stroke-width="1.5"/>
+  <text x="1198" y="664" font-family="Georgia, serif" font-size="13" fill="#1f2933">What operators get</text>
+  <text x="1198" y="686" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" fill="#1f2933">·  Discord, UI, CLI all read the same MEMORY.md</text>
+  <text x="1198" y="702" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" fill="#1f2933">·  Quest claimed in UI visible from CLI</text>
+  <text x="1198" y="718" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" fill="#1f2933">·  Cost meter sums across all conversations</text>
+  <text x="1198" y="734" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" fill="#1f2933">·  TEAM column shows ONE Athena</text>
+
+  <!-- ═══════ Bottom legend / summary band ═══════ -->
+  <rect x="20" y="780" width="1580" height="120" rx="6" fill="#f4ece1" stroke="#cdc6b9" stroke-width="1"/>
+  <text x="36" y="804" font-family="Georgia, serif" font-size="13" fill="#1f2933">Storage layer summary  ·  what changes vs what stays</text>
+  <text x="36" y="828" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11.5" fill="#3a6b3f">★  NEW:  Conversation entity at  ~/.hammurabi/commander/&lt;cmdId&gt;/conversations/&lt;convId&gt;.json</text>
+  <text x="36" y="848" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11.5" fill="#3a6b3f">★  NEW:  StreamSession.conversationId field linking runtime to conversation</text>
+  <text x="36" y="868" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11.5" fill="#1f2933">·  UNCHANGED:  Provider JSONL paths, Hammurabi event log paths, MEMORY.md, working-memory, LanceDB index path</text>
+  <text x="36" y="888" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11.5" fill="#1f2933">·  MOVED (CommanderSession → Conversation):  pid, lastHeartbeat, currentTask, claudeSessionId / codexThreadId / geminiSessionId, channelMeta, completedTasks, totalCostUsd</text>
+
+  <!-- ═══════ Footer ═══════ -->
+  <text x="800" y="1010" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" fill="#52606d">Refs:  store.ts:78–105 (Commander identity), conversation-store.ts (NEW), agents/types.ts:201–273 (StreamSession + conversationId),</text>
+  <text x="800" y="1028" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" fill="#52606d">register-channels.ts (rewritten to upsert at conversation tier), persistence.ts:109–173 (transcript paths unchanged),</text>
+  <text x="800" y="1046" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="11" fill="#52606d">heartbeat.ts (per-conversation scheduler), transcript-index.ts:255–290 (unchanged)</text>
+</svg>
