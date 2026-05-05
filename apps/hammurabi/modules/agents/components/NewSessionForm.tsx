@@ -5,20 +5,15 @@ import type {
   Machine,
   SessionTransportType,
 } from '@/types'
+import { useProviderRegistry } from '@/hooks/use-providers'
 import type { ClaudeAdaptiveThinkingMode } from '../../claude-adaptive-thinking.js'
 import type { ClaudeEffortLevel } from '../../claude-effort.js'
 import { AgentControlsSection } from './new-session-form/AgentControlsSection'
 import { MachineSection } from './new-session-form/MachineSection'
 import { ResumeSourceSection } from './new-session-form/ResumeSourceSection'
 import { SessionFieldsSection } from './new-session-form/SessionFieldsSection'
-import {
-  CLAUDE_MODE_OPTIONS,
-  CODEX_MODE_OPTIONS,
-  GEMINI_MODE_OPTIONS,
-} from './new-session-form/options'
 import { useNewSessionConstraints } from './new-session-form/useNewSessionConstraints'
 
-const DEFAULT_AGENT_OPTIONS: AgentType[] = ['claude', 'codex', 'gemini']
 const NOOP_SET_STRING = (_value: string): undefined => undefined
 
 export interface NewSessionFormProps {
@@ -98,15 +93,19 @@ function NewSessionFormComponent({
   beforeTaskField,
   afterScheduleField,
   showNameField = true,
-  agentOptions = DEFAULT_AGENT_OPTIONS,
+  agentOptions,
 }: NewSessionFormProps) {
+  const { data: registeredProviders = [] } = useProviderRegistry()
   const remoteMachines = machines.filter((machine) => machine.host)
   const showMachineSelector = remoteMachines.length > 0
   const resumeSelectionEnabled = Array.isArray(resumeOptions) && typeof setResumeSourceName === 'function'
   const resumeLocked = resumeSource !== null
+  const providers = registeredProviders.filter((provider) =>
+    !agentOptions || agentOptions.includes(provider.id),
+  )
 
   useNewSessionConstraints({
-    agentOptions,
+    providers,
     agentType,
     setAgentType,
     transportType,
@@ -120,7 +119,7 @@ function NewSessionFormComponent({
   return (
     <form onSubmit={onSubmit} className="space-y-3">
       <AgentControlsSection
-        agentOptions={agentOptions}
+        providers={providers}
         agentType={agentType}
         setAgentType={setAgentType}
         transportType={transportType}
@@ -182,5 +181,3 @@ function NewSessionFormComponent({
 
 export const NewSessionForm = memo(NewSessionFormComponent)
 NewSessionForm.displayName = 'NewSessionForm'
-
-export { CLAUDE_MODE_OPTIONS, CODEX_MODE_OPTIONS, GEMINI_MODE_OPTIONS }

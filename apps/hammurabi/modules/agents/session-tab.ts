@@ -1,5 +1,5 @@
 export type SessionTab = 'all' | 'commander' | 'worker' | 'other'
-type SessionType = 'commander' | 'worker' | 'cron' | 'sentinel'
+type SessionType = 'commander' | 'worker' | 'cron' | 'sentinel' | 'automation'
 
 export const DEFAULT_SESSION_TAB: SessionTab = 'commander'
 
@@ -15,7 +15,8 @@ function parseSessionType(value: unknown): SessionType | null {
     value === 'commander' ||
     value === 'worker' ||
     value === 'cron' ||
-    value === 'sentinel'
+    value === 'sentinel' ||
+    value === 'automation'
   ) {
     return value
   }
@@ -26,7 +27,9 @@ function matchesSessionTabName(sessionType: unknown, tab: SessionTab): boolean {
   const resolvedType = parseSessionType(sessionType) ?? 'worker'
   if (tab === 'commander') return resolvedType === 'commander'
   if (tab === 'worker') return resolvedType === 'worker'
-  if (tab === 'other') return resolvedType === 'cron' || resolvedType === 'sentinel'
+  if (tab === 'other') {
+    return resolvedType === 'cron' || resolvedType === 'sentinel' || resolvedType === 'automation'
+  }
   return true
 }
 

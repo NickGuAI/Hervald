@@ -578,7 +578,7 @@ describe('dispatch-worker', () => {
         },
         body: JSON.stringify({
           spawnedBy: 'commander-main',
-          machine: 'gpu-1',
+          host: 'gpu-1',
         }),
       })
 
@@ -658,7 +658,7 @@ describe('dispatch-worker', () => {
           },
           body: JSON.stringify({
             spawnedBy: 'commander-main',
-            machine: 'remote-test',
+            host: 'remote-test',
             agentType: 'claude',
             cwd: '/tmp',
           }),
@@ -721,7 +721,7 @@ describe('dispatch-worker', () => {
           },
           body: JSON.stringify({
             spawnedBy: 'commander-main',
-            machine: 'remote-test',
+            host: 'remote-test',
             agentType: 'codex',
             cwd: '/tmp',
           }),

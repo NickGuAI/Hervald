@@ -4,17 +4,7 @@ import multer from 'multer'
 import { type Request, type Response as ExpressResponse } from 'express'
 import { combinedAuth } from '../../../server/middleware/combined-auth.js'
 import type { CommanderSessionsInterface } from '../../agents/routes.js'
-import {
-  CommandRoomRunStore,
-  defaultCommandRoomRunStorePath,
-  type WorkflowRun,
-} from '../../command-room/run-store.js'
-import {
-  CommandRoomTaskStore,
-  defaultCommandRoomTaskStorePath,
-  type CreateCronTaskInput,
-  type CronTask as CommandRoomCronTask,
-} from '../../command-room/task-store.js'
+import { AutomationStore } from '../../automations/store.js'
 import { resolveModuleDataDir } from '../../data-dir.js'
 import {
   resolveWorkspaceRoot,
@@ -33,7 +23,6 @@ import {
 } from '../commander-profile.js'
 import {
   migrateLegacyCommanderConfig,
-  migrateLegacyCommanderConfigForSession,
 } from '../config-migration.js'
 import {
   CommanderEmailConfigStore,
@@ -42,27 +31,25 @@ import {
 import { EmailPoller } from '../email-poller.js'
 import {
   CommanderHeartbeatManager,
-  createDefaultHeartbeatState,
-  type CommanderHeartbeatState,
+  createDefaultHeartbeatConfig,
+  type CommanderHeartbeatConfig,
 } from '../heartbeat.js'
 import { HeartbeatLog, type HeartbeatLogAppendInput } from '../heartbeat-log.js'
 import { CommanderManager, type CommanderSubagentLifecycleEvent } from '../manager.js'
 import { ConversationStore, type Conversation } from '../conversation-store.js'
 import {
   resolveCommanderDataDir,
-  resolveCommanderPaths,
 } from '../paths.js'
 import { QuestStore, type CommanderQuest } from '../quest-store.js'
 import { resolveGitHubToken } from '../github-http.js'
 import {
-  COMMANDER_INSTRUCTION_TASK_TYPE,
   parseBearerToken,
   parseContextPressureInputTokenThreshold,
   parseMessage,
   parseSessionId,
 } from '../route-parsers.js'
 import {
-  buildLegacyCommanderConversationId,
+  buildDefaultCommanderConversationId,
   CommanderSessionStore,
   type CommanderChannelMeta,
   type CommanderCurrentTask,
@@ -82,10 +69,6 @@ import {
 } from '../workflow-resolution.js'
 import type {
   CommanderChannelReplyDispatchInput,
-  CommanderCronScheduler,
-  CommanderCronStores,
-  CommanderCronTaskRecord,
-  CommanderCronTaskResponse,
   CommanderRoutesContext,
   CommanderRuntime,
   CommanderConversationRuntimeView,
@@ -110,9 +93,7 @@ export function toCommanderSessionName(commanderId: string): string {
 export function buildConversationSessionName(
   conversation: Pick<Conversation, 'commanderId' | 'id'>,
 ): string {
-  return conversation.id === buildLegacyCommanderConversationId(conversation.commanderId)
-    ? toCommanderSessionName(conversation.commanderId)
-    : `${toCommanderSessionName(conversation.commanderId)}-conversation-${conversation.id}`
+  return `${toCommanderSessionName(conversation.commanderId)}-conversation-${conversation.id}`
 }
 
 function defaultAgentsSessionStorePath(): string {
@@ -122,6 +103,15 @@ function defaultAgentsSessionStorePath(): string {
 function normalizeQueuedInternalUserMessage(message: string): string | null {
   const normalized = message.trim()
   return normalized.length > 0 ? normalized : null
+}
+
+function isMissingOperatorsStoreError(error: unknown): boolean {
+  return error instanceof Error
+    && error.message.includes('operators.json')
+    && (
+      error.message.includes('ENOENT')
+      || error.message.includes('Founder operator')
+    )
 }
 
 export function queueInternalUserMessage(
@@ -234,12 +224,12 @@ async function readPersistedCommanderSessionNames(
 }
 
 export function resolveEffectiveHeartbeat(
-  heartbeat: CommanderHeartbeatState,
-): CommanderHeartbeatState {
-  return { ...heartbeat }
+  commander: Pick<CommanderSession, 'heartbeat'>,
+): CommanderHeartbeatConfig {
+  return { ...commander.heartbeat }
 }
 
-export function isLegacyContextPressureEvent(event: StreamEvent): boolean {
+export function isContextPressureSubtypeEvent(event: StreamEvent): boolean {
   const type = typeof event.type === 'string' ? event.type : ''
   const subtype = typeof event.subtype === 'string' ? event.subtype : ''
   return type === 'context_pressure' || subtype === 'context_pressure'
@@ -313,7 +303,7 @@ type HeartbeatLogTaskSnapshot = {
 
 function defaultCommanderRuntimeView(): CommanderConversationRuntimeView {
   return {
-    heartbeat: createDefaultHeartbeatState(),
+    heartbeat: createDefaultHeartbeatConfig(),
     lastHeartbeat: null,
     heartbeatTickCount: 0,
     currentTask: null,
@@ -322,11 +312,11 @@ function defaultCommanderRuntimeView(): CommanderConversationRuntimeView {
   }
 }
 
-async function resolveLegacyConversationForCommander(
+async function resolveDefaultConversationForCommander(
   commanderId: string,
   conversationStore: ConversationStore,
 ): Promise<Conversation | null> {
-  return conversationStore.get(buildLegacyCommanderConversationId(commanderId))
+  return conversationStore.get(buildDefaultCommanderConversationId(commanderId))
 }
 
 function latestIsoTimestamp(values: Array<string | null | undefined>): string | null {
@@ -352,7 +342,6 @@ function getConversationActivityTimestamp(conversation: Conversation): string {
 function getConversationHeartbeatTimestamp(conversation: Conversation): string | null {
   return latestIsoTimestamp([
     conversation.lastHeartbeat,
-    conversation.heartbeat.lastSentAt,
   ])
 }
 
@@ -431,10 +420,7 @@ async function resolveCommanderRuntimeViewForCommander(
   )
 
   return {
-    heartbeat: {
-      ...primary.heartbeat,
-      lastSentAt: lastHeartbeat,
-    },
+    heartbeat: createDefaultHeartbeatConfig(),
     lastHeartbeat,
     heartbeatTickCount,
     currentTask: primary.currentTask ? { ...primary.currentTask } : null,
@@ -442,9 +428,7 @@ async function resolveCommanderRuntimeViewForCommander(
     totalCostUsd,
     channelMeta: primary.channelMeta ? { ...primary.channelMeta } : undefined,
     lastRoute: primary.lastRoute ? { ...primary.lastRoute } : undefined,
-    claudeSessionId: primary.claudeSessionId,
-    codexThreadId: primary.codexThreadId,
-    geminiSessionId: primary.geminiSessionId,
+    providerContext: primary.providerContext ? { ...primary.providerContext } : undefined,
   }
 }
 
@@ -466,20 +450,18 @@ async function resolveLatestChannelConversationForCommander(
   return channelConversations[0] ?? null
 }
 
-async function ensureLegacyConversationForCommander(
+async function ensureDefaultConversationForCommander(
   session: CommanderSession,
   conversationStore: ConversationStore,
   options: {
     surface?: Conversation['surface']
-    heartbeat?: CommanderHeartbeatState
     currentTask?: CommanderCurrentTask | null
   } = {},
 ): Promise<Conversation> {
-  return conversationStore.ensureLegacyConversation({
+  return conversationStore.ensureDefaultConversation({
     commanderId: session.id,
     surface: options.surface,
     createdAt: session.created,
-    heartbeat: options.heartbeat,
     currentTask: options.currentTask,
   })
 }
@@ -524,11 +506,8 @@ async function buildHeartbeatLogTaskSnapshot(
 
 export function resolveCommanderAgentType(
   session: Pick<CommanderSession, 'agentType'>,
-): 'claude' | 'codex' | 'gemini' {
-  if (session.agentType === 'codex' || session.agentType === 'gemini') {
-    return session.agentType
-  }
-  return 'claude'
+): NonNullable<CommanderSession['agentType']> {
+  return session.agentType ?? 'claude'
 }
 
 export async function toCommanderSessionResponse(
@@ -549,6 +528,7 @@ export async function toCommanderSessionResponse(
     ? {
         ...session,
         ...runtimeView,
+        heartbeat: { ...session.heartbeat },
         name: session.host,
         agentType: normalizedAgentType,
         remoteOrigin: {
@@ -559,6 +539,7 @@ export async function toCommanderSessionResponse(
     : {
         ...session,
         ...runtimeView,
+        heartbeat: { ...session.heartbeat },
         name: session.host,
         agentType: normalizedAgentType,
       }
@@ -589,68 +570,6 @@ export function createContextPressureBridge(): ContextPressureBridge {
         await handler()
       }
     },
-  }
-}
-
-function toCommanderCronTask(
-  task: CommandRoomCronTask,
-  fallbackCommanderId: string,
-  metadata: {
-    lastRun?: string | null
-    nextRun?: string | null
-  } = {},
-): CommanderCronTaskResponse {
-  return {
-    id: task.id,
-    commanderId: task.commanderId ?? fallbackCommanderId,
-    schedule: task.schedule,
-    instruction: task.instruction,
-    taskType: task.taskType ?? COMMANDER_INSTRUCTION_TASK_TYPE,
-    enabled: task.enabled,
-    lastRun: metadata.lastRun ?? null,
-    nextRun: metadata.nextRun ?? null,
-    agentType: task.agentType,
-    ...(task.sessionType ? { sessionType: task.sessionType } : {}),
-    ...(task.permissionMode ? { permissionMode: task.permissionMode } : {}),
-    ...(task.workDir ? { workDir: task.workDir } : {}),
-    ...(task.machine ? { machine: task.machine } : {}),
-  }
-}
-
-function pickLatestWorkflowRun(runs: Array<WorkflowRun | null | undefined>): WorkflowRun | null {
-  let latest: WorkflowRun | null = null
-  for (const run of runs) {
-    if (!run) {
-      continue
-    }
-    if (!latest) {
-      latest = run
-      continue
-    }
-    const latestTimestamp = latest.completedAt ?? latest.startedAt
-    const candidateTimestamp = run.completedAt ?? run.startedAt
-    if (
-      candidateTimestamp > latestTimestamp ||
-      (candidateTimestamp === latestTimestamp && run.startedAt > latest.startedAt)
-    ) {
-      latest = run
-    }
-  }
-  return latest
-}
-
-function resolveCommanderCronStorePaths(
-  commanderId: string,
-  basePath?: string,
-): {
-  tasksPath: string
-  runsPath: string
-} {
-  const commanderPaths = resolveCommanderPaths(commanderId, basePath)
-  const cronRoot = path.join(commanderPaths.commanderRoot, 'cron')
-  return {
-    tasksPath: path.join(cronRoot, 'tasks.json'),
-    runsPath: path.join(cronRoot, 'runs.json'),
   }
 }
 
@@ -758,12 +677,7 @@ export function buildCommandersContext(
   const conversationStore = options.conversationStore
     ?? new ConversationStore(commanderDataDir)
   const sessionStore = options.sessionStore
-    ?? new CommanderSessionStore(options.sessionStorePath, {
-      runtimeConfig,
-      persistBackfilledConversation: async (conversation) => {
-        await conversationStore.upsertBackfilledConversation(conversation)
-      },
-    })
+    ?? new CommanderSessionStore(options.sessionStorePath, { runtimeConfig })
   const emailStoresDataDir = parseMessage(options.memoryBasePath)
     ?? parseMessage(options.heartbeatBasePath)
     ?? commanderDataDir
@@ -774,31 +688,16 @@ export function buildCommandersContext(
         ? new QuestStore(path.dirname(path.resolve(options.sessionStorePath)))
         : new QuestStore()
   )
+  const automationStore = options.automationStore ?? new AutomationStore({
+    commanderDataDir,
+  })
   const emailConfigStore = options.emailConfigStore ?? new CommanderEmailConfigStore(emailStoresDataDir)
   const emailStateStore = options.emailStateStore ?? new CommanderEmailStateStore(emailStoresDataDir)
   const ghTasksFactory = options.ghTasksFactory ?? ((repo: string) => new GhTasks({ repo }))
-  const sharedCommanderCronStores = (
-    options.commandRoomTaskStore || options.commandRoomRunStore
-  )
-    ? {
-        taskStore: options.commandRoomTaskStore ?? new CommandRoomTaskStore(),
-        runStore: options.commandRoomRunStore ?? new CommandRoomRunStore(),
-      }
-    : null
-  const legacyCommanderCronStores = sharedCommanderCronStores
-    ? null
-    : {
-        taskStore: new CommandRoomTaskStore(defaultCommandRoomTaskStorePath()),
-        runStore: new CommandRoomRunStore({
-          filePath: defaultCommandRoomRunStorePath(),
-          commanderDataDir: commanderBasePath,
-        }),
-      }
-  const commandRoomScheduler = options.commandRoomScheduler
-  const commandRoomSchedulerInitialized = commandRoomScheduler
-    ? (options.commandRoomSchedulerInitialized ?? Promise.resolve())
+  const automationScheduler = options.automationScheduler
+  const automationSchedulerInitialized = automationScheduler
+    ? (options.automationSchedulerInitialized ?? Promise.resolve())
     : Promise.resolve()
-  const commanderCronStoresById = new Map<string, CommanderCronStores>()
   const sendWorkspaceError = (res: ExpressResponse, error: unknown): void => {
     const workspaceError = toWorkspaceError(error)
     res.status(workspaceError.statusCode).json({ error: workspaceError.message })
@@ -833,99 +732,23 @@ export function buildCommandersContext(
     })
   }
 
-  const getCommanderCronStores = (commanderId: string): CommanderCronStores => {
-    if (sharedCommanderCronStores) {
-      return sharedCommanderCronStores
-    }
-    const existing = commanderCronStoresById.get(commanderId)
-    if (existing) {
-      return existing
-    }
-    const paths = resolveCommanderCronStorePaths(commanderId, commanderBasePath)
-    const created: CommanderCronStores = {
-      taskStore: new CommandRoomTaskStore(paths.tasksPath),
-      runStore: new CommandRoomRunStore(paths.runsPath),
-    }
-    commanderCronStoresById.set(commanderId, created)
-    return created
-  }
-
-  const listCommanderCronRunStores = (commanderId: string): CommandRoomRunStore[] => {
-    const runStores = [getCommanderCronStores(commanderId).runStore]
-    if (legacyCommanderCronStores && !runStores.includes(legacyCommanderCronStores.runStore)) {
-      runStores.push(legacyCommanderCronStores.runStore)
-    }
-    return runStores
-  }
-
-  const listCommanderCronTaskStores = (commanderId: string): CommandRoomTaskStore[] => {
-    const taskStores = [getCommanderCronStores(commanderId).taskStore]
-    if (legacyCommanderCronStores && !taskStores.includes(legacyCommanderCronStores.taskStore)) {
-      taskStores.push(legacyCommanderCronStores.taskStore)
-    }
-    return taskStores
-  }
-
-  const listCommanderCronTasksWithStores = async (
-    commanderId: string,
-  ): Promise<CommanderCronTaskRecord[]> => {
-    const primaryStores = getCommanderCronStores(commanderId)
-    const tasksById = new Map<string, CommanderCronTaskRecord>()
-
-    const primaryTasks = await primaryStores.taskStore.listTasks({ commanderId })
-    for (const task of primaryTasks) {
-      tasksById.set(task.id, { task, stores: primaryStores })
-    }
-
-    if (legacyCommanderCronStores) {
-      const legacyTasks = await legacyCommanderCronStores.taskStore.listTasks({ commanderId })
-      for (const task of legacyTasks) {
-        if (!tasksById.has(task.id)) {
-          tasksById.set(task.id, { task, stores: legacyCommanderCronStores })
-        }
-      }
-    }
-
-    return [...tasksById.values()]
-  }
-
   const getCommanderSessionStats = async (commanderId: string): Promise<CommanderSessionStats> => {
-    await commandRoomSchedulerInitialized
-    const [quests, cronTasks] = await Promise.all([
+    await automationSchedulerInitialized
+    const [quests, automations] = await Promise.all([
       questStore.list(commanderId),
-      listCommanderCronTasksWithStores(commanderId),
+      automationStore.list({ parentCommanderId: commanderId }).catch((error) => {
+        if (isMissingOperatorsStoreError(error)) {
+          return []
+        }
+        throw error
+      }),
     ])
+    const scheduleCount = automations.filter((automation) => automation.trigger === 'schedule').length
 
     return {
       questCount: quests.length,
-      scheduleCount: cronTasks.length,
+      scheduleCount,
     }
-  }
-
-  const findCommanderCronTaskWithStores = async (
-    commanderId: string,
-    taskId: string,
-  ): Promise<CommanderCronTaskRecord | null> => {
-    const primaryStores = getCommanderCronStores(commanderId)
-    const primaryTask = await primaryStores.taskStore.getTask(taskId)
-    if (primaryTask?.commanderId === commanderId) {
-      return {
-        task: primaryTask,
-        stores: primaryStores,
-      }
-    }
-
-    if (legacyCommanderCronStores) {
-      const legacyTask = await legacyCommanderCronStores.taskStore.getTask(taskId)
-      if (legacyTask?.commanderId === commanderId) {
-        return {
-          task: legacyTask,
-          stores: legacyCommanderCronStores,
-        }
-      }
-    }
-
-    return null
   }
 
   const heartbeatDataDir = parseMessage(options.heartbeatBasePath) ?? parseMessage(commanderBasePath)
@@ -952,21 +775,6 @@ export function buildCommandersContext(
         })
       : null
   )
-
-  const buildCommanderCronTask = async (
-    task: CommandRoomCronTask,
-    fallbackCommanderId: string,
-  ): Promise<CommanderCronTaskResponse> => {
-    const runStores = listCommanderCronRunStores(fallbackCommanderId)
-    const latestByStore = await Promise.all(
-      runStores.map((runStore) => runStore.listLatestRunsByTaskIds([task.id])),
-    )
-    const latestRun = pickLatestWorkflowRun(latestByStore.map((runs) => runs.get(task.id)))
-    return toCommanderCronTask(task, fallbackCommanderId, {
-      lastRun: latestRun?.completedAt ?? latestRun?.startedAt ?? null,
-      nextRun: commandRoomScheduler?.getNextRun?.(task.id)?.toISOString() ?? null,
-    })
-  }
 
   const requireReadAccess = combinedAuth({
     apiKeyStore: options.apiKeyStore,
@@ -1014,21 +822,18 @@ export function buildCommandersContext(
 
   }
 
-  const migrateCommanderConfigSource = async (commanderId: string): Promise<void> => {
-    const commander = await sessionStore.get(commanderId)
-    if (!commander) {
-      return
-    }
+  let commanderConfigMigrationPromise: Promise<void> | null = null
 
-    await migrateLegacyCommanderConfigForSession(sessionStore, commander, {
-      commanderBasePath,
-    })
+  const migrateCommanderConfigSource = async (_commanderId: string): Promise<void> => {
+    await migrateAllCommanderConfigSources()
   }
 
   const migrateAllCommanderConfigSources = async (): Promise<void> => {
-    await migrateLegacyCommanderConfig(sessionStore, {
+    commanderConfigMigrationPromise ??= migrateLegacyCommanderConfig(sessionStore, {
       commanderBasePath,
-    })
+    }).then(() => undefined)
+
+    await commanderConfigMigrationPromise
   }
 
   const scheduleCollectSend = (commanderId: string, runtime: CommanderRuntime): void => {
@@ -1295,13 +1100,11 @@ export function buildCommandersContext(
       return true
     },
     onHeartbeatSent: async ({ conversationId, timestamp }) => {
-      await sessionStore.updateLastHeartbeat(
-        {
-          conversationId,
-          timestamp,
-        },
-        conversationStore,
-      )
+      await conversationStore.update(conversationId, (current) => ({
+        ...current,
+        lastHeartbeat: timestamp,
+        heartbeatTickCount: current.heartbeatTickCount + 1,
+      }))
       heartbeatFiredAtByConversation.delete(conversationId)
     },
     onHeartbeatError: ({ commanderId, conversationId, error }) => {
@@ -1343,14 +1146,16 @@ export function buildCommandersContext(
     const allCommanders = await sessionStore.list()
     const runningCommanders = allCommanders.filter((session) => session.state === 'running')
     for (const commander of runningCommanders) {
+      const defaultConversation = await ensureDefaultConversationForCommander(
+        commander,
+        conversationStore,
+        { surface: 'ui' },
+      )
       const conversations = await conversationStore.listByCommander(commander.id)
+      const defaultSessionName = buildConversationSessionName(defaultConversation)
       let hasLiveConversation = false
       activeCommanderSessions.delete(commander.id)
       for (const conversation of conversations) {
-        if (conversation.status !== 'active') {
-          continue
-        }
-
         const sessionName = buildConversationSessionName(conversation)
         const liveSession = persistedCommanderSessions.parseFailed
           ? sessionsInterface.getSession(sessionName)
@@ -1362,17 +1167,49 @@ export function buildCommandersContext(
         }
 
         hasLiveConversation = true
-        if (conversation.id === buildLegacyCommanderConversationId(commander.id)) {
+        const activeConversation = conversation.status === 'active'
+          ? conversation
+          : await conversationStore.update(conversation.id, (current) => ({
+              ...current,
+              status: 'active',
+            })) ?? conversation
+        if (activeConversation.id === buildDefaultCommanderConversationId(commander.id)) {
           activeCommanderSessions.set(commander.id, {
             sessionName,
             startedAt: liveSession.createdAt ?? commander.created,
           })
         }
         heartbeatManager.start(
-          conversation.id,
+          activeConversation.id,
           commander.id,
-          resolveEffectiveHeartbeat(conversation.heartbeat),
+          resolveEffectiveHeartbeat(commander),
         )
+      }
+
+      if (!hasLiveConversation) {
+        const liveDefaultSession = persistedCommanderSessions.parseFailed
+          ? sessionsInterface.getSession(defaultSessionName)
+          : persistedCommanderSessions.names.has(defaultSessionName)
+            ? sessionsInterface.getSession(defaultSessionName)
+            : undefined
+        if (liveDefaultSession) {
+          hasLiveConversation = true
+          const activeDefaultConversation = defaultConversation.status === 'active'
+            ? defaultConversation
+            : await conversationStore.update(defaultConversation.id, (current) => ({
+                ...current,
+                status: 'active',
+              })) ?? defaultConversation
+          activeCommanderSessions.set(commander.id, {
+            sessionName: defaultSessionName,
+            startedAt: liveDefaultSession.createdAt ?? commander.created,
+          })
+          heartbeatManager.start(
+            activeDefaultConversation.id,
+            commander.id,
+            resolveEffectiveHeartbeat(commander),
+          )
+        }
       }
 
       if (!hasLiveConversation) {
@@ -1547,33 +1384,29 @@ export function buildCommandersContext(
     activeCommanderSessions,
     heartbeatFiredAtByConversation,
     avatarUpload,
-    commandRoomScheduler,
-    commandRoomSchedulerInitialized,
+    automationStore,
+    automationScheduler,
+    automationSchedulerInitialized,
     sendWorkspaceError,
     resolveCommanderWorkspace,
     getCommanderSessionStats,
-    listCommanderCronRunStores,
-    listCommanderCronTaskStores,
-    listCommanderCronTasksWithStores,
-    findCommanderCronTaskWithStores,
-    buildCommanderCronTask,
     onSubagentLifecycleEvent,
     authorizeRemoteSync,
     dispatchCommanderMessage,
     dispatchCommanderChannelReply,
     attachCommanderPublicUi,
-    resolveLegacyConversation: (commanderId: string) =>
-      resolveLegacyConversationForCommander(commanderId, conversationStore),
+    resolveDefaultConversation: (commanderId: string) =>
+      resolveDefaultConversationForCommander(commanderId, conversationStore),
     resolveHeartbeatConversation: (
       commanderId: string,
       conversationId?: string,
     ) => resolveHeartbeatConversationForCommander(commanderId, conversationStore, conversationId),
     resolveCommanderRuntimeView: (commanderId: string) =>
       resolveCommanderRuntimeViewForCommander(commanderId, conversationStore),
-    ensureLegacyConversation: (
+    ensureDefaultConversation: (
       session: CommanderSession,
       options,
-    ) => ensureLegacyConversationForCommander(session, conversationStore, options),
+    ) => ensureDefaultConversationForCommander(session, conversationStore, options),
     migrateCommanderConfigSource,
     migrateLegacyCommanderConfig: migrateAllCommanderConfigSources,
     reconcileCommanderSessions,

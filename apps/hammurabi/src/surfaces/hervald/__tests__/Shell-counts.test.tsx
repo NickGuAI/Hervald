@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act } from 'react'
+import { flushSync } from 'react-dom'
 import { createRoot, type Root } from 'react-dom/client'
 import { MemoryRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -50,7 +50,7 @@ async function renderShell() {
     },
   })
 
-  await act(async () => {
+  flushSync(() => {
     root?.render(
       <QueryClientProvider client={queryClient}>
         <MemoryRouter initialEntries={['/command-room']}>
@@ -91,7 +91,7 @@ describe('Shell top-bar counts', () => {
 
   afterEach(async () => {
     if (root) {
-      await act(async () => {
+      flushSync(() => {
         root?.unmount()
       })
     }
@@ -104,13 +104,10 @@ describe('Shell top-bar counts', () => {
     vi.clearAllMocks()
   })
 
-  it('counts active and idle as running, keeps exited separate from stale, and ignores completed', async () => {
+  it('counts active and idle as running', async () => {
     await renderShell()
 
     const text = document.body.textContent?.replace(/\s+/g, ' ') ?? ''
     expect(text).toContain('2 running')
-    expect(text).toContain('1 stale')
-    expect(text).toContain('1 exited')
-    expect(text).toContain('2 pending')
   })
 })

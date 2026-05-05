@@ -1,6 +1,7 @@
 import { Link } from 'react-router-dom'
 import { Bell, Bolt, ChevronRight, CircleUserRound, Eye, Info, LogOut, RadioTower } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
+import { useFounderProfile } from '@modules/operators/hooks/useFounderProfile'
 import TelemetryPreviewCard from '@modules/telemetry/components/TelemetryPreviewCard'
 
 /**
@@ -61,7 +62,11 @@ function initials(name?: string | null, email?: string | null): string {
 
 export function MobileSettings() {
   const auth = useAuth()
+  const { data: founder } = useFounderProfile()
   const user = auth?.user
+  const displayName = founder?.displayName ?? user?.name ?? 'Operator'
+  const email = founder?.email ?? user?.email ?? 'Signed in with an API key'
+  const picture = founder?.avatarUrl ?? user?.picture ?? null
 
   return (
     <section className="flex min-h-0 flex-1 flex-col" data-testid="mobile-settings">
@@ -73,24 +78,24 @@ export function MobileSettings() {
       <div className="hv-scroll flex-1 overflow-y-auto px-0 pb-5">
         <div className="mx-4 rounded-[3px_14px_3px_14px] border border-ink-border/70 bg-washi-white px-4 py-4">
           <div className="flex items-center gap-3">
-            {user?.picture ? (
+            {picture ? (
               <img
-                src={user.picture}
-                alt={user.name ?? 'Profile'}
+                src={picture}
+                alt={displayName}
                 className="h-11 w-11 rounded-full object-cover"
               />
             ) : (
               <div className="flex h-11 w-11 items-center justify-center rounded-full bg-sumi-black font-display text-lg italic text-washi-white">
-                {initials(user?.name, user?.email)}
+                {initials(displayName, email)}
               </div>
             )}
 
             <div className="min-w-0 flex-1">
               <p className="truncate text-sm font-medium text-sumi-black">
-                {user?.name ?? 'Operator'}
+                {displayName}
               </p>
               <p className="mt-1 truncate font-mono text-[11px] text-sumi-diluted">
-                {user?.email ?? 'Signed in with an API key'}
+                {email}
               </p>
             </div>
 

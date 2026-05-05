@@ -6,8 +6,8 @@
  * helper closure against a real `createAgentsRouter` so we pin the
  * URL-baked-creator + key-presence-rejection contract end-to-end.
  */
-import { describe, expect, it } from 'vitest'
-import { createMockPtySpawner, startServer } from './routes-test-harness'
+import { describe, expect, it, vi } from 'vitest'
+import { createMockPtySpawner, createTempMachinesRegistry, startServer } from './routes-test-harness'
 
 const COMMANDER_ID = 'd66a5217-ace6-4f00-b2ac-bbd64a9a7e7e'
 
@@ -104,6 +104,111 @@ describe('dispatchWorkerForCommander helper (agents-side)', () => {
       })
       expect(result.status).toBe(400)
       expect(String(result.body.error)).toContain('Invalid session name')
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('accepts host as the canonical machine-routing field', async () => {
+    const registry = await createTempMachinesRegistry({
+      machines: [
+        { id: 'gpu-1', label: 'GPU 1', host: '10.0.1.50', user: 'builder' },
+      ],
+    })
+    const server = await startServer({ machinesFilePath: registry.filePath })
+
+    try {
+      const result = await server.agents.sessionsInterface.dispatchWorkerForCommander({
+        commanderId: COMMANDER_ID,
+        rawBody: {
+          name: 'worker-host-route',
+          host: 'gpu-1',
+        },
+      })
+
+      expect(result.status).toBe(201)
+      expect(result.body).toMatchObject({
+        sessionName: 'worker-host-route',
+        sessionType: 'worker',
+        creator: { kind: 'commander', id: COMMANDER_ID },
+        host: 'gpu-1',
+        created: true,
+      })
+    } finally {
+      await server.close()
+      await registry.cleanup()
+    }
+  })
+
+  it('rejects machine and requires host as the canonical machine-routing field', async () => {
+    const registry = await createTempMachinesRegistry({
+      machines: [
+        { id: 'gpu-1', label: 'GPU 1', host: '10.0.1.50', user: 'builder' },
+      ],
+    })
+    const server = await startServer({ machinesFilePath: registry.filePath })
+
+    try {
+      const result = await server.agents.sessionsInterface.dispatchWorkerForCommander({
+        commanderId: COMMANDER_ID,
+        rawBody: {
+          name: 'worker-machine-route',
+          machine: 'gpu-1',
+        },
+      })
+
+      expect(result).toEqual({
+        status: 400,
+        body: {
+          error: 'Unknown request body property: "machine"',
+        },
+      })
+    } finally {
+      await server.close()
+      await registry.cleanup()
+    }
+  })
+
+  it('returns 400 when machine is provided alongside host', async () => {
+    const { spawner } = createMockPtySpawner()
+    const server = await startServer({ ptySpawner: spawner })
+
+    try {
+      const result = await server.agents.sessionsInterface.dispatchWorkerForCommander({
+        commanderId: COMMANDER_ID,
+        rawBody: {
+          name: 'worker-host-machine-disagree',
+          host: 'gpu-1',
+          machine: 'gpu-2',
+        },
+      })
+
+      expect(result).toEqual({
+        status: 400,
+        body: {
+          error: 'Unknown request body property: "machine"',
+        },
+      })
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('returns 400 for unknown routing-ish fields', async () => {
+    const { spawner } = createMockPtySpawner()
+    const server = await startServer({ ptySpawner: spawner })
+
+    try {
+      const result = await server.agents.sessionsInterface.dispatchWorkerForCommander({
+        commanderId: COMMANDER_ID,
+        rawBody: {
+          name: 'worker-unknown-routing-field',
+          machineId: 'gpu-1',
+        },
+      })
+
+      expect(result.status).toBe(400)
+      expect(String(result.body.error)).toBe('Unknown request body property: "machineId"')
     } finally {
       await server.close()
     }

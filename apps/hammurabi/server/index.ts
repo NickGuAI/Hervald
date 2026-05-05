@@ -1,4 +1,5 @@
 import { existsSync } from 'node:fs'
+import { readFile } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import path from 'node:path'
 import express from 'express'
@@ -10,6 +11,8 @@ import { createModules } from './module-registry.js'
 import { isCorsOriginAllowed, parseAllowedCorsOrigins } from './cors.js'
 import { createApiKeysRouter } from './routes/api-keys.js'
 import { createInstallScriptRouter } from './routes/install-script.js'
+import { AppSettingsStore } from '../modules/settings/store.js'
+import type { AppTheme } from '../modules/settings/types.js'
 
 const buildVersion = process.env.LAUNCH_COMMIT ?? 'dev'
 const startedAt = Date.now()
@@ -56,6 +59,7 @@ const app = express()
 const port = parseInt(process.env.PORT ?? '20001', 10)
 const allowedCorsOrigins = parseAllowedCorsOrigins(process.env.HAMMURABI_ALLOWED_ORIGINS)
 const apiKeyStore = new ApiKeyJsonStore()
+const appSettingsStore = new AppSettingsStore()
 
 void bootstrapDefaultMasterKey(apiKeyStore, {
   logWarn,
@@ -74,6 +78,7 @@ const { modules, otelRouter } = createModules({
   auth0Audience: process.env.AUTH0_AUDIENCE,
   auth0ClientId: process.env.AUTH0_CLIENT_ID,
   maxAgentSessions,
+  appSettingsStore,
 })
 
 app.use(
@@ -132,14 +137,47 @@ for (const mod of modules) {
 }
 
 const distDir = path.resolve(process.cwd(), 'dist')
+
+function applyInitialThemeClass(html: string, theme: AppTheme): string {
+  const themeClass = theme === 'dark' ? 'hv-dark' : 'hv-light'
+  return html.replace(/<html\b([^>]*)>/i, (match, attrs: string) => {
+    if (/\sclass=/.test(attrs)) {
+      return match.replace(
+        /\sclass=(["'])(.*?)\1/i,
+        (_classMatch, quote: string, classes: string) => {
+          const nextClasses = classes
+            .split(/\s+/)
+            .filter((entry) => entry && entry !== 'hv-light' && entry !== 'hv-dark')
+          nextClasses.push(themeClass)
+          return ` class=${quote}${nextClasses.join(' ')}${quote}`
+        },
+      )
+    }
+
+    return `<html${attrs} class="${themeClass}">`
+  })
+}
+
+async function sendIndexHtml(res: express.Response, next: express.NextFunction): Promise<void> {
+  try {
+    const [html, settings] = await Promise.all([
+      readFile(path.join(distDir, 'index.html'), 'utf8'),
+      appSettingsStore.get(),
+    ])
+    res.type('html').send(applyInitialThemeClass(html, settings.theme))
+  } catch (error) {
+    next(error)
+  }
+}
+
 if (process.env.NODE_ENV === 'production' && existsSync(distDir)) {
-  app.use(express.static(distDir))
+  app.use(express.static(distDir, { index: false }))
   app.get('*', (req, res, next) => {
     if (req.path.startsWith('/api/') || req.path.startsWith('/v1/')) {
       next()
       return
     }
-    res.sendFile(path.join(distDir, 'index.html'))
+    void sendIndexHtml(res, next)
   })
 }
 

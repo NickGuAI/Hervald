@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
-import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
+import { flushSync } from 'react-dom'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { AgentAvatar } from '@/surfaces/hervald/primitives'
@@ -13,7 +13,7 @@ async function render(element: React.ReactElement) {
   container = document.createElement('div')
   document.body.appendChild(container)
   root = createRoot(container)
-  await act(async () => {
+  flushSync(() => {
     root?.render(element)
   })
 }
@@ -21,7 +21,7 @@ async function render(element: React.ReactElement) {
 describe('AgentAvatar — live commander shape', () => {
   afterEach(async () => {
     if (root) {
-      await act(async () => {
+      flushSync(() => {
         root?.unmount()
       })
     }
@@ -35,10 +35,10 @@ describe('AgentAvatar — live commander shape', () => {
     await render(
       <AgentAvatar
         commander={{
-          id: 'athena-id',
+          id: 'atlas-id',
           displayName: 'Test Commander',
-          host: 'athena',
-          avatarUrl: '/commander-assets/athena-id/avatar',
+          host: 'atlas',
+          avatarUrl: '/commander-assets/atlas-id/avatar',
           ui: { accentColor: '#C23B22' },
         }}
         size={32}
@@ -50,7 +50,7 @@ describe('AgentAvatar — live commander shape', () => {
 
     const img = avatar?.querySelector('img')
     expect(img).not.toBeNull()
-    expect(img?.getAttribute('src')).toBe('/commander-assets/athena-id/avatar')
+    expect(img?.getAttribute('src')).toBe('/commander-assets/atlas-id/avatar')
     expect(img?.getAttribute('alt')).toBe('Test Commander')
   })
 
@@ -58,9 +58,9 @@ describe('AgentAvatar — live commander shape', () => {
     await render(
       <AgentAvatar
         commander={{
-          id: 'zendude-id',
+          id: 'zephyr-id',
           displayName: 'Demo User',
-          host: 'zendude',
+          host: 'zephyr',
           avatarUrl: null,
           ui: { accentColor: '#D4763A' },
         }}
@@ -71,7 +71,7 @@ describe('AgentAvatar — live commander shape', () => {
     const avatar = document.querySelector('[data-testid="agent-avatar"]') as HTMLElement | null
     expect(avatar).not.toBeNull()
     expect(avatar?.querySelector('img')).toBeNull()
-    expect(avatar?.textContent).toBe('Z')
+    expect(avatar?.textContent).toBe('D')
     // Accent color flows through to the letter color + border.
     expect(avatar?.style.color.toLowerCase()).toContain('212') // rgb(212, 118, 58) from #D4763A
   })
@@ -103,7 +103,7 @@ describe('AgentAvatar — live commander shape', () => {
         commander={{
           id: 'host-only',
           displayName: '',
-          host: 'jarvis',
+          host: 'hera',
           avatarUrl: null,
           ui: null,
         }}

@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { ClipboardCheck, Clock3, MessageSquare, Pencil, Play, Square, Trash2, Zap } from 'lucide-react'
+import { useProviderRegistry } from '@/hooks/use-providers'
 import { cn } from '@/lib/utils'
 import type { CommanderAgentType, CommanderSession } from '../hooks/useCommander'
 
@@ -69,6 +70,7 @@ export function CommanderCard({
   isTriggerHeartbeatPending = false,
   isDeletePending,
 }: CommanderCardProps) {
+  const { data: providers = [] } = useProviderRegistry()
   const [agentType, setAgentType] = useState<CommanderAgentType>('claude')
 
   const isRunning = commander.state === 'running'
@@ -115,7 +117,7 @@ export function CommanderCard({
           {questCount} quests
         </Link>
         <Link
-          to={`/command-room?commander=${commander.id}`}
+          to={`/command-room?commander=${commander.id}&panel=automation`}
           className={STAT_LINK_CLASSES}
           onClick={(e) => e.stopPropagation()}
         >
@@ -149,13 +151,6 @@ export function CommanderCard({
       {/* Pill nav */}
       <div className="mt-3 flex gap-1 p-1 rounded-full bg-washi-aged/60 border border-ink-border w-fit">
         <Link
-          to={`/sentinels?commander=${commander.id}`}
-          className="px-3 py-1 rounded-full text-[10px] uppercase tracking-wide font-medium text-sumi-gray hover:text-sumi-black hover:bg-washi-white transition-all"
-          onClick={(e) => e.stopPropagation()}
-        >
-          Sentinels
-        </Link>
-        <Link
           to={`/quests?commander=${commander.id}`}
           className="px-3 py-1 rounded-full text-[10px] uppercase tracking-wide font-medium text-sumi-gray hover:text-sumi-black hover:bg-washi-white transition-all"
           onClick={(e) => e.stopPropagation()}
@@ -163,11 +158,11 @@ export function CommanderCard({
           Quests
         </Link>
         <Link
-          to={`/command-room?commander=${commander.id}&panel=cron`}
+          to={`/command-room?commander=${commander.id}&panel=automation`}
           className="px-3 py-1 rounded-full text-[10px] uppercase tracking-wide font-medium text-sumi-gray hover:text-sumi-black hover:bg-washi-white transition-all"
           onClick={(e) => e.stopPropagation()}
         >
-          Automation
+          Automations
         </Link>
       </div>
 
@@ -178,16 +173,14 @@ export function CommanderCard({
             <label className={cn(ACTION_CONTROL_CLASSES, 'cursor-pointer text-sumi-diluted')}>
               <select
                 value={agentType}
-                onChange={(e) => {
-                  const nextValue = e.target.value
-                  const next = nextValue === 'codex' || nextValue === 'gemini' ? nextValue : 'claude'
-                  setAgentType(next as CommanderAgentType)
-                }}
+                onChange={(e) => setAgentType(e.target.value)}
                 className="w-full bg-transparent text-center text-sumi-black focus:outline-none"
               >
-                <option value="claude">claude</option>
-                <option value="codex">codex</option>
-                <option value="gemini">gemini</option>
+                {providers.map((provider) => (
+                  <option key={provider.id} value={provider.id}>
+                    {provider.label.toLowerCase()}
+                  </option>
+                ))}
               </select>
             </label>
             <button

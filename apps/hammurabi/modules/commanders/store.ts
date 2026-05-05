@@ -1,17 +1,19 @@
 import { createHash } from 'node:crypto'
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, readdir, readFile } from 'node:fs/promises'
 import path from 'node:path'
 import {
   DEFAULT_CLAUDE_EFFORT_LEVEL,
   normalizeClaudeEffortLevel,
   type ClaudeEffortLevel,
 } from '../claude-effort.js'
+import { parseProviderId } from '../agents/providers/registry.js'
+import type { ProviderSessionContext } from '../agents/providers/provider-session-context.js'
+import type { AgentType } from '../agents/types.js'
 import {
-  createDefaultHeartbeatState,
-  normalizeHeartbeatState,
-  type CommanderHeartbeatState,
+  createDefaultHeartbeatConfig,
+  normalizeHeartbeatConfig,
+  type CommanderHeartbeatConfig,
 } from './heartbeat.js'
-import type { ConversationStore } from './conversation-store.js'
 import { resolveCommanderSessionStorePath } from './paths.js'
 import {
   createDefaultCommanderRuntimeConfig,
@@ -19,6 +21,13 @@ import {
   DEFAULT_COMMANDER_RUNTIME_LIMIT_MAX_TURNS,
   type CommanderRuntimeConfig,
 } from './runtime-config.shared.js'
+import type { OrgCommanderRoleKey } from '../org/types.js'
+import { writeJsonFileAtomically } from '../../migrations/write-json-file-atomically.js'
+import {
+  migrateProviderContext,
+  migratedProviderContextChanged,
+  parseCanonicalProviderContext,
+} from '../../migrations/provider-context.js'
 
 const COMMANDER_STATES = new Set<CommanderSession['state']>([
   'idle',
@@ -26,21 +35,6 @@ const COMMANDER_STATES = new Set<CommanderSession['state']>([
   'paused',
   'stopped',
 ])
-
-const LEGACY_RUNTIME_KEYS = [
-  'pid',
-  'currentTask',
-  'lastHeartbeat',
-  'heartbeat',
-  'heartbeatTickCount',
-  'claudeSessionId',
-  'codexThreadId',
-  'geminiSessionId',
-  'channelMeta',
-  'lastRoute',
-  'completedTasks',
-  'totalCostUsd',
-]
 
 export const DEFAULT_COMMANDER_MAX_TURNS = DEFAULT_COMMANDER_RUNTIME_DEFAULT_MAX_TURNS
 export const MAX_COMMANDER_MAX_TURNS = DEFAULT_COMMANDER_RUNTIME_LIMIT_MAX_TURNS
@@ -98,13 +92,21 @@ export interface CommanderSession {
   persona?: string
   state: 'idle' | 'running' | 'paused' | 'stopped'
   created: string
-  agentType?: 'claude' | 'codex' | 'gemini'
+  agentType?: AgentType
   effort?: ClaudeEffortLevel
+  providerContext?: ProviderSessionContext
   cwd?: string
+  heartbeat: CommanderHeartbeatConfig
   maxTurns: number
   contextMode: CommanderContextMode
   contextConfig?: HeartbeatContextConfig
   taskSource: CommanderTaskSource | null
+  operatorId?: string
+  roleKey?: OrgCommanderRoleKey
+  templateId?: string | null
+  replicatedFromCommanderId?: string | null
+  archived?: boolean
+  archivedAt?: string
   remoteOrigin?: CommanderRemoteOrigin
 }
 
@@ -116,34 +118,38 @@ export type CommanderConversationSurface =
   | 'cli'
   | 'api'
 
-export interface CommanderConversationBackfill {
-  id: string
-  commanderId: string
-  surface: CommanderConversationSurface
-  channelMeta?: CommanderChannelMeta
-  lastRoute?: CommanderLastRoute
-  status: 'active' | 'idle' | 'archived'
-  currentTask: CommanderCurrentTask | null
-  claudeSessionId?: string
-  codexThreadId?: string
-  geminiSessionId?: string
-  lastHeartbeat: string | null
-  heartbeat: CommanderHeartbeatState
-  heartbeatTickCount: number
-  completedTasks: number
-  totalCostUsd: number
-  createdAt: string
-  lastMessageAt: string
-}
-
 interface ParsedCommanderSessions {
   sessions: CommanderSession[]
-  backfills: CommanderConversationBackfill[]
-  legacyShapeDetected: boolean
+  commanderHeartbeatMissingIds: Set<string>
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
+}
+
+function hasOwnProperty(value: Record<string, unknown>, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(value, key)
+}
+
+function latestIsoTimestamp(values: Array<string | null | undefined>): string | null {
+  let latest: string | null = null
+  for (const value of values) {
+    const trimmed = typeof value === 'string' ? value.trim() : ''
+    if (!trimmed) {
+      continue
+    }
+    if (!latest || trimmed > latest) {
+      latest = trimmed
+    }
+  }
+  return latest
+}
+
+function isNonDefaultHeartbeat(heartbeat: CommanderHeartbeatConfig): boolean {
+  const defaults = createDefaultHeartbeatConfig()
+  return heartbeat.intervalMs !== defaults.intervalMs ||
+    heartbeat.messageTemplate.trim() !== defaults.messageTemplate.trim() ||
+    heartbeat.intervalOverridden === true
 }
 
 function parseTaskSource(raw: unknown): CommanderTaskSource | null {
@@ -165,37 +171,6 @@ function parseTaskSource(raw: unknown): CommanderTaskSource | null {
     : undefined
 
   return { owner, repo, label, project }
-}
-
-function parseCurrentTask(raw: unknown): CommanderCurrentTask | null {
-  if (raw === null || raw === undefined) {
-    return null
-  }
-
-  if (!isObject(raw)) {
-    return null
-  }
-
-  const issueNumber = raw.issueNumber
-  const issueUrl = raw.issueUrl
-  const startedAt = raw.startedAt
-  if (
-    typeof issueNumber !== 'number' ||
-    !Number.isInteger(issueNumber) ||
-    issueNumber < 1 ||
-    typeof issueUrl !== 'string' ||
-    issueUrl.trim().length === 0 ||
-    typeof startedAt !== 'string' ||
-    startedAt.trim().length === 0
-  ) {
-    return null
-  }
-
-  return {
-    issueNumber,
-    issueUrl: issueUrl.trim(),
-    startedAt: startedAt.trim(),
-  }
 }
 
 function parseHeartbeatContextConfig(raw: unknown): HeartbeatContextConfig | undefined {
@@ -246,6 +221,17 @@ function parseRemoteOrigin(raw: unknown): CommanderRemoteOrigin | undefined {
 function parseOptionalNonEmptyString(raw: unknown): string | undefined {
   return typeof raw === 'string' && raw.trim().length > 0
     ? raw.trim()
+    : undefined
+}
+
+function parseOptionalCommanderRoleKey(raw: unknown): OrgCommanderRoleKey | undefined {
+  return raw === 'engineering'
+    || raw === 'research'
+    || raw === 'ops'
+    || raw === 'content'
+    || raw === 'validator'
+    || raw === 'ea'
+    ? raw
     : undefined
 }
 
@@ -311,13 +297,6 @@ export function parseCommanderLastRoute(raw: unknown): CommanderLastRoute | unde
   }
 }
 
-function parseAgentType(raw: unknown): 'claude' | 'codex' | 'gemini' {
-  if (raw === 'codex' || raw === 'gemini') {
-    return raw
-  }
-  return 'claude'
-}
-
 function parseCommanderMaxTurns(raw: unknown, runtimeConfig: CommanderRuntimeConfig): number {
   if (
     typeof raw !== 'number' ||
@@ -336,36 +315,9 @@ function parseCommanderContextMode(raw: unknown): CommanderContextMode {
     : DEFAULT_COMMANDER_CONTEXT_MODE
 }
 
-function hasLegacyRuntimeShape(raw: Record<string, unknown>): boolean {
-  return LEGACY_RUNTIME_KEYS.some((key) => raw[key] !== undefined && raw[key] !== null)
-}
-
-function normalizeLegacyConversationStatus(
-  rawState: CommanderSession['state'],
-): CommanderConversationBackfill['status'] {
-  return rawState === 'running'
-    ? 'active'
-    : 'idle'
-}
-
-function surfaceFromChannelMeta(
-  channelMeta: CommanderChannelMeta | undefined,
-): CommanderConversationSurface {
-  switch (channelMeta?.provider) {
-    case 'discord':
-      return 'discord'
-    case 'telegram':
-      return 'telegram'
-    case 'whatsapp':
-      return 'whatsapp'
-    default:
-      return 'ui'
-  }
-}
-
-export function buildLegacyCommanderConversationId(commanderId: string): string {
+function buildCommanderConversationHashId(seed: string): string {
   const hash = createHash('sha256')
-    .update(`legacy-conversation:${commanderId}`)
+    .update(seed)
     .digest('hex')
 
   return [
@@ -377,55 +329,19 @@ export function buildLegacyCommanderConversationId(commanderId: string): string 
   ].join('-')
 }
 
-function buildLegacyBackfill(
-  raw: Record<string, unknown>,
-  session: CommanderSession,
-  runtimeConfig: CommanderRuntimeConfig,
-): CommanderConversationBackfill {
-  const channelMeta = parseCommanderChannelMeta(raw.channelMeta)
-  const lastRoute = parseCommanderLastRoute(raw.lastRoute)
-  const currentTask = parseCurrentTask(raw.currentTask)
-  const lastHeartbeat = typeof raw.lastHeartbeat === 'string'
-    ? raw.lastHeartbeat.trim() || null
-    : null
-  const heartbeatTickCount = typeof raw.heartbeatTickCount === 'number' && Number.isFinite(raw.heartbeatTickCount)
-    ? Math.max(0, Math.floor(raw.heartbeatTickCount))
-    : 0
-  const heartbeat = normalizeHeartbeatState(raw.heartbeat, lastHeartbeat)
-  const completedTasks = typeof raw.completedTasks === 'number' && Number.isFinite(raw.completedTasks)
-    ? Math.max(0, Math.floor(raw.completedTasks))
-    : 0
-  const totalCostUsd = typeof raw.totalCostUsd === 'number' && Number.isFinite(raw.totalCostUsd)
-    ? Math.max(0, raw.totalCostUsd)
-    : 0
-
-  return {
-    id: buildLegacyCommanderConversationId(session.id),
-    commanderId: session.id,
-    surface: surfaceFromChannelMeta(channelMeta),
-    ...(channelMeta ? { channelMeta } : {}),
-    ...(lastRoute ? { lastRoute } : {}),
-    status: normalizeLegacyConversationStatus(session.state),
-    currentTask,
-    claudeSessionId: parseOptionalNonEmptyString(raw.claudeSessionId),
-    codexThreadId: parseOptionalNonEmptyString(raw.codexThreadId),
-    geminiSessionId: parseOptionalNonEmptyString(raw.geminiSessionId),
-    lastHeartbeat: heartbeat.lastSentAt ?? lastHeartbeat,
-    heartbeat,
-    heartbeatTickCount,
-    completedTasks,
-    totalCostUsd,
-    createdAt: session.created,
-    lastMessageAt: heartbeat.lastSentAt ?? session.created,
-  }
+export function buildDefaultCommanderConversationId(commanderId: string): string {
+  return buildCommanderConversationHashId(`default-conversation:${commanderId}`)
 }
 
 function parseCommanderSession(
   raw: unknown,
   runtimeConfig: CommanderRuntimeConfig,
-): { session: CommanderSession | null; backfill?: CommanderConversationBackfill; legacyShapeDetected: boolean } {
+): {
+  session: CommanderSession | null
+  heartbeatMissing?: boolean
+} {
   if (!isObject(raw)) {
-    return { session: null, legacyShapeDetected: false }
+    return { session: null }
   }
 
   const id = typeof raw.id === 'string' ? raw.id.trim() : ''
@@ -437,8 +353,9 @@ function parseCommanderSession(
     ? raw.persona.trim()
     : undefined
   const created = typeof raw.created === 'string' ? raw.created.trim() : ''
-  const agentType = parseAgentType(raw.agentType)
+  const agentType = parseProviderId(raw.agentType) ?? 'claude'
   const effort = normalizeClaudeEffortLevel(raw.effort, DEFAULT_CLAUDE_EFFORT_LEVEL)
+  const providerContext = parseCanonicalProviderContext(raw.providerContext, { effort }) ?? undefined
   const cwd = typeof raw.cwd === 'string' && raw.cwd.trim().length > 0
     ? raw.cwd.trim()
     : undefined
@@ -446,6 +363,16 @@ function parseCommanderSession(
   const contextConfig = parseHeartbeatContextConfig(raw.contextConfig)
   const maxTurns = parseCommanderMaxTurns(raw.maxTurns, runtimeConfig)
   const contextMode = parseCommanderContextMode(raw.contextMode)
+  const heartbeat = normalizeHeartbeatConfig(raw.heartbeat)
+  const heartbeatMissing = !hasOwnProperty(raw, 'heartbeat')
+  const operatorId = parseOptionalNonEmptyString(raw.operatorId)
+  const roleKey = parseOptionalCommanderRoleKey(raw.roleKey)
+  const templateId = raw.templateId === null ? null : parseOptionalNonEmptyString(raw.templateId)
+  const replicatedFromCommanderId = raw.replicatedFromCommanderId === null
+    ? null
+    : parseOptionalNonEmptyString(raw.replicatedFromCommanderId)
+  const archived = raw.archived === true
+  const archivedAt = archived ? parseOptionalNonEmptyString(raw.archivedAt) : undefined
   const remoteOrigin = parseRemoteOrigin(raw.remoteOrigin)
   const state = raw.state
 
@@ -455,7 +382,7 @@ function parseCommanderSession(
     !created ||
     !COMMANDER_STATES.has(state as CommanderSession['state'])
   ) {
-    return { session: null, legacyShapeDetected: false }
+    return { session: null }
   }
 
   const session: CommanderSession = {
@@ -467,21 +394,25 @@ function parseCommanderSession(
     created,
     agentType,
     effort,
+    ...(providerContext ? { providerContext } : {}),
     cwd,
+    heartbeat,
     maxTurns,
     contextMode,
     contextConfig,
     taskSource,
+    ...(operatorId ? { operatorId } : {}),
+    ...(roleKey ? { roleKey } : {}),
+    ...(templateId !== undefined ? { templateId } : {}),
+    ...(replicatedFromCommanderId !== undefined ? { replicatedFromCommanderId } : {}),
+    ...(archived ? { archived: true } : {}),
+    ...(archivedAt ? { archivedAt } : {}),
     ...(remoteOrigin ? { remoteOrigin } : {}),
   }
 
-  const legacyShapeDetected = hasLegacyRuntimeShape(raw)
   return {
     session,
-    backfill: legacyShapeDetected
-      ? buildLegacyBackfill(raw, session, runtimeConfig)
-      : undefined,
-    legacyShapeDetected,
+    heartbeatMissing,
   }
 }
 
@@ -494,8 +425,7 @@ function parsePersistedCommanderSessions(
     : (isObject(raw) && Array.isArray(raw.sessions) ? raw.sessions : [])
 
   const sessions: CommanderSession[] = []
-  const backfills: CommanderConversationBackfill[] = []
-  let legacyShapeDetected = false
+  const commanderHeartbeatMissingIds = new Set<string>()
 
   for (const entry of candidates) {
     const parsed = parseCommanderSession(entry, runtimeConfig)
@@ -503,26 +433,34 @@ function parsePersistedCommanderSessions(
       continue
     }
     sessions.push(parsed.session)
-    if (parsed.backfill) {
-      backfills.push(parsed.backfill)
+    if (parsed.heartbeatMissing) {
+      commanderHeartbeatMissingIds.add(parsed.session.id)
     }
-    legacyShapeDetected = legacyShapeDetected || parsed.legacyShapeDetected
   }
 
-  return { sessions, backfills, legacyShapeDetected }
+  return { sessions, commanderHeartbeatMissingIds }
 }
 
 function cloneSession(session: CommanderSession): CommanderSession {
   return {
     ...session,
+    ...(session.providerContext ? { providerContext: { ...session.providerContext } } : {}),
+    heartbeat: normalizeHeartbeatConfig(session.heartbeat),
     contextConfig: session.contextConfig ? { ...session.contextConfig } : undefined,
     taskSource: session.taskSource ? { ...session.taskSource } : null,
     ...(session.remoteOrigin ? { remoteOrigin: { ...session.remoteOrigin } } : {}),
   }
 }
 
-function serializeSession(session: CommanderSession): CommanderSession {
-  return cloneSession(session)
+type SerializedCommanderSession = Record<string, unknown> & { created: string }
+
+function serializeSession(session: CommanderSession): SerializedCommanderSession {
+  const raw = cloneSession(session) as unknown as Record<string, unknown>
+  const cleaned = migrateProviderContext(raw).cleaned
+  return {
+    ...cleaned,
+    created: typeof cleaned.created === 'string' ? cleaned.created : session.created,
+  }
 }
 
 export function defaultCommanderSessionStorePath(): string {
@@ -531,14 +469,12 @@ export function defaultCommanderSessionStorePath(): string {
 
 export interface CommanderSessionStoreOptions {
   runtimeConfig?: CommanderRuntimeConfig
-  persistBackfilledConversation?: (conversation: CommanderConversationBackfill) => Promise<void>
   logger?: Pick<Console, 'info' | 'warn'>
 }
 
 export class CommanderSessionStore {
   private readonly filePath: string
   private readonly runtimeConfig: CommanderRuntimeConfig
-  private readonly persistBackfilledConversation?: (conversation: CommanderConversationBackfill) => Promise<void>
   private readonly logger: Pick<Console, 'info' | 'warn'>
   private sessionsById: Map<string, CommanderSession> | null = null
   private loadPromise: Promise<void> | null = null
@@ -550,7 +486,6 @@ export class CommanderSessionStore {
   ) {
     this.filePath = path.resolve(filePath)
     this.runtimeConfig = options.runtimeConfig ?? createDefaultCommanderRuntimeConfig()
-    this.persistBackfilledConversation = options.persistBackfilledConversation
     this.logger = options.logger ?? console
   }
 
@@ -579,31 +514,6 @@ export class CommanderSessionStore {
       await this.writeToDisk()
       return cloneSession(session)
     })
-  }
-
-  // Deprecated compatibility shim. Channel binding moved to ConversationStore.
-  async findOrCreateBySessionKey(): Promise<never> {
-    throw new Error('CommanderSessionStore.findOrCreateBySessionKey moved to ConversationStore')
-  }
-
-  // Deprecated compatibility shim. Heartbeat state moved to Conversation persistence.
-  async updateLastHeartbeat(
-    input: {
-      conversationId: string
-      timestamp: string
-    },
-    conversationStore: Pick<ConversationStore, 'update'>,
-  ): Promise<boolean> {
-    const updated = await conversationStore.update(input.conversationId, (current) => ({
-      ...current,
-      lastHeartbeat: input.timestamp,
-      heartbeat: {
-        ...current.heartbeat,
-        lastSentAt: input.timestamp,
-      },
-      heartbeatTickCount: current.heartbeatTickCount + 1,
-    }))
-    return updated !== null
   }
 
   async update(
@@ -662,23 +572,20 @@ export class CommanderSessionStore {
         )
       }
 
-      let backfillPersisted = false
-      if (persisted.backfills.length > 0 && this.persistBackfilledConversation) {
-        for (const backfill of persisted.backfills) {
-          await this.persistBackfilledConversation(backfill)
-          this.logger.info(
-            `[commanders][backfill] Lifted runtime fields from commander "${backfill.commanderId}" into conversation "${backfill.id}"`,
-          )
+      let heartbeatMigrationPersisted = false
+      if (persisted.commanderHeartbeatMissingIds.size > 0) {
+        for (const commanderId of persisted.commanderHeartbeatMissingIds) {
+          const session = this.sessions().get(commanderId)
+          if (!session) {
+            continue
+          }
+          session.heartbeat = await this.resolveMigratedCommanderHeartbeat(commanderId)
         }
-        backfillPersisted = true
-      } else if (persisted.backfills.length > 0) {
-        this.logger.warn(
-          `[commanders][backfill] Detected ${persisted.backfills.length} legacy commander runtime records but no conversation backfill handler is configured`,
-        )
+        heartbeatMigrationPersisted = true
       }
 
-      if (persisted.legacyShapeDetected && (persisted.backfills.length === 0 || backfillPersisted)) {
-        await this.writeToDisk()
+      if (heartbeatMigrationPersisted) {
+        await this.writeToDisk({ backup: true })
       }
     })()
 
@@ -695,7 +602,10 @@ export class CommanderSessionStore {
       rawFile = await readFile(this.filePath, 'utf8')
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-        return { sessions: [], backfills: [], legacyShapeDetected: false }
+        return {
+          sessions: [],
+          commanderHeartbeatMissingIds: new Set<string>(),
+        }
       }
       throw error
     }
@@ -704,22 +614,109 @@ export class CommanderSessionStore {
     try {
       parsed = JSON.parse(rawFile) as unknown
     } catch {
-      return { sessions: [], backfills: [], legacyShapeDetected: false }
+      return {
+        sessions: [],
+        commanderHeartbeatMissingIds: new Set<string>(),
+      }
     }
 
-    return parsePersistedCommanderSessions(parsed, this.runtimeConfig)
+    const parsedPayload = isObject(parsed) ? parsed : null
+    const sessions = Array.isArray(parsed)
+      ? parsed
+      : (parsedPayload && Array.isArray(parsedPayload.sessions) ? parsedPayload.sessions : null)
+    if (!sessions) {
+      return parsePersistedCommanderSessions(parsed, this.runtimeConfig)
+    }
+
+    let migratedCount = 0
+    const migratedSessions = sessions.map((entry) => {
+      if (!isObject(entry)) {
+        return entry
+      }
+      const { cleaned } = migrateProviderContext(entry)
+      if (migratedProviderContextChanged(entry, cleaned)) {
+        migratedCount += 1
+      }
+      return cleaned
+    })
+
+    const migratedPayload = Array.isArray(parsed)
+      ? migratedSessions
+      : { ...parsedPayload, sessions: migratedSessions }
+    if (migratedCount > 0) {
+      await writeJsonFileAtomically(this.filePath, migratedPayload, { backup: true })
+      this.logger.warn(
+        `[commanders][migration] Migrated providerContext in ${migratedCount} commander session record(s)`,
+      )
+    }
+
+    return parsePersistedCommanderSessions(migratedPayload, this.runtimeConfig)
   }
 
-  private async writeToDisk(): Promise<void> {
+  private async resolveMigratedCommanderHeartbeat(commanderId: string): Promise<CommanderHeartbeatConfig> {
+    const candidates = await this.readHistoricalConversationHeartbeatCandidates(commanderId)
+    const selected = candidates
+      .filter((candidate) => isNonDefaultHeartbeat(candidate.heartbeat))
+      .sort((left, right) => right.timestamp.localeCompare(left.timestamp))[0]
+    return selected ? { ...selected.heartbeat } : createDefaultHeartbeatConfig()
+  }
+
+  private async readHistoricalConversationHeartbeatCandidates(
+    commanderId: string,
+  ): Promise<Array<{ heartbeat: CommanderHeartbeatConfig; timestamp: string }>> {
+    const conversationsDir = path.join(path.dirname(this.filePath), commanderId, 'conversations')
+    let files: import('node:fs').Dirent[]
+    try {
+      files = await readdir(conversationsDir, { withFileTypes: true })
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        return []
+      }
+      throw error
+    }
+
+    const candidates: Array<{ heartbeat: CommanderHeartbeatConfig; timestamp: string }> = []
+    for (const file of files) {
+      if (!file.isFile() || !file.name.endsWith('.json')) {
+        continue
+      }
+
+      try {
+        const raw = JSON.parse(await readFile(path.join(conversationsDir, file.name), 'utf8')) as unknown
+        if (!isObject(raw) || raw.commanderId !== commanderId || !hasOwnProperty(raw, 'heartbeat')) {
+          continue
+        }
+        const lastHeartbeat = typeof raw.lastHeartbeat === 'string' && raw.lastHeartbeat.trim().length > 0
+          ? raw.lastHeartbeat.trim()
+          : null
+        const heartbeat = normalizeHeartbeatConfig(raw.heartbeat)
+        const historicalHeartbeatLastSentAt = isObject(raw.heartbeat) && typeof raw.heartbeat.lastSentAt === 'string'
+          ? raw.heartbeat.lastSentAt.trim() || null
+          : null
+        const timestamp = latestIsoTimestamp([
+          typeof raw.lastMessageAt === 'string' ? raw.lastMessageAt : null,
+          historicalHeartbeatLastSentAt,
+          lastHeartbeat,
+          typeof raw.createdAt === 'string' ? raw.createdAt : null,
+        ]) ?? ''
+        candidates.push({ heartbeat, timestamp })
+      } catch {
+        // Ignore malformed historical conversation files; session loading must remain tolerant.
+      }
+    }
+    return candidates
+  }
+
+  private async writeToDisk(options: { backup?: boolean } = {}): Promise<void> {
     const sessions = [...this.sessions().values()]
       .map((session) => serializeSession(session))
       .sort((left, right) => left.created.localeCompare(right.created))
 
     await mkdir(path.dirname(this.filePath), { recursive: true })
-    await writeFile(
+    await writeJsonFileAtomically(
       this.filePath,
-      JSON.stringify({ sessions }, null, 2),
-      'utf8',
+      { sessions },
+      { backup: options.backup },
     )
   }
 

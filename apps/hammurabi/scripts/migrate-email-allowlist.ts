@@ -39,7 +39,7 @@ async function main() {
     sourceFilePath,
     targetPolicyFilePath,
     repoRoot: path.resolve(expandHome(parseArg('--repo-root') ?? repoRoot)),
-    addedBy: parseArg('--added-by') ?? 'legacy-migration',
+    addedBy: parseArg('--added-by') ?? 'email-allowlist-migration',
   })
 
   process.stdout.write(`Source: ${result.sourceFilePath}\n`)

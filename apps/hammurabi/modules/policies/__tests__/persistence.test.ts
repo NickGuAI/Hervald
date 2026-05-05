@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { ApprovalCoordinator } from '../pending-store'
@@ -265,7 +265,7 @@ describe('approval persistence', () => {
       auditFilePath: path.join(rootDir, 'audit.jsonl'),
     })
 
-    const approval = await coordinator.createPendingApproval({
+    const approval = await coordinator.enqueue({
       source: 'claude',
       sessionId: 'session-1',
       commanderId: 'commander-1',
@@ -276,7 +276,8 @@ describe('approval persistence', () => {
         summary: 'Email the CEO',
         details: { recipient: 'ceo@example.com' },
       },
-      onResolve: (decision, options) => ({
+    }, {
+      resolutionHandler: (_approval, decision, options) => ({
         decision,
         allowed: decision === 'approve',
         reason: options?.timedOut ? 'Approval timed out.' : 'Resolved before wait started.',
@@ -306,5 +307,52 @@ describe('approval persistence', () => {
       reason: 'Resolved before wait started.',
       timedOut: undefined,
     })
+  })
+
+  it('rewrites audit.jsonl with only the last 7 days of entries during a retention sweep', async () => {
+    const rootDir = await createTempDir('hammurabi-approval-audit-retention-')
+    const auditFilePath = path.join(rootDir, 'audit.jsonl')
+    const fixedNow = new Date('2026-05-01T12:00:00.000Z')
+    const coordinator = new ApprovalCoordinator({
+      snapshotFilePath: path.join(rootDir, 'pending.json'),
+      auditFilePath,
+      now: () => new Date(fixedNow),
+    })
+
+    const entries = [14, 10, 7, 3, 0].map((daysAgo) => ({
+      timestamp: new Date(fixedNow.getTime() - (daysAgo * 24 * 60 * 60 * 1000)).toISOString(),
+      type: 'approval.resolved' as const,
+      approvalId: `approval-${daysAgo}d`,
+      actionId: 'send-message',
+      actionLabel: 'Send Message',
+      source: 'claude' as const,
+      summary: `Resolved ${daysAgo}d ago`,
+      decision: 'approve' as const,
+      delivered: true,
+      outcome: {
+        decision: 'approve' as const,
+        allowed: true,
+      },
+    }))
+
+    await writeFile(
+      auditFilePath,
+      `${entries.map((entry) => JSON.stringify(entry)).join('\n')}\n`,
+      'utf8',
+    )
+
+    await coordinator.pruneAuditLog(7 * 24 * 60 * 60 * 1000)
+
+    const persistedEntries = (await readFile(auditFilePath, 'utf8'))
+      .trim()
+      .split(/\r?\n/)
+      .filter((line) => line.length > 0)
+      .map((line) => JSON.parse(line) as { approvalId: string })
+
+    expect(persistedEntries).toEqual([
+      expect.objectContaining({ approvalId: 'approval-7d' }),
+      expect.objectContaining({ approvalId: 'approval-3d' }),
+      expect.objectContaining({ approvalId: 'approval-0d' }),
+    ])
   })
 })

@@ -68,14 +68,6 @@ export function createCommandersRouter(
     context.runtimes.clear()
     context.activeCommanderSessions.clear()
     context.heartbeatFiredAtByConversation.clear()
-
-    if (
-      context.commandRoomScheduler &&
-      'stopAllJobs' in context.commandRoomScheduler &&
-      typeof context.commandRoomScheduler.stopAllJobs === 'function'
-    ) {
-      context.commandRoomScheduler.stopAllJobs()
-    }
   }
 
   return { router, conversationRouter, dispose }

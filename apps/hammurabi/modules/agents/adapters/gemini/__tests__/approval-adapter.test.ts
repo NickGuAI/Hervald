@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { type ActionPolicyGateResult } from '../../../../policies/action-policy-gate'
 import { buildFallbackClaudeApprovalSession } from '../../claude/approval-adapter'
+import { createGeminiProviderContext } from '../../../providers/provider-session-context'
 import {
   geminiApprovalAdapter,
   type GeminiApprovalRawEvent,
@@ -11,9 +12,11 @@ function buildGeminiSession(): StreamSession {
   return {
     ...buildFallbackClaudeApprovalSession('gemini-worker-1'),
     agentType: 'gemini',
-    geminiRuntime: {
-      sendResponse: vi.fn(),
-    },
+    providerContext: createGeminiProviderContext({
+      runtime: {
+        sendResponse: vi.fn(),
+      },
+    }),
   } as StreamSession
 }
 
@@ -88,8 +91,8 @@ describe('geminiApprovalAdapter', () => {
 
     await geminiApprovalAdapter.sendReply(result, rawEvent, session)
 
-    const runtime = session.geminiRuntime as { sendResponse: ReturnType<typeof vi.fn> }
-    expect(runtime.sendResponse).toHaveBeenCalledWith(17, {
+    const runtime = session.providerContext as { sendResponse?: ReturnType<typeof vi.fn>; runtime?: { sendResponse: ReturnType<typeof vi.fn> } }
+    expect(runtime.runtime?.sendResponse).toHaveBeenCalledWith(17, {
       outcome: {
         outcome: 'selected',
         optionId: 'opt-allow-once',
@@ -112,8 +115,8 @@ describe('geminiApprovalAdapter', () => {
 
     await geminiApprovalAdapter.sendReply(result, rawEvent, session)
 
-    const runtime = session.geminiRuntime as { sendResponse: ReturnType<typeof vi.fn> }
-    expect(runtime.sendResponse).toHaveBeenCalledWith(17, {
+    const runtime = session.providerContext as { runtime?: { sendResponse: ReturnType<typeof vi.fn> } }
+    expect(runtime.runtime?.sendResponse).toHaveBeenCalledWith(17, {
       outcome: {
         outcome: 'selected',
         optionId: 'opt-reject-once',

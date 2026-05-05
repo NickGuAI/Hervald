@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
-import { act, createElement } from 'react'
+import { createElement } from 'react'
+import { act } from 'react-dom/test-utils'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createRoot, type Root } from 'react-dom/client'
 import { MemoryRouter } from 'react-router-dom'
@@ -79,14 +80,14 @@ let originalMatchMedia: typeof window.matchMedia | undefined
 function buildCommander(overrides: Partial<Record<string, unknown>> = {}) {
   return {
     id: '72e40eda-4ab1-457a-a91d-e5ab7ac2f5d3',
-    host: 'athena',
+    host: 'atlas',
     displayName: 'Test Commander',
     pid: null,
     state: 'idle',
     created: '2026-04-20T16:00:00.000Z',
     agentType: 'claude',
     effort: 'medium',
-    cwd: '/tmp/athena',
+    cwd: '/tmp/atlas',
     persona: 'Primary commander',
     heartbeat: {
       intervalMs: 900_000,
@@ -208,6 +209,7 @@ describe('Hervald create commander workflow', () => {
     mocks.useAgentSessionStream.mockReturnValue({
       messages: [],
       sendInput: vi.fn(async () => true),
+      sendDispatcher: { mode: 'ws-direct', send: vi.fn(async () => true) },
       answerQuestion: vi.fn(),
       status: 'disconnected',
     })
@@ -327,7 +329,7 @@ describe('Hervald create commander workflow', () => {
     }
 
     await act(async () => {
-      setInputValue(hostInput, 'jarvis')
+      setInputValue(hostInput, 'hera')
     })
 
     await vi.waitFor(() => {
@@ -365,7 +367,7 @@ describe('Hervald create commander workflow', () => {
 
     expect(createBodies).toEqual([
       expect.objectContaining({
-        host: 'jarvis',
+        host: 'hera',
         maxTurns: 22,
       }),
     ])
@@ -375,7 +377,7 @@ describe('Hervald create commander workflow', () => {
     })
 
     await vi.waitFor(() => {
-      expect(document.body.querySelector('[data-testid="selected-commander"]')?.textContent).toContain('jarvis')
+      expect(document.body.querySelector('[data-testid="selected-commander"]')?.textContent).toContain('hera')
     })
   })
 
@@ -483,10 +485,10 @@ describe('Hervald create commander workflow', () => {
       if (url === '/api/commanders/72e40eda-4ab1-457a-a91d-e5ab7ac2f5d3/tasks') {
         return []
       }
-      if (url === '/api/commanders/72e40eda-4ab1-457a-a91d-e5ab7ac2f5d3/crons') {
+      if (url === '/api/automations?parentCommanderId=72e40eda-4ab1-457a-a91d-e5ab7ac2f5d3&trigger=schedule') {
         return []
       }
-      if (url === '/api/command-room/tasks') {
+      if (url === '/api/automations?parentCommanderId=null&trigger=schedule') {
         return []
       }
       if (url === '/api/agents/sessions') {
@@ -516,7 +518,7 @@ describe('Hervald create commander workflow', () => {
     })
 
     await vi.waitFor(() => {
-      expect(mocks.fetchJson).toHaveBeenCalledWith('/api/command-room/tasks')
+      expect(mocks.fetchJson).toHaveBeenCalledWith('/api/automations?parentCommanderId=null&trigger=schedule')
     })
 
     await vi.waitFor(() => {

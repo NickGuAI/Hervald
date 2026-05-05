@@ -1,4 +1,7 @@
 import { platform as readPlatform } from 'node:os'
+import { randomUUID } from 'node:crypto'
+import { access, mkdir, writeFile } from 'node:fs/promises'
+import path from 'node:path'
 import { spawn } from 'node:child_process'
 import {
   createHammurabiConfig,
@@ -8,8 +11,10 @@ import {
 } from './config.js'
 import {
   ensureCommanderRuntimeConfig,
+  resolveHammurabiDataDir,
 } from './commander-runtime-config-node.js'
 import { applyManagedAgentTelemetryConfig } from './agent-telemetry.js'
+import { listMachineAuthProviders, loadProviderRegistry, type ProviderRegistryEntry } from './providers.js'
 import {
   closePromptResources,
   promptConfirm,
@@ -50,6 +55,7 @@ type InteractiveCommandRunner = (
 ) => Promise<number>
 
 export interface OnboardCliDependencies {
+  fetchImpl?: typeof fetch
   platform?: NodeJS.Platform
   runCommand?: CommandRunner
   runInteractiveCommand?: InteractiveCommandRunner
@@ -112,6 +118,15 @@ function printUsage(): void {
 
 function normalizeTailscaleHostname(value: string): string {
   return value.trim().replace(/\.+$/u, '')
+}
+
+function isErrnoException(error: unknown): error is NodeJS.ErrnoException {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    typeof error.code === 'string'
+  )
 }
 
 export function detectTailscalePlatform(platform: NodeJS.Platform): TailscalePlatform {
@@ -229,6 +244,75 @@ async function defaultRunInteractiveCommand(
       resolve(code ?? 1)
     })
   })
+}
+
+async function resolveGitUserName(runCommand: CommandRunner): Promise<string | undefined> {
+  try {
+    const result = await runCommand('git', ['config', 'user.name'], {
+      timeoutMs: 5_000,
+    })
+    const userName = result.stdout.trim()
+    return result.code === 0 && userName.length > 0 ? userName : undefined
+  } catch {
+    return undefined
+  }
+}
+
+function defaultOperatorsPath(env: NodeJS.ProcessEnv = process.env): string {
+  return path.join(resolveHammurabiDataDir(env), 'operators.json')
+}
+
+function createFounderOperator(input: {
+  displayName: string
+  email: string
+  createdAt?: Date
+}) {
+  return {
+    id: randomUUID(),
+    kind: 'founder',
+    displayName: input.displayName.trim(),
+    email: input.email.trim(),
+    avatarUrl: null,
+    createdAt: (input.createdAt ?? new Date()).toISOString(),
+  }
+}
+
+async function ensureFounderOperator(
+  dependencies: OnboardCliDependencies,
+): Promise<{ filePath: string; created: boolean }> {
+  const filePath = defaultOperatorsPath()
+
+  try {
+    await access(filePath)
+    return {
+      filePath,
+      created: false,
+    }
+  } catch (error) {
+    if (!isErrnoException(error) || error.code !== 'ENOENT') {
+      throw error
+    }
+  }
+
+  const runCommand = dependencies.runCommand ?? defaultRunCommand
+  const defaultDisplayName = await resolveGitUserName(runCommand)
+  const displayName = await promptText('Founder display name', {
+    defaultValue: defaultDisplayName,
+    required: true,
+  })
+  const email = await promptText('Founder email', { required: true })
+  const founder = createFounderOperator({
+    displayName,
+    email,
+  })
+
+  await mkdir(path.dirname(filePath), { recursive: true })
+  await writeFile(filePath, `${JSON.stringify(founder, null, 2)}\n`, 'utf8')
+
+  return {
+    filePath,
+    created: true,
+  }
 }
 
 async function runTailscaleSetup(
@@ -365,6 +449,26 @@ function printSelectedAgentInstructions(
   }
 }
 
+function printProviderRuntimeInstructions(providers: readonly ProviderRegistryEntry[]): void {
+  const machineAuthProviders = listMachineAuthProviders(providers)
+  if (machineAuthProviders.length === 0) {
+    return
+  }
+
+  process.stdout.write('\nProvider runtime setup:\n')
+  for (const provider of machineAuthProviders) {
+    const machineAuth = provider.machineAuth
+    if (!machineAuth) {
+      continue
+    }
+
+    const installTarget = machineAuth.installPackageName ?? machineAuth.cliBinaryName
+    const modes = machineAuth.supportedAuthModes.join(', ')
+    process.stdout.write(`- ${provider.label}: install ${installTarget}, verify \`${machineAuth.cliBinaryName} --version\`, then authenticate with ${modes}.\n`)
+  }
+  process.stdout.write('- Detailed auth recipes live in the Hervald provider docs.\n')
+}
+
 export async function runCli(
   args: readonly string[],
   dependencies: OnboardCliDependencies = {},
@@ -417,6 +521,7 @@ export async function runCli(
 
     await writeHammurabiConfig(config)
     const runtimeConfig = await ensureCommanderRuntimeConfig()
+    const founderOperator = await ensureFounderOperator(dependencies)
 
     const autoConfigured = new Set<HammurabiAgent>()
     const telemetrySetup = await applyManagedAgentTelemetryConfig(config)
@@ -430,7 +535,21 @@ export async function runCli(
         ? `Saved runtime config: ${runtimeConfig.filePath}\n`
         : `Runtime config already present: ${runtimeConfig.filePath}\n`,
     )
+    process.stdout.write(
+      founderOperator.created
+        ? `Saved founder operator: ${founderOperator.filePath}\n`
+        : `Founder operator already present: ${founderOperator.filePath}\n`,
+    )
     printSelectedAgentInstructions(config.endpoint, config.apiKey, config.agents, autoConfigured)
+    try {
+      const { providers } = await loadProviderRegistry(config, {
+        fetchImpl: dependencies.fetchImpl ?? fetch,
+      })
+      printProviderRuntimeInstructions(providers)
+    } catch {
+      process.stdout.write('\nProvider runtime setup:\n')
+      process.stdout.write('- Provider registry unavailable right now. Open Hervald docs after the server is reachable for provider-specific auth steps.\n')
+    }
     await runTailscaleSetup(dependencies)
     process.stdout.write('\nOnboarding complete.\n')
 

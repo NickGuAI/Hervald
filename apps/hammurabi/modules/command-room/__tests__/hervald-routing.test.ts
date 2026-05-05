@@ -1,6 +1,8 @@
 // @vitest-environment jsdom
 
-import { act, createElement, Fragment } from 'react'
+import { createElement, Fragment } from 'react'
+import { act } from 'react-dom/test-utils'
+import { flushSync } from 'react-dom'
 import { createRoot, type Root } from 'react-dom/client'
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -113,8 +115,8 @@ vi.mock('../../commanders/components/CommanderSentinelsTab', () => ({
   CommanderSentinelsTab: () => createElement('div', undefined, 'Sentinels panel'),
 }))
 
-vi.mock('../../commanders/components/CommanderCronTab', () => ({
-  CommanderCronTab: () => createElement('div', undefined, 'Automation panel'),
+vi.mock('../../commanders/components/AutomationPanel', () => ({
+  AutomationPanel: () => createElement('div', undefined, 'Automation panel'),
 }))
 
 vi.mock('../../commanders/components/CommanderIdentityTab', () => ({
@@ -122,7 +124,6 @@ vi.mock('../../commanders/components/CommanderIdentityTab', () => ({
 }))
 
 import CommandRoomPage from '../page'
-import HervaldLegacyRedirectPage from '../../hervald-redirect/page'
 
 const reactActEnvironment = globalThis as typeof globalThis & {
   IS_REACT_ACT_ENVIRONMENT?: boolean
@@ -186,18 +187,6 @@ async function renderAt(pathname: string) {
               path: '/command-room',
               element: createElement(CommandRoomRoute),
             }),
-            createElement(Route, {
-              path: '/quests/*',
-              element: createElement(HervaldLegacyRedirectPage),
-            }),
-            createElement(Route, {
-              path: '/sentinels/*',
-              element: createElement(HervaldLegacyRedirectPage),
-            }),
-            createElement(Route, {
-              path: '/workspace/*',
-              element: createElement(HervaldLegacyRedirectPage),
-            }),
           ),
         ),
       ),
@@ -224,6 +213,12 @@ function clickButton(label: string) {
   button.dispatchEvent(new MouseEvent('click', { bubbles: true }))
 }
 
+function composerQueueButton(): HTMLButtonElement | undefined {
+  return Array.from(document.body.querySelectorAll('button')).find(
+    (candidate) => candidate.textContent?.trim() === 'Queue',
+  ) as HTMLButtonElement | undefined
+}
+
 function changeComposerText(value: string) {
   const input = Array.from(document.body.querySelectorAll('textarea, input')).find(
     (candidate) => candidate.getAttribute('placeholder')?.includes('Send a message to'),
@@ -236,8 +231,11 @@ function changeComposerText(value: string) {
     ? window.HTMLTextAreaElement.prototype
     : window.HTMLInputElement.prototype
   const valueSetter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set
-  valueSetter?.call(input, value)
-  input.dispatchEvent(new Event('input', { bubbles: true }))
+  flushSync(() => {
+    valueSetter?.call(input, value)
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+    input.dispatchEvent(new Event('change', { bubbles: true }))
+  })
 }
 
 function pressComposerEnter() {
@@ -305,6 +303,70 @@ function composerInput(): HTMLTextAreaElement | HTMLInputElement | undefined {
   ) as HTMLTextAreaElement | HTMLInputElement | undefined
 }
 
+const LIVE_CONVERSATION_SESSION_NAME = 'commander-commander-1-conversation-conversation-1'
+
+function buildLiveConversation() {
+  return {
+    id: 'conversation-1',
+    commanderId: 'commander-1',
+    surface: 'ui',
+    name: 'Live conversation',
+    status: 'active',
+    currentTask: null,
+    lastHeartbeat: null,
+    heartbeatTickCount: 0,
+    completedTasks: 0,
+    totalCostUsd: 1.25,
+    createdAt: '2026-05-01T08:00:00.000Z',
+    lastMessageAt: '2026-05-01T08:05:00.000Z',
+    liveSession: {
+      name: LIVE_CONVERSATION_SESSION_NAME,
+      label: 'Live conversation',
+      created: '2026-05-01T08:00:00.000Z',
+      pid: 123,
+      transportType: 'stream',
+      agentType: 'claude',
+      status: 'active',
+      processAlive: true,
+    },
+  }
+}
+
+function mockConversationEndpoints(
+  conversation = buildLiveConversation(),
+  queueSnapshot = {
+    items: [],
+    currentMessage: null,
+    totalCount: 0,
+  },
+) {
+  mocks.fetchJson.mockImplementation(async (path: string) => {
+    if (path === '/api/agents/sessions' || path === '/api/approvals/pending') {
+      return []
+    }
+    if (path === '/api/commanders/commander-1/conversations') {
+      return [conversation]
+    }
+    if (path === '/api/commanders/commander-1/conversations/active') {
+      return conversation
+    }
+    if (path === '/api/conversations/conversation-1') {
+      return conversation
+    }
+    if (path === '/api/conversations/conversation-1/message') {
+      return {
+        accepted: true,
+        createdSession: false,
+        conversation,
+      }
+    }
+    if (path === `/api/agents/sessions/${LIVE_CONVERSATION_SESSION_NAME}/queue`) {
+      return queueSnapshot
+    }
+    return []
+  })
+}
+
 describe('Hervald command-room routing', () => {
   beforeEach(() => {
     previousActEnvironment = reactActEnvironment.IS_REACT_ACT_ENVIRONMENT
@@ -323,6 +385,7 @@ describe('Hervald command-room routing', () => {
       dispatchEvent: vi.fn(),
     }))
     window.localStorage.clear()
+    document.documentElement.className = 'hv-light'
 
     mocks.fetchJson.mockImplementation(async (path: string) => {
       if (path === '/api/agents/sessions' || path === '/api/approvals/pending') {
@@ -340,6 +403,7 @@ describe('Hervald command-room routing', () => {
     mocks.useAgentSessionStream.mockReturnValue({
       messages: [],
       sendInput: vi.fn(),
+      sendDispatcher: { mode: 'ws-direct', send: vi.fn(async () => true) },
       answerQuestion: vi.fn(),
       status: 'connected',
     })
@@ -469,14 +533,7 @@ describe('Hervald command-room routing', () => {
     reactActEnvironment.IS_REACT_ACT_ENVIRONMENT = previousActEnvironment
     document.body.innerHTML = ''
     window.localStorage.clear()
-  })
-
-  it('lands legacy /quests redirects on the quests panel', async () => {
-    await renderAt('/quests')
-    await flushAsync()
-
-    expect(currentLocationText()).toBe('/command-room?panel=quests')
-    expect(document.body.textContent).toContain('QuestBoard panel')
+    document.documentElement.className = ''
   })
 
   it('keeps users on /command-room while switching center tabs', async () => {
@@ -487,24 +544,17 @@ describe('Hervald command-room routing', () => {
     expect(document.body.textContent).toContain('QuestBoard panel')
 
     await act(async () => {
-      clickButton('Sentinels')
+      clickButton('Automations')
       await Promise.resolve()
     })
-    expect(currentLocationText()).toBe('/command-room?panel=sentinels')
-    expect(document.body.textContent).toContain('Sentinels panel')
-
-    await act(async () => {
-      clickButton('Automation')
-      await Promise.resolve()
-    })
-    expect(currentLocationText()).toBe('/command-room?panel=cron')
+    expect(currentLocationText()).toBe('/command-room?panel=automation&commander=global')
     expect(document.body.textContent).toContain('Automation panel')
 
     await act(async () => {
       clickButton('Identity')
       await Promise.resolve()
     })
-    expect(currentLocationText()).toBe('/command-room?panel=identity')
+    expect(currentLocationText()).toBe('/command-room?panel=identity&commander=global')
     expect(document.body.textContent).toContain('Identity panel')
   })
 
@@ -517,7 +567,7 @@ describe('Hervald command-room routing', () => {
       await Promise.resolve()
     })
 
-    expect(currentLocationText()).toBe('/command-room?panel=cron')
+    expect(currentLocationText()).toBe('/command-room?panel=automation&commander=global')
   })
 
   it('forces Automation and hides non-global tabs when Global scope is selected', async () => {
@@ -565,25 +615,25 @@ describe('Hervald command-room routing', () => {
       deleteCronId: null,
     })
 
-    await renderAt('/command-room')
+    await renderAt('/command-room?commander=global&panel=automation')
     await flushAsync()
     await flushAsync()
 
-    expect(currentLocationText()).toBe('/command-room?panel=cron')
+    expect(currentLocationText()).toBe('/command-room?commander=global&panel=automation')
     expect(document.body.textContent).toContain('Automation panel')
 
     const labels = Array.from(document.body.querySelectorAll('button'))
       .map((button) => button.textContent?.trim() ?? '')
 
-    expect(labels).toContain('Automation')
+    expect(labels).toContain('Automations')
     expect(labels).not.toContain('Chat')
     expect(labels).not.toContain('Quests')
-    expect(labels).not.toContain('Sentinels')
     expect(labels).not.toContain('Identity')
   })
 
-  it('keeps the shared color-indicator status treatment in the center header', async () => {
-    await renderAt('/command-room')
+  it('keeps the shared color-indicator active status treatment in the center header', async () => {
+    mockConversationEndpoints()
+    await renderAt('/command-room?commander=commander-1&conversation=conversation-1')
     await flushAsync()
 
     const conversationStatus = document.body.querySelector(
@@ -592,19 +642,22 @@ describe('Hervald command-room routing', () => {
 
     const conversationStatusDot = conversationStatus?.firstElementChild as HTMLElement | null
 
-    expect(conversationStatus?.textContent).toContain('Connected')
+    await vi.waitFor(() => {
+      expect(conversationStatus?.textContent).toContain('Active')
+    })
     expect(document.body.querySelector('[data-testid="commander-status-indicator"]')).toBeNull()
     expect(conversationStatusDot?.style.width).toBe('7px')
     expect(conversationStatusDot?.style.height).toBe('7px')
     expect(conversationStatusDot?.style.borderRadius).toBe('50%')
   })
 
-  it('shows an explicit idle start takeover and disables the composer until the commander is started', async () => {
+  it('shows the create-chat state and disables the composer when no conversation is selected', async () => {
     const startCommander = vi.fn().mockResolvedValue(undefined)
 
     mocks.useAgentSessionStream.mockReturnValue({
       messages: [],
       sendInput: vi.fn(),
+      sendDispatcher: { mode: 'ws-direct', send: vi.fn(async () => true) },
       answerQuestion: vi.fn(),
       status: 'disconnected',
     })
@@ -666,30 +719,28 @@ describe('Hervald command-room routing', () => {
     await renderAt('/command-room')
     await flushAsync()
 
-    expect(mocks.useAgentSessionStream).toHaveBeenLastCalledWith(
-      'commander-commander-1',
+    expect(mocks.useAgentSessionStream).toHaveBeenCalled()
+    const lastStreamHookCall = mocks.useAgentSessionStream.mock.calls.at(-1)
+    expect(lastStreamHookCall?.[1]).toEqual(
       expect.objectContaining({
         enabled: false,
       }),
     )
-    expect(document.body.textContent).toContain('Start Marcus')
+    // The empty-state Create Conversation panel (#1362) renders a provider
+    // dropdown plus a Create button — no commander start controls.
+    expect(document.body.querySelector('[data-testid="create-chat-panel-button"]')).not.toBeNull()
+    expect(document.body.textContent).not.toContain('Start Marcus')
     expect(composerInput()?.hasAttribute('disabled')).toBe(true)
-
-    await act(async () => {
-      clickButton('Start Marcus')
-      await Promise.resolve()
-      await Promise.resolve()
-    })
-
-    expect(startCommander).toHaveBeenCalledWith('commander-1', 'claude')
+    expect(startCommander).not.toHaveBeenCalled()
   })
 
-  it('shows an inline stop control for running commanders', async () => {
+  it('does not render the state-B stop control when the header is in conversation status vocabulary', async () => {
     const stopCommander = vi.fn().mockResolvedValue(undefined)
 
     mocks.useAgentSessionStream.mockReturnValue({
       messages: [],
       sendInput: vi.fn(),
+      sendDispatcher: { mode: 'ws-direct', send: vi.fn(async () => true) },
       answerQuestion: vi.fn(),
       status: 'connected',
     })
@@ -751,20 +802,18 @@ describe('Hervald command-room routing', () => {
     await renderAt('/command-room')
     await flushAsync()
 
-    await act(async () => {
-      clickButton('Stop')
-      await Promise.resolve()
-    })
-
-    expect(stopCommander).toHaveBeenCalledWith('commander-1')
+    expect(document.body.textContent).not.toContain('Stop')
+    expect(stopCommander).not.toHaveBeenCalled()
   })
 
   it('queues composer drafts on Tab instead of sending immediately for running sessions', async () => {
     const sendInput = vi.fn().mockResolvedValue(true)
 
+    mockConversationEndpoints()
     mocks.useAgentSessionStream.mockReturnValue({
       messages: [],
       sendInput,
+      sendDispatcher: { mode: 'ws-direct', send: vi.fn(async () => true) },
       answerQuestion: vi.fn(),
       status: 'connected',
     })
@@ -823,41 +872,60 @@ describe('Hervald command-room routing', () => {
       deleteCronId: null,
     })
 
-    await renderAt('/command-room')
+    await renderAt('/command-room?commander=commander-1&conversation=conversation-1')
+    await flushAsync()
+    await vi.waitFor(() => {
+      expect(mocks.useAgentSessionStream).toHaveBeenLastCalledWith(
+        LIVE_CONVERSATION_SESSION_NAME,
+        expect.objectContaining({
+          enabled: true,
+        }),
+      )
+    })
     await flushAsync()
     mocks.fetchJson.mockClear()
 
     await act(async () => {
       changeComposerText('Queue this follow-up.')
+      await Promise.resolve()
+    })
+    await vi.waitFor(() => {
+      expect(composerQueueButton()?.disabled).toBe(false)
+    })
+    await act(async () => {
       pressComposerTab()
       await Promise.resolve()
       await Promise.resolve()
     })
 
     expect(sendInput).not.toHaveBeenCalled()
-    expect(mocks.fetchJson).toHaveBeenCalledWith(
-      '/api/agents/sessions/commander-commander-1/message?queue=true',
-      expect.objectContaining({
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-        },
-        body: JSON.stringify({ text: 'Queue this follow-up.' }),
-      }),
-    )
+    await vi.waitFor(() => {
+      expect(mocks.fetchJson).toHaveBeenCalledWith(
+        '/api/conversations/conversation-1/message',
+        expect.objectContaining({
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify({ message: 'Queue this follow-up.', queue: true }),
+        }),
+      )
+    })
   })
 
   it('queues composer image prompts on Tab without dropping attachments', async () => {
     const sendInput = vi.fn().mockResolvedValue(true)
 
+    mockConversationEndpoints()
     mocks.useAgentSessionStream.mockReturnValue({
       messages: [],
       sendInput,
+      sendDispatcher: { mode: 'ws-direct', send: vi.fn(async () => true) },
       answerQuestion: vi.fn(),
       status: 'connected',
     })
 
-    await renderAt('/command-room')
+    await renderAt('/command-room?commander=commander-1&conversation=conversation-1')
     await flushAsync()
     mocks.fetchJson.mockClear()
 
@@ -865,81 +933,92 @@ describe('Hervald command-room routing', () => {
 
     await act(async () => {
       changeComposerText('Queue this screenshot.')
+      await Promise.resolve()
+    })
+    await vi.waitFor(() => {
+      expect(composerQueueButton()?.disabled).toBe(false)
+    })
+    await act(async () => {
       pressComposerTab()
       await Promise.resolve()
       await Promise.resolve()
     })
 
     expect(sendInput).not.toHaveBeenCalled()
-    expect(mocks.fetchJson).toHaveBeenCalledWith(
-      '/api/agents/sessions/commander-commander-1/message?queue=true',
-      expect.objectContaining({
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-        },
-        body: JSON.stringify({
-          text: 'Queue this screenshot.',
-          images: [
-            {
-              mediaType: 'image/png',
-              data: 'ZmFrZS1pbWFnZQ==',
-            },
-          ],
+    await vi.waitFor(() => {
+      expect(mocks.fetchJson).toHaveBeenCalledWith(
+        `/api/agents/sessions/${LIVE_CONVERSATION_SESSION_NAME}/message?queue=true`,
+        expect.objectContaining({
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify({
+            text: 'Queue this screenshot.',
+            images: [
+              {
+                mediaType: 'image/png',
+                data: 'ZmFrZS1pbWFnZQ==',
+              },
+            ],
+          }),
         }),
-      }),
-    )
+      )
+    })
   })
 
-  it('keeps the queue dock and composer visible on non-chat tabs and exposes the theme toggle in the top rail', async () => {
-    mocks.fetchJson.mockImplementation(async (path: string) => {
+  it('keeps the unavailable queue dock visible on non-chat tabs without a selected conversation and exposes the theme toggle in the top rail', async () => {
+    let currentTheme: 'light' | 'dark' = 'light'
+    mocks.fetchJson.mockImplementation(async (path: string, init?: RequestInit) => {
       if (path === '/api/agents/sessions' || path === '/api/approvals/pending') {
         return []
       }
-      if (path === '/api/agents/sessions/commander-commander-1/queue') {
+      if (path === '/api/settings') {
+        if (init?.method === 'PATCH') {
+          const body = typeof init.body === 'string'
+            ? JSON.parse(init.body) as { theme?: 'light' | 'dark' }
+            : {}
+          currentTheme = body.theme === 'dark' ? 'dark' : 'light'
+        }
         return {
-          items: [
-            {
-              id: 'queue-1',
-              text: 'Follow up after the automation finishes.',
-              priority: 'normal',
-              queuedAt: '2026-04-19T18:00:00.000Z',
-            },
-          ],
-          currentMessage: null,
-          totalCount: 1,
+          settings: {
+            theme: currentTheme,
+            updatedAt: '2026-05-03T00:00:00.000Z',
+          },
         }
       }
       return []
     })
 
-    await renderAt('/command-room?panel=cron')
+    await renderAt('/command-room?commander=commander-1&panel=cron')
     await flushAsync()
 
     expect(document.body.textContent).toContain('Automation panel')
     expect(document.body.textContent).toContain('Queue')
-    expect(document.body.textContent).toContain('Follow up after the automation finishes.')
-    expect(composerInput()?.getAttribute('placeholder')).toBe('Send a message to Marcus…')
+    expect(document.body.textContent).toContain('Select a conversation to stack follow-ups.')
+    expect(document.body.textContent).toContain('Select a commander or worker to start chatting.')
+    expect(composerInput()?.hasAttribute('disabled')).toBe(true)
 
-    const shell = document.body.querySelector('[data-testid="command-room-shell"]')
-    expect(shell?.className).toContain('hv-light')
+    expect(document.documentElement.className).toContain('hv-light')
 
     await act(async () => {
       clickButton('Dark')
       await Promise.resolve()
     })
-
-    expect(shell?.className).toContain('hv-dark')
+    await vi.waitFor(() => {
+      expect(document.documentElement.className).toContain('hv-dark')
+    })
 
     await act(async () => {
       clickButton('Identity')
       await Promise.resolve()
     })
 
-    expect(currentLocationText()).toBe('/command-room?panel=identity')
+    expect(currentLocationText()).toBe('/command-room?commander=commander-1&panel=identity')
     expect(document.body.textContent).toContain('Identity panel')
-    expect(document.body.textContent).toContain('Follow up after the automation finishes.')
-    expect(composerInput()?.getAttribute('placeholder')).toBe('Send a message to Marcus…')
+    expect(document.body.textContent).toContain('Select a conversation to stack follow-ups.')
+    expect(document.body.textContent).toContain('Select a commander or worker to start chatting.')
+    expect(composerInput()?.hasAttribute('disabled')).toBe(true)
   })
 
   it('opens the legacy new-session popup from the sessions header button', async () => {

@@ -1,5 +1,7 @@
 import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useProviderRegistry } from '@/hooks/use-providers'
+import type { AgentType } from '@/types'
 import { AskDialog } from '../AskDialog'
 import { CommandPrompt } from '../CommandPrompt'
 import { DialoguePanel } from '../DialoguePanel'
@@ -17,7 +19,7 @@ interface CommanderSession {
   id: string
   host: string
   state: 'idle' | 'running' | 'paused' | 'stopped'
-  agentType: 'claude' | 'codex' | 'gemini'
+  agentType: AgentType
   currentTask: { issueNumber: number; issueUrl: string; startedAt: string } | null
   completedTasks: number
   totalCostUsd: number
@@ -679,8 +681,11 @@ function AgentControl({ onClose }: { onClose: () => void }) {
                   name="agentType"
                   className="w-full rounded border border-cyan-800/50 bg-cyan-950/40 px-3 py-1.5 font-serif text-[12px] text-cyan-100 focus:border-cyan-500/60 focus:outline-none"
                 >
-                  <option value="claude">Claude</option>
-                  <option value="codex">Codex</option>
+                  {providers.map((provider) => (
+                    <option key={provider.id} value={provider.id}>
+                      {provider.label}
+                    </option>
+                  ))}
                 </select>
               </div>
               <div>
@@ -727,6 +732,7 @@ interface OverworldScreenProps {
 }
 
 export function OverworldScreen({ agents, worldStatus, worldError }: OverworldScreenProps) {
+  const { data: providers = [] } = useProviderRegistry()
   const sceneRef = useRef<RpgSceneHandle | null>(null)
 
   const streamAgents = useMemo(

@@ -52,7 +52,9 @@ export function ModalFormContainer({
     const previousActiveElement = document.activeElement instanceof HTMLElement
       ? document.activeElement
       : null
-    const isDesktop = window.matchMedia('(min-width: 768px)').matches
+    const isDesktop = typeof window.matchMedia === 'function'
+      ? window.matchMedia('(min-width: 768px)').matches
+      : false
     const dialog = isDesktop ? desktopDialogRef.current : mobileDialogRef.current
     if (!dialog) {
       return

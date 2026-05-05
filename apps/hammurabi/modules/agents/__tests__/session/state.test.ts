@@ -5,6 +5,7 @@ import {
   toCommanderWorldAgent,
 } from '../../session/state'
 import type { CommanderSession } from '../../../commanders/store'
+import { getProvider } from '../../providers/registry'
 
 describe('agents/session/state', () => {
   it('drops legacy persisted OpenClaw entries during restore parsing', () => {
@@ -55,6 +56,33 @@ describe('agents/session/state', () => {
     })).toEqual(expect.objectContaining({
       name: 'worker-skill-02',
       currentSkillInvocation: undefined,
+    }))
+  })
+
+  it('preserves legacy OpenClaw skills discovery under the Claude adapter', () => {
+    expect(getProvider('claude')?.skillScanPaths).toEqual(
+      expect.arrayContaining(['~/.claude/skills', '~/.openclaw/skills']),
+    )
+  })
+
+  it('keeps explicit non-Claude legacy contexts on their matching provider', () => {
+    expect(parsePersistedStreamSessionEntry({
+      name: 'gemini-legacy',
+      agentType: 'gemini',
+      mode: 'default',
+      cwd: '/tmp/worktree',
+      createdAt: '2026-04-24T00:00:00.000Z',
+      providerContext: {
+        sessionId: 'gemini-session-1',
+      },
+      effort: 'max',
+      adaptiveThinking: 'disabled',
+    })).toEqual(expect.objectContaining({
+      agentType: 'gemini',
+      providerContext: expect.objectContaining({
+        providerId: 'gemini',
+        sessionId: 'gemini-session-1',
+      }),
     }))
   })
 

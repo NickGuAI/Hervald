@@ -59,6 +59,15 @@ function normalizeDomain(value: string | undefined): string | null {
   }
 }
 
+function claimString(value: unknown): string | undefined {
+  if (typeof value !== 'string') {
+    return undefined
+  }
+
+  const normalized = value.trim()
+  return normalized.length > 0 ? normalized : undefined
+}
+
 function resolveAuth0Config(options: Auth0Options): ResolvedAuth0Config | null {
   const domain = normalizeDomain(options.domain ?? process.env.AUTH0_DOMAIN)
   const audience = asNonEmptyString(options.audience ?? process.env.AUTH0_AUDIENCE)
@@ -122,6 +131,29 @@ export function auth0PermissionsFromClaims(
 
 export function auth0PermissionsFromUser(user: AuthUser): string[] {
   return user.metadata ? auth0PermissionsFromClaims(user.metadata) : []
+}
+
+export function auth0MetadataFromClaims(
+  claims: Readonly<Record<string, unknown>>,
+): Record<string, unknown> {
+  const permissions = auth0PermissionsFromClaims(claims)
+  const emailVerified =
+    typeof claims.email_verified === 'boolean'
+      ? claims.email_verified
+      : undefined
+  const name = claimString(claims.name)
+  const nickname = claimString(claims.nickname)
+  const picture = claimString(claims.picture)
+
+  return {
+    provider: 'auth0',
+    aud: claims.aud,
+    permissions,
+    ...(emailVerified === undefined ? {} : { emailVerified }),
+    ...(name ? { name, displayName: name } : {}),
+    ...(nickname ? { nickname } : {}),
+    ...(picture ? { picture } : {}),
+  }
 }
 
 function apiKeyScopesFromUser(user: AuthUser): string[] {
@@ -199,23 +231,11 @@ class Auth0JwksClient implements Auth0ClientLike {
       typeof verification.payload.email === 'string'
         ? verification.payload.email
         : `${subject}@auth0.local`
-    const permissions = auth0PermissionsFromClaims(
-      verification.payload as Readonly<Record<string, unknown>>,
-    )
-    const emailVerified =
-      typeof verification.payload.email_verified === 'boolean'
-        ? verification.payload.email_verified
-        : undefined
 
     return {
       id: subject,
       email,
-      metadata: {
-        provider: 'auth0',
-        aud: verification.payload.aud,
-        permissions,
-        ...(emailVerified === undefined ? {} : { emailVerified }),
-      },
+      metadata: auth0MetadataFromClaims(verification.payload as Readonly<Record<string, unknown>>),
     }
   }
 

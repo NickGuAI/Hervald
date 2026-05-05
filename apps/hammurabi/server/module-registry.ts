@@ -1,17 +1,21 @@
 import type { Router } from 'express'
-import cron from 'node-cron'
 import { randomBytes } from 'node:crypto'
 import type { IncomingMessage } from 'node:http'
 import type { Duplex } from 'node:stream'
 import type { AgentSessionMonitorOptions } from '@gehirn/ai-services'
 import { createAgentsRouter } from '../modules/agents/routes.js'
-import { CommandRoomExecutor } from '../modules/command-room/executor.js'
-import { CommandRoomRunStore } from '../modules/command-room/run-store.js'
-import { createCommandRoomRouter } from '../modules/command-room/routes.js'
-import { CommandRoomScheduler } from '../modules/command-room/scheduler.js'
-import { CommandRoomTaskStore } from '../modules/command-room/task-store.js'
+import { createAutomationsRouter } from '../modules/automations/routes.js'
+import { AutomationExecutor } from '../modules/automations/executor.js'
+import { AutomationScheduler } from '../modules/automations/scheduler.js'
+import { AutomationStore } from '../modules/automations/store.js'
+import { AutomationQuestEventBus } from '../modules/automations/quest-event-bus.js'
+import { createProviderRegistryRouter } from '../modules/agents/providers/http-router.js'
 import { registerCommanderCron } from '../modules/commanders/cron.js'
 import { createChannelReplyDispatchers } from '../modules/commanders/channel-dispatchers.js'
+import {
+  COMMANDER_EMAIL_POLL_CRON,
+  COMMANDER_TRANSCRIPT_MAINTENANCE_CRON,
+} from '../modules/commanders/cron.js'
 import { QuestStore } from '../modules/commanders/quest-store.js'
 import {
   CommanderEmailConfigStore,
@@ -22,16 +26,21 @@ import {
   resolveCommanderDataDir,
   resolveCommanderSessionStorePath,
 } from '../modules/commanders/paths.js'
+import { createCommanderChannelsRouter } from '../modules/channels/route.js'
 import { createCommandersRouter } from '../modules/commanders/routes.js'
 import { CommanderSessionStore } from '../modules/commanders/store.js'
 import { ConversationStore } from '../modules/commanders/conversation-store.js'
+import { createOrgRouter } from '../modules/org/route.js'
+import { createOperatorsRouter } from '../modules/operators/routes.js'
+import { maintainCommanderTranscriptIndex } from '../modules/commanders/transcript-index.js'
 import { createApprovalsRouter } from '../modules/policies/approvals-routes.js'
 import { ActionPolicyGate } from '../modules/policies/action-policy-gate.js'
 import { ApprovalCoordinator } from '../modules/policies/pending-store.js'
 import { createPoliciesRouter } from '../modules/policies/routes.js'
 import { PolicyStore } from '../modules/policies/store.js'
 import { createServicesRouter } from '../modules/services/routes.js'
-import { createSentinelsRouter } from '../modules/sentinels/routes.js'
+import { createSettingsRouter } from '../modules/settings/routes.js'
+import type { AppSettingsStore } from '../modules/settings/store.js'
 import { createSkillsRouter } from '../modules/skills/routes.js'
 import { createTelemetryRouterWithHub } from '../modules/telemetry/routes.js'
 import { createOtelRouter } from '../modules/telemetry/otel-receiver.js'
@@ -57,6 +66,7 @@ interface ModuleRegistryOptions {
   auth0ClientId?: string
   /** Max concurrent agent sessions (default 10). Set via HAMMURABI_MAX_AGENT_SESSIONS. */
   maxAgentSessions?: number
+  appSettingsStore?: AppSettingsStore
 }
 
 export interface ModuleRegistryResult {
@@ -113,13 +123,18 @@ export function createModules(options: ModuleRegistryOptions = {}): ModuleRegist
   const policyStore = new PolicyStore()
   const approvalCoordinator = new ApprovalCoordinator()
   let actionPolicyGate: ActionPolicyGate | null = null
+  const questEventBus = new AutomationQuestEventBus()
+  const questStore = new QuestStore({
+    dataDir: commanderDataDir,
+    eventBus: questEventBus,
+  })
 
   const agents = createAgentsRouter({
     apiKeyStore: options.apiKeyStore,
     getActionPolicyGate: () => actionPolicyGate,
     maxSessions: options.maxAgentSessions,
     internalToken,
-    questStore: new QuestStore(commanderDataDir),
+    questStore,
   })
   actionPolicyGate = new ActionPolicyGate({
     policyStore,
@@ -128,19 +143,8 @@ export function createModules(options: ModuleRegistryOptions = {}): ModuleRegist
   })
 
   const commanderSessionStorePath = resolveCommanderSessionStorePath(commanderDataDir)
-  // Build ConversationStore BEFORE CommanderSessionStore so the legacy-runtime
-  // backfill in CommanderSessionStore.ensureLoaded() can persist synthetic
-  // Conversation rows derived from pre-#1216 CommanderSession shapes. Without
-  // the persistBackfilledConversation callback wired here, store.ts:670-678
-  // logs a warning and silent-drops the migration — operators upgrading from
-  // pre-#1216 lose historical heartbeat / currentTask / cost / channel data.
-  // See PR #1279 codex review.
   const commanderConversationStore = new ConversationStore(commanderDataDir)
-  const commanderSessionStore = new CommanderSessionStore(commanderSessionStorePath, {
-    persistBackfilledConversation: async (conversation) => {
-      await commanderConversationStore.upsertBackfilledConversation(conversation)
-    },
-  })
+  const commanderSessionStore = new CommanderSessionStore(commanderSessionStorePath)
   const emailConfigStore = new CommanderEmailConfigStore(commanderDataDir)
   const emailStateStore = new CommanderEmailStateStore(commanderDataDir)
   const emailPoller = new EmailPoller({
@@ -150,25 +154,22 @@ export function createModules(options: ModuleRegistryOptions = {}): ModuleRegist
     sessionsInterface: agents.sessionsInterface,
   })
 
-  const commandRoomTaskStore = new CommandRoomTaskStore({
+  const automationStore = new AutomationStore({
     commanderDataDir,
   })
-  const commandRoomRunStore = new CommandRoomRunStore({
-    commanderDataDir,
-    taskStore: commandRoomTaskStore,
-  })
-  const commandRoomExecutor = new CommandRoomExecutor({
-    taskStore: commandRoomTaskStore,
-    runStore: commandRoomRunStore,
+  const automationExecutor = new AutomationExecutor({
+    store: automationStore,
     internalToken,
   })
-  const commandRoomScheduler = new CommandRoomScheduler({
-    taskStore: commandRoomTaskStore,
-    executor: commandRoomExecutor,
+  const automationScheduler = new AutomationScheduler({
+    store: automationStore,
+    executor: automationExecutor,
+    commanderStore: commanderSessionStore,
+    questEventBus,
   })
-  const commandRoomSchedulerInitialized = commandRoomScheduler.initialize()
-  void commandRoomSchedulerInitialized.catch((error) => {
-    console.error('[command-room] Failed to initialize shared scheduler:', error)
+  const automationSchedulerInitialized = automationScheduler.initialize()
+  void automationSchedulerInitialized.catch((error) => {
+    console.error('[automations] Failed to initialize shared scheduler:', error)
   })
 
   const commanders = createCommandersRouter({
@@ -182,51 +183,102 @@ export function createModules(options: ModuleRegistryOptions = {}): ModuleRegist
     // Share the same ConversationStore instance the sessionStore writes
     // backfills into, so router-side reads observe the migrated rows.
     conversationStore: commanderConversationStore,
-    questStoreDataDir: commanderDataDir,
+    questStore,
     heartbeatBasePath: commanderDataDir,
     memoryBasePath: commanderDataDir,
-    commandRoomTaskStore,
-    commandRoomRunStore,
-    commandRoomScheduler,
-    commandRoomSchedulerInitialized,
+    automationStore,
+    automationScheduler,
+    automationSchedulerInitialized,
     channelReplyDispatchers: createChannelReplyDispatchers(),
     emailConfigStore,
     emailStateStore,
     emailPoller,
   })
-
-  registerCommanderCron(cron, {
-    basePath: commanderDataDir,
-    commanderSessionStorePath,
-    enableEmailPoll: parseEnabledFlag(process.env.COMMANDER_EMAIL_POLL_ENABLED),
-    emailPoller,
-  })
-
-  const commandRoom = createCommandRoomRouter({
-    apiKeyStore: options.apiKeyStore,
-    taskStore: commandRoomTaskStore,
-    runStore: commandRoomRunStore,
-    executor: commandRoomExecutor,
-    scheduler: commandRoomScheduler,
-    schedulerInitialized: commandRoomSchedulerInitialized,
-    internalToken,
-    monitorOptions: commandRoomMonitorOptions,
-  })
-
-  const sentinels = createSentinelsRouter({
+  const channels = createCommanderChannelsRouter({
     apiKeyStore: options.apiKeyStore,
     auth0Domain: options.auth0Domain,
     auth0Audience: options.auth0Audience,
     auth0ClientId: options.auth0ClientId,
+    internalToken,
+    sessionStore: commanderSessionStore,
+  })
+
+  if (parseEnabledFlag(process.env.COMMANDER_EMAIL_POLL_ENABLED)) {
+    let emailPollInFlight: Promise<void> | null = null
+    automationScheduler.registerInternalSchedule(
+      'commander-email-poll',
+      process.env.COMMANDER_EMAIL_POLL_CRON?.trim() || COMMANDER_EMAIL_POLL_CRON,
+      () => {
+        if (emailPollInFlight) {
+          return
+        }
+        emailPollInFlight = emailPoller.pollAll()
+          .catch((error) => {
+            console.error('[commanders] Failed commander email poll:', error)
+          })
+          .finally(() => {
+            emailPollInFlight = null
+          })
+      },
+    )
+  }
+
+  automationScheduler.registerInternalSchedule(
+    'commander-transcript-maintenance',
+    process.env.COMMANDER_TRANSCRIPT_MAINTENANCE_CRON?.trim() || COMMANDER_TRANSCRIPT_MAINTENANCE_CRON,
+    async () => {
+      const commanderIds = (await commanderSessionStore.list()).map((session) => session.id)
+      for (const commanderId of commanderIds) {
+        await maintainCommanderTranscriptIndex(commanderId, { basePath: commanderDataDir }).catch((error) => {
+          console.error(`[commanders] Failed transcript maintenance for ${commanderId}:`, error)
+        })
+      }
+    },
+  )
+
+  const automations = createAutomationsRouter({
+    apiKeyStore: options.apiKeyStore,
+    auth0Domain: options.auth0Domain,
+    auth0Audience: options.auth0Audience,
+    auth0ClientId: options.auth0ClientId,
+    store: automationStore,
+    executor: automationExecutor,
+    scheduler: automationScheduler,
+    schedulerInitialized: automationSchedulerInitialized,
     commanderStore: commanderSessionStore,
     internalToken,
+    monitorOptions: commandRoomMonitorOptions,
   })
-  void sentinels.ready.catch((error) => {
-    console.error('[sentinel] Failed to initialize shared scheduler:', error)
+  const operators = createOperatorsRouter({
+    apiKeyStore: options.apiKeyStore,
+    auth0Domain: options.auth0Domain,
+    auth0Audience: options.auth0Audience,
+    auth0ClientId: options.auth0ClientId,
+    internalToken,
+  })
+  const org = createOrgRouter({
+    sessionStore: commanderSessionStore,
+    automationStore,
+    conversationStore: commanderConversationStore,
+    questStore,
+    commanderDataDir,
+    apiKeyStore: options.apiKeyStore,
+    auth0Domain: options.auth0Domain,
+    auth0Audience: options.auth0Audience,
+    auth0ClientId: options.auth0ClientId,
+    internalToken,
   })
 
   const services = createServicesRouter({
     apiKeyStore: options.apiKeyStore,
+  })
+  const settings = createSettingsRouter({
+    store: options.appSettingsStore,
+    apiKeyStore: options.apiKeyStore,
+    auth0Domain: options.auth0Domain,
+    auth0Audience: options.auth0Audience,
+    auth0ClientId: options.auth0ClientId,
+    internalToken,
   })
 
   const policies = createPoliciesRouter({
@@ -251,7 +303,7 @@ export function createModules(options: ModuleRegistryOptions = {}): ModuleRegist
     approvalSessionsInterface: agents.approvalSessionsInterface,
   })
 
-  // Telemetry — returns both the legacy router and the shared hub
+  // Telemetry router + shared hub
   const telemetry = createTelemetryRouterWithHub({
     apiKeyStore: options.apiKeyStore,
   })
@@ -282,6 +334,18 @@ export function createModules(options: ModuleRegistryOptions = {}): ModuleRegist
       shutdown: agents.sessionsInterface.shutdown,
     },
     {
+      name: 'providers',
+      label: 'Provider Registry',
+      routePrefix: '/api',
+      router: createProviderRegistryRouter({
+        apiKeyStore: options.apiKeyStore,
+        auth0Domain: options.auth0Domain,
+        auth0Audience: options.auth0Audience,
+        auth0ClientId: options.auth0ClientId,
+        internalToken,
+      }),
+    },
+    {
       name: 'policies',
       label: 'Action Policies',
       routePrefix: '/api',
@@ -301,22 +365,40 @@ export function createModules(options: ModuleRegistryOptions = {}): ModuleRegist
       router: commanders.router,
     },
     {
+      name: 'channels',
+      label: 'Channels',
+      routePrefix: '/api/commanders',
+      router: channels,
+    },
+    {
       name: 'conversations',
       label: 'Conversations',
       routePrefix: '/api/conversations',
       router: commanders.conversationRouter,
     },
     {
-      name: 'command-room',
-      label: 'Command Room',
-      routePrefix: '/api/command-room',
-      router: commandRoom.router,
+      name: 'operators',
+      label: 'Operators',
+      routePrefix: '/api/operators',
+      router: operators,
     },
     {
-      name: 'sentinels',
-      label: 'Sentinels',
-      routePrefix: '/api/sentinels',
-      router: sentinels.router,
+      name: 'org',
+      label: 'Org Chart',
+      routePrefix: '/api/org',
+      router: org,
+    },
+    {
+      name: 'settings',
+      label: 'App Settings',
+      routePrefix: '/api/settings',
+      router: settings,
+    },
+    {
+      name: 'automations',
+      label: 'Automations',
+      routePrefix: '/api/automations',
+      router: automations.router,
     },
     {
       name: 'telemetry',

@@ -1,9 +1,8 @@
 import { useEffect, useState } from 'react'
 import type { CSSProperties } from 'react'
 import { Triangle } from 'lucide-react'
+import { useProviderRegistry } from '@/hooks/use-providers'
 import type { CommanderAgentType } from '../hooks/useCommander'
-
-const AGENT_TYPE_OPTIONS: CommanderAgentType[] = ['claude', 'codex', 'gemini']
 
 const DESKTOP_CONTAINER_STYLE: CSSProperties = {
   display: 'flex',
@@ -42,10 +41,9 @@ const DESKTOP_SELECT_STYLE: CSSProperties = {
 }
 
 function resolveCommanderAgentType(value?: string | null): CommanderAgentType {
-  if (value === 'codex' || value === 'gemini') {
-    return value
-  }
-  return 'claude'
+  return typeof value === 'string' && value.trim().length > 0
+    ? value.trim()
+    : 'claude'
 }
 
 export interface CommanderStartControlProps {
@@ -63,6 +61,7 @@ export function CommanderStartControl({
   variant = 'desktop',
   onStart,
 }: CommanderStartControlProps) {
+  const { data: providers = [] } = useProviderRegistry()
   const [agentType, setAgentType] = useState<CommanderAgentType>(
     resolveCommanderAgentType(initialAgentType),
   )
@@ -96,9 +95,9 @@ export function CommanderStartControl({
             disabled={disabled}
             className="bg-transparent text-sm normal-case tracking-normal text-washi-white focus:outline-none disabled:cursor-not-allowed disabled:opacity-60"
           >
-            {AGENT_TYPE_OPTIONS.map((option) => (
-              <option key={option} value={option} className="text-sumi-black">
-                {option}
+            {providers.map((provider) => (
+              <option key={provider.id} value={provider.id} className="text-sumi-black">
+                {provider.label.toLowerCase()}
               </option>
             ))}
           </select>
@@ -147,9 +146,9 @@ export function CommanderStartControl({
           disabled={disabled}
           style={DESKTOP_SELECT_STYLE}
         >
-          {AGENT_TYPE_OPTIONS.map((option) => (
-            <option key={option} value={option}>
-              {option}
+          {providers.map((provider) => (
+            <option key={provider.id} value={provider.id}>
+              {provider.label.toLowerCase()}
             </option>
           ))}
         </select>

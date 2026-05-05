@@ -1,7 +1,12 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { getAccessToken } from '@/lib/api'
 import { getWsBase } from '@/lib/api-base'
 import type { SessionQueueSnapshot, StreamEvent } from '@/types'
+import {
+  createWsDirectDispatcher,
+  type AgentSessionStreamInputImage,
+  type SendInput,
+} from '@/hooks/send-dispatcher'
 import { useStreamEventProcessor } from '../../modules/agents/components/use-stream-event-processor'
 import { capMessages, createUserMessage, type MsgItem } from '../../modules/agents/messages/model'
 import {
@@ -11,15 +16,8 @@ import {
 import { createReconnectBackoff, shouldReconnectWebSocketClose } from '../../modules/agents/ws-reconnect'
 
 export type AgentSessionStreamStatus = 'connecting' | 'connected' | 'disconnected'
-export interface AgentSessionStreamInputImage {
-  mediaType: string
-  data: string
-}
-
-export interface AgentSessionStreamSendInput {
-  text: string
-  images?: AgentSessionStreamInputImage[]
-}
+export type { AgentSessionStreamInputImage }
+export type AgentSessionStreamSendInput = SendInput
 
 export function decodeAgentSessionSocketData(data: unknown): string | null {
   if (typeof data === 'string') {
@@ -107,7 +105,7 @@ export function useAgentSessionStream(sessionName?: string, options: AgentSessio
   // messages when the caller genuinely switches sessions. Without this, every
   // WS-setup effect re-run (enabled flicker, processEvent/resetMessages
   // identity change, etc.) would wipe the optimistic message added by
-  // sendInput and make follow-up sends appear to no-op.
+  // sendDispatcher and make follow-up sends appear to no-op.
   const prevSessionNameRef = useRef<string | undefined>(undefined)
 
   // Reset messages + queue ONLY when sessionName changes. Kept separate from
@@ -263,42 +261,24 @@ export function useAgentSessionStream(sessionName?: string, options: AgentSessio
     }
   }, [enabled, onQueueUpdate, processEvent, resetMessages, sessionName])
 
-  const sendInput = useCallback(async ({ text, images }: AgentSessionStreamSendInput): Promise<boolean> => {
-    const trimmed = text.trim()
-    const hasContent = trimmed.length > 0 || Boolean(images && images.length > 0)
-    if (!sessionName || !hasContent) {
-      return false
-    }
+  const pushOptimisticUserMessage = useCallback(
+    (text: string, images?: AgentSessionStreamInputImage[]) => {
+      const id = `user-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+      setMessages((prev) =>
+        capMessages([...prev, createUserMessage(id, text || '[image]', images)]),
+      )
+    },
+    [setMessages],
+  )
 
-    const socket = wsRef.current
-    const optimisticId = `user-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-    const optimisticMessage = createUserMessage(optimisticId, trimmed || '[image]', images)
-    const imagesPayload = images && images.length > 0 ? images : undefined
-
-    if (socket?.readyState === WebSocket.OPEN) {
-      setMessages((prev) => capMessages([...prev, optimisticMessage]))
-      socket.send(JSON.stringify({ type: 'input', text: trimmed, images: imagesPayload }))
-      return true
-    }
-
-    // WS is not OPEN (reconnecting, disconnected, or never-connected). Fall
-    // back to POST /api/agents/sessions/:name/message — the queue-backed HTTP
-    // route waits for turn completion on the server side and can resume
-    // delivery even when raw stdin writes fail. This matches the doctrine
-    // noted in .claude/rules/hammurabi.md under "workers send vs queued
-    // session messages" and makes follow-up sends reliable during the
-    // reconnect window.
-    const fallbackOk = await postInputViaHttpFallback(
+  const sendDispatcher = useMemo(
+    () => createWsDirectDispatcher({
+      wsRef,
       sessionName,
-      { text: trimmed, images: imagesPayload },
-      getAccessToken,
-    )
-    if (!fallbackOk) {
-      return false
-    }
-    setMessages((prev) => capMessages([...prev, optimisticMessage]))
-    return true
-  }, [sessionName, setMessages])
+      fallbackHttp: (body) => postInputViaHttpFallback(sessionName ?? '', body, getAccessToken),
+    }),
+    [sessionName],
+  )
 
   const answerQuestion = useCallback((toolId: string, answers: Record<string, string[]>) => {
     const socket = wsRef.current
@@ -315,7 +295,8 @@ export function useAgentSessionStream(sessionName?: string, options: AgentSessio
 
   return {
     messages,
-    sendInput,
+    sendDispatcher,
+    pushOptimisticUserMessage,
     answerQuestion,
     isStreaming,
     status,

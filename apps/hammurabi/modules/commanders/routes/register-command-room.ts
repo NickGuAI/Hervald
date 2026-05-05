@@ -1,23 +1,196 @@
 import cron from 'node-cron'
+import { getProvider, parseProviderId } from '../../agents/providers/registry.js'
 import { parseOptionalClaudePermissionMode } from '../../agents/session/input.js'
 import {
   buildGitHubHeaders,
   readGitHubError,
 } from '../github-http.js'
+import type {
+  CreateAutomationInput,
+  UpdateAutomationInput,
+} from '../../automations/store.js'
 import {
-  COMMANDER_INSTRUCTION_TASK_TYPE,
   isObject,
   parseCommanderId,
   parseCronInstruction,
   parseCronTaskId,
-  parseCronTaskType,
   parseIssueNumber,
   parseOptionalEnabled,
   parseSchedule,
   parseSessionId,
-  parseTriggerInstruction,
 } from '../route-parsers.js'
 import type { CommanderRoutesContext, GitHubIssueResponse } from './types.js'
+import type { Automation } from '../../automations/types.js'
+
+function parseAutomationTrigger(raw: unknown): 'schedule' | 'quest' | 'manual' | null | undefined {
+  if (raw === undefined) {
+    return undefined
+  }
+  return raw === 'schedule' || raw === 'quest' || raw === 'manual'
+    ? raw
+    : null
+}
+
+function parseAutomationStatus(raw: unknown): 'active' | 'paused' | 'completed' | 'cancelled' | null | undefined {
+  if (raw === undefined) {
+    return undefined
+  }
+  return raw === 'active' || raw === 'paused' || raw === 'completed' || raw === 'cancelled'
+    ? raw
+    : null
+}
+
+function parseOptionalString(raw: unknown): string | null | undefined {
+  if (raw === undefined || raw === null) {
+    return undefined
+  }
+  if (typeof raw !== 'string') {
+    return null
+  }
+  const trimmed = raw.trim()
+  return trimmed.length > 0 ? trimmed : undefined
+}
+
+function parseOptionalQuestTrigger(
+  raw: unknown,
+): { event: 'completed'; commanderId?: string } | null | undefined {
+  if (raw === undefined) {
+    return undefined
+  }
+  if (!isObject(raw) || raw.event !== 'completed') {
+    return null
+  }
+  const commanderId = raw.commanderId === undefined ? undefined : parseCommanderId(raw.commanderId)
+  if (raw.commanderId !== undefined && !commanderId) {
+    return null
+  }
+  return {
+    event: 'completed',
+    ...(commanderId ? { commanderId } : {}),
+  }
+}
+
+function parseOptionalSkillList(raw: unknown): string[] | null | undefined {
+  if (raw === undefined) {
+    return undefined
+  }
+  if (!Array.isArray(raw)) {
+    return null
+  }
+  const nextSkills: string[] = []
+  for (const entry of raw) {
+    if (typeof entry !== 'string' || entry.trim().length === 0) {
+      return null
+    }
+    nextSkills.push(entry.trim())
+  }
+  return nextSkills
+}
+
+function parseOptionalObservations(raw: unknown): string[] | null | undefined {
+  if (raw === undefined) {
+    return undefined
+  }
+  if (!Array.isArray(raw)) {
+    return null
+  }
+  const observations: string[] = []
+  for (const entry of raw) {
+    if (typeof entry !== 'string') {
+      return null
+    }
+    const trimmed = entry.trim()
+    if (trimmed) {
+      observations.push(trimmed)
+    }
+  }
+  return observations
+}
+
+function parseOptionalTimezone(raw: unknown): string | null | undefined {
+  if (raw === undefined || raw === null) {
+    return undefined
+  }
+  if (typeof raw !== 'string') {
+    return null
+  }
+  const timezone = raw.trim()
+  if (!timezone) {
+    return undefined
+  }
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: timezone })
+  } catch {
+    return null
+  }
+  return timezone
+}
+
+function parseOptionalWorkDir(raw: unknown): string | null | undefined {
+  const workDir = parseOptionalString(raw)
+  if (workDir === undefined) {
+    return undefined
+  }
+  if (workDir === null) {
+    return null
+  }
+  return workDir.startsWith('/') ? workDir : null
+}
+
+function parseOptionalSessionType(raw: unknown): 'stream' | 'pty' | null | undefined {
+  if (raw === undefined) {
+    return undefined
+  }
+  return raw === 'stream' || raw === 'pty' ? raw : null
+}
+
+function parsePositiveInteger(raw: unknown): number | null | undefined {
+  if (raw === undefined || raw === null || raw === '') {
+    return undefined
+  }
+  const parsed = typeof raw === 'number' ? raw : Number.parseInt(String(raw), 10)
+  if (!Number.isFinite(parsed) || !Number.isInteger(parsed) || parsed <= 0) {
+    return null
+  }
+  return parsed
+}
+
+function parseOptionalModel(
+  raw: unknown,
+  options: { allowClear: boolean },
+): string | null | undefined {
+  if (raw === undefined) {
+    return undefined
+  }
+  if (raw === null) {
+    return options.allowClear ? null : undefined
+  }
+  if (typeof raw !== 'string') {
+    return undefined
+  }
+  const trimmed = raw.trim()
+  if (trimmed.length > 0) {
+    return trimmed
+  }
+  return options.allowClear ? null : undefined
+}
+
+function toIsoString(value: Date | null | undefined): string | null {
+  if (!(value instanceof Date) || Number.isNaN(value.getTime())) {
+    return null
+  }
+  return value.toISOString()
+}
+
+function toCommanderAutomationResponse(
+  automation: Automation,
+  context: CommanderRoutesContext,
+): Automation & { nextRun: string | null } {
+  return {
+    ...automation,
+    nextRun: toIsoString(context.automationScheduler?.getNextRun(automation.id)),
+  }
+}
 
 export function registerCommandRoomRoutes(
   router: import('express').Router,
@@ -146,10 +319,10 @@ export function registerCommandRoomRoutes(
       issueUrl: `https://github.com/${session.taskSource.owner}/${session.taskSource.repo}/issues/${issueNumber}`,
       startedAt: context.now().toISOString(),
     }
-    const legacyConversation = await context.ensureLegacyConversation(session)
-    const previousIssueNumber = legacyConversation.currentTask?.issueNumber ?? null
+    const defaultConversation = await context.ensureDefaultConversation(session)
+    const previousIssueNumber = defaultConversation.currentTask?.issueNumber ?? null
 
-    const updated = await context.conversationStore.update(legacyConversation.id, (current) => ({
+    const updated = await context.conversationStore.update(defaultConversation.id, (current) => ({
       ...current,
       currentTask,
     }))
@@ -165,7 +338,7 @@ export function registerCommandRoomRoutes(
     })
   })
 
-  router.get('/:id/crons', context.requireReadAccess, async (req, res) => {
+  router.get('/:id/automations', context.requireReadAccess, async (req, res) => {
     const commanderId = parseCommanderId(req.params.id)
     if (!commanderId) {
       res.status(400).json({ error: 'Invalid commander id' })
@@ -173,39 +346,65 @@ export function registerCommandRoomRoutes(
     }
 
     try {
-      await context.commandRoomSchedulerInitialized
-      const taskRecords = await context.listCommanderCronTasksWithStores(commanderId)
-      const response = await Promise.all(
-        taskRecords.map(({ task }) => context.buildCommanderCronTask(task, commanderId)),
-      )
-      res.json(response)
+      await context.automationSchedulerInitialized
+      const trigger = parseAutomationTrigger(req.query.trigger)
+      if (trigger === null) {
+        res.status(400).json({ error: 'trigger must be schedule, quest, or manual when provided' })
+        return
+      }
+      const status = parseAutomationStatus(req.query.status)
+      if (status === null) {
+        res.status(400).json({ error: 'status must be active, paused, completed, or cancelled when provided' })
+        return
+      }
+      const automations = await context.automationStore.list({
+        parentCommanderId: commanderId,
+        ...(trigger ? { trigger } : {}),
+        ...(status ? { status } : {}),
+      })
+      res.json(automations.map((automation) => toCommanderAutomationResponse(automation, context)))
     } catch {
-      res.status(500).json({ error: 'Failed to list cron tasks' })
+      res.status(500).json({ error: 'Failed to list automations' })
     }
   })
 
-  router.post('/:id/crons', context.requireWriteAccess, async (req, res) => {
+  router.post('/:id/automations', context.requireWriteAccess, async (req, res) => {
     const commanderId = parseCommanderId(req.params.id)
     if (!commanderId) {
       res.status(400).json({ error: 'Invalid commander id' })
       return
     }
 
-    const schedule = parseSchedule(req.body?.schedule)
-    if (!schedule) {
-      res.status(400).json({ error: 'schedule is required' })
+    const trigger = parseAutomationTrigger(req.body?.trigger) ?? 'schedule'
+    if (!trigger) {
+      res.status(400).json({ error: 'trigger must be schedule, quest, or manual when provided' })
       return
     }
 
-    const taskType = parseCronTaskType(req.body?.taskType)
-    if (!taskType) {
-      res.status(400).json({ error: 'taskType must be instruction when provided' })
-      return
-    }
-
+    const name = typeof req.body?.name === 'string' && req.body.name.trim()
+      ? req.body.name.trim()
+      : `commander-${commanderId}-automation`
     const instruction = parseCronInstruction(req.body?.instruction)
-    if (taskType === COMMANDER_INSTRUCTION_TASK_TYPE && !instruction) {
+    if (!instruction) {
       res.status(400).json({ error: 'instruction is required' })
+      return
+    }
+    const schedule = parseSchedule(req.body?.schedule)
+    if (trigger === 'schedule' && !schedule) {
+      res.status(400).json({ error: 'schedule is required when trigger=schedule' })
+      return
+    }
+    if (schedule && !cron.validate(schedule)) {
+      res.status(400).json({ error: 'Invalid cron expression' })
+      return
+    }
+    const questTrigger = parseOptionalQuestTrigger(req.body?.questTrigger)
+    if (trigger === 'quest' && !questTrigger) {
+      res.status(400).json({ error: 'questTrigger is required when trigger=quest' })
+      return
+    }
+    if (questTrigger === null) {
+      res.status(400).json({ error: 'questTrigger must be { event: completed, commanderId? } when provided' })
       return
     }
 
@@ -214,220 +413,371 @@ export function registerCommandRoomRoutes(
       res.status(400).json({ error: 'enabled must be a boolean when provided' })
       return
     }
-
-    if (!cron.validate(schedule)) {
-      res.status(400).json({ error: 'Invalid cron expression' })
+    const explicitStatus = parseAutomationStatus(req.body?.status)
+    if (explicitStatus === null) {
+      res.status(400).json({ error: 'status must be active, paused, completed, or cancelled when provided' })
       return
     }
 
-    const name = typeof req.body?.name === 'string' && req.body.name.trim()
-      ? req.body.name.trim()
-      : `commander-${commanderId}-cron`
-    const agentType = req.body?.agentType === 'codex'
-      ? 'codex'
-      : (req.body?.agentType === 'gemini' ? 'gemini' : 'claude')
-    const sessionType = req.body?.sessionType === 'pty'
-      ? 'pty'
-      : req.body?.sessionType === 'stream'
-        ? 'stream'
-        : undefined
+    const agentType = parseProviderId(req.body?.agentType) ?? 'claude'
+    if (!getProvider(agentType)?.capabilities.supportsAutomation) {
+      res.status(400).json({ error: `Provider ${agentType} cannot run automations` })
+      return
+    }
+    const sessionType = parseOptionalSessionType(req.body?.sessionType)
+    if (sessionType === null) {
+      res.status(400).json({ error: 'sessionType must be stream or pty when provided' })
+      return
+    }
     const permissionMode = parseOptionalClaudePermissionMode(req.body?.permissionMode)
     if (permissionMode === null) {
       res.status(400).json({ error: 'permissionMode must be default when provided' })
       return
     }
-    const workDir = typeof req.body?.workDir === 'string' ? req.body.workDir.trim() : ''
-    if (workDir && !workDir.startsWith('/')) {
+    const workDir = parseOptionalWorkDir(req.body?.workDir)
+    if (workDir === null) {
       res.status(400).json({ error: 'workDir must be an absolute path when provided' })
       return
     }
+    const timezone = parseOptionalTimezone(req.body?.timezone)
+    if (timezone === null) {
+      res.status(400).json({ error: 'timezone must be a valid IANA timezone when provided' })
+      return
+    }
+    const maxRuns = parsePositiveInteger(req.body?.maxRuns)
+    if (maxRuns === null) {
+      res.status(400).json({ error: 'maxRuns must be a positive integer when provided' })
+      return
+    }
+    const skills = parseOptionalSkillList(req.body?.skills)
+    if (skills === null) {
+      res.status(400).json({ error: 'skills must be an array of non-empty strings when provided' })
+      return
+    }
+    const observations = parseOptionalObservations(req.body?.observations)
+    if (observations === null) {
+      res.status(400).json({ error: 'observations must be an array of strings when provided' })
+      return
+    }
+    const description = parseOptionalString(req.body?.description)
+    if (description === null) {
+      res.status(400).json({ error: 'description must be a string when provided' })
+      return
+    }
+    const model = parseOptionalString(req.body?.model)
+    if (model === null) {
+      res.status(400).json({ error: 'model must be a string when provided' })
+      return
+    }
     const machine = typeof req.body?.machine === 'string' ? req.body.machine.trim() : ''
+    const status = explicitStatus ?? (enabled === false ? 'paused' : 'active')
+    const createInput: CreateAutomationInput = {
+      name,
+      parentCommanderId: commanderId,
+      trigger,
+      ...(schedule ? { schedule } : {}),
+      ...(questTrigger ? { questTrigger } : {}),
+      instruction,
+      agentType,
+      ...(permissionMode ? { permissionMode } : {}),
+      ...(skills ? { skills } : {}),
+      status,
+      ...(description ? { description } : {}),
+      ...(timezone ? { timezone } : {}),
+      machine,
+      ...(workDir ? { workDir } : {}),
+      ...(model ? { model } : {}),
+      ...(sessionType ? { sessionType } : {}),
+      ...(observations ? { observations } : {}),
+      ...(typeof req.body?.seedMemory === 'string' ? { seedMemory: req.body.seedMemory } : {}),
+      ...(maxRuns ? { maxRuns } : {}),
+    }
 
     try {
-      await context.commandRoomSchedulerInitialized
-      const created = context.commandRoomScheduler
-        ? await context.commandRoomScheduler.createTask({
-            name,
-            commanderId,
-            schedule,
-            machine,
-            workDir,
-            agentType,
-            instruction: instruction ?? '',
-            taskType,
-            enabled: enabled ?? true,
-            sessionType,
-            permissionMode,
-          })
-        : await context.listCommanderCronTaskStores(commanderId)[0].createTask({
-            name,
-            commanderId,
-            schedule,
-            machine,
-            workDir,
-            agentType,
-            instruction: instruction ?? '',
-            taskType,
-            enabled: enabled ?? true,
-            sessionType,
-            permissionMode,
-          })
-      res.status(201).json(await context.buildCommanderCronTask(created, commanderId))
+      await context.automationSchedulerInitialized
+      const created = await context.automationScheduler!.createAutomation(createInput)
+      res.status(201).json(toCommanderAutomationResponse(created, context))
     } catch {
-      res.status(500).json({ error: 'Failed to create cron task' })
+      res.status(500).json({ error: 'Failed to create automation' })
     }
   })
 
-  router.patch('/:id/crons/:cronId', context.requireWriteAccess, async (req, res) => {
+  router.patch('/:id/automations/:automationId', context.requireWriteAccess, async (req, res) => {
     const commanderId = parseCommanderId(req.params.id)
     if (!commanderId) {
       res.status(400).json({ error: 'Invalid commander id' })
       return
     }
 
-    const cronTaskId = parseCronTaskId(req.params.cronId)
-    if (!cronTaskId) {
-      res.status(400).json({ error: 'Invalid cron task id' })
+    const automationId = parseCronTaskId(req.params.automationId)
+    if (!automationId) {
+      res.status(400).json({ error: 'Invalid automation id' })
       return
     }
 
-    const update: {
-      schedule?: string
-      instruction?: string
-      enabled?: boolean
-    } = {}
+    const body = isObject(req.body) ? req.body : {}
+    const patch: UpdateAutomationInput = {}
 
-    if ('schedule' in (req.body ?? {})) {
-      const schedule = parseSchedule(req.body?.schedule)
+    if ('schedule' in body) {
+      const schedule = parseSchedule(body.schedule)
       if (!schedule) {
         res.status(400).json({ error: 'schedule must be a non-empty string' })
         return
       }
-      update.schedule = schedule
+      if (!cron.validate(schedule)) {
+        res.status(400).json({ error: 'Invalid cron expression' })
+        return
+      }
+      patch.schedule = schedule
     }
 
-    if ('instruction' in (req.body ?? {})) {
-      const instruction = parseCronInstruction(req.body?.instruction)
+    if ('instruction' in body) {
+      const instruction = parseCronInstruction(body.instruction)
       if (!instruction) {
         res.status(400).json({ error: 'instruction must be a non-empty string' })
         return
       }
-      update.instruction = instruction
+      patch.instruction = instruction
     }
 
-    if ('enabled' in (req.body ?? {})) {
-      const enabled = parseOptionalEnabled(req.body?.enabled)
+    if ('enabled' in body) {
+      const enabled = parseOptionalEnabled(body.enabled)
       if (enabled === null || enabled === undefined) {
         res.status(400).json({ error: 'enabled must be a boolean' })
         return
       }
-      update.enabled = enabled
+      patch.status = enabled ? 'active' : 'paused'
     }
 
-    if (Object.keys(update).length === 0) {
-      res.status(400).json({ error: 'At least one of schedule, instruction, or enabled is required' })
-      return
+    if ('name' in body) {
+      const name = parseOptionalString(body.name)
+      if (name === null) {
+        res.status(400).json({ error: 'name must be a non-empty string when provided' })
+        return
+      }
+      patch.name = name
     }
-
-    if (update.schedule && !cron.validate(update.schedule)) {
-      res.status(400).json({ error: 'Invalid cron expression' })
+    if ('trigger' in body) {
+      const trigger = parseAutomationTrigger(body.trigger)
+      if (!trigger) {
+        res.status(400).json({ error: 'trigger must be schedule, quest, or manual when provided' })
+        return
+      }
+      patch.trigger = trigger
+    }
+    if ('status' in body) {
+      const status = parseAutomationStatus(body.status)
+      if (!status) {
+        res.status(400).json({ error: 'status must be active, paused, completed, or cancelled when provided' })
+        return
+      }
+      patch.status = status
+    }
+    if ('questTrigger' in body) {
+      if (body.questTrigger === null) {
+        patch.questTrigger = null
+      } else {
+        const questTrigger = parseOptionalQuestTrigger(body.questTrigger)
+        if (!questTrigger) {
+          res.status(400).json({ error: 'questTrigger must be { event: completed, commanderId? } when provided' })
+          return
+        }
+        patch.questTrigger = questTrigger
+      }
+    }
+    if ('description' in body) {
+      const description = parseOptionalString(body.description)
+      if (description === null) {
+        res.status(400).json({ error: 'description must be a string when provided' })
+        return
+      }
+      patch.description = description
+    }
+    if ('timezone' in body) {
+      const timezone = parseOptionalTimezone(body.timezone)
+      if (timezone === null) {
+        res.status(400).json({ error: 'timezone must be a valid IANA timezone when provided' })
+        return
+      }
+      patch.timezone = timezone
+    }
+    if ('machine' in body) {
+      const machine = parseOptionalString(body.machine)
+      if (machine === null) {
+        res.status(400).json({ error: 'machine must be a string when provided' })
+        return
+      }
+      patch.machine = machine ?? ''
+    }
+    if ('workDir' in body) {
+      const workDir = parseOptionalWorkDir(body.workDir)
+      if (workDir === null) {
+        res.status(400).json({ error: 'workDir must be an absolute path when provided' })
+        return
+      }
+      patch.workDir = workDir
+    }
+    if ('agentType' in body) {
+      const agentType = parseProviderId(body.agentType)
+      const provider = agentType ? getProvider(agentType) : undefined
+      if (!provider?.capabilities.supportsCommanderConversation) {
+        res.status(400).json({
+          error: agentType
+            ? `Provider ${agentType} cannot host commander conversations`
+            : 'agentType must be a registered provider when provided',
+        })
+        return
+      }
+      patch.agentType = provider.id
+    }
+    if ('model' in body) {
+      if (body.model === null) {
+        patch.model = null
+      } else {
+        const model = parseOptionalString(body.model)
+        if (model === null) {
+          res.status(400).json({ error: 'model must be a string when provided' })
+          return
+        }
+        patch.model = model
+      }
+    }
+    if ('permissionMode' in body) {
+      const permissionMode = parseOptionalClaudePermissionMode(body.permissionMode)
+      if (permissionMode === null) {
+        res.status(400).json({ error: 'permissionMode must be default when provided' })
+        return
+      }
+      patch.permissionMode = permissionMode
+    }
+    if ('sessionType' in body) {
+      if (body.sessionType === null) {
+        patch.sessionType = null
+      } else {
+        const sessionType = parseOptionalSessionType(body.sessionType)
+        if (!sessionType) {
+          res.status(400).json({ error: 'sessionType must be stream or pty when provided' })
+          return
+        }
+        patch.sessionType = sessionType
+      }
+    }
+    if ('skills' in body) {
+      const skills = parseOptionalSkillList(body.skills)
+      if (skills === null) {
+        res.status(400).json({ error: 'skills must be an array of non-empty strings when provided' })
+        return
+      }
+      patch.skills = skills
+    }
+    if ('observations' in body) {
+      const observations = parseOptionalObservations(body.observations)
+      if (observations === null) {
+        res.status(400).json({ error: 'observations must be an array of strings when provided' })
+        return
+      }
+      patch.observations = observations
+    }
+    if ('seedMemory' in body) {
+      if (typeof body.seedMemory !== 'string') {
+        res.status(400).json({ error: 'seedMemory must be a string when provided' })
+        return
+      }
+      patch.seedMemory = body.seedMemory
+    }
+    if ('maxRuns' in body) {
+      const maxRuns = parsePositiveInteger(body.maxRuns)
+      if (maxRuns === null) {
+        res.status(400).json({ error: 'maxRuns must be a positive integer when provided' })
+        return
+      }
+      patch.maxRuns = maxRuns
+    }
+    if (Object.keys(patch).length === 0) {
+      res.status(400).json({ error: 'At least one automation field is required' })
       return
     }
 
     try {
-      await context.commandRoomSchedulerInitialized
-      const record = await context.findCommanderCronTaskWithStores(commanderId, cronTaskId)
-      if (!record) {
-        res.status(404).json({ error: 'Cron task not found' })
+      await context.automationSchedulerInitialized
+      const current = await context.automationStore.get(automationId)
+      if (!current || current.parentCommanderId !== commanderId) {
+        res.status(404).json({ error: 'Automation not found' })
         return
       }
-
-      let updated = context.commandRoomScheduler
-        ? await context.commandRoomScheduler.updateTask(cronTaskId, update)
-        : null
-      if (!updated) {
-        updated = await record.stores.taskStore.updateTask(cronTaskId, update)
-      }
-      if (!updated || updated.commanderId !== commanderId) {
-        res.status(404).json({ error: 'Cron task not found' })
+      const updated = await context.automationScheduler!.updateAutomation(automationId, patch)
+      if (!updated || updated.parentCommanderId !== commanderId) {
+        res.status(404).json({ error: 'Automation not found' })
         return
       }
-
-      res.json(await context.buildCommanderCronTask(updated, commanderId))
+      res.json(toCommanderAutomationResponse(updated, context))
     } catch {
-      res.status(500).json({ error: 'Failed to update cron task' })
+      res.status(500).json({ error: 'Failed to update automation' })
     }
   })
 
-  router.delete('/:id/crons/:cronId', context.requireWriteAccess, async (req, res) => {
+  router.delete('/:id/automations/:automationId', context.requireWriteAccess, async (req, res) => {
     const commanderId = parseCommanderId(req.params.id)
     if (!commanderId) {
       res.status(400).json({ error: 'Invalid commander id' })
       return
     }
 
-    const cronTaskId = parseCronTaskId(req.params.cronId)
-    if (!cronTaskId) {
-      res.status(400).json({ error: 'Invalid cron task id' })
+    const automationId = parseCronTaskId(req.params.automationId)
+    if (!automationId) {
+      res.status(400).json({ error: 'Invalid automation id' })
       return
     }
 
     try {
-      await context.commandRoomSchedulerInitialized
-      const record = await context.findCommanderCronTaskWithStores(commanderId, cronTaskId)
-      if (!record) {
-        res.status(404).json({ error: 'Cron task not found' })
+      await context.automationSchedulerInitialized
+      const current = await context.automationStore.get(automationId)
+      if (!current || current.parentCommanderId !== commanderId) {
+        res.status(404).json({ error: 'Automation not found' })
         return
       }
-
-      const schedulerDeleted = context.commandRoomScheduler
-        ? await context.commandRoomScheduler.deleteTask(cronTaskId)
-        : false
-
-      let deletedCount = 0
-      for (const taskStore of context.listCommanderCronTaskStores(commanderId)) {
-        deletedCount += await taskStore.deleteTaskEverywhere(cronTaskId, commanderId)
-      }
-      if (!schedulerDeleted && deletedCount === 0) {
-        res.status(404).json({ error: 'Cron task not found' })
+      const deleted = await context.automationScheduler!.deleteAutomation(automationId)
+      if (!deleted) {
+        res.status(404).json({ error: 'Automation not found' })
         return
       }
-      await Promise.all(
-        context.listCommanderCronRunStores(commanderId).map((runStore) => runStore.deleteRunsForTask(cronTaskId)),
-      )
       res.status(204).send()
     } catch {
-      res.status(500).json({ error: 'Failed to delete cron task' })
+      res.status(500).json({ error: 'Failed to delete automation' })
     }
   })
 
-  router.post('/:id/cron-trigger', context.requireWriteAccess, async (req, res) => {
+  router.post('/:id/automations/:automationId/run', context.requireWriteAccess, async (req, res) => {
     const commanderId = parseCommanderId(req.params.id)
     if (!commanderId) {
       res.status(400).json({ error: 'Invalid commander id' })
       return
     }
 
-    const instruction = parseTriggerInstruction(req.body)
-    if (!instruction) {
-      res.status(200).json({ ok: true, triggered: false })
+    const automationId = parseCronTaskId(req.params.automationId)
+    if (!automationId) {
+      res.status(400).json({ error: 'Invalid automation id' })
       return
     }
 
     try {
-        const runtime = context.runtimes.get(commanderId)
-        if (runtime && context.sessionsInterface) {
-          const session = await context.sessionStore.get(commanderId)
-          if (session && session.state === 'running') {
-            runtime.lastTaskState = instruction
-            const sent = await context.sessionsInterface.sendToSession(`commander-${commanderId}`, instruction)
-            res.status(200).json({ ok: true, triggered: sent })
-            return
-        }
+      await context.automationSchedulerInitialized
+      const current = await context.automationStore.get(automationId)
+      if (!current || current.parentCommanderId !== commanderId) {
+        res.status(404).json({ error: 'Automation not found' })
+        return
       }
-      res.status(200).json({ ok: true, triggered: false })
+      const result = await context.automationScheduler!.runAutomation(automationId, 'manual')
+      if (!result) {
+        res.status(409).json({ error: 'Automation could not be triggered in its current state' })
+        return
+      }
+      res.status(201).json({
+        automation: toCommanderAutomationResponse(result.automation, context),
+        historyEntry: result.historyEntry,
+      })
     } catch {
-      res.status(500).json({ error: 'Failed to trigger commander instruction' })
+      res.status(500).json({ error: 'Failed to trigger automation' })
     }
   })
 }

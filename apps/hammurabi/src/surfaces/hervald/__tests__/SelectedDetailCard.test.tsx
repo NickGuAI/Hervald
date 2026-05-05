@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
-import { act } from 'react'
+import type { ReactElement } from 'react'
+import { flushSync } from 'react-dom'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { SelectedDetailCard } from '../SelectedDetailCard'
@@ -8,11 +9,11 @@ import { SelectedDetailCard } from '../SelectedDetailCard'
 let root: Root | null = null
 let container: HTMLDivElement | null = null
 
-async function render(element: React.ReactElement) {
+async function render(element: ReactElement) {
   container = document.createElement('div')
   document.body.appendChild(container)
   root = createRoot(container)
-  await act(async () => {
+  flushSync(() => {
     root?.render(element)
   })
 }
@@ -24,7 +25,7 @@ describe('SelectedDetailCard', () => {
 
   afterEach(async () => {
     if (root) {
-      await act(async () => {
+      flushSync(() => {
         root?.unmount()
       })
     }
@@ -60,7 +61,7 @@ describe('SelectedDetailCard', () => {
     expect(document.body.textContent).toContain('Dismiss removes this exited worker from the team list')
     expect(document.body.textContent).toContain('resume handle')
 
-    await act(async () => {
+    flushSync(() => {
       button?.click()
     })
 

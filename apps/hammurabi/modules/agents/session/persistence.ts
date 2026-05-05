@@ -1,6 +1,12 @@
-import { appendFile, mkdir, readFile, writeFile } from 'node:fs/promises'
+import { appendFile, mkdir, readFile } from 'node:fs/promises'
 import * as path from 'node:path'
+import {
+  migrateProviderContext,
+  migratedProviderContextChanged,
+  sanitizeProviderContextForPersistence,
+} from '../../../migrations/provider-context.js'
 import { resolveCommanderDataDir } from '../../commanders/paths.js'
+import { writeJsonFileAtomically } from '../../../migrations/write-json-file-atomically.js'
 import { resolveModuleDataDir } from '../../data-dir.js'
 import {
   DEFAULT_CLAUDE_ADAPTIVE_THINKING_MODE,
@@ -40,6 +46,10 @@ import {
   type TranscriptMeta,
   writeSessionMeta,
 } from '../transcript-store.js'
+import {
+  ensureCodexProviderContext,
+} from '../providers/provider-session-context.js'
+import { getProvider } from '../providers/registry.js'
 
 export interface PersistedSessionsWriteDeps {
   sessions: Map<string, AnySession>
@@ -54,18 +64,10 @@ export interface PersistedRestoreDeps {
   sessionStorePath?: string
   machineRegistry: MachineRegistryStore
   applyUsageEvent: (session: StreamSession, event: StreamJsonEvent) => void
-  createClaudeSession: (
+  restoreProviderSession: (
     entry: PersistedStreamSession,
     machine?: MachineConfig,
   ) => StreamSession | Promise<StreamSession>
-  createCodexSession: (
-    entry: PersistedStreamSession,
-    machine?: MachineConfig,
-  ) => Promise<StreamSession>
-  createGeminiSession: (
-    entry: PersistedStreamSession,
-    machine?: MachineConfig,
-  ) => Promise<StreamSession>
 }
 
 function defaultSessionStorePath(): string {
@@ -93,9 +95,10 @@ export function buildTranscriptMeta(session: StreamSession): TranscriptMeta {
     cwd: session.cwd,
     host: session.host,
     createdAt: session.createdAt,
-    claudeSessionId: session.claudeSessionId,
-    codexThreadId: session.codexThreadId,
-    geminiSessionId: session.geminiSessionId,
+    providerContext: sanitizeProviderContextForPersistence(session.providerContext, {
+      effort: session.effort,
+      adaptiveThinking: session.adaptiveThinking,
+    }),
     spawnedBy: session.spawnedBy,
   }
 }
@@ -128,9 +131,7 @@ export function appendCommanderTranscriptEvent(
     return
   }
 
-  const rawTranscriptId = session.claudeSessionId
-    ?? session.codexThreadId
-    ?? session.geminiSessionId
+  const rawTranscriptId = getProvider(session.agentType)?.transcriptId(session, event)
     ?? extractClaudeSessionId(event)
     ?? session.name
   const transcriptId = sanitizeTranscriptFileKey(rawTranscriptId)
@@ -206,17 +207,22 @@ export function serializePersistedSessionsState(
   const sessionsByName = new Map<string, PersistedStreamSession>()
   for (const session of deps.sessions.values()) {
     if (session.kind !== 'stream') continue
-    if (session.sessionType === 'cron' && session.lastTurnCompleted && session.finalResultEvent) continue
-    if (session.agentType === 'claude' && (!session.claudeSessionId || !session.lastTurnCompleted)) continue
-    if (session.agentType === 'codex' && !session.codexThreadId) continue
+    if (
+      (session.sessionType === 'cron' || session.sessionType === 'automation') &&
+      session.lastTurnCompleted &&
+      session.finalResultEvent
+    ) continue
+    if (!getProvider(session.agentType)?.snapshotForPersist(session)) continue
     sessionsByName.set(session.name, buildPersistedEntryFromLiveStreamSession(session.name, session))
   }
 
   for (const [sessionName, exited] of deps.exitedStreamSessions) {
-    if (exited.sessionType === 'cron') continue
-    if (exited.agentType === 'claude' && !exited.claudeSessionId) continue
-    if (exited.agentType === 'codex' && !exited.codexThreadId) continue
-    sessionsByName.set(sessionName, buildPersistedEntryFromExitedSession(sessionName, exited))
+    if (exited.sessionType === 'cron' || exited.sessionType === 'automation') continue
+    const persistedExited = buildPersistedEntryFromExitedSession(sessionName, exited)
+    if (!getProvider(exited.agentType)?.hasResumeIdentifier(persistedExited)) {
+      continue
+    }
+    sessionsByName.set(sessionName, persistedExited)
   }
 
   const restoredSessions = [...sessionsByName.values()]
@@ -227,9 +233,9 @@ export function serializePersistedSessionsState(
 export async function writePersistedSessionsState(
   sessionStorePath: string,
   payload: PersistedSessionsState,
+  options: { backup?: boolean } = {},
 ): Promise<void> {
-  await mkdir(path.dirname(sessionStorePath), { recursive: true })
-  await writeFile(sessionStorePath, JSON.stringify(payload, null, 2), 'utf8')
+  await writeJsonFileAtomically(sessionStorePath, payload, { backup: options.backup })
 }
 
 export async function readPersistedSessionsState(
@@ -255,7 +261,54 @@ export async function readPersistedSessionsState(
     return { sessions: [] }
   }
 
-  return parsePersistedSessionsState(parsed)
+  const payload = asObject(parsed)
+  if (!Array.isArray(payload?.sessions)) {
+    return parsePersistedSessionsState(parsed)
+  }
+
+  let migratedCount = 0
+  let migratedSessions: unknown[] | null = null
+  for (const [index, entry] of payload.sessions.entries()) {
+    if (!asObject(entry)) {
+      if (migratedSessions) {
+        migratedSessions.push(entry)
+      }
+      continue
+    }
+
+    const { cleaned } = migrateProviderContext(entry)
+    const changed = migratedProviderContextChanged(entry, cleaned)
+    if (!changed) {
+      if (migratedSessions) {
+        migratedSessions.push(entry)
+      }
+      continue
+    }
+
+    if (!migratedSessions) {
+      migratedSessions = payload.sessions.slice(0, index)
+    }
+    migratedSessions.push(cleaned)
+    migratedCount += 1
+  }
+
+  if (migratedCount === 0 || !migratedSessions) {
+    return parsePersistedSessionsState(parsed)
+  }
+
+  const migratedPayload = {
+    ...payload,
+    sessions: migratedSessions,
+  }
+
+  if (migratedCount > 0) {
+    await writeJsonFileAtomically(resolvedPath, migratedPayload, { backup: true })
+    console.warn(
+      `[agents][migration] Migrated providerContext in ${migratedCount} stream session record(s)`,
+    )
+  }
+
+  return parsePersistedSessionsState(migratedPayload)
 }
 
 export async function restorePersistedSessions(
@@ -264,29 +317,34 @@ export async function restorePersistedSessions(
   const persisted = await readPersistedSessionsState(deps.sessionStorePath)
   if (persisted.sessions.length === 0) return
 
-  for (const rawEntry of persisted.sessions) {
+  const machines = await deps.machineRegistry.readMachineRegistry()
+  let remainingLiveSlots = Math.max(0, deps.maxSessions - deps.sessions.size)
+
+  await Promise.allSettled(persisted.sessions.map(async (rawEntry) => {
     if (deps.sessions.has(rawEntry.name)) {
-      continue
+      return
     }
 
     try {
       const { entry, events } = await resolveRestoredReplaySource(rawEntry)
 
       if (entry.sessionState === 'exited') {
+        if (!entry.sessionType || !entry.creator) {
+          return
+        }
         const hadResult = entry.hadResult ?? false
-        if (
-          (entry.agentType === 'claude' && !entry.claudeSessionId) ||
-          (entry.agentType === 'codex' && !entry.codexThreadId) ||
-          (entry.agentType === 'gemini' && !entry.geminiSessionId)
-        ) {
-          continue
+        if (!getProvider(entry.agentType)?.hasResumeIdentifier(entry)) {
+          return
         }
 
+        const provider = getProvider(entry.agentType)
+        const supportsEffort = provider?.uiCapabilities.supportsEffort ?? false
+        const supportsAdaptiveThinking = provider?.uiCapabilities.supportsAdaptiveThinking ?? false
         deps.exitedStreamSessions.set(entry.name, {
           phase: 'exited',
           hadResult,
-          sessionType: entry.sessionType ?? 'worker',
-          creator: entry.creator ?? { kind: 'human' },
+          sessionType: entry.sessionType,
+          creator: entry.creator,
           agentType: entry.agentType,
           mode: entry.mode,
           cwd: entry.cwd,
@@ -297,14 +355,12 @@ export async function restorePersistedSessions(
           spawnedBy: entry.spawnedBy,
           spawnedWorkers: entry.spawnedWorkers ? [...entry.spawnedWorkers] : [],
           createdAt: entry.createdAt,
-          claudeSessionId: entry.claudeSessionId,
-          codexThreadId: entry.codexThreadId,
+          providerContext: entry.providerContext,
           activeTurnId: entry.activeTurnId,
-          geminiSessionId: entry.geminiSessionId,
-          effort: entry.agentType === 'claude'
+          effort: supportsEffort
             ? entry.effort ?? DEFAULT_CLAUDE_EFFORT_LEVEL
             : undefined,
-          adaptiveThinking: entry.agentType === 'claude'
+          adaptiveThinking: supportsAdaptiveThinking
             ? entry.adaptiveThinking ?? DEFAULT_CLAUDE_ADAPTIVE_THINKING_MODE
             : undefined,
           resumedFrom: entry.resumedFrom,
@@ -344,54 +400,62 @@ export async function restorePersistedSessions(
               subtype: 'success',
               finalComment: '',
               costUsd: 0,
-              sessionType: entry.sessionType ?? 'worker',
-              creator: entry.creator ?? { kind: 'human' },
+              sessionType: entry.sessionType,
+              creator: entry.creator,
               spawnedBy: entry.spawnedBy,
             })
           }
         }
-        continue
+        return
       }
 
-      if (deps.sessions.size >= deps.maxSessions) {
-        break
+      if (!entry.sessionType || !entry.creator) {
+        return
       }
 
       let machine: MachineConfig | undefined
       if (entry.host) {
-        const machines = await deps.machineRegistry.readMachineRegistry()
         machine = machines.find((candidate) => candidate.id === entry.host)
         if (!machine) {
-          continue
+          return
         }
       }
 
-      const session = entry.agentType === 'codex'
-        ? await deps.createCodexSession(entry, machine)
-        : entry.agentType === 'gemini'
-          ? await deps.createGeminiSession(entry, machine)
-          : await deps.createClaudeSession(entry, machine)
-
-      applyRestoredReplayState(session, events, deps.applyUsageEvent, entry.conversationEntryCount)
-      session.messageQueue = new SessionMessageQueue(
-        DEFAULT_SESSION_MESSAGE_QUEUE_LIMIT,
-        entry.queuedMessages ?? [],
-      )
-      session.currentQueuedMessage = entry.currentQueuedMessage
-      session.pendingDirectSendMessages = entry.pendingDirectSendMessages
-        ? [...entry.pendingDirectSendMessages]
-        : []
-      session.activeTurnId = entry.activeTurnId
-      if (entry.agentType === 'codex' && entry.activeTurnId) {
-        session.lastTurnCompleted = false
-        session.completedTurnAt = undefined
-        session.finalResultEvent = undefined
+      if (remainingLiveSlots <= 0) {
+        return
       }
-      deps.sessions.set(entry.name, session)
-    } catch {
-      // Ignore individual restore failures and continue restoring others.
+      remainingLiveSlots -= 1
+
+      try {
+        const session = await deps.restoreProviderSession(entry, machine)
+
+        applyRestoredReplayState(session, events, deps.applyUsageEvent, entry.conversationEntryCount)
+        session.messageQueue = new SessionMessageQueue(
+          DEFAULT_SESSION_MESSAGE_QUEUE_LIMIT,
+          entry.queuedMessages ?? [],
+        )
+        session.currentQueuedMessage = entry.currentQueuedMessage
+        session.pendingDirectSendMessages = entry.pendingDirectSendMessages
+          ? [...entry.pendingDirectSendMessages]
+          : []
+        session.activeTurnId = entry.activeTurnId
+        if (entry.agentType === 'codex' && entry.activeTurnId) {
+          session.lastTurnCompleted = false
+          session.completedTurnAt = undefined
+          session.finalResultEvent = undefined
+        }
+        deps.sessions.set(entry.name, session)
+      } catch (error) {
+        remainingLiveSlots += 1
+        throw error
+      }
+    } catch (error) {
+      console.warn(
+        `[agents][restore] Failed to restore persisted session "${rawEntry.name}"`,
+        error,
+      )
     }
-  }
+  }))
 }
 
 export function clearCodexResumeMetadata(
@@ -402,14 +466,14 @@ export function clearCodexResumeMetadata(
 ): void {
   const liveSession = sessions.get(sessionName)
   if (liveSession?.kind === 'stream' && liveSession.agentType === 'codex') {
-    liveSession.codexThreadId = undefined
+    ensureCodexProviderContext(liveSession).threadId = undefined
     liveSession.activeTurnId = undefined
     liveSession.codexTurnStaleAt = undefined
   }
 
   const exitedSession = exitedStreamSessions.get(sessionName)
   if (exitedSession?.agentType === 'codex') {
-    exitedSession.codexThreadId = undefined
+    ensureCodexProviderContext(exitedSession).threadId = undefined
     exitedSession.activeTurnId = undefined
   }
 
@@ -427,8 +491,8 @@ export function retireLiveCodexSessionForResume(
 ): void {
   clearCodexTurnWatchdog(session)
   markCodexTurnHealthy(session)
-  session.codexNotificationCleanup?.()
-  session.codexNotificationCleanup = undefined
+  ensureCodexProviderContext(session).notificationCleanup?.()
+  ensureCodexProviderContext(session).notificationCleanup = undefined
   for (const client of session.clients) {
     client.close(1000, 'Session resumed')
   }

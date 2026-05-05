@@ -23,16 +23,21 @@ export async function reserveLocalCodexRuntimePort(): Promise<number> {
   })
 }
 
-export async function spawnLocalCodexRuntime(): Promise<{ port: number; process: ChildProcess }> {
+export async function spawnLocalCodexRuntime(
+  spawnImpl: typeof spawn = spawn,
+): Promise<{ port: number; process: ChildProcess }> {
   const port = await reserveLocalCodexRuntimePort()
-  const process = spawn('codex', ['app-server', '--listen', `ws://127.0.0.1:${port}`], {
+  const process = spawnImpl('codex', ['app-server', '--listen', `ws://127.0.0.1:${port}`], {
     stdio: ['pipe', 'pipe', 'pipe'],
     env: scrubEnvironmentVariables(globalThis.process.env, ANTHROPIC_MODEL_ENV_KEYS),
   })
   return { port, process }
 }
 
-export function spawnRemoteCodexRuntime(machine: MachineConfig & { host: string }): ChildProcess {
+export function spawnRemoteCodexRuntime(
+  machine: MachineConfig & { host: string },
+  spawnImpl: typeof spawn = spawn,
+): ChildProcess {
   const preparedLaunch = prepareMachineLaunchEnvironment(
     machine,
     scrubEnvironmentVariables(globalThis.process.env, ANTHROPIC_MODEL_ENV_KEYS),
@@ -42,7 +47,7 @@ export function spawnRemoteCodexRuntime(machine: MachineConfig & { host: string 
     undefined,
     preparedLaunch.sourcedEnvFile,
   )
-  return spawn('ssh', buildSshArgs(machine, remoteCommand, false, undefined, preparedLaunch.sshSendEnvKeys), {
+  return spawnImpl('ssh', buildSshArgs(machine, remoteCommand, false, undefined, preparedLaunch.sshSendEnvKeys), {
     stdio: ['pipe', 'pipe', 'pipe'],
     env: preparedLaunch.env,
   })

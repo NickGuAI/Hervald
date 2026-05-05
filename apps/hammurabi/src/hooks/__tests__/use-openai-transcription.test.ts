@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
-import { act, createElement } from 'react'
+import { createElement } from 'react'
+import { flushSync } from 'react-dom'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type {
@@ -170,7 +171,7 @@ async function renderHook(options?: UseOpenAITranscriptionOptions): Promise<void
   document.body.appendChild(container)
   root = createRoot(container)
 
-  await act(async () => {
+  flushSync(() => {
     root?.render(createElement(HookHarness, { options }))
   })
 }
@@ -180,10 +181,8 @@ async function startListeningAndGetSocket(): Promise<MockWebSocket> {
     throw new Error('Hook was not rendered')
   }
 
-  await act(async () => {
-    latestHookState?.startListening()
-    await flushMicrotasks()
-  })
+  latestHookState?.startListening()
+  await flushMicrotasks()
 
   const socket = MockWebSocket.instances.at(-1)
   if (!socket) {
@@ -219,10 +218,12 @@ beforeEach(() => {
   })
 })
 
-afterEach(async () => {
-  await act(async () => {
-    root?.unmount()
-  })
+afterEach(() => {
+  if (root) {
+    flushSync(() => {
+      root?.unmount()
+    })
+  }
   root = null
   container?.remove()
   container = null
@@ -307,13 +308,13 @@ describe('useOpenAITranscription websocket lifecycle', () => {
     await renderHook()
     const socket = await startListeningAndGetSocket()
 
-    await act(async () => {
+    flushSync(() => {
       socket.emitOpen()
       socket.emitMessage({ type: 'ready' })
       socket.emitMessage({ type: 'final', text: 'first finalized segment' })
       socket.emitClose()
-      await flushMicrotasks()
     })
+    await flushMicrotasks()
 
     expect(latestHookState?.transcript).toBe('first finalized segment')
     expect(latestHookState?.isListening).toBe(false)
@@ -325,13 +326,13 @@ describe('useOpenAITranscription websocket lifecycle', () => {
     await renderHook({ onError })
     const socket = await startListeningAndGetSocket()
 
-    await act(async () => {
+    flushSync(() => {
       socket.emitOpen()
       socket.emitMessage({ type: 'ready' })
       socket.emitMessage({ type: 'partial', text: 'spoken words so far' })
       socket.emitMessage({ type: 'error', message: 'Realtime upstream closed' })
-      await flushMicrotasks()
     })
+    await flushMicrotasks()
 
     expect(latestHookState?.transcript).toBe('spoken words so far')
     expect(onError).toHaveBeenCalledWith('Realtime upstream closed')

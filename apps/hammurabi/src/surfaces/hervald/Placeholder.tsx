@@ -27,15 +27,6 @@ const cardStyle: CSSProperties = {
   borderRadius: 'var(--hv-radius-carved-xl)',
 }
 
-const labelStyle: CSSProperties = {
-  fontSize: 11,
-  letterSpacing: '0.14em',
-  textTransform: 'uppercase',
-  color: 'var(--hv-fg-subtle)',
-  marginBottom: 12,
-  fontFamily: 'var(--hv-font-body)',
-}
-
 const titleStyle: CSSProperties = {
   margin: 0,
   fontFamily: 'var(--hv-font-primary)',
@@ -59,7 +50,6 @@ export function Placeholder({ title, note, children }: PlaceholderProps) {
   return (
     <div style={outerStyle}>
       <div style={cardStyle}>
-        <div style={labelStyle}>Placeholder · wire to real data</div>
         <h1 style={titleStyle}>{title}</h1>
         <p style={noteStyle}>{note}</p>
         {children && <div style={{ marginTop: 32 }}>{children}</div>}

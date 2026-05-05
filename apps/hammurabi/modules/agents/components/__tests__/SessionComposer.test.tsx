@@ -42,7 +42,7 @@ let container: HTMLDivElement | null = null
 
 function buildProps(overrides: Partial<ComposerProps> = {}): ComposerProps {
   return {
-    sessionName: 'commander-athena',
+    sessionName: 'commander-atlas',
     theme: 'dark',
     onSend: vi.fn(() => true),
     onQueue: vi.fn(() => true),
@@ -108,6 +108,39 @@ afterEach(() => {
 })
 
 describe('SessionComposer', () => {
+  it('does not render the composer-mode-toggle', async () => {
+    renderComposer()
+
+    expect(document.body.querySelector('.composer-mode-toggle')).toBeNull()
+  })
+
+  it('does not render a markdown preview', async () => {
+    renderComposer()
+    setDraftText('Preview mode is gone')
+
+    expect(document.body.querySelector('textarea')).not.toBeNull()
+    expect(document.body.querySelector('.composer-preview-markdown')).toBeNull()
+  })
+
+  it('ignores Cmd+Shift+P after the preview shortcut was removed', async () => {
+    renderComposer()
+    setDraftText('Stay in the textarea')
+
+    flushSync(() => {
+      window.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'P',
+        metaKey: true,
+        shiftKey: true,
+        bubbles: true,
+      }))
+    })
+
+    const textarea = document.body.querySelector('textarea') as HTMLTextAreaElement | null
+    expect(textarea).not.toBeNull()
+    expect(textarea?.value).toBe('Stay in the textarea')
+    expect(document.body.querySelector('.composer-preview-markdown')).toBeNull()
+  })
+
   it('renders exactly three bottom-row controls in the mobile variant', async () => {
     renderComposer({ variant: 'mobile' })
 

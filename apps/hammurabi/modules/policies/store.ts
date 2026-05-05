@@ -1,7 +1,6 @@
 import path from 'node:path'
 import { resolveModuleDataDir } from '../data-dir.js'
 import {
-  createStandingApprovalEntry,
   DEFAULT_STANDING_APPROVAL_EXPIRY_DAYS,
   getActiveStandingApprovalEmails,
   normalizeStandingApprovalEntries,
@@ -91,42 +90,22 @@ function normalizePolicyRecord(
 
   const updatedAt = asTrimmedString(entry.updatedAt)
   const updatedBy = asTrimmedString(entry.updatedBy)
+  const allowlist = normalizeStringArray(entry.allowlist)
   const blocklist = normalizeStringArray(entry.blocklist)
-  const legacyAllowlist = normalizeStringArray(entry.allowlist)
   const normalizedNow = now()
 
   const standingApproval = actionId === SEND_EMAIL_ACTION_ID
     ? normalizeStandingApprovalEntries(
-      entry.standing_approval ?? entry.standingApproval,
+      entry.standing_approval,
       {
         now: normalizedNow,
         default_added_at: updatedAt ?? normalizedNow.toISOString(),
-        default_added_by: updatedBy ?? 'legacy-migration',
-        default_reason: 'Migrated legacy allowlist entry.',
+        default_added_by: updatedBy ?? 'email-allowlist-migration',
+        default_reason: 'Migrated standing approval entry.',
         expiry_days: standingApprovalExpiryDays,
       },
     )
     : []
-
-  const legacyStandingApproval = legacyAllowlist
-    .map((email) =>
-      createStandingApprovalEntry({
-        email,
-        now: normalizedNow,
-        added_at: updatedAt ?? normalizedNow.toISOString(),
-        added_by: updatedBy ?? 'legacy-migration',
-        reason: 'Migrated legacy allowlist entry.',
-        expiry_days: standingApprovalExpiryDays,
-      }))
-    .filter((value): value is NonNullable<typeof value> => value !== null)
-
-  const normalizedStandingApproval = actionId === SEND_EMAIL_ACTION_ID
-    ? (standingApproval.length > 0 ? standingApproval : legacyStandingApproval)
-    : []
-
-  const allowlist = actionId === SEND_EMAIL_ACTION_ID
-    ? getActiveStandingApprovalEmails(normalizedStandingApproval, normalizedNow)
-    : legacyAllowlist
 
   const record: ActionPolicyRecord = {
     actionId,
@@ -135,8 +114,8 @@ function normalizePolicyRecord(
     blocklist,
     ...(actionId === SEND_EMAIL_ACTION_ID
       ? {
-        ...(normalizedStandingApproval.length > 0
-          ? { standing_approval: normalizedStandingApproval }
+        ...(standingApproval.length > 0
+          ? { standing_approval: standingApproval }
           : {}),
       }
       : {}),

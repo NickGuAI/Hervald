@@ -121,9 +121,9 @@ async function readErrorDetail(response: Response): Promise<string | null> {
 
 function printUsage(stdout: Writable): void {
   stdout.write('Usage:\n')
-  stdout.write('  hammurabi sessions list [--type commander|worker|cron|sentinel|all]\n')
+  stdout.write('  hammurabi sessions list [--type commander|worker|automation|all]\n')
   stdout.write('  hammurabi sessions info <name> [--tail <N>] [--json]\n')
-  stdout.write('  hammurabi session register --name <name> --machine <machine> [--cwd <path>] [--agent claude|codex|gemini|openclaw] [--task <text>]\n')
+  stdout.write('  hammurabi session register --name <name> --machine <machine> [--cwd <path>] [--agent <provider>] [--task <text>]\n')
   stdout.write('  hammurabi session heartbeat --name <name>\n')
   stdout.write('  hammurabi session events --name <name> --events \'[{"type":"..."}]\'\n')
   stdout.write('  hammurabi session unregister --name <name>\n')
@@ -155,8 +155,7 @@ function parseListFilter(args: readonly string[]): SessionListFilter | null {
   if (
     rawType === 'commander' ||
     rawType === 'worker' ||
-    rawType === 'cron' ||
-    rawType === 'sentinel'
+    rawType === 'automation'
   ) {
     return rawType
   }

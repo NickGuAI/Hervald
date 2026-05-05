@@ -12,78 +12,36 @@
  * passed through `CommanderInterfaceContext` at construction time — the
  * router instantiates this interface once and the contract is explicit.
  *
- * Non-closure dependencies (codex turn watchdog helpers, default adaptive
- * thinking mode constant) are imported directly so the context interface
+ * Non-closure dependencies stay imported directly so the context interface
  * stays focused on what's actually router-local.
  */
-import {
-  clearCodexTurnWatchdog,
-  markCodexTurnHealthy,
-} from './adapters/codex/helpers.js'
-import { DEFAULT_CLAUDE_ADAPTIVE_THINKING_MODE } from '../claude-adaptive-thinking.js'
-import type { ClaudeEffortLevel } from '../claude-effort.js'
 import type { QueuedMessage, QueuedMessagePriority } from './message-queue.js'
+import type { ProviderCreateOptions } from './providers/provider-adapter.js'
+import { getProvider } from './providers/registry.js'
 import type {
+  AgentType,
   AnySession,
   ClaudePermissionMode,
   CommanderSessionsInterface,
   MachineConfig,
-  SessionCreator,
-  SessionType,
   StreamJsonEvent,
   StreamSession,
 } from './types.js'
 
-/** Signature for the router's Codex app-server session creator. */
-export type CodexSessionCreator = (
-  sessionName: string,
-  mode: ClaudePermissionMode,
-  task: string,
-  cwd: string,
-  options: {
-    resumeSessionId?: string
-    systemPrompt?: string
-    sessionType?: SessionType
-    creator?: SessionCreator
-    conversationId?: string
-  },
-) => Promise<StreamSession>
+type ProviderSessionCreateOptions = Omit<
+  ProviderCreateOptions,
+  'sessionName' | 'mode' | 'task' | 'cwd' | 'machine'
+>
 
-/** Signature for the router's Gemini ACP session creator. */
-export type GeminiSessionCreator = (
-  sessionName: string,
-  mode: ClaudePermissionMode,
-  task: string,
-  cwd: string,
-  options: {
-    resumeSessionId?: string
-    systemPrompt?: string
-    maxTurns?: number
-    sessionType?: SessionType
-    creator?: SessionCreator
-    conversationId?: string
-  },
-) => Promise<StreamSession>
-
-/** Signature for the router's Claude stream session creator (synchronous). */
-export type ClaudeSessionCreator = (
+export type ProviderSessionCreator = (
   sessionName: string,
   mode: ClaudePermissionMode,
   task: string,
   cwd: string | undefined,
   machine: MachineConfig | undefined,
-  agentType: 'claude',
-  options: {
-    systemPrompt?: string
-    effort?: ClaudeEffortLevel
-    adaptiveThinking: typeof DEFAULT_CLAUDE_ADAPTIVE_THINKING_MODE
-    resumeSessionId?: string
-    maxTurns?: number
-    sessionType?: SessionType
-    creator?: SessionCreator
-    conversationId?: string
-  },
-) => StreamSession
+  agentType: AgentType,
+  options?: ProviderSessionCreateOptions,
+) => Promise<StreamSession>
 
 export type SessionTeardown = (session: StreamSession, reason: string) => Promise<void>
 export type RuntimeShutdown = (reason?: string) => Promise<void>
@@ -128,19 +86,15 @@ export interface CommanderInterfaceContext {
   sessionEventHandlers: Map<string, Set<(event: StreamJsonEvent) => void>>
   schedulePersistedSessionsWrite: () => void
 
-  createCodexAppServerSession: CodexSessionCreator
-  createGeminiAcpSession: GeminiSessionCreator
-  createStreamSession: ClaudeSessionCreator
+  createProviderStreamSession: ProviderSessionCreator
 
   createQueuedMessage: CreateQueuedMessage
   enqueueQueuedMessage: EnqueueQueuedMessage
   scheduleQueuedMessageDrain: ScheduleQueueDrain
   sendImmediateTextToStreamSession: SendImmediateText
 
-  teardownCodexSessionRuntime: SessionTeardown
-  teardownGeminiSessionRuntime: SessionTeardown
-  shutdownCodexRuntimes: RuntimeShutdown
-  shutdownGeminiRuntimes: RuntimeShutdown
+  teardownProviderSession: SessionTeardown
+  shutdownProviderRuntimes: RuntimeShutdown
 }
 
 /**
@@ -157,6 +111,8 @@ export type BaseCommanderSessionsInterface = Omit<
   'dispatchWorkerForCommander'
 >
 
+type CreateCommanderSessionInput = Parameters<BaseCommanderSessionsInterface['createCommanderSession']>[0]
+
 /**
  * Construct the commander-session interface backed by the given router
  * context. Behavior is identical to the pre-#921-P5 inline object literal
@@ -169,121 +125,118 @@ export function createCommanderSessionsInterface(
     sessions,
     sessionEventHandlers,
     schedulePersistedSessionsWrite,
-    createCodexAppServerSession,
-    createGeminiAcpSession,
-    createStreamSession,
+    createProviderStreamSession,
     createQueuedMessage,
     enqueueQueuedMessage,
     scheduleQueuedMessageDrain,
     sendImmediateTextToStreamSession,
-    teardownCodexSessionRuntime,
-    teardownGeminiSessionRuntime,
-    shutdownCodexRuntimes,
-    shutdownGeminiRuntimes,
+    teardownProviderSession,
+    shutdownProviderRuntimes,
   } = ctx
 
-  return {
-    async createCommanderSession({
-      name,
-      commanderId,
-      conversationId,
+  async function buildCommanderSession({
+    name,
+    commanderId,
+    conversationId,
+    systemPrompt,
+    agentType,
+    effort,
+    cwd,
+    resumeProviderContext,
+    maxTurns,
+  }: CreateCommanderSessionInput): Promise<StreamSession> {
+    const creator = {
+      kind: 'commander' as const,
+      id: commanderId?.trim() || name,
+    }
+    const provider = getProvider(agentType)
+    if (!provider) {
+      throw new Error(`Unknown provider: ${agentType}`)
+    }
+    const sessionCwd = cwd ?? process.env.HOME ?? '/tmp'
+    const resumeSessionId = resumeProviderContext
+      ? provider.getResumeId({
+        agentType,
+        providerContext: resumeProviderContext,
+      } as StreamSession)
+      : undefined
+    const baseOptions: ProviderSessionCreateOptions = {
       systemPrompt,
-      agentType,
       effort,
-      cwd,
-      resumeSessionId,
-      resumeCodexThreadId,
-      resumeGeminiSessionId,
       maxTurns,
-    }) {
-      const creator = {
-        kind: 'commander' as const,
-        id: commanderId?.trim() || name,
-      }
-      let session: StreamSession
-      if (agentType === 'codex') {
-        const sessionCwd = cwd ?? process.env.HOME ?? '/tmp'
-        if (resumeCodexThreadId) {
-          try {
-            session = await createCodexAppServerSession(
-              name,
-              'default',
-              '',
-              sessionCwd,
-              {
-                resumeSessionId: resumeCodexThreadId,
-                sessionType: 'commander',
-                creator,
-                conversationId,
-              },
-            )
-          } catch {
-            session = await createCodexAppServerSession(
-              name,
-              'default',
-              '',
-              sessionCwd,
-              {
-                systemPrompt,
-                sessionType: 'commander',
-                creator,
-                conversationId,
-              },
-            )
-          }
-        } else {
-          session = await createCodexAppServerSession(
-            name,
-            'default',
-            '',
-            sessionCwd,
-            {
-              systemPrompt,
-              sessionType: 'commander',
-              creator,
-              conversationId,
-            },
-          )
-        }
-      } else if (agentType === 'gemini') {
-        const sessionCwd = cwd ?? process.env.HOME ?? '/tmp'
-        session = await createGeminiAcpSession(
-          name,
-          'default',
-          '',
-          sessionCwd,
-          {
-            resumeSessionId: resumeGeminiSessionId,
-            systemPrompt,
-            maxTurns,
-            sessionType: 'commander',
-            creator,
-            conversationId,
-          },
-        )
-      } else {
-        session = createStreamSession(
-          name,
-          'default',
-          '',
-          cwd,
-          undefined,
-          'claude',
-          {
-            systemPrompt,
-            effort,
-            adaptiveThinking: DEFAULT_CLAUDE_ADAPTIVE_THINKING_MODE,
-            resumeSessionId,
-            maxTurns,
-            sessionType: 'commander',
-            creator,
-            conversationId,
-          },
-        )
-      }
+      sessionType: 'commander',
+      creator,
+      conversationId,
+    }
+
+    return resumeSessionId
+      ? await createProviderStreamSession(
+        name,
+        'default',
+        '',
+        sessionCwd,
+        undefined,
+        agentType,
+        {
+          ...baseOptions,
+          resumeSessionId,
+        },
+      ).catch(async () => createProviderStreamSession(
+        name,
+        'default',
+        '',
+        sessionCwd,
+        undefined,
+        agentType,
+        baseOptions,
+      ))
+      : await createProviderStreamSession(
+        name,
+        'default',
+        '',
+        sessionCwd,
+        undefined,
+        agentType,
+        baseOptions,
+      )
+  }
+
+  return {
+    async createCommanderSession(input) {
+      const { name } = input
+      const session = await buildCommanderSession(input)
       sessions.set(name, session)
       schedulePersistedSessionsWrite()
       return session
+    },
+
+    async replaceCommanderSession(input) {
+      const { name } = input
+      const previous = sessions.get(name)
+      if (previous && previous.kind === 'stream') {
+        await teardownProviderSession(previous, `Provider swap on session "${name}"`)
+      }
+
+      const replacement = await buildCommanderSession(input)
+      if (previous && previous.kind === 'stream' && replacement.kind === 'stream') {
+        // Mirror websocket.ts auto-rotate replacement so same-name provider
+        // swaps preserve replay, usage, entry count, and auto-rotate state.
+        replacement.events = previous.events.slice()
+        replacement.usage = previous.usage ? { ...previous.usage } : previous.usage
+        replacement.conversationEntryCount = previous.conversationEntryCount
+        replacement.autoRotatePending = previous.autoRotatePending
+        // Transfer connected WS clients to the replacement so broadcasts
+        // from the new runtime reach them without a reconnect round-trip.
+        for (const client of previous.clients) {
+          replacement.clients.add(client)
+        }
+        previous.clients.clear()
+      }
+      // sessionEventHandlers is keyed by `name`, so the replacement that
+      // reuses the same slot naturally keeps prior subscribers attached.
+      sessions.set(name, replacement)
+      schedulePersistedSessionsWrite()
+      return replacement
     },
 
     async sendToSession(name, text, options) {
@@ -316,15 +269,7 @@ export function createCommanderSessionsInterface(
       }
 
       if (session.kind === 'stream') {
-        if (session.agentType === 'codex') {
-          clearCodexTurnWatchdog(session)
-          markCodexTurnHealthy(session)
-          void teardownCodexSessionRuntime(session, `Commander stopped session "${name}"`)
-        } else if (session.agentType === 'gemini') {
-          void teardownGeminiSessionRuntime(session, `Commander stopped session "${name}"`)
-        } else {
-          session.process.kill('SIGTERM')
-        }
+        void teardownProviderSession(session, `Commander stopped session "${name}"`)
       } else if (session.kind === 'pty') {
         session.pty.kill()
       }
@@ -360,10 +305,7 @@ export function createCommanderSessionsInterface(
     },
 
     async shutdown() {
-      await Promise.all([
-        shutdownCodexRuntimes(),
-        shutdownGeminiRuntimes(),
-      ])
+      await shutdownProviderRuntimes()
     },
   }
 }

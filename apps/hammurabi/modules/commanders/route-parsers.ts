@@ -1,5 +1,5 @@
 import type { Request } from 'express'
-import type { CommandRoomTaskType } from '../command-room/task-store.js'
+import { parseProviderId } from '../agents/providers/registry.js'
 import { parseOptionalClaudePermissionMode } from '../agents/session/input.js'
 import { parseOptionalClaudeEffort, type ClaudeEffortLevel } from '../claude-effort.js'
 import { DEFAULT_COMMANDER_CONTEXT_MODE } from './store.js'
@@ -32,7 +32,6 @@ const QUEST_STATUSES = new Set<CommanderQuestStatus>(['pending', 'active', 'done
 const QUEST_SOURCES = new Set<CommanderQuestSource>(['manual', 'github-issue', 'idea', 'voice-log'])
 const QUEST_ARTIFACT_TYPES = new Set<QuestArtifactType>(['github_issue', 'github_pr', 'url', 'file'])
 const DEFAULT_CONTEXT_PRESSURE_INPUT_TOKEN_THRESHOLD = 150_000
-export const COMMANDER_INSTRUCTION_TASK_TYPE: CommandRoomTaskType = 'instruction'
 
 export type CommanderMessageMode = 'collect' | 'followup'
 
@@ -472,14 +471,11 @@ export function formatChannelCommanderDisplayName(meta: CommanderChannelMeta): s
 
 export function parseOptionalCommanderAgentType(
   raw: unknown,
-): 'claude' | 'codex' | 'gemini' | undefined | null {
+): string | undefined | null {
   if (raw === undefined || raw === null) {
     return undefined
   }
-  if (raw === 'claude' || raw === 'codex' || raw === 'gemini') {
-    return raw
-  }
-  return null
+  return parseProviderId(raw)
 }
 
 export function parseOptionalCommanderEffort(
@@ -574,7 +570,7 @@ export function parseQuestContract(raw: unknown): CommanderQuestContract | null 
 
   const cwd = parseMessage(raw.cwd) ?? process.cwd()
   const permissionMode = parseOptionalClaudePermissionMode(raw.permissionMode)
-  const agentType = parseMessage(raw.agentType) ?? 'claude'
+  const agentType = parseProviderId(raw.agentType) ?? 'claude'
   const skillsToUse = parseOptionalStringArray(raw.skillsToUse)
   if (permissionMode === null || skillsToUse === null) {
     return null
@@ -709,23 +705,6 @@ export function parsePositiveInteger(raw: string): number | null {
   return parsed
 }
 
-// Legacy COMMANDER.md heartbeat.interval migration input must be a positive integer
-// milliseconds value. Cron expressions are not supported because the heartbeat
-// system uses setInterval, not cron scheduling.
-export function resolveWorkflowHeartbeatIntervalMs(rawInterval: string | undefined): number | undefined {
-  if (rawInterval === undefined) {
-    return undefined
-  }
-
-  const trimmed = rawInterval.trim()
-  if (!trimmed) {
-    return undefined
-  }
-
-  const ms = parsePositiveInteger(trimmed)
-  return ms !== null ? ms : undefined
-}
-
 export function parseContextPressureInputTokenThreshold(raw: unknown): number {
   if (typeof raw !== 'number' || !Number.isFinite(raw) || raw <= 0) {
     return DEFAULT_CONTEXT_PRESSURE_INPUT_TOKEN_THRESHOLD
@@ -784,19 +763,6 @@ export function parseCronInstruction(rawInstruction: unknown): string | null {
   }
 
   return instruction
-}
-
-export function parseCronTaskType(rawTaskType: unknown): CommandRoomTaskType | null {
-  if (rawTaskType === undefined || rawTaskType === null) {
-    return COMMANDER_INSTRUCTION_TASK_TYPE
-  }
-  if (typeof rawTaskType !== 'string') {
-    return null
-  }
-  if (rawTaskType === COMMANDER_INSTRUCTION_TASK_TYPE) {
-    return rawTaskType
-  }
-  return null
 }
 
 export function parseOptionalEnabled(rawEnabled: unknown): boolean | undefined | null {

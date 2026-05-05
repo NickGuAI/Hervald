@@ -79,40 +79,48 @@
 
 @layer components {
   .card-sumi {
-    @apply bg-washi-white border border-ink-border shadow-ink-sm;
+    background: var(--hv-bg);
+    color: var(--hv-fg);
+    border: 1px solid var(--hv-border-hair);
+    box-shadow: var(--hv-shadow-rest);
     border-radius: 4px 20px 4px 20px;
   }
 
   .card-sumi:hover {
-    @apply shadow-ink-hover;
-    border-color: rgba(28, 28, 28, 0.1);
+    box-shadow: var(--hv-shadow-lift);
+    border-color: var(--hv-border-soft);
   }
 
   .btn-primary {
-    @apply bg-sumi-black text-washi-white px-7 py-3.5 font-normal tracking-wide;
+    @apply px-7 py-3.5 font-normal tracking-wide;
+    background: var(--hv-fg);
+    color: var(--hv-fg-inverse);
     border-radius: 2px 12px 2px 12px;
     transition: all 0.4s cubic-bezier(0.23, 1, 0.32, 1);
   }
 
   .btn-primary:hover {
-    @apply bg-sumi-gray shadow-ink-hover;
+    background: var(--hv-fg-muted);
+    box-shadow: var(--hv-shadow-lift);
     transform: translateY(-1px);
   }
 
   .btn-ghost {
-    @apply bg-transparent border border-ink-border-hover text-sumi-gray px-7 py-3.5;
+    @apply bg-transparent px-7 py-3.5;
+    border: 1px solid var(--hv-border-soft);
+    color: var(--hv-fg-muted);
     border-radius: 2px 12px 2px 12px;
     transition: all 0.4s cubic-bezier(0.23, 1, 0.32, 1);
   }
 
   .btn-ghost:hover {
-    @apply bg-ink-wash;
+    background: var(--hv-ink-wash-01);
   }
 
   .badge-sumi {
     @apply inline-flex items-center px-3 py-1 text-whisper uppercase;
-    background: rgba(28, 28, 28, 0.04);
-    color: #4A4A4A;
+    background: var(--hv-ink-wash-02);
+    color: var(--hv-fg-muted);
     border-radius: 2px 8px 2px 8px;
   }
 
@@ -137,16 +145,17 @@
   }
 
   .badge-completed {
-    background: rgba(28, 28, 28, 0.04);
-    color: #8B8B8B;
+    background: var(--hv-ink-wash-02);
+    color: var(--hv-fg-subtle);
   }
 
   .section-title {
-    @apply text-section uppercase text-sumi-diluted tracking-widest;
+    @apply text-section uppercase tracking-widest;
+    color: var(--hv-fg-subtle);
   }
 
   .divider-ink {
-    border-top: 1px solid rgba(28, 28, 28, 0.06);
+    border-top: 1px solid var(--hv-border-hair);
   }
 
   /* ── Bottom Sheet (mobile) ──────────────────────── */
@@ -248,9 +257,11 @@
     box-shadow: var(--hv-shadow-whisper, 0 1px 2px rgba(28, 28, 28, 0.02));
   }
 
-  .sheet-skill--hervald:hover {
-    background: var(--hv-bg-raised, #F0EBE3);
-    border-color: var(--hv-border-soft, rgba(28, 28, 28, 0.12));
+  @media (hover: hover) and (pointer: fine) {
+    .sheet-skill--hervald:hover {
+      background: var(--hv-bg-raised, #F0EBE3);
+      border-color: var(--hv-border-soft, rgba(28, 28, 28, 0.12));
+    }
   }
 
   .sheet-skill-icon--hervald {
@@ -433,8 +444,8 @@
     justify-content: space-between;
     padding: 12px 16px;
     padding-top: calc(12px + var(--safe-top));
-    background: var(--msg-surface);
-    border-bottom: 1px solid var(--msg-border);
+    background: transparent;
+    border-bottom: none;
     flex-shrink: 0;
     z-index: 10;
   }
@@ -571,7 +582,6 @@
     overflow-y: auto;
     padding: 16px 12px 8px;
     -webkit-overflow-scrolling: touch;
-    scroll-behavior: smooth;
   }
   .session-view-overlay .messages-area::-webkit-scrollbar { display: none; }
 
@@ -1729,18 +1739,6 @@
     margin-bottom: 8px;
     padding: 0;
   }
-  .hervald-session-composer .composer-mode-toggle {
-    border-radius: var(--hv-radius-carved-sm);
-    border-color: var(--msg-border);
-    background: var(--hv-chat-card-muted, var(--hv-ink-wash-01));
-    padding: 2px;
-  }
-  .hervald-session-composer .composer-mode-button {
-    border-radius: var(--hv-radius-carved-sm);
-  }
-  .hervald-session-composer .composer-shortcut-hint {
-    color: var(--hv-fg-faint);
-  }
   .hervald-session-composer .composer-row {
     align-items: center;
     gap: 10px;
@@ -1777,58 +1775,6 @@
       font-size: 16px;
     }
   }
-  .hervald-session-composer .composer-preview {
-    min-height: 48px;
-    max-height: 160px;
-    padding: 10px 14px;
-    border: 1px solid var(--msg-border);
-    border-radius: var(--hv-radius-carved);
-    background: var(--hv-bg-raised);
-    box-shadow: var(--hv-shadow-inner-hi);
-  }
-  .hervald-session-composer .composer-preview-markdown,
-  .hervald-session-composer .composer-preview-markdown p,
-  .hervald-session-composer .composer-preview-markdown li {
-    color: var(--hv-fg);
-  }
-  .hervald-session-composer .composer-preview-markdown > * + * {
-    margin-top: 0.75rem;
-  }
-  .hervald-session-composer .composer-preview-markdown ul,
-  .hervald-session-composer .composer-preview-markdown ol {
-    padding-left: 1.25rem;
-  }
-  .hervald-session-composer .composer-preview-markdown a {
-    color: var(--vermillion-seal);
-    text-decoration: underline;
-    text-underline-offset: 2px;
-  }
-  .hervald-session-composer .composer-preview-markdown code {
-    font-family: var(--hv-font-mono);
-    font-size: 12px;
-  }
-  .hervald-session-composer .composer-preview-markdown :not(pre) > code {
-    padding: 2px 6px;
-    border-radius: 4px;
-    background: var(--hv-chat-inline-code-bg, rgba(28, 28, 28, 0.06));
-    color: var(--vermillion-seal);
-  }
-  .hervald-session-composer .composer-preview-markdown pre {
-    margin: 0;
-    padding: 10px 12px;
-    border: 1px solid var(--hv-border-hair);
-    border-radius: 8px;
-    background: var(--hv-chat-pre-bg, rgba(28, 28, 28, 0.04));
-    overflow-x: auto;
-  }
-  .hervald-session-composer .composer-preview-markdown pre code {
-    padding: 0;
-    background: transparent;
-    color: inherit;
-  }
-  .hervald-session-composer .composer-preview-empty {
-    color: var(--hv-fg-faint);
-  }
   .hervald-session-composer .composer-icon-btn {
     border-radius: var(--hv-radius-carved-sm);
   }
@@ -1836,8 +1782,8 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 40px;
-    height: 40px;
+    width: 36px;
+    height: 36px;
     background: var(--hv-chat-card-muted, var(--hv-ink-wash-01));
     color: var(--msg-text-muted);
     border: 1px solid var(--msg-border);
@@ -1867,8 +1813,8 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 40px;
-    height: 40px;
+    width: 36px;
+    height: 36px;
     background: var(--hv-fg);
     color: var(--hv-fg-inverse);
     border-radius: var(--hv-radius-carved);
@@ -1886,7 +1832,7 @@
     padding: 8px 0 0;
   }
   .hervald-session-composer .composer-field-stack {
-    min-height: 48px;
+    min-height: 40px;
   }
   .hervald-session-composer .composer-row--mobile {
     display: flex;
@@ -1905,8 +1851,8 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 40px;
-    height: 40px;
+    width: 36px;
+    height: 36px;
     background: var(--hv-chat-card-muted, var(--hv-ink-wash-01));
     color: var(--msg-text-muted);
     border: 1px solid var(--msg-border);
@@ -1942,9 +1888,10 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 32px;
-    height: 32px;
-    border-radius: 8px;
+    width: 100%;
+    height: 100%;
+    border-radius: inherit;
+    padding: 0;
     background: transparent;
     border: none;
     color: var(--msg-text-muted);
@@ -1976,7 +1923,7 @@
     content: "";
     position: absolute;
     inset: 0;
-    border-radius: 8px;
+    border-radius: inherit;
     box-shadow: 0 0 0 2px rgba(196, 122, 110, 0.25);
     animation: session-approvals-pulse 1.8s ease-in-out infinite;
     pointer-events: none;

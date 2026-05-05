@@ -1,4 +1,5 @@
 import { ArrowLeft, MessageSquare, Square, Triangle, Zap } from 'lucide-react'
+import type { AgentType } from '@/types'
 import { cn } from '@/lib/utils'
 import { fetchVoid } from '@/lib/api'
 import type {
@@ -7,16 +8,14 @@ import type {
   CommanderCronTask,
 } from '../hooks/useCommander'
 import { QuestBoard } from './QuestBoard'
-import { CommanderCronTab } from './CommanderCronTab'
-import { CommanderSentinelsTab } from './CommanderSentinelsTab'
+import { AutomationPanel } from './AutomationPanel'
 import { CommanderIdentityTab } from './CommanderIdentityTab'
 
-type TabId = 'quests' | 'sentinels' | 'cron' | 'identity'
+type TabId = 'quests' | 'automation' | 'identity'
 
 const TABS: Array<{ id: TabId; label: string }> = [
   { id: 'quests', label: 'Quests' },
-  { id: 'sentinels', label: 'Sentinels' },
-  { id: 'cron', label: 'Automation' },
+  { id: 'automation', label: 'Automations' },
   { id: 'identity', label: 'Identity' },
 ]
 
@@ -28,7 +27,10 @@ const STATE_BADGE_CLASSES: Record<CommanderSession['state'], string> = {
 }
 
 function normalizeTab(tab: string): TabId {
-  if (tab === 'sentinels' || tab === 'cron' || tab === 'identity') {
+  if (tab === 'sentinels' || tab === 'cron' || tab === 'automation') {
+    return 'automation'
+  }
+  if (tab === 'identity') {
     return tab
   }
   return 'quests'
@@ -98,7 +100,7 @@ export function CommanderDetailPanel({
     timezone?: string
     machine?: string
     workDir?: string
-    agentType?: 'claude' | 'codex' | 'gemini'
+    agentType?: AgentType
     instruction?: string
     model?: string
     enabled?: boolean
@@ -245,29 +247,7 @@ export function CommanderDetailPanel({
       {/* Tab content */}
       <div className="flex-1 min-h-0 overflow-hidden">
         {tab === 'quests' && <QuestBoard commanders={[commander]} selectedCommanderId={commander.id} />}
-        {tab === 'sentinels' && <CommanderSentinelsTab commander={commander} />}
-        {tab === 'cron' && (
-          <CommanderCronTab
-            scope={{ kind: 'commander', commander }}
-            crons={crons}
-            cronsLoading={cronsLoading}
-            cronsError={cronsError}
-            addCron={addCron}
-            addCronPending={addCronPending}
-            toggleCron={toggleCron}
-            toggleCronPending={toggleCronPending}
-            toggleCronId={toggleCronId}
-            updateCron={updateCron}
-            updateCronPending={updateCronPending}
-            updateCronId={updateCronId}
-            triggerCron={triggerCron}
-            triggerCronPending={triggerCronPending}
-            triggerCronId={triggerCronId}
-            deleteCron={deleteCron}
-            deleteCronPending={deleteCronPending}
-            deleteCronId={deleteCronId}
-          />
-        )}
+        {tab === 'automation' && <AutomationPanel scope={{ kind: 'commander', commander }} />}
         {tab === 'identity' && <CommanderIdentityTab commander={commander} />}
       </div>
     </div>

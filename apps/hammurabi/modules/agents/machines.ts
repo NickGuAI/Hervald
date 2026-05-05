@@ -10,11 +10,12 @@ import {
   type ClaudeAdaptiveThinkingMode,
 } from '../claude-adaptive-thinking.js'
 import type { WorkspaceCommandRunner } from '../workspace/index.js'
-import { MACHINE_TOOL_KEYS, WORKSPACE_EXEC_MAX_BUFFER_BYTES } from './constants.js'
+import { WORKSPACE_EXEC_MAX_BUFFER_BYTES } from './constants.js'
 import {
   migrateMachineEnvFiles,
   prepareMachineLaunchEnvironment,
 } from './machine-credentials.js'
+import { listMachineProviders } from './providers/machine-provider-adapter.js'
 import type {
   CapturedCommandResult,
   ClaudePermissionMode,
@@ -453,18 +454,24 @@ export function createMissingToolStatus(): MachineToolStatus {
   return { ok: false, version: null, raw: 'missing' }
 }
 
-export function buildMachineProbeScript(): string {
-  const toolCommands: Array<[MachineToolKey, string]> = [
-    ['claude', 'command -v claude >/dev/null 2>&1 && claude --version | head -n 1 || echo missing'],
-    ['codex', 'command -v codex >/dev/null 2>&1 && codex --version | head -n 1 || echo missing'],
-    ['gemini', 'command -v gemini >/dev/null 2>&1 && gemini --version | head -n 1 || echo missing'],
-    ['git', 'command -v git >/dev/null 2>&1 && git --version | head -n 1 || echo missing'],
-    ['node', 'command -v node >/dev/null 2>&1 && node --version | head -n 1 || echo missing'],
+function listMachineToolKeys(): MachineToolKey[] {
+  return [
+    ...new Set([
+      ...listMachineProviders().map((provider) => provider.cliBinaryName),
+      'git',
+      'node',
+    ]),
   ]
+}
+
+export function buildMachineProbeScript(): string {
+  const toolCommands = listMachineToolKeys().map((tool) => (
+    `printf '${tool}:'; command -v ${tool} >/dev/null 2>&1 && ${tool} --version | head -n 1 || echo missing`
+  ))
   return [
     'set -e',
     'echo ssh:ok',
-    ...toolCommands.map(([key, command]) => `printf '${key}:'; ${command}`),
+    ...toolCommands,
   ].join('\n')
 }
 
@@ -472,8 +479,9 @@ export function parseMachineHealthOutput(
   machine: MachineConfig,
   output: string,
 ): MachineHealthReport {
+  const toolKeys = listMachineToolKeys()
   const tools = Object.fromEntries(
-    MACHINE_TOOL_KEYS.map((key) => [key, createMissingToolStatus()]),
+    toolKeys.map((key) => [key, createMissingToolStatus()]),
   ) as Record<MachineToolKey, MachineToolStatus>
 
   const lines = output
@@ -493,7 +501,7 @@ export function parseMachineHealthOutput(
     }
     const key = line.slice(0, colonIndex) as MachineToolKey
     const raw = line.slice(colonIndex + 1).trim()
-    if (!MACHINE_TOOL_KEYS.includes(key)) {
+    if (!toolKeys.includes(key)) {
       continue
     }
     tools[key] = raw === 'missing'
@@ -515,10 +523,16 @@ export function parseMachineHealthOutput(
 export async function runCapturedCommand(
   command: string,
   args: string[],
-  options: { cwd?: string; env?: NodeJS.ProcessEnv; timeoutMs?: number } = {},
+  options: {
+    cwd?: string
+    env?: NodeJS.ProcessEnv
+    timeoutMs?: number
+    spawnImpl?: typeof spawn
+  } = {},
 ): Promise<CapturedCommandResult> {
   return await new Promise<CapturedCommandResult>((resolve, reject) => {
-    const child = spawn(command, args, {
+    const spawnImpl = options.spawnImpl ?? spawn
+    const child = spawnImpl(command, args, {
       cwd: options.cwd,
       env: options.env,
       stdio: ['ignore', 'pipe', 'pipe'],

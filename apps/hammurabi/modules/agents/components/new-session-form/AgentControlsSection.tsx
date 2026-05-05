@@ -1,4 +1,5 @@
 import { AlertTriangle } from 'lucide-react'
+import type { ProviderRegistryEntry } from '@/types'
 import { cn } from '@/lib/utils'
 import type { AgentType, SessionTransportType } from '@/types'
 import {
@@ -8,7 +9,7 @@ import {
 import { CLAUDE_EFFORT_LEVELS, type ClaudeEffortLevel } from '../../../claude-effort.js'
 
 interface AgentControlsSectionProps {
-  agentOptions: readonly AgentType[]
+  providers: readonly ProviderRegistryEntry[]
   agentType: AgentType
   setAgentType: (value: AgentType) => void
   transportType: Exclude<SessionTransportType, 'external'>
@@ -21,7 +22,7 @@ interface AgentControlsSectionProps {
 }
 
 export function AgentControlsSection({
-  agentOptions,
+  providers,
   agentType,
   setAgentType,
   transportType,
@@ -32,7 +33,8 @@ export function AgentControlsSection({
   adaptiveThinking,
   setAdaptiveThinking,
 }: AgentControlsSectionProps) {
-  const sessionTypeOptions = agentType === 'gemini'
+  const currentProvider = providers.find((provider) => provider.id === agentType) ?? null
+  const sessionTypeOptions = currentProvider?.uiCapabilities.forcedTransport === 'stream'
     ? [{ value: 'stream', label: 'Stream', description: 'ACP chat UI, supports resume' }]
     : [
         { value: 'stream', label: 'Stream', description: 'Chat UI, supports resume' },
@@ -44,21 +46,21 @@ export function AgentControlsSection({
       <div>
         <label className="section-title block mb-2">Agent</label>
         <div className="flex gap-2">
-          {agentOptions.map((type) => (
+          {providers.map((provider) => (
             <button
-              key={type}
+              key={provider.id}
               type="button"
-              onClick={() => setAgentType(type)}
+              onClick={() => setAgentType(provider.id)}
               disabled={resumeLocked}
               className={cn(
                 'flex-1 text-center rounded-lg border px-3 py-2 transition-colors min-h-[44px] font-mono text-sm',
-                agentType === type
+                agentType === provider.id
                   ? 'border-sumi-black bg-sumi-black text-washi-aged'
                   : 'border-ink-border bg-washi-aged text-sumi-black hover:border-ink-border-hover',
                 resumeLocked && 'cursor-not-allowed opacity-60 hover:border-ink-border',
               )}
             >
-              {type}
+              {provider.label}
             </button>
           ))}
         </div>
@@ -99,9 +101,9 @@ export function AgentControlsSection({
             <span>PTY sessions cannot be resumed after server restart</span>
           </div>
         ) : null}
-        {agentType === 'gemini' ? (
+        {currentProvider?.uiCapabilities.infoBanner ? (
           <div className="mt-2 flex items-start gap-2 rounded-lg bg-sky-500/10 px-3 py-2 text-xs text-sky-700">
-            <span>Gemini uses ACP-backed stream sessions only.</span>
+            <span>{currentProvider.uiCapabilities.infoBanner.text}</span>
           </div>
         ) : null}
       </div>
@@ -114,7 +116,7 @@ export function AgentControlsSection({
         </div>
       </div>
 
-      {agentType === 'claude' ? (
+      {currentProvider?.uiCapabilities.supportsEffort ? (
         <>
           <div>
             <label className="section-title block mb-2">Claude Effort</label>

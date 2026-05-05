@@ -37,14 +37,14 @@ describe('runWorkersCli', () => {
           {
             name: 'worker-1710000000000',
             sessionType: 'worker',
-            creator: { kind: 'commander', id: 'cmdr-athena' },
+            creator: { kind: 'commander', id: 'cmdr-atlas' },
             status: 'active',
             cwd: '/tmp/worktree-a',
           },
           {
             name: 'worker-1710000000002',
             sessionType: 'worker',
-            creator: { kind: 'commander', id: 'cmdr-athena' },
+            creator: { kind: 'commander', id: 'cmdr-atlas' },
             status: 'exited',
             processAlive: false,
             host: 'mac-mini',
@@ -75,9 +75,9 @@ describe('runWorkersCli', () => {
     expect(exitCode).toBe(0)
     expect(stderr.read()).toBe('')
     expect(stdout.read()).toContain('Workers:')
-    expect(stdout.read()).toContain('worker-1710000000000 type=worker creator=commander/cmdr-athena lifecycle=running')
+    expect(stdout.read()).toContain('worker-1710000000000 type=worker creator=commander/cmdr-atlas lifecycle=running')
     expect(stdout.read()).toContain('cwd=/tmp/worktree-a')
-    expect(stdout.read()).toContain('worker-1710000000002 type=worker creator=commander/cmdr-athena lifecycle=exited')
+    expect(stdout.read()).toContain('worker-1710000000002 type=worker creator=commander/cmdr-atlas lifecycle=exited')
     expect(stdout.read()).toContain('host=mac-mini')
     expect(stdout.read()).toContain('worker-human type=worker creator=human/api-key lifecycle=stale')
   })

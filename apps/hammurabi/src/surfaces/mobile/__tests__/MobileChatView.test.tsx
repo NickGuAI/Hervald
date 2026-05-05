@@ -5,6 +5,7 @@ import { MobileChatView } from '../MobileChatView'
 
 vi.mock('@modules/agents/page-shell/MobileSessionShell', () => ({
   MobileSessionShell: ({
+    sessionName,
     sessionLabel,
     isStreaming,
     theme,
@@ -13,6 +14,7 @@ vi.mock('@modules/agents/page-shell/MobileSessionShell', () => ({
     workers,
     emptyState,
   }: {
+    sessionName: string
     sessionLabel: string
     isStreaming?: boolean
     theme?: string
@@ -24,6 +26,7 @@ vi.mock('@modules/agents/page-shell/MobileSessionShell', () => ({
     'div',
     {
       'data-testid': 'mobile-session-shell',
+      'data-session-name': sessionName,
       'data-session-label': sessionLabel,
       'data-is-streaming': String(Boolean(isStreaming)),
       'data-theme': theme,
@@ -37,7 +40,7 @@ vi.mock('@modules/agents/page-shell/MobileSessionShell', () => ({
 }))
 
 describe('MobileChatView', () => {
-  it('adapts Hervald chat props into the shared dark mobile shell', () => {
+  it('adapts Hervald chat props into the shared mobile shell and forwards theme', () => {
     const html = renderToStaticMarkup(
       createElement(MobileChatView, {
         commander: {
@@ -80,6 +83,8 @@ describe('MobileChatView', () => {
         wsStatus: 'connected',
         costUsd: 0.42,
         durationSec: 90,
+        theme: 'light',
+        onSetTheme: vi.fn(),
         queueSnapshot: {
           currentMessage: null,
           items: [],
@@ -105,14 +110,14 @@ describe('MobileChatView', () => {
     expect(html).toContain('data-testid="mobile-session-shell"')
     expect(html).toContain('data-session-label="Test Commander"')
     expect(html).toContain('data-is-streaming="true"')
-    expect(html).toContain('data-theme="dark"')
-    expect(html).toContain('data-root-class="mobile-session-shell session-view-overlay hv-dark"')
+    expect(html).toContain('data-theme="light"')
+    expect(html).toContain('data-root-class="mobile-session-shell session-view-overlay hv-light"')
     expect(html).toContain('data-approval-count="1"')
     expect(html).toContain('data-worker-count="1"')
     expect(html).toContain('data-has-empty-state="false"')
   })
 
-  it('passes an idle empty state into the shell when the commander is stopped', () => {
+  it('does not pass the removed commander-start empty state when no conversation is selected', () => {
     const html = renderToStaticMarkup(
       createElement(MobileChatView, {
         commander: {
@@ -128,6 +133,8 @@ describe('MobileChatView', () => {
         composerEnabled: false,
         composerSendReady: false,
         canQueueDraft: false,
+        theme: 'dark',
+        onSetTheme: vi.fn(),
         queueSnapshot: {
           currentMessage: null,
           items: [],
@@ -139,7 +146,6 @@ describe('MobileChatView', () => {
         onBack: vi.fn(),
         onOpenTeam: vi.fn(),
         onOpenWorkspace: vi.fn(),
-        onStartCommander: vi.fn(),
         onAnswer: vi.fn(),
         onApproveApproval: vi.fn(),
         onDenyApproval: vi.fn(),
@@ -150,6 +156,66 @@ describe('MobileChatView', () => {
     )
 
     expect(html).toContain('data-testid="mobile-session-shell"')
-    expect(html).toContain('data-has-empty-state="true"')
+    expect(html).toContain('data-has-empty-state="false"')
+  })
+
+  it('does not use legacy commander liveSession names for conversation pages', () => {
+    const html = renderToStaticMarkup(
+      createElement(MobileChatView, {
+        commander: {
+          id: 'cmd-1',
+          name: 'Test Commander',
+          status: 'running',
+          description: 'Primary commander',
+        },
+        workers: [],
+        transcript: [],
+        approvals: [],
+        sessionName: '',
+        composerEnabled: false,
+        composerSendReady: false,
+        canQueueDraft: false,
+        conversations: [{
+          id: 'conv-1',
+          commanderId: 'cmd-1',
+          surface: 'ui',
+          status: 'active',
+          currentTask: null,
+          lastHeartbeat: null,
+          heartbeatTickCount: 0,
+          completedTasks: 0,
+          totalCostUsd: 0,
+          name: 'Chat 1',
+          createdAt: '2026-05-01T00:00:00.000Z',
+          lastMessageAt: '2026-05-01T00:00:00.000Z',
+          liveSession: {
+            name: 'commander-cmd-1',
+          },
+        }],
+        selectedConversationId: 'conv-1',
+        theme: 'dark',
+        onSetTheme: vi.fn(),
+        queueSnapshot: {
+          currentMessage: null,
+          items: [],
+          totalCount: 0,
+          maxSize: 8,
+        },
+        queueError: null,
+        isQueueMutating: false,
+        onBack: vi.fn(),
+        onOpenTeam: vi.fn(),
+        onOpenWorkspace: vi.fn(),
+        onAnswer: vi.fn(),
+        onApproveApproval: vi.fn(),
+        onDenyApproval: vi.fn(),
+        onClearQueue: vi.fn(),
+        onMoveQueuedMessage: vi.fn(),
+        onRemoveQueuedMessage: vi.fn(),
+      }),
+    )
+
+    expect(html).toContain('data-session-name="conversation-conv-1"')
+    expect(html).not.toContain('data-session-name="commander-cmd-1"')
   })
 })

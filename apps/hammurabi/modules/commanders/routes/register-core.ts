@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { DEFAULT_CLAUDE_EFFORT_LEVEL } from '../../claude-effort.js'
 import {
@@ -10,17 +10,16 @@ import {
   type CommanderUiProfile,
 } from '../commander-profile.js'
 import {
-  createDefaultHeartbeatState,
-  mergeHeartbeatState,
+  createDefaultHeartbeatConfig,
+  mergeHeartbeatConfig,
   parseHeartbeatPatch,
 } from '../heartbeat.js'
 import { CommanderManager } from '../manager.js'
 import {
   deleteCommanderDisplayName,
-  setCommanderDisplayName,
-  UnknownCommanderError,
+  withNamesLock,
 } from '../names-lock.js'
-import { resolveCommanderPaths } from '../paths.js'
+import { resolveCommanderNamesPath, resolveCommanderPaths } from '../paths.js'
 import { MAX_PERSONA_LENGTH } from '../persona.js'
 import {
   parseHost,
@@ -38,7 +37,10 @@ import {
 } from '../route-parsers.js'
 import {
   DEFAULT_COMMANDER_CONTEXT_MODE,
+  type CommanderContextMode,
   type CommanderSession,
+  type CommanderTaskSource,
+  type HeartbeatContextConfig,
 } from '../store.js'
 import {
   COMMANDER_WIZARD_START_MESSAGE,
@@ -54,7 +56,7 @@ import {
   consumeInternalUserMessage,
   createContextPressureBridge,
   isInputTokenContextPressureEvent,
-  isLegacyContextPressureEvent,
+  isContextPressureSubtypeEvent,
   listSubAgentEntries,
   queueInternalUserMessage,
   resolveCommanderAgentType,
@@ -63,14 +65,80 @@ import {
   toCommanderSessionName,
   toCommanderSessionResponse,
 } from './context.js'
-import { buildCommanderSessionSeedFromResolvedWorkflow } from '../memory/module.js'
+import {
+  applyRemoteMemorySnapshot,
+  buildCommanderSessionSeedFromResolvedWorkflow,
+  exportRemoteMemorySnapshot,
+} from '../memory/module.js'
 import type { CommanderRoutesContext, CommanderRuntime, StreamEvent } from './types.js'
 import { resolveCommanderWorkflow } from '../workflow-resolution.js'
-import { stopConversationSession } from './conversation-runtime.js'
+import { COMMANDER_WORKFLOW_FILE } from '../workflow.js'
+import { getLiveConversationSession, stopConversationSession } from './conversation-runtime.js'
+import type { OrgCommanderRoleKey } from '../../org/types.js'
+import type { AgentType } from '../../agents/types.js'
+import type { ClaudeEffortLevel } from '../../claude-effort.js'
 
 const WIZARD_SESSION_PREFIX = 'commander-wizard-'
 const WIZARD_SESSION_NAME_PATTERN = /^commander-wizard-[a-zA-Z0-9_-]+$/
 const CONVERSATION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+const ARCHIVED_COMMANDER_RUNTIME_ERROR = 'Commander is archived. Restore it first via POST /:id/restore.'
+
+class DuplicateCommanderDisplayNameError extends Error {
+  constructor(displayName: string) {
+    super(`Commander displayName "${displayName}" already exists`)
+    this.name = 'DuplicateCommanderDisplayNameError'
+  }
+}
+
+interface CommanderTemplatePackage {
+  schemaVersion: 1
+  exportedAt: string
+  sourceCommanderId?: string
+  commander: {
+    id?: string
+    host?: string
+    displayName: string
+    roleKey?: OrgCommanderRoleKey
+    persona?: string
+    agentType?: AgentType
+    effort?: ClaudeEffortLevel
+    maxTurns?: number
+    contextMode?: CommanderContextMode
+    contextConfig?: HeartbeatContextConfig
+    cwd?: string
+    taskSource?: CommanderTaskSource | null
+  }
+  commanderMd: string | null
+  memorySnapshot: {
+    memoryMd: string
+    syncRevision: number
+  }
+  skillBindings: Array<{
+    skillId: string
+    version?: string
+  }>
+}
+
+function parseOptionalCommanderRoleKey(
+  raw: unknown,
+): OrgCommanderRoleKey | undefined | null {
+  if (
+    raw === undefined
+    || raw === null
+    || (typeof raw === 'string' && raw.trim().length === 0)
+  ) {
+    return undefined
+  }
+
+  return raw === 'engineering'
+    || raw === 'research'
+    || raw === 'ops'
+    || raw === 'content'
+    || raw === 'validator'
+    || raw === 'ea'
+    ? raw
+    : null
+}
 
 function parseConversationId(raw: unknown): string | null {
   return typeof raw === 'string' && CONVERSATION_ID_PATTERN.test(raw.trim())
@@ -125,6 +193,121 @@ function extractRawUserMessage(event: StreamEvent): string | null {
   return normalizeUserMessageText((message as { content?: unknown }).content)
 }
 
+function buildReplicatedHost(
+  sourceHost: string,
+  existingHosts: ReadonlySet<string>,
+): string {
+  const base = `${sourceHost}-copy`
+  if (!existingHosts.has(base)) {
+    return base
+  }
+
+  let suffix = 2
+  let candidate = `${base}-${suffix}`
+  while (existingHosts.has(candidate)) {
+    suffix += 1
+    candidate = `${base}-${suffix}`
+  }
+
+  return candidate
+}
+
+function buildUniqueHost(baseHost: string, existingHosts: ReadonlySet<string>): string {
+  if (!existingHosts.has(baseHost)) {
+    return baseHost
+  }
+
+  let suffix = 2
+  let candidate = `${baseHost}-copy`
+  while (existingHosts.has(candidate)) {
+    candidate = `${baseHost}-copy-${suffix}`
+    suffix += 1
+  }
+
+  return candidate
+}
+
+function buildHostFromDisplayName(displayName: string): string {
+  const normalized = displayName
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+  return normalized || `commander-${randomUUID().slice(0, 8)}`
+}
+
+function buildUniqueDisplayName(
+  displayName: string,
+  existingDisplayNames: ReadonlySet<string>,
+): string {
+  const normalized = normalizeCommanderDisplayName(displayName)
+  if (!existingDisplayNames.has(normalized)) {
+    return displayName
+  }
+
+  let suffix = 2
+  let candidate = `${displayName} Copy`
+  while (existingDisplayNames.has(normalizeCommanderDisplayName(candidate))) {
+    candidate = `${displayName} Copy ${suffix}`
+    suffix += 1
+  }
+
+  return candidate
+}
+
+function normalizeCommanderDisplayName(displayName: string): string {
+  return displayName.trim().toLowerCase()
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null
+}
+
+function rejectArchivedCommanderRuntime(
+  session: CommanderSession,
+  res: import('express').Response,
+): boolean {
+  if (session.archived !== true) {
+    return false
+  }
+
+  res.status(409).json({ error: ARCHIVED_COMMANDER_RUNTIME_ERROR })
+  return true
+}
+
+function parseNonNegativeInteger(raw: unknown): number | null {
+  return typeof raw === 'number' && Number.isInteger(raw) && raw >= 0
+    ? raw
+    : null
+}
+
+async function readCommanderDisplayNames(dataDir: string): Promise<Record<string, string>> {
+  try {
+    const namesPath = resolveCommanderNamesPath(dataDir)
+    return JSON.parse(await readFile(namesPath, 'utf8')) as Record<string, string>
+  } catch {
+    return {}
+  }
+}
+
+async function upsertCommanderDisplayName(
+  dataDir: string,
+  commanderId: string,
+  displayName: string,
+): Promise<void> {
+  const normalizedDisplayName = normalizeCommanderDisplayName(displayName)
+  await withNamesLock(dataDir, (names) => {
+    const duplicateEntry = Object.entries(names).find(([existingCommanderId, existingDisplayName]) => (
+      existingCommanderId !== commanderId
+      && normalizeCommanderDisplayName(existingDisplayName) === normalizedDisplayName
+    ))
+    if (duplicateEntry) {
+      throw new DuplicateCommanderDisplayNameError(displayName)
+    }
+    names[commanderId] = displayName
+  })
+}
+
 export function registerCoreRoutes(
   router: import('express').Router,
   context: CommanderRoutesContext,
@@ -147,6 +330,9 @@ export function registerCoreRoutes(
     const session = await context.sessionStore.get(commanderId)
     if (!session) {
       res.status(404).json({ error: `Commander "${commanderId}" not found` })
+      return
+    }
+    if (rejectArchivedCommanderRuntime(session, res)) {
       return
     }
 
@@ -186,7 +372,7 @@ export function registerCoreRoutes(
         context.heartbeatManager.start(
           conversation.id,
           commanderId,
-          resolveEffectiveHeartbeat(conversation.heartbeat),
+          resolveEffectiveHeartbeat(session),
         )
         // fall through to fire manual heartbeat below
       } else {
@@ -264,6 +450,73 @@ export function registerCoreRoutes(
     return { authorizationHeader }
   }
 
+  const assertUniqueCommanderDisplayName = async (
+    displayName: string,
+    excludeCommanderId?: string,
+  ): Promise<void> => {
+    const normalizedDisplayName = normalizeCommanderDisplayName(displayName)
+    const sessions = await context.sessionStore.list()
+    const displayNames = await readCommanderDisplayNames(context.commanderDataDir)
+    const duplicateSession = sessions.find((session) => {
+      if (session.id === excludeCommanderId) {
+        return false
+      }
+
+      const resolvedDisplayName = displayNames[session.id]?.trim() || session.host
+      return normalizeCommanderDisplayName(resolvedDisplayName) === normalizedDisplayName
+    })
+
+    if (duplicateSession) {
+      throw new DuplicateCommanderDisplayNameError(displayName)
+    }
+  }
+
+  const persistCreatedCommander = async (
+    session: CommanderSession,
+    displayName: string,
+    heartbeat = session.heartbeat,
+  ) => {
+    const created = await context.sessionStore.create({
+      ...session,
+      heartbeat,
+    })
+    let defaultConversationId: string | null = null
+
+    const rollbackCreatedCommander = async (): Promise<void> => {
+      if (defaultConversationId) {
+        await context.conversationStore.delete(defaultConversationId).catch(() => {})
+      }
+      await context.sessionStore.delete(created.id).catch(() => {})
+      const { commanderRoot } = resolveCommanderPaths(created.id, context.commanderBasePath)
+      await rm(commanderRoot, { recursive: true, force: true }).catch(() => {})
+    }
+
+    try {
+      const defaultConversation = await context.ensureDefaultConversation(created, {
+        surface: 'ui',
+        currentTask: null,
+      })
+      defaultConversationId = defaultConversation.id
+
+      await scaffoldCommanderWorkflow(
+        created.id,
+        {
+          cwd: created.cwd,
+        },
+        context.commanderBasePath,
+      )
+
+      await upsertCommanderDisplayName(context.commanderDataDir, created.id, displayName)
+    } catch (error) {
+      await rollbackCreatedCommander()
+      throw error
+    }
+
+    const stats = await context.getCommanderSessionStats(created.id)
+    const base = await toCommanderSessionResponse(created, context.conversationStore, undefined, stats)
+    return await context.attachCommanderPublicUi(created.id, base)
+  }
+
   const parseWizardSessionName = (raw: unknown): string | null => {
     if (typeof raw !== 'string') {
       return null
@@ -274,15 +527,7 @@ export function registerCoreRoutes(
 
   router.get('/', context.requireReadAccess, async (_req, res) => {
     const sessions = await context.sessionStore.list()
-    // Read display names persisted at creation time, best-effort
-    let displayNames: Record<string, string> = {}
-    try {
-      const { resolveCommanderNamesPath } = await import('../paths.js')
-      const namesPath = resolveCommanderNamesPath(context.commanderDataDir)
-      displayNames = JSON.parse(await readFile(namesPath, 'utf8')) as Record<string, string>
-    } catch {
-      // names.json may not exist yet — fall back to host for all
-    }
+    const displayNames = await readCommanderDisplayNames(context.commanderDataDir)
     const response = await Promise.all(
       sessions.map(async (session) => {
         const stats = await context.getCommanderSessionStats(session.id)
@@ -443,8 +688,10 @@ export function registerCoreRoutes(
     const { commanderRoot, memoryRoot } = resolveCommanderPaths(commanderId, context.commanderBasePath)
     const stats = await context.getCommanderSessionStats(commanderId)
     const base = await toCommanderSessionResponse(session, context.conversationStore, runtime, stats)
+    const displayNames = await readCommanderDisplayNames(context.commanderDataDir)
     res.json({
       ...(await context.attachCommanderPublicUi(commanderId, base)),
+      displayName: displayNames[commanderId]?.trim() || session.host,
       subAgents: listSubAgentEntries(runtime),
       commanderMd,
       workflowMd: commanderMd,
@@ -481,7 +728,7 @@ export function registerCoreRoutes(
 
     const parsedAgentType = parseOptionalCommanderAgentType(req.body?.agentType)
     if (parsedAgentType === null) {
-      res.status(400).json({ error: 'agentType must be either "claude", "codex", or "gemini"' })
+      res.status(400).json({ error: 'agentType must be a registered provider id' })
       return
     }
 
@@ -495,7 +742,7 @@ export function registerCoreRoutes(
     const selectedEffort = selectedAgentType === 'claude'
       ? (parsedEffort ?? 'low')
       : undefined
-    const sessionName = `${WIZARD_SESSION_PREFIX}${randomUUID().replaceAll('-', '')}`
+    const sessionName = `${WIZARD_SESSION_PREFIX}${randomUUID().split('-').join('')}`
     const cwd = parseMessage(req.body?.cwd) ?? undefined
     const wizardAuthHeaders = resolveWizardAuthHeaders(req)
     const systemPrompt = buildCommanderWizardSystemPrompt({
@@ -582,15 +829,45 @@ export function registerCoreRoutes(
     }
 
     const displayName = parseMessage(req.body?.displayName) ?? host
+    try {
+      await assertUniqueCommanderDisplayName(displayName)
+    } catch (error) {
+      if (error instanceof DuplicateCommanderDisplayNameError) {
+        res.status(409).json({ error: error.message })
+        return
+      }
+      throw error
+    }
     const cwd = parseMessage(req.body?.cwd) ?? undefined
     const avatarSeed = parseMessage(req.body?.avatarSeed) ?? undefined
+    const roleKey = parseOptionalCommanderRoleKey(req.body?.roleKey)
+    if (roleKey === null) {
+      res.status(400).json({
+        error: 'roleKey must be one of: engineering, research, ops, content, validator, ea',
+      })
+      return
+    }
+    const templateId = req.body?.templateId === null
+      ? null
+      : (parseMessage(req.body?.templateId) ?? undefined)
+    const replicatedFromCommanderId = req.body?.replicatedFromCommanderId === null
+      ? null
+      : (parseSessionId(req.body?.replicatedFromCommanderId) ?? undefined)
+    if (
+      req.body?.replicatedFromCommanderId !== undefined
+      && req.body?.replicatedFromCommanderId !== null
+      && !replicatedFromCommanderId
+    ) {
+      res.status(400).json({ error: 'replicatedFromCommanderId must be a valid commander id when provided' })
+      return
+    }
     const parsedPersona = parseOptionalPersona(req.body?.persona)
     if (!parsedPersona.valid) {
       res.status(400).json({ error: `persona must be a string up to ${MAX_PERSONA_LENGTH} characters` })
       return
     }
     const persona = parsedPersona.value
-    const defaultHeartbeat = createDefaultHeartbeatState()
+    const defaultHeartbeat = createDefaultHeartbeatConfig()
     let heartbeat = defaultHeartbeat
 
     if (req.body?.heartbeat !== undefined) {
@@ -599,12 +876,12 @@ export function registerCoreRoutes(
         res.status(400).json({ error: parsedHeartbeat.error })
         return
       }
-      heartbeat = mergeHeartbeatState(defaultHeartbeat, parsedHeartbeat.value)
+      heartbeat = mergeHeartbeatConfig(defaultHeartbeat, parsedHeartbeat.value)
     }
 
     const parsedAgentTypeCreate = parseOptionalCommanderAgentType(req.body?.agentType)
     if (parsedAgentTypeCreate === null) {
-      res.status(400).json({ error: 'agentType must be either "claude", "codex", or "gemini"' })
+      res.status(400).json({ error: 'agentType must be a registered provider id' })
       return
     }
     const parsedEffortCreate = parseOptionalCommanderEffort(req.body?.effort)
@@ -625,48 +902,510 @@ export function registerCoreRoutes(
       maxTurns: parsedMaxTurns.value ?? context.runtimeConfig.defaults.maxTurns,
       contextMode: parsedContextMode.value ?? DEFAULT_COMMANDER_CONTEXT_MODE,
       contextConfig: parsedContextConfig.value,
+      heartbeat,
       taskSource,
       cwd,
+      ...(roleKey ? { roleKey } : {}),
+      ...(templateId !== undefined ? { templateId } : {}),
+      ...(replicatedFromCommanderId !== undefined ? { replicatedFromCommanderId } : {}),
     }
 
     try {
-      const created = await context.sessionStore.create(session)
-      await context.ensureLegacyConversation(created, {
-        surface: 'ui',
-        heartbeat,
-        currentTask: null,
-      })
-      try {
-        await scaffoldCommanderWorkflow(
-          created.id,
-          {
-            cwd: created.cwd,
-          },
-          context.commanderBasePath,
-        )
-      } catch (scaffoldError) {
-        await context.sessionStore.delete(created.id).catch(() => {})
-        throw scaffoldError
-      }
-      try {
-        await setCommanderDisplayName(context.commanderDataDir, created.id, displayName)
-      } catch (error) {
-        if (!(error instanceof UnknownCommanderError)) {
-          console.warn(
-            `[commanders] Failed to persist display name for "${created.id}":`,
-            error,
-          )
-        }
-      }
-      res.status(201).json(created)
+      const created = await persistCreatedCommander(session, displayName, heartbeat)
+      res.status(201).json(
+        displayName !== created.host
+          ? { ...created, displayName }
+          : created,
+      )
     } catch (error) {
+      if (error instanceof DuplicateCommanderDisplayNameError) {
+        res.status(409).json({ error: error.message })
+        return
+      }
       res.status(500).json({
         error: error instanceof Error ? error.message : 'Failed to create commander session',
       })
     }
   })
 
-  router.post('/:id/start', context.requireWriteAccess, async (req, res) => {
+  router.get('/:id/export', context.requireReadAccess, async (req, res) => {
+    const commanderId = parseSessionId(req.params.id)
+    if (!commanderId) {
+      res.status(400).json({ error: 'Invalid commander id' })
+      return
+    }
+
+    const session = await context.sessionStore.get(commanderId)
+    if (!session) {
+      res.status(404).json({ error: `Commander "${commanderId}" not found` })
+      return
+    }
+
+    try {
+      const displayNames = await readCommanderDisplayNames(context.commanderDataDir)
+      const displayName = displayNames[commanderId]?.trim() || session.host
+      const [commanderMd, memorySnapshot] = await Promise.all([
+        readCommanderWorkflowMarkdown(commanderId, context.commanderBasePath),
+        exportRemoteMemorySnapshot(commanderId, context.commanderBasePath),
+      ])
+
+      const payload: CommanderTemplatePackage = {
+        schemaVersion: 1,
+        exportedAt: context.now().toISOString(),
+        sourceCommanderId: session.id,
+        commander: {
+          id: session.id,
+          host: session.host,
+          displayName,
+          ...(session.roleKey ? { roleKey: session.roleKey } : {}),
+          ...(session.persona ? { persona: session.persona } : {}),
+          ...(session.agentType ? { agentType: session.agentType } : {}),
+          ...(session.effort ? { effort: session.effort } : {}),
+          maxTurns: session.maxTurns,
+          contextMode: session.contextMode,
+          ...(session.contextConfig ? { contextConfig: { ...session.contextConfig } } : {}),
+          ...(session.cwd ? { cwd: session.cwd } : {}),
+          taskSource: session.taskSource ? { ...session.taskSource } : null,
+        },
+        commanderMd,
+        memorySnapshot,
+        skillBindings: [],
+      }
+
+      res.json(payload)
+    } catch (error) {
+      res.status(500).json({
+        error: error instanceof Error ? error.message : 'Failed to export commander template',
+      })
+    }
+  })
+
+  router.post('/import', context.requireWriteAccess, async (req, res) => {
+    const payload = req.body
+    if (!isRecord(payload) || payload.schemaVersion !== 1) {
+      res.status(400).json({ error: 'schemaVersion must be 1' })
+      return
+    }
+
+    const commander = isRecord(payload.commander) ? payload.commander : null
+    if (!commander) {
+      res.status(400).json({ error: 'commander template is required' })
+      return
+    }
+
+    const sourceDisplayName = parseMessage(commander.displayName)
+    if (!sourceDisplayName) {
+      res.status(400).json({ error: 'commander.displayName is required' })
+      return
+    }
+
+    const roleKey = parseOptionalCommanderRoleKey(commander.roleKey)
+    if (roleKey === null) {
+      res.status(400).json({
+        error: 'roleKey must be one of: engineering, research, ops, content, validator, ea',
+      })
+      return
+    }
+
+    const parsedPersona = parseOptionalPersona(commander.persona)
+    if (!parsedPersona.valid) {
+      res.status(400).json({ error: `persona must be a string up to ${MAX_PERSONA_LENGTH} characters` })
+      return
+    }
+
+    const parsedAgentType = parseOptionalCommanderAgentType(commander.agentType)
+    if (parsedAgentType === null) {
+      res.status(400).json({ error: 'agentType must be a registered provider id' })
+      return
+    }
+
+    const parsedEffort = parseOptionalCommanderEffort(commander.effort)
+    if (parsedEffort === null) {
+      res.status(400).json({ error: 'effort must be one of: low, medium, high, max' })
+      return
+    }
+
+    const parsedMaxTurns = parseOptionalCommanderMaxTurns(
+      commander.maxTurns,
+      { max: context.runtimeConfig.limits.maxTurns },
+    )
+    if (!parsedMaxTurns.valid) {
+      res.status(400).json({
+        error: `maxTurns must be an integer between 1 and ${context.runtimeConfig.limits.maxTurns}`,
+      })
+      return
+    }
+
+    const parsedContextMode = parseOptionalCommanderContextMode(commander.contextMode)
+    if (!parsedContextMode.valid) {
+      res.status(400).json({ error: 'contextMode must be either "thin" or "fat"' })
+      return
+    }
+
+    const parsedContextConfig = parseOptionalHeartbeatContextConfig(commander.contextConfig)
+    if (!parsedContextConfig.valid) {
+      res.status(400).json({ error: 'Invalid contextConfig' })
+      return
+    }
+
+    const taskSource = commander.taskSource === null || commander.taskSource === undefined
+      ? null
+      : parseTaskSource(commander.taskSource)
+    if (commander.taskSource !== null && commander.taskSource !== undefined && !taskSource) {
+      res.status(400).json({ error: 'Invalid taskSource' })
+      return
+    }
+
+    const existing = await context.sessionStore.list()
+    const displayNames = await readCommanderDisplayNames(context.commanderDataDir)
+    const existingDisplayNames = new Set(
+      existing.map((session) =>
+        normalizeCommanderDisplayName(displayNames[session.id]?.trim() || session.host)),
+    )
+    const displayName = buildUniqueDisplayName(sourceDisplayName, existingDisplayNames)
+    const requestedHost = parseHost(commander.host)
+    const baseHost = requestedHost ?? buildHostFromDisplayName(sourceDisplayName)
+    const host = buildUniqueHost(baseHost, new Set(existing.map((session) => session.host)))
+    const sourceCommanderId = parseMessage(payload.sourceCommanderId)
+      ?? parseMessage(commander.id)
+      ?? undefined
+    const commanderMd = typeof payload.commanderMd === 'string'
+      ? payload.commanderMd
+      : null
+    const memorySnapshotProvided = payload.memorySnapshot !== undefined
+    const memorySnapshot = memorySnapshotProvided && isRecord(payload.memorySnapshot)
+      ? payload.memorySnapshot
+      : null
+    if (memorySnapshotProvided && typeof memorySnapshot?.memoryMd !== 'string') {
+      res.status(400).json({ error: 'memorySnapshot.memoryMd must be a string when memorySnapshot is present' })
+      return
+    }
+    if (memorySnapshot && parseNonNegativeInteger(memorySnapshot.syncRevision) === null) {
+      res.status(400).json({ error: 'memorySnapshot.syncRevision must be a non-negative integer' })
+      return
+    }
+    const memoryMd = memorySnapshot
+      ? (memorySnapshot.memoryMd as string)
+      : undefined
+
+    const session: CommanderSession = {
+      id: randomUUID(),
+      host,
+      persona: parsedPersona.value,
+      state: 'idle',
+      created: context.now().toISOString(),
+      agentType: parsedAgentType ?? 'claude',
+      effort: parsedEffort ?? DEFAULT_CLAUDE_EFFORT_LEVEL,
+      maxTurns: parsedMaxTurns.value ?? context.runtimeConfig.defaults.maxTurns,
+      contextMode: parsedContextMode.value ?? DEFAULT_COMMANDER_CONTEXT_MODE,
+      contextConfig: parsedContextConfig.value,
+      heartbeat: createDefaultHeartbeatConfig(),
+      taskSource,
+      ...(roleKey ? { roleKey } : {}),
+      ...(sourceCommanderId ? { templateId: sourceCommanderId } : {}),
+    }
+
+    try {
+      const created = await persistCreatedCommander(session, displayName)
+      if (commanderMd !== null) {
+        const { commanderRoot } = resolveCommanderPaths(session.id, context.commanderBasePath)
+        await mkdir(commanderRoot, { recursive: true })
+        await writeFile(
+          path.join(commanderRoot, COMMANDER_WORKFLOW_FILE),
+          `${commanderMd.trimEnd()}\n`,
+          'utf8',
+        )
+      }
+
+      if (memoryMd !== undefined) {
+        const applied = await applyRemoteMemorySnapshot(
+          session.id,
+          0,
+          memoryMd,
+          context.commanderBasePath,
+        )
+        if (applied.status !== 'applied') {
+          throw new Error('Memory snapshot could not be applied to imported commander')
+        }
+      }
+
+      res.status(201).json({
+        ...created,
+        displayName,
+        url: `/command-room?commander=${encodeURIComponent(session.id)}`,
+      })
+    } catch (error) {
+      await context.sessionStore.delete(session.id).catch(() => {})
+      await deleteCommanderDisplayName(context.commanderDataDir, session.id).catch(() => {})
+      const { commanderRoot } = resolveCommanderPaths(session.id, context.commanderBasePath)
+      await rm(commanderRoot, { recursive: true, force: true }).catch(() => {})
+      if (error instanceof DuplicateCommanderDisplayNameError) {
+        res.status(409).json({ error: error.message })
+        return
+      }
+      res.status(500).json({
+        error: error instanceof Error ? error.message : 'Failed to import commander template',
+      })
+    }
+  })
+
+  router.post('/:id/replicate', context.requireWriteAccess, async (req, res) => {
+    const sourceCommanderId = parseSessionId(req.params.id)
+    if (!sourceCommanderId) {
+      res.status(400).json({ error: 'Invalid commander id' })
+      return
+    }
+
+    const source = await context.sessionStore.get(sourceCommanderId)
+    if (!source) {
+      res.status(404).json({ error: `Commander "${sourceCommanderId}" not found` })
+      return
+    }
+
+    const displayName = parseMessage(req.body?.displayName)
+    if (!displayName) {
+      res.status(400).json({ error: 'displayName is required' })
+      return
+    }
+    try {
+      await assertUniqueCommanderDisplayName(displayName)
+    } catch (error) {
+      if (error instanceof DuplicateCommanderDisplayNameError) {
+        res.status(409).json({ error: error.message })
+        return
+      }
+      throw error
+    }
+
+    const existing = await context.sessionStore.list()
+    const host = buildReplicatedHost(
+      source.host,
+      new Set(existing.map((session) => session.host)),
+    )
+
+    const session: CommanderSession = {
+      id: randomUUID(),
+      host,
+      avatarSeed: source.avatarSeed,
+      persona: source.persona,
+      state: 'idle',
+      created: context.now().toISOString(),
+      agentType: source.agentType ?? 'claude',
+      effort: source.effort ?? DEFAULT_CLAUDE_EFFORT_LEVEL,
+      cwd: source.cwd,
+      maxTurns: source.maxTurns,
+      contextMode: source.contextMode,
+      contextConfig: source.contextConfig ? { ...source.contextConfig } : undefined,
+      heartbeat: { ...source.heartbeat },
+      taskSource: source.taskSource ? { ...source.taskSource } : null,
+      ...(source.roleKey ? { roleKey: source.roleKey } : {}),
+      ...(source.templateId !== undefined ? { templateId: source.templateId } : {}),
+      replicatedFromCommanderId: source.id,
+    }
+
+    try {
+      const created = await persistCreatedCommander(session, displayName)
+      res.status(201).json(
+        displayName !== created.host
+          ? { ...created, displayName }
+          : created,
+      )
+    } catch (error) {
+      if (error instanceof DuplicateCommanderDisplayNameError) {
+        res.status(409).json({ error: error.message })
+        return
+      }
+      res.status(500).json({
+        error: error instanceof Error ? error.message : 'Failed to replicate commander session',
+      })
+    }
+  })
+
+  router.patch('/:id', context.requireWriteAccess, async (req, res) => {
+    const commanderId = parseSessionId(req.params.id)
+    if (!commanderId) {
+      res.status(400).json({ error: 'Invalid commander id' })
+      return
+    }
+
+    const displayNameProvided = req.body?.displayName !== undefined
+    const roleKeyProvided = req.body?.roleKey !== undefined
+    const personaProvided = req.body?.persona !== undefined
+    const agentTypeProvided = req.body?.agentType !== undefined
+    const effortProvided = req.body?.effort !== undefined
+    const cwdProvided = req.body?.cwd !== undefined
+    const maxTurnsProvided = req.body?.maxTurns !== undefined
+    const contextModeProvided = req.body?.contextMode !== undefined
+
+    if (
+      !displayNameProvided
+      && !roleKeyProvided
+      && !personaProvided
+      && !agentTypeProvided
+      && !effortProvided
+      && !cwdProvided
+      && !maxTurnsProvided
+      && !contextModeProvided
+    ) {
+      res.status(400).json({ error: 'At least one editable field must be provided' })
+      return
+    }
+
+    const displayName = displayNameProvided
+      ? parseMessage(req.body?.displayName)
+      : undefined
+    if (displayNameProvided && !displayName) {
+      res.status(400).json({ error: 'displayName must be a non-empty string' })
+      return
+    }
+
+    const roleKey = parseOptionalCommanderRoleKey(req.body?.roleKey)
+    if (roleKeyProvided && roleKey === null) {
+      res.status(400).json({
+        error: 'roleKey must be one of: engineering, research, ops, content, validator, ea',
+      })
+      return
+    }
+
+    const parsedPersona = parseOptionalPersona(req.body?.persona)
+    if (!parsedPersona.valid) {
+      res.status(400).json({ error: `persona must be a string up to ${MAX_PERSONA_LENGTH} characters` })
+      return
+    }
+
+    const parsedAgentType = parseOptionalCommanderAgentType(req.body?.agentType)
+    if (agentTypeProvided && (req.body?.agentType === null || parsedAgentType === null)) {
+      res.status(400).json({ error: 'agentType must be a supported provider' })
+      return
+    }
+
+    const parsedEffort = parseOptionalCommanderEffort(req.body?.effort)
+    if (effortProvided && (req.body?.effort === null || parsedEffort === null)) {
+      res.status(400).json({ error: 'effort must be one of: low, medium, high, max' })
+      return
+    }
+
+    if (maxTurnsProvided && req.body?.maxTurns === null) {
+      res.status(400).json({
+        error: `maxTurns must be an integer between 1 and ${context.runtimeConfig.limits.maxTurns}`,
+      })
+      return
+    }
+    const parsedMaxTurns = parseOptionalCommanderMaxTurns(
+      req.body?.maxTurns,
+      { max: context.runtimeConfig.limits.maxTurns },
+    )
+    if (!parsedMaxTurns.valid) {
+      res.status(400).json({
+        error: `maxTurns must be an integer between 1 and ${context.runtimeConfig.limits.maxTurns}`,
+      })
+      return
+    }
+
+    if (contextModeProvided && req.body?.contextMode === null) {
+      res.status(400).json({ error: 'contextMode must be either "thin" or "fat"' })
+      return
+    }
+    const parsedContextMode = parseOptionalCommanderContextMode(req.body?.contextMode)
+    if (!parsedContextMode.valid) {
+      res.status(400).json({ error: 'contextMode must be either "thin" or "fat"' })
+      return
+    }
+
+    const cwd = !cwdProvided
+      ? undefined
+      : req.body?.cwd === null
+        ? undefined
+        : parseMessage(req.body?.cwd) ?? undefined
+    if (
+      cwdProvided
+      && req.body?.cwd !== null
+      && typeof req.body?.cwd !== 'string'
+    ) {
+      res.status(400).json({ error: 'cwd must be a string when provided' })
+      return
+    }
+
+    const session = await context.sessionStore.get(commanderId)
+    if (!session) {
+      res.status(404).json({ error: `Commander "${commanderId}" not found` })
+      return
+    }
+
+    const existingDisplayNames = await readCommanderDisplayNames(context.commanderDataDir)
+    const previousDisplayName = existingDisplayNames[commanderId] ?? session.host
+    const nextDisplayName = displayName ?? previousDisplayName
+    if (displayNameProvided && displayName && displayName !== previousDisplayName) {
+      try {
+        await assertUniqueCommanderDisplayName(displayName, commanderId)
+      } catch (error) {
+        if (error instanceof DuplicateCommanderDisplayNameError) {
+          res.status(409).json({ error: error.message })
+          return
+        }
+        throw error
+      }
+    }
+
+    const updated = await context.sessionStore.update(commanderId, (current) => {
+      const nextContextMode = parsedContextMode.value ?? current.contextMode
+      const nextAgentType = parsedAgentType ?? current.agentType
+      const nextEffort = parsedEffort ?? DEFAULT_CLAUDE_EFFORT_LEVEL
+      return {
+        ...current,
+        ...(roleKeyProvided
+          ? (roleKey ? { roleKey } : { roleKey: undefined })
+          : {}),
+        ...(personaProvided ? { persona: parsedPersona.value } : {}),
+        ...(agentTypeProvided
+          ? (nextAgentType ? { agentType: nextAgentType } : { agentType: undefined })
+          : {}),
+        ...(effortProvided ? { effort: nextEffort } : {}),
+        ...(cwdProvided ? { cwd } : {}),
+        ...(maxTurnsProvided && parsedMaxTurns.value !== undefined ? { maxTurns: parsedMaxTurns.value } : {}),
+        ...(contextModeProvided && parsedContextMode.value !== undefined ? { contextMode: parsedContextMode.value } : {}),
+        ...(contextModeProvided && nextContextMode === 'thin' ? { contextConfig: undefined } : {}),
+      }
+    })
+
+    if (!updated) {
+      res.status(404).json({ error: `Commander "${commanderId}" not found` })
+      return
+    }
+
+    if (displayNameProvided && displayName && displayName !== previousDisplayName) {
+      try {
+        await upsertCommanderDisplayName(context.commanderDataDir, commanderId, displayName)
+      } catch (error) {
+        await context.sessionStore.update(commanderId, () => session).catch(() => {})
+        if (error instanceof DuplicateCommanderDisplayNameError) {
+          res.status(409).json({ error: error.message })
+          return
+        }
+        res.status(500).json({
+          error: error instanceof Error ? error.message : 'Failed to update commander display name',
+        })
+        return
+      }
+    }
+
+    const liveSessionName = context.activeCommanderSessions.get(commanderId)?.sessionName
+      ?? toCommanderSessionName(commanderId)
+    const liveSession = context.sessionsInterface?.getSession(liveSessionName)
+    if (liveSession) {
+      liveSession.maxTurns = updated.maxTurns
+    }
+
+    res.json({
+      ...updated,
+      displayName: nextDisplayName,
+    })
+  })
+
+  const startCommanderRoute = async (
+    req: import('express').Request,
+    res: import('express').Response,
+  ) => {
     const commanderId = parseSessionId(req.params.id)
     if (!commanderId) {
       res.status(400).json({ error: 'Invalid commander id' })
@@ -678,6 +1417,9 @@ export function registerCoreRoutes(
     const session = await context.sessionStore.get(commanderId)
     if (!session) {
       res.status(404).json({ error: `Commander "${commanderId}" not found` })
+      return
+    }
+    if (rejectArchivedCommanderRuntime(session, res)) {
       return
     }
     if (session.state === 'running') {
@@ -692,13 +1434,14 @@ export function registerCoreRoutes(
     }
     const parsedAgentType = parseOptionalCommanderAgentType(req.body?.agentType)
     if (parsedAgentType === null) {
-      res.status(400).json({ error: 'agentType must be either "claude", "codex", or "gemini"' })
+      res.status(400).json({ error: 'agentType must be a registered provider id' })
       return
     }
     const selectedAgentType = parsedAgentType ?? resolveCommanderAgentType(session)
     const previousState = session.state
-    const legacyConversation = await context.ensureLegacyConversation(session, { surface: 'ui' })
-    const sessionName = toCommanderSessionName(commanderId)
+    const defaultConversation = await context.ensureDefaultConversation(session, { surface: 'ui' })
+    const sessionName = buildConversationSessionName(defaultConversation)
+    const legacySessionName = toCommanderSessionName(commanderId)
     let runtime: CommanderRuntime | null = null
     let startStateUpdated = false
 
@@ -717,6 +1460,7 @@ export function registerCoreRoutes(
 
       context.activeCommanderSessions.delete(commanderId)
       context.sessionsInterface?.deleteSession(sessionName)
+      context.sessionsInterface?.deleteSession(legacySessionName)
 
       if (!startStateUpdated) {
         return
@@ -726,13 +1470,12 @@ export function registerCoreRoutes(
         ...current,
         state: previousState,
       }))
-      await context.conversationStore.update(legacyConversation.id, (current) => ({
+      await context.conversationStore.update(defaultConversation.id, (current) => ({
         ...current,
-        status: legacyConversation.status,
-        currentTask: legacyConversation.currentTask,
-        lastHeartbeat: legacyConversation.lastHeartbeat,
-        heartbeat: { ...legacyConversation.heartbeat },
-        heartbeatTickCount: legacyConversation.heartbeatTickCount,
+        status: defaultConversation.status,
+        currentTask: defaultConversation.currentTask,
+        lastHeartbeat: defaultConversation.lastHeartbeat,
+        heartbeatTickCount: defaultConversation.heartbeatTickCount,
       }))
     }
 
@@ -765,26 +1508,20 @@ export function registerCoreRoutes(
       }
       startStateUpdated = true
 
-      const activeConversation = await context.conversationStore.update(legacyConversation.id, (current) => ({
+      const activeConversation = await context.conversationStore.update(defaultConversation.id, (current) => ({
         ...current,
         status: 'active',
         currentTask: parsedCurrentTask.value ?? current.currentTask,
         lastHeartbeat: null,
-        heartbeat: {
-          ...current.heartbeat,
-          lastSentAt: null,
-        },
         heartbeatTickCount: 0,
       }))
-      const effectiveHeartbeat = resolveEffectiveHeartbeat(
-        activeConversation?.heartbeat ?? legacyConversation.heartbeat,
-      )
+      const effectiveHeartbeat = resolveEffectiveHeartbeat(started)
       const built = await buildCommanderSessionSeedFromResolvedWorkflow(
         {
           commanderId,
           cwd: started.cwd ?? undefined,
           persona: started.persona,
-          currentTask: activeConversation?.currentTask ?? legacyConversation.currentTask,
+          currentTask: activeConversation?.currentTask ?? defaultConversation.currentTask,
           taskSource: started.taskSource,
           maxTurns: started.maxTurns,
           memoryBasePath: context.commanderBasePath,
@@ -797,17 +1534,17 @@ export function registerCoreRoutes(
       }
 
       context.sessionsInterface.deleteSession(sessionName)
+      context.sessionsInterface.deleteSession(legacySessionName)
       await context.sessionsInterface.createCommanderSession({
         name: sessionName,
         commanderId,
-        conversationId: activeConversation?.id ?? legacyConversation.id,
+        conversationId: activeConversation?.id ?? defaultConversation.id,
         systemPrompt: built.systemPrompt,
         agentType: selectedAgentType,
         effort: selectedAgentType === 'claude'
           ? started.effort ?? DEFAULT_CLAUDE_EFFORT_LEVEL
           : undefined,
         cwd: started.cwd ?? undefined,
-        resumeSessionId: undefined,
         maxTurns: built.maxTurns,
       })
 
@@ -862,7 +1599,7 @@ export function registerCoreRoutes(
           runtime &&
           !contextPressureTriggeredForTurn &&
           (
-            isLegacyContextPressureEvent(event) ||
+            isContextPressureSubtypeEvent(event) ||
             isInputTokenContextPressureEvent(
               event,
               sessionInputTokens,
@@ -898,7 +1635,7 @@ export function registerCoreRoutes(
         startedAt: context.now().toISOString(),
       })
       context.heartbeatManager.start(
-        activeConversation?.id ?? legacyConversation.id,
+        activeConversation?.id ?? defaultConversation.id,
         commanderId,
         effectiveHeartbeat,
       )
@@ -933,7 +1670,9 @@ export function registerCoreRoutes(
         error: error instanceof Error ? error.message : 'Failed to start commander',
       })
     }
-  })
+  }
+
+  router.post('/:id/start', context.requireWriteAccess, startCommanderRoute)
 
   router.post('/:id/heartbeat', context.requireWriteAccess, triggerHeartbeatRoute)
   router.post('/:id/heartbeat/trigger', context.requireWriteAccess, triggerHeartbeatRoute)
@@ -953,13 +1692,13 @@ export function registerCoreRoutes(
 
     context.heartbeatManager.stopForCommander(commanderId)
     const activeSession = context.activeCommanderSessions.get(commanderId)
-    const legacySessionName = activeSession?.sessionName ?? toCommanderSessionName(commanderId)
+    const commanderSessionName = activeSession?.sessionName ?? toCommanderSessionName(commanderId)
 
-    // Sweep every conversation owned by this commander, not just the legacy
+    // Sweep every conversation owned by this commander, not just the default
     // single-session path. Per #1216 phase 1 each conversation can have its
     // own per-conversation stream session under
-    // `commander-${commanderId}-conversation-${convId}`; stopping just the
-    // legacy session left those orphaned and reported `stopped` while live
+    // `commander-${commanderId}-conversation-${convId}`; stopping only the
+    // commander session would leave those orphaned and report `stopped` while live
     // agent runtimes kept consuming budget. See codex-review P1 on PR #1279
     // (comment 3174778566).
     const conversations = await context.conversationStore.listByCommander(commanderId)
@@ -991,11 +1730,10 @@ export function registerCoreRoutes(
     }
 
     context.activeCommanderSessions.delete(commanderId)
-    // Defensive cleanup of the legacy session name in case nothing referenced
-    // the legacy conversation (e.g. the commander never had a legacy
-    // backfilled conversation). The sweep above already covers all real
-    // per-conversation sessions through `stopConversationSession`.
-    context.sessionsInterface?.deleteSession(legacySessionName)
+    // Defensive cleanup of the commander session name in case nothing
+    // referenced the default conversation. The sweep above already covers all
+    // real per-conversation sessions through `stopConversationSession`.
+    context.sessionsInterface?.deleteSession(commanderSessionName)
 
     const stopped = await context.sessionStore.update(commanderId, (current) => ({
       ...current,
@@ -1025,6 +1763,83 @@ export function registerCoreRoutes(
     res.status(204).send()
   })
 
+  router.post('/:id/archive', context.requireWriteAccess, async (req, res) => {
+    const commanderId = parseSessionId(req.params.id)
+    if (!commanderId) {
+      res.status(400).json({ error: 'Invalid commander id' })
+      return
+    }
+
+    const session = await context.sessionStore.get(commanderId)
+    if (!session) {
+      res.status(404).json({ error: `Commander "${commanderId}" not found` })
+      return
+    }
+
+    const liveWorkerSession = context.sessionsInterface?.getSession(toCommanderSessionName(commanderId))
+    if (session.state === 'running' || liveWorkerSession) {
+      res.status(409).json({
+        error: `Commander "${commanderId}" has a live worker session. Stop it before archiving.`,
+      })
+      return
+    }
+
+    const conversations = await context.conversationStore.listByCommander(commanderId)
+    const activeLiveConversation = conversations.find((conversation) => (
+      conversation.status === 'active'
+      && Boolean(getLiveConversationSession(context, conversation))
+    ))
+    if (activeLiveConversation) {
+      res.status(409).json({
+        error: `Commander "${commanderId}" has an active live conversation "${activeLiveConversation.id}". Stop it before archiving.`,
+      })
+      return
+    }
+
+    const archivedAt = session.archivedAt ?? context.now().toISOString()
+    const archived = await context.sessionStore.update(commanderId, (current) => ({
+      ...current,
+      archived: true,
+      archivedAt,
+    }))
+
+    if (!archived) {
+      res.status(404).json({ error: `Commander "${commanderId}" not found` })
+      return
+    }
+
+    res.json({
+      id: archived.id,
+      archived: archived.archived === true,
+      archivedAt: archived.archivedAt,
+    })
+  })
+
+  router.post('/:id/restore', context.requireWriteAccess, async (req, res) => {
+    const commanderId = parseSessionId(req.params.id)
+    if (!commanderId) {
+      res.status(400).json({ error: 'Invalid commander id' })
+      return
+    }
+
+    const restored = await context.sessionStore.update(commanderId, (current) => ({
+      ...current,
+      archived: false,
+      archivedAt: undefined,
+    }))
+
+    if (!restored) {
+      res.status(404).json({ error: `Commander "${commanderId}" not found` })
+      return
+    }
+
+    res.json({
+      id: restored.id,
+      archived: restored.archived === true,
+      archivedAt: restored.archivedAt ?? null,
+    })
+  })
+
   router.delete('/:id', context.requireWriteAccess, async (req, res) => {
     const commanderId = parseSessionId(req.params.id)
     if (!commanderId) {
@@ -1038,8 +1853,23 @@ export function registerCoreRoutes(
       return
     }
 
-    if (session.state === 'running') {
-      res.status(409).json({ error: `Commander "${commanderId}" is running. Stop it before deleting.` })
+    const liveWorkerSession = context.sessionsInterface?.getSession(toCommanderSessionName(commanderId))
+    if (session.state === 'running' || liveWorkerSession) {
+      res.status(409).json({
+        error: `Commander "${commanderId}" has a live worker session. Stop it before deleting.`,
+      })
+      return
+    }
+
+    const conversations = await context.conversationStore.listByCommander(commanderId)
+    const activeLiveConversation = conversations.find((conversation) => (
+      conversation.status === 'active'
+      && Boolean(getLiveConversationSession(context, conversation))
+    ))
+    if (activeLiveConversation) {
+      res.status(409).json({
+        error: `Commander "${commanderId}" has an active live conversation "${activeLiveConversation.id}". Stop it before deleting.`,
+      })
       return
     }
 
@@ -1049,7 +1879,6 @@ export function registerCoreRoutes(
     // commander row itself is removed. Otherwise inbound channel webhooks can
     // hit the orphan conversation later and crash on the missing-commander
     // path. See codex-review P1 on PR #1279 (comment 3174814198).
-    const conversations = await context.conversationStore.listByCommander(commanderId)
     for (const conversation of conversations) {
       try {
         await stopConversationSession(context, conversation, 'archived')
@@ -1083,6 +1912,15 @@ export function registerCoreRoutes(
         error,
       )
     }
+    try {
+      const { commanderRoot } = resolveCommanderPaths(commanderId, context.commanderBasePath)
+      await rm(commanderRoot, { recursive: true, force: true })
+    } catch (error) {
+      console.warn(
+        `[commanders] Failed to remove commander root for "${commanderId}":`,
+        error,
+      )
+    }
     res.status(204).send()
   })
 
@@ -1099,41 +1937,30 @@ export function registerCoreRoutes(
       return
     }
 
-    const session = await context.sessionStore.get(commanderId)
-    if (!session) {
+    const updatedCommander = await context.sessionStore.update(commanderId, (current) => ({
+      ...current,
+      heartbeat: mergeHeartbeatConfig(current.heartbeat, parsed.value),
+    }))
+
+    if (!updatedCommander) {
       res.status(404).json({ error: `Commander "${commanderId}" not found` })
       return
     }
 
-    const legacyConversation = await context.ensureLegacyConversation(session)
-    const updated = await context.conversationStore.update(legacyConversation.id, (current) => {
-      const heartbeat = mergeHeartbeatState(current.heartbeat, parsed.value)
-      return {
-        ...current,
-        heartbeat,
-      }
-    })
-
-    if (!updated) {
-      res.status(404).json({ error: `Conversation "${legacyConversation.id}" not found` })
-      return
-    }
-
-    if (session.state === 'running') {
-      const effectiveHeartbeat = resolveEffectiveHeartbeat(updated.heartbeat)
-      context.heartbeatManager.start(updated.id, commanderId, effectiveHeartbeat)
-    } else {
-      context.heartbeatManager.stop(updated.id)
+    const conversations = (await context.conversationStore.listByCommander(commanderId))
+      .filter((conversation) => conversation.status !== 'archived')
+    const effectiveHeartbeat = resolveEffectiveHeartbeat(updatedCommander)
+    for (const conversation of conversations) {
+      context.heartbeatManager.start(conversation.id, commanderId, effectiveHeartbeat)
     }
 
     res.json({
-      id: session.id,
-      heartbeat: {
-        intervalMs: updated.heartbeat.intervalMs,
-        messageTemplate: updated.heartbeat.messageTemplate,
-        lastSentAt: updated.heartbeat.lastSentAt,
-      },
-      lastHeartbeat: updated.lastHeartbeat,
+      id: updatedCommander.id,
+      heartbeat: { ...updatedCommander.heartbeat },
+      conversations: conversations.map((conversation) => ({
+        id: conversation.id,
+        lastHeartbeat: conversation.lastHeartbeat,
+      })),
     })
   })
 
@@ -1201,7 +2028,8 @@ export function registerCoreRoutes(
       return
     }
 
-    const sessionName = toCommanderSessionName(commanderId)
+    const sessionName = context.activeCommanderSessions.get(commanderId)?.sessionName
+      ?? toCommanderSessionName(commanderId)
     const liveSession = context.sessionsInterface?.getSession(sessionName)
     if (liveSession) {
       liveSession.maxTurns = updated.maxTurns
@@ -1215,7 +2043,11 @@ export function registerCoreRoutes(
     })
   })
 
-  router.post('/:id/message', context.requireWriteAccess, async (req, res) => {
+  const deliverCommanderMessageRoute = async (
+    req: import('express').Request,
+    res: import('express').Response,
+    modeOverride?: 'collect' | 'followup',
+  ) => {
     const commanderId = parseSessionId(req.params.id)
     if (!commanderId) {
       res.status(400).json({ error: 'Invalid commander id' })
@@ -1227,7 +2059,7 @@ export function registerCoreRoutes(
       res.status(400).json({ error: 'Message must be a non-empty string' })
       return
     }
-    const mode = parseMessageMode(req.query.mode)
+    const mode = modeOverride ?? parseMessageMode(req.query.mode)
     if (!mode) {
       res.status(400).json({ error: 'mode must be either "collect" or "followup"' })
       return
@@ -1236,6 +2068,9 @@ export function registerCoreRoutes(
     const session = await context.sessionStore.get(commanderId)
     if (!session) {
       res.status(404).json({ error: `Commander "${commanderId}" not found` })
+      return
+    }
+    if (rejectArchivedCommanderRuntime(session, res)) {
       return
     }
 
@@ -1262,5 +2097,45 @@ export function registerCoreRoutes(
     }
 
     res.json({ accepted: true })
+  }
+
+  router.post('/:id/run-now', context.requireWriteAccess, async (req, res) => {
+    const commanderId = parseSessionId(req.params.id)
+    if (!commanderId) {
+      res.status(400).json({ error: 'Invalid commander id' })
+      return
+    }
+
+    const message = parseMessage(req.body?.message)
+    if (!message) {
+      res.status(400).json({ error: 'message must be a non-empty string' })
+      return
+    }
+
+    const session = await context.sessionStore.get(commanderId)
+    if (!session) {
+      res.status(404).json({ error: `Commander "${commanderId}" not found` })
+      return
+    }
+    if (rejectArchivedCommanderRuntime(session, res)) {
+      return
+    }
+
+    if (session.state === 'running') {
+      if (req.body?.agentType !== undefined || req.body?.currentTask !== undefined) {
+        res.status(400).json({
+          error: 'agentType and currentTask are only supported when run-now starts a stopped commander',
+        })
+        return
+      }
+      await deliverCommanderMessageRoute(req, res, 'followup')
+      return
+    }
+
+    await startCommanderRoute(req, res)
+  })
+
+  router.post('/:id/message', context.requireWriteAccess, async (req, res) => {
+    await deliverCommanderMessageRoute(req, res)
   })
 }

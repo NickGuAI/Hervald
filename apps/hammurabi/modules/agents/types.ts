@@ -14,14 +14,17 @@ import type {
 import type { ClaudeEffortLevel } from '../claude-effort.js'
 import type { QuestStore } from '../commanders/quest-store.js'
 import type { GeminiTurnState } from './event-normalizers/gemini.js'
+import type { OpenCodeTurnState } from './event-normalizers/opencode.js'
+import type { ProviderId } from './adapters/provider-registry-types.js'
+import type { ProviderSessionContext } from './providers/provider-session-context.js'
 
 // Session execution now runs in a single approval-on mode.
 export type ClaudePermissionMode = 'default'
 
-export type AgentType = 'claude' | 'codex' | 'gemini'
-export type SessionType = 'commander' | 'worker' | 'cron' | 'sentinel'
+export type AgentType = ProviderId
+export type SessionType = 'commander' | 'worker' | 'cron' | 'sentinel' | 'automation'
 export type SessionTransportType = 'pty' | 'stream' | 'external'
-export type SessionCreatorKind = 'human' | 'commander' | 'cron' | 'sentinel'
+export type SessionCreatorKind = 'human' | 'commander' | 'cron' | 'sentinel' | 'automation'
 
 export interface SessionCreator {
   kind: SessionCreatorKind
@@ -181,6 +184,23 @@ export interface GeminiProtocolMessage {
   requestId?: number | string
 }
 
+export interface OpenCodeAcpRuntimeHandle {
+  process: ChildProcess | null
+  ensureConnected(): Promise<void>
+  sendRequest(method: string, params: unknown): Promise<unknown>
+  sendNotification(method: string, params: unknown): void
+  sendResponse(id: number | string, result: unknown): void
+  addNotificationListener(sessionId: string, cb: (message: OpenCodeProtocolMessage) => void): () => void
+  teardown(options?: { reason?: string; timeoutMs?: number }): Promise<void>
+  teardownOnProcessExit(): void
+}
+
+export interface OpenCodeProtocolMessage {
+  method: string
+  params: unknown
+  requestId?: number | string
+}
+
 export type StreamDispatchMode = 'live' | 'queue'
 
 export type StreamDispatchResult =
@@ -234,10 +254,8 @@ export interface StreamSession {
   stdinDraining: boolean
   lastTurnCompleted: boolean
   completedTurnAt?: string
-  claudeSessionId?: string
-  codexThreadId?: string
+  providerContext: ProviderSessionContext
   activeTurnId?: string
-  geminiSessionId?: string
   resumedFrom?: string
   finalResultEvent?: StreamJsonEvent
   conversationEntryCount: number
@@ -257,15 +275,12 @@ export interface StreamSession {
   queuedMessageDrainScheduled: boolean
   queuedMessageDrainPending: boolean
   queuedMessageDrainPendingForce: boolean
-  codexNotificationCleanup?: () => void
-  codexRuntime?: CodexSessionRuntimeHandle
-  codexRuntimeTeardownPromise?: Promise<void>
-  geminiNotificationCleanup?: () => void
-  geminiRuntime?: GeminiAcpRuntimeHandle
-  geminiRuntimeTeardownPromise?: Promise<void>
   geminiPendingSystemPrompt?: string
   geminiTurnState?: GeminiTurnState
   geminiToolCallSnapshots?: Map<string, Record<string, unknown>>
+  opencodePendingSystemPrompt?: string
+  opencodeTurnState?: OpenCodeTurnState
+  opencodeToolCallSnapshots?: Map<string, Record<string, unknown>>
   adapter?: StreamSessionAdapter
   /** True when this session was spawned during restore with no new task.
    * Used to skip the persist-write on exit so the file is not overwritten
@@ -339,10 +354,8 @@ export interface ExitedStreamSessionState {
   spawnedBy?: string
   spawnedWorkers: string[]
   createdAt: string
-  claudeSessionId?: string
-  codexThreadId?: string
+  providerContext: ProviderSessionContext
   activeTurnId?: string
-  geminiSessionId?: string
   resumedFrom?: string
   conversationEntryCount: number
   events: StreamJsonEvent[]
@@ -389,6 +402,22 @@ export interface GeminiSessionCreateOptions {
   spawnedBy?: string
   spawnedWorkers?: string[]
   systemPrompt?: string
+  resumedFrom?: string
+  machine?: MachineConfig
+  maxTurns?: number
+  sessionType?: SessionType
+  creator?: SessionCreator
+  conversationId?: string
+  currentSkillInvocation?: ActiveSkillInvocation
+}
+
+export interface OpenCodeSessionCreateOptions {
+  resumeSessionId?: string
+  createdAt?: string
+  spawnedBy?: string
+  spawnedWorkers?: string[]
+  systemPrompt?: string
+  model?: string
   resumedFrom?: string
   machine?: MachineConfig
   maxTurns?: number
@@ -507,12 +536,21 @@ export interface CommanderSessionsInterface {
     commanderId?: string
     conversationId?: string
     systemPrompt: string
-    agentType: 'claude' | 'codex' | 'gemini'
+    agentType: AgentType
     effort?: ClaudeEffortLevel
     cwd?: string
-    resumeSessionId?: string
-    resumeCodexThreadId?: string
-    resumeGeminiSessionId?: string
+    resumeProviderContext?: ProviderSessionContext
+    maxTurns?: number
+  }): Promise<StreamSession>
+  replaceCommanderSession(params: {
+    name: string
+    commanderId?: string
+    conversationId?: string
+    systemPrompt: string
+    agentType: AgentType
+    effort?: ClaudeEffortLevel
+    cwd?: string
+    resumeProviderContext?: ProviderSessionContext
     maxTurns?: number
   }): Promise<StreamSession>
   /**
@@ -552,7 +590,7 @@ export interface MachineConfig {
   envFile?: string
 }
 
-export type MachineToolKey = 'claude' | 'codex' | 'gemini' | 'git' | 'node'
+export type MachineToolKey = string
 
 export interface MachineToolStatus {
   ok: boolean
@@ -583,10 +621,8 @@ export interface PersistedStreamSession {
   host?: string
   currentSkillInvocation?: ActiveSkillInvocation
   createdAt: string
-  claudeSessionId?: string
-  codexThreadId?: string
+  providerContext: ProviderSessionContext
   activeTurnId?: string
-  geminiSessionId?: string
   conversationEntryCount?: number
   events?: StreamJsonEvent[]
   spawnedBy?: string

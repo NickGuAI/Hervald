@@ -91,9 +91,6 @@ export const OBJECTS_LAYER: number[][] = [
   [ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
 ]
 
-// Keep FLOOR_LAYER as alias for backward compat (TileMapLayer references it)
-export const FLOOR_LAYER = DUNGEON_LAYER
-
 // Walkable tile indices (by packed index = GID - 140):
 //   48 = floor, 50 = transition, 40 = corridor, 10 = left door,
 //   11 = right door, 30 = column gap, 60 = workstation, 62 = commander station
@@ -169,10 +166,6 @@ export const COMMANDER_SPAWN = tc(24, 10)
 // Object interaction positions (from objects layer)
 export const QUEST_BOARD_POS = tc(23, 5)
 export const AGENT_CONTROL_POS = tc(24, 5)
-
-// Legacy exports for backward compatibility
-export const TABLE_SPOTS = WORKSTATION_SPOTS
-export const ANVIL_SPOTS = WORKSTATION_SPOTS
 
 // ---------------------------------------------------------------------------
 // Helpers

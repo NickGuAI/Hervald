@@ -136,6 +136,6 @@ describe('commander memory module facade', () => {
     expect(built.systemPrompt).toContain('# Hammurabi Quest Board')
     expect(built.systemPrompt).toContain('# Commander Memory Workflow')
     expect(built.systemPrompt).toContain('## Commander Memory')
-    expect(built.systemPrompt).toContain('**Issue #77**: Issue #77 — example-org/example-repo')
+    expect(built.systemPrompt).toContain('**Issue #77**: Issue #77 — NickGuAI/example-repo')
   })
 })

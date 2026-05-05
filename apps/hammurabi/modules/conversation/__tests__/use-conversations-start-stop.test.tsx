@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
-import { act, createElement } from 'react'
+import { createElement } from 'react'
+import { act } from 'react-dom/test-utils'
 import { createRoot, type Root } from 'react-dom/client'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -84,7 +85,7 @@ describe('useStartConversation', () => {
   it('posts to the conversation start route, updates both caches, and returns the started conversation', async () => {
     await renderHook('start')
 
-    const commanderId = 'commander/athena'
+    const commanderId = 'commander/atlas'
     const otherConversation: ConversationRecord = {
       id: 'conv-other',
       commanderId,
@@ -177,7 +178,7 @@ describe('useStopConversation', () => {
   it('posts to the conversation pause route, updates both caches, and returns the paused conversation', async () => {
     await renderHook('stop')
 
-    const commanderId = 'commander/athena'
+    const commanderId = 'commander/atlas'
     const otherConversation: ConversationRecord = {
       id: 'conv-other',
       commanderId,

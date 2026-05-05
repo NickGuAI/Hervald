@@ -11,11 +11,17 @@ import {
   ChevronLeft,
   ChevronUp,
   Cpu,
+  DollarSign,
+  Moon,
   MoreVertical,
+  Play,
   Plus,
   Power,
+  Square,
+  Sun,
   Warehouse,
 } from 'lucide-react'
+import { useProviderRegistry } from '@/hooks/use-providers'
 import { cn, formatCost } from '@/lib/utils'
 import type { AgentType, SessionQueueSnapshot } from '@/types'
 import type { PendingApproval } from '@/hooks/use-approvals'
@@ -32,6 +38,7 @@ import {
   getQueuePendingCount,
   getQueuedMessageLabel,
 } from '@modules/agents/queue-state'
+import type { ConversationRecord } from '@modules/conversation/hooks/use-conversations'
 import { StreamingDots } from './StreamingDots'
 import { SessionApprovalsButton } from './SessionApprovalsButton'
 import { getKillConfirmationMessage } from './session-helpers'
@@ -45,6 +52,7 @@ export interface WorkerBadge {
 export interface MobileSessionShellProps {
   sessionName: string
   sessionLabel: string
+  chatLabel?: string
   agentType?: AgentType
   sessionType?: 'stream' | 'pty'
   commanderId?: string | null
@@ -77,7 +85,8 @@ export interface MobileSessionShellProps {
   composerSendReady: boolean
   composerPlaceholder?: string
   composerDisabledMessage?: string
-  theme?: 'light' | 'dark'
+  theme: 'light' | 'dark'
+  onSetTheme?: (theme: 'light' | 'dark') => void
   onBack: () => void
   onKill?: () => void | Promise<void>
   onOpenWorkspace?: () => void
@@ -93,6 +102,14 @@ export interface MobileSessionShellProps {
   isStreaming?: boolean
   emptyState?: ReactNode
   dataTestId?: string
+  conversation?: ConversationRecord | null
+  onStartConversation?: (conversationId: string) => void | Promise<void>
+  onStopConversation?: (conversationId: string) => void | Promise<void>
+  onRenameConversation?: (conversationId: string, name: string) => void | Promise<void>
+  onSwapConversationProvider?: (conversationId: string, agentType: AgentType) => void | Promise<void>
+  onArchiveConversation?: (conversationId: string) => void | Promise<void>
+  onRemoveConversation?: (conversationId: string) => void | Promise<void>
+  belowHeader?: ReactNode
 }
 
 function formatDuration(durationSec?: number): string | null {
@@ -108,6 +125,7 @@ function formatDuration(durationSec?: number): string | null {
 export function MobileSessionShell({
   sessionName,
   sessionLabel,
+  chatLabel,
   agentType,
   wsStatus,
   costUsd,
@@ -131,7 +149,8 @@ export function MobileSessionShell({
   composerSendReady,
   composerPlaceholder,
   composerDisabledMessage,
-  theme = 'light',
+  theme,
+  onSetTheme,
   onBack,
   onKill,
   onOpenWorkspace,
@@ -146,11 +165,21 @@ export function MobileSessionShell({
   isStreaming = false,
   emptyState,
   dataTestId,
+  conversation = null,
+  onStartConversation,
+  onStopConversation,
+  onRenameConversation,
+  onSwapConversationProvider,
+  onArchiveConversation,
+  onRemoveConversation,
+  belowHeader,
 }: MobileSessionShellProps) {
   const usesOverlayChrome = rootClassName?.includes('session-view-overlay') ?? false
   const [showOverflowMenu, setShowOverflowMenu] = useState(false)
+  const [showConversationProviderMenu, setShowConversationProviderMenu] = useState(false)
   const [showAddToChatSheet, setShowAddToChatSheet] = useState(false)
   const [isKilling, setIsKilling] = useState(false)
+  const [conversationActionBusy, setConversationActionBusy] = useState<string | null>(null)
   const [queueExpanded, setQueueExpanded] = useState(false)
   const composerRef = useRef<SessionComposerHandle>(null)
   const emptyStateActive = Boolean(emptyState) && !composerEnabled
@@ -177,17 +206,13 @@ export function MobileSessionShell({
       parts.push(wsStatus)
     }
 
-    if (typeof costUsd === 'number') {
-      parts.push(formatCost(costUsd))
-    }
-
     const formattedDuration = formatDuration(durationSec)
     if (formattedDuration) {
       parts.push(formattedDuration)
     }
 
     return parts
-  }, [costUsd, durationSec, wsStatus])
+  }, [durationSec, wsStatus])
 
   const currentQueuedMessage = queueSnapshot.currentMessage ?? null
   const queueItems = queueSnapshot.items
@@ -202,6 +227,33 @@ export function MobileSessionShell({
       : 'Queue empty'
   const canClearQueue = (totalQueuedCount > 0 || currentQueuedMessage !== null) && !isQueueMutating
   const workerCount = workers?.length ?? 0
+  const { data: providers = [] } = useProviderRegistry()
+  const providerOptions = providers.length > 0
+    ? providers.map((provider) => ({
+      id: provider.id,
+      label: provider.label,
+    }))
+    : (conversation?.agentType
+      ? [{ id: conversation.agentType, label: conversation.agentType }]
+      : [])
+  const conversationName = conversation?.name?.trim() || (conversation ? `chat ${conversation.id.slice(0, 8)}` : '')
+  const canStartConversation = conversation?.status === 'idle' || conversation?.status === 'paused'
+  const canStopConversation = conversation?.status === 'active'
+  const showConversationDrawerActions = Boolean(
+    conversation && (
+      canStartConversation
+      || canStopConversation
+      || onRenameConversation
+      || onSwapConversationProvider
+      || onArchiveConversation
+      || onRemoveConversation
+    ),
+  )
+
+  const closeOverflowMenu = useCallback(() => {
+    setShowConversationProviderMenu(false)
+    setShowOverflowMenu(false)
+  }, [])
 
   const handleKill = useCallback(async () => {
     if (!onKill || isKilling) {
@@ -241,6 +293,111 @@ export function MobileSessionShell({
     onOpenWorkspace?.()
   }, [onOpenWorkspace])
 
+  const handleConversationAction = useCallback(async (
+    actionId: string,
+    callback: () => Promise<void>,
+  ) => {
+    setConversationActionBusy(actionId)
+    try {
+      await callback()
+    } finally {
+      setConversationActionBusy((current) => (current === actionId ? null : current))
+    }
+  }, [])
+
+  const handleRename = useCallback(async () => {
+    if (!conversation || !onRenameConversation) {
+      return
+    }
+    const nextName = window.prompt('Rename chat', conversationName)
+    if (nextName === null) {
+      return
+    }
+    const trimmed = nextName.trim()
+    if (!trimmed) {
+      return
+    }
+    await handleConversationAction('rename', async () => {
+      await onRenameConversation(conversation.id, trimmed)
+      setShowConversationProviderMenu(false)
+      setShowOverflowMenu(false)
+    })
+  }, [
+    conversation,
+    conversationName,
+    handleConversationAction,
+    onRenameConversation,
+  ])
+
+  const handleSwapConversationProvider = useCallback(async (provider: AgentType) => {
+    if (!conversation || !onSwapConversationProvider || provider === conversation.agentType) {
+      return
+    }
+    await handleConversationAction(`provider:${provider}`, async () => {
+      await onSwapConversationProvider(conversation.id, provider)
+      setShowConversationProviderMenu(false)
+      setShowOverflowMenu(false)
+    })
+  }, [
+    conversation,
+    handleConversationAction,
+    onSwapConversationProvider,
+  ])
+
+  const handleArchive = useCallback(async () => {
+    if (!conversation || !onArchiveConversation) {
+      return
+    }
+    await handleConversationAction('archive', async () => {
+      await onArchiveConversation(conversation.id)
+      setShowConversationProviderMenu(false)
+      setShowOverflowMenu(false)
+    })
+  }, [conversation, handleConversationAction, onArchiveConversation])
+
+  const handleRemove = useCallback(async () => {
+    if (!conversation || !onRemoveConversation) {
+      return
+    }
+    const confirmation = window.prompt(
+      `Type ${conversationName} to remove this chat and its transcript files.`,
+      '',
+    )
+    if (confirmation !== conversationName) {
+      return
+    }
+    await handleConversationAction('remove', async () => {
+      await onRemoveConversation(conversation.id)
+      setShowConversationProviderMenu(false)
+      setShowOverflowMenu(false)
+    })
+  }, [
+    conversation,
+    conversationName,
+    handleConversationAction,
+    onRemoveConversation,
+  ])
+
+  const handleStart = useCallback(async () => {
+    if (!conversation || !onStartConversation) {
+      return
+    }
+    await handleConversationAction('start', async () => {
+      await onStartConversation(conversation.id)
+      closeOverflowMenu()
+    })
+  }, [closeOverflowMenu, conversation, handleConversationAction, onStartConversation])
+
+  const handleStop = useCallback(async () => {
+    if (!conversation || !onStopConversation) {
+      return
+    }
+    await handleConversationAction('stop', async () => {
+      await onStopConversation(conversation.id)
+      closeOverflowMenu()
+    })
+  }, [closeOverflowMenu, conversation, handleConversationAction, onStopConversation])
+
   return (
     <section
       className={cn(
@@ -256,7 +413,7 @@ export function MobileSessionShell({
         className={cn(
           'session-header border-b px-3 pb-3 pt-4',
           theme === 'dark'
-            ? 'border-white/10 bg-[#1d1d21]'
+            ? 'border-white/10'
             : 'border-ink-border bg-washi-white',
         )}
       >
@@ -283,6 +440,11 @@ export function MobileSessionShell({
             >
               {sessionLabel}
             </p>
+            {chatLabel && (
+              <p className="session-header-chat mt-0.5 truncate text-[11px] tracking-wide opacity-70">
+                {chatLabel}
+              </p>
+            )}
             {metaParts.length > 0 && (
               <p
                 className={cn(
@@ -308,21 +470,23 @@ export function MobileSessionShell({
           </div>
 
           <div className="session-header-actions flex shrink-0 items-center gap-1">
-            <SessionApprovalsButton
-              approvals={approvals}
-              onDecision={onApprovalDecision}
-            />
-
             <div className="relative shrink-0">
               <button
                 type="button"
                 className={cn(
-                  'inline-flex min-h-[36px] min-w-[36px] items-center justify-center rounded-md transition-colors',
+                  'inline-flex h-9 w-9 items-center justify-center rounded-full border border-white/20 bg-black/55 backdrop-blur-[2px] transition-colors',
                   theme === 'dark'
                     ? 'text-washi-white/65 hover:bg-white/5'
                     : 'text-sumi-diluted hover:bg-ink-wash',
                 )}
-                onClick={() => setShowOverflowMenu((prev) => !prev)}
+                onClick={() => {
+                  if (showOverflowMenu) {
+                    closeOverflowMenu()
+                    return
+                  }
+                  setShowConversationProviderMenu(false)
+                  setShowOverflowMenu(true)
+                }}
                 aria-label="Session actions"
                 aria-expanded={showOverflowMenu}
               >
@@ -333,7 +497,7 @@ export function MobileSessionShell({
                 <>
                   <div
                     className="fixed inset-0 z-40"
-                    onClick={() => setShowOverflowMenu(false)}
+                    onClick={closeOverflowMenu}
                   />
 
                   <div
@@ -344,6 +508,21 @@ export function MobileSessionShell({
                         : 'border-ink-border bg-washi-white',
                     )}
                   >
+                    {approvals && approvals.length > 0 && onApprovalDecision && (
+                      <SessionApprovalsButton
+                        approvals={approvals}
+                        onDecision={onApprovalDecision}
+                        layout="row"
+                        rootClassName="mb-0.5"
+                        buttonClassName={cn(
+                          '!flex !h-auto !w-full !justify-start rounded-md px-3 py-2.5 text-left',
+                          theme === 'dark'
+                            ? 'text-washi-white/85 hover:bg-white/5'
+                            : 'text-sumi-black hover:bg-ink-wash',
+                        )}
+                      />
+                    )}
+
                     {onNewQuest && (
                       <button
                         type="button"
@@ -356,7 +535,7 @@ export function MobileSessionShell({
                         onClick={() => {
                           composerRef.current?.seedText('Create a new quest on your quest board: ')
                           onNewQuest()
-                          setShowOverflowMenu(false)
+                          closeOverflowMenu()
                         }}
                       >
                         <Plus size={13} className="shrink-0" />
@@ -374,7 +553,7 @@ export function MobileSessionShell({
                             : 'text-sumi-black hover:bg-ink-wash',
                         )}
                         onClick={() => {
-                          setShowOverflowMenu(false)
+                          closeOverflowMenu()
                           onOpenWorkers()
                         }}
                       >
@@ -402,7 +581,7 @@ export function MobileSessionShell({
                             : 'text-sumi-black hover:bg-ink-wash',
                         )}
                         onClick={() => {
-                          setShowOverflowMenu(false)
+                          closeOverflowMenu()
                           onOpenWorkspace()
                         }}
                       >
@@ -418,6 +597,217 @@ export function MobileSessionShell({
                       </button>
                     )}
 
+                    {typeof costUsd === 'number' && (
+                      <div className="flex w-full items-center gap-2 rounded-md px-3 py-2.5 text-xs cursor-default">
+                        <DollarSign size={13} className="shrink-0" />
+                        <span className="flex-1 text-left">Cost</span>
+                        <span className="font-mono opacity-75">{formatCost(costUsd)}</span>
+                      </div>
+                    )}
+
+                    {onSetTheme && (
+                      <>
+                        <div className={cn('my-1 h-px', theme === 'dark' ? 'bg-white/10' : 'bg-ink-border')} />
+                        <div className="flex items-center gap-3 rounded-md px-3 py-2.5 text-xs">
+                          <div
+                            className={cn(
+                              'flex items-center gap-2',
+                              theme === 'dark' ? 'text-washi-white/85' : 'text-sumi-black',
+                            )}
+                          >
+                            <Sun size={13} className="shrink-0" />
+                            <span>Theme</span>
+                          </div>
+                          <div
+                            className={cn(
+                              'ml-auto inline-flex items-center gap-1 rounded-[2px_10px_2px_10px] border p-1',
+                              theme === 'dark'
+                                ? 'border-white/10 bg-black/20'
+                                : 'border-ink-border bg-washi-aged/60',
+                            )}
+                          >
+                            <button
+                              type="button"
+                              className={cn(
+                                'inline-flex items-center gap-1 rounded-[2px_8px_2px_8px] px-2 py-1 text-[10px] font-medium transition-colors',
+                                theme === 'light'
+                                  ? 'bg-sumi-black text-washi-white'
+                                  : theme === 'dark'
+                                    ? 'text-white/60 hover:text-washi-white'
+                                    : 'text-sumi-diluted hover:text-sumi-black',
+                              )}
+                              aria-label="Use light theme"
+                              aria-pressed={theme === 'light'}
+                              onClick={() => onSetTheme('light')}
+                            >
+                              <Sun size={11} />
+                              Light
+                            </button>
+                            <button
+                              type="button"
+                              className={cn(
+                                'inline-flex items-center gap-1 rounded-[2px_8px_2px_8px] px-2 py-1 text-[10px] font-medium transition-colors',
+                                theme === 'dark'
+                                  ? 'bg-sumi-black text-washi-white'
+                                  : 'text-sumi-diluted hover:text-sumi-black',
+                              )}
+                              aria-label="Use dark theme"
+                              aria-pressed={theme === 'dark'}
+                              onClick={() => onSetTheme('dark')}
+                            >
+                              <Moon size={11} />
+                              Dark
+                            </button>
+                          </div>
+                        </div>
+                      </>
+                    )}
+
+                    {showConversationDrawerActions && (
+                      <div className={cn('my-1 h-px', theme === 'dark' ? 'bg-white/10' : 'bg-ink-border')} />
+                    )}
+
+                    {canStartConversation && onStartConversation && (
+                      <button
+                        type="button"
+                        className={cn(
+                          'flex w-full items-center gap-2 rounded-md px-3 py-2.5 text-left text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-50',
+                          theme === 'dark'
+                            ? 'text-washi-white/85 hover:bg-white/5'
+                            : 'text-sumi-black hover:bg-ink-wash',
+                        )}
+                        onClick={() => {
+                          void handleStart()
+                        }}
+                        disabled={conversationActionBusy !== null}
+                      >
+                        <Play size={13} className="shrink-0" />
+                        {conversationActionBusy === 'start' ? 'Starting…' : 'Start chat'}
+                      </button>
+                    )}
+
+                    {canStopConversation && onStopConversation && (
+                      <button
+                        type="button"
+                        className={cn(
+                          'flex w-full items-center gap-2 rounded-md px-3 py-2.5 text-left text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-50',
+                          theme === 'dark'
+                            ? 'text-washi-white/85 hover:bg-white/5'
+                            : 'text-sumi-black hover:bg-ink-wash',
+                        )}
+                        onClick={() => {
+                          void handleStop()
+                        }}
+                        disabled={conversationActionBusy !== null}
+                      >
+                        <Square size={13} className="shrink-0" />
+                        {conversationActionBusy === 'stop' ? 'Stopping…' : 'Stop chat'}
+                      </button>
+                    )}
+
+                    {onRenameConversation && conversation && (
+                      <button
+                        type="button"
+                        className={cn(
+                          'flex w-full items-center gap-2 rounded-md px-3 py-2.5 text-left text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-50',
+                          theme === 'dark'
+                            ? 'text-washi-white/85 hover:bg-white/5'
+                            : 'text-sumi-black hover:bg-ink-wash',
+                        )}
+                        data-testid="mobile-chat-rename-button"
+                        onClick={() => {
+                          void handleRename()
+                        }}
+                        disabled={conversationActionBusy !== null}
+                      >
+                        Rename
+                      </button>
+                    )}
+
+                    {onSwapConversationProvider && conversation && (
+                      <>
+                        <button
+                          type="button"
+                          className={cn(
+                            'flex w-full items-center gap-2 rounded-md px-3 py-2.5 text-left text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-50',
+                            theme === 'dark'
+                              ? 'text-washi-white/85 hover:bg-white/5'
+                              : 'text-sumi-black hover:bg-ink-wash',
+                          )}
+                          data-testid="mobile-chat-provider-menu-button"
+                          onClick={() => setShowConversationProviderMenu((current) => !current)}
+                          disabled={conversationActionBusy !== null}
+                        >
+                          <span>Swap provider</span>
+                          <span className="ml-auto">{showConversationProviderMenu ? '▾' : '▸'}</span>
+                        </button>
+                        {showConversationProviderMenu && (
+                          <div
+                            className={cn(
+                              'mt-1 border-t pl-3 pt-1',
+                              theme === 'dark' ? 'border-white/10' : 'border-ink-border',
+                            )}
+                          >
+                            {providerOptions.map((provider) => (
+                              <button
+                                key={provider.id}
+                                type="button"
+                                className={cn(
+                                  'flex w-full items-center gap-2 rounded-md px-3 py-2.5 text-left text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-50',
+                                  theme === 'dark'
+                                    ? 'text-washi-white/85 hover:bg-white/5'
+                                    : 'text-sumi-black hover:bg-ink-wash',
+                                )}
+                                data-testid={`mobile-chat-provider-option-${provider.id}`}
+                                onClick={() => {
+                                  void handleSwapConversationProvider(provider.id)
+                                }}
+                                disabled={conversationActionBusy !== null || provider.id === conversation.agentType}
+                              >
+                                <span>{provider.label}</span>
+                                {provider.id === conversation.agentType && (
+                                  <span className="ml-auto">current</span>
+                                )}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </>
+                    )}
+
+                    {onArchiveConversation && conversation && (
+                      <button
+                        type="button"
+                        className={cn(
+                          'flex w-full items-center gap-2 rounded-md px-3 py-2.5 text-left text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-50',
+                          theme === 'dark'
+                            ? 'text-washi-white/85 hover:bg-white/5'
+                            : 'text-sumi-black hover:bg-ink-wash',
+                        )}
+                        data-testid="mobile-chat-close-button"
+                        onClick={() => {
+                          void handleArchive()
+                        }}
+                        disabled={conversationActionBusy !== null}
+                      >
+                        Close
+                      </button>
+                    )}
+
+                    {onRemoveConversation && conversation && (
+                      <button
+                        type="button"
+                        className="flex w-full items-center gap-2 rounded-md px-3 py-2.5 text-left text-xs text-accent-vermillion transition-colors hover:bg-accent-vermillion/5 disabled:cursor-not-allowed disabled:opacity-50"
+                        data-testid="mobile-chat-remove-button"
+                        onClick={() => {
+                          void handleRemove()
+                        }}
+                        disabled={conversationActionBusy !== null}
+                      >
+                        Remove
+                      </button>
+                    )}
+
                     {onKill && (
                       <>
                         <div className={cn('my-1 h-px', theme === 'dark' ? 'bg-white/10' : 'bg-ink-border')} />
@@ -425,7 +815,7 @@ export function MobileSessionShell({
                           type="button"
                           className="flex w-full items-center gap-2 rounded-md px-3 py-2.5 text-left text-xs text-accent-vermillion transition-colors hover:bg-accent-vermillion/5 disabled:cursor-not-allowed disabled:opacity-50"
                           onClick={() => {
-                            setShowOverflowMenu(false)
+                            closeOverflowMenu()
                             void handleKill()
                           }}
                           disabled={isKilling}
@@ -446,7 +836,7 @@ export function MobileSessionShell({
                           : 'text-sumi-diluted hover:bg-ink-wash',
                       )}
                       onClick={() => {
-                        setShowOverflowMenu(false)
+                        closeOverflowMenu()
                         onBack()
                       }}
                     >
@@ -459,6 +849,11 @@ export function MobileSessionShell({
             </div>
           </div>
         </div>
+        {belowHeader && (
+          <div className="mt-3 space-y-2">
+            {belowHeader}
+          </div>
+        )}
       </header>
 
       {emptyStateActive ? (
@@ -492,7 +887,7 @@ export function MobileSessionShell({
           {canQueueDraft && (
             <div
               className={cn(
-                'border-t px-3 py-3',
+                'border-t px-3 py-2',
                 theme === 'dark'
                   ? 'border-white/10 bg-[#1d1d21]'
                   : 'border-ink-border bg-washi-white',
@@ -512,7 +907,7 @@ export function MobileSessionShell({
                   aria-expanded={queueExpanded}
                   aria-label="Toggle queue details"
                   data-testid="mobile-queue-header"
-                  className="flex cursor-pointer items-center justify-between gap-3 px-3 py-2.5"
+                  className="flex cursor-pointer items-center justify-between gap-3 px-3 py-1.5"
                   onClick={() => setQueueExpanded((prev) => !prev)}
                   onKeyDown={(event) => {
                     if (event.key === 'Enter' || event.key === ' ') {
@@ -708,7 +1103,7 @@ export function MobileSessionShell({
 
           <div
             className={cn(
-              'border-t px-3 py-3',
+              'border-t px-3 py-2',
               theme === 'dark'
                 ? 'border-white/10 bg-[#1d1d21]'
                 : 'border-ink-border bg-washi-white',

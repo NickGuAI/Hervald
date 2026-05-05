@@ -1,13 +1,12 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { createDefaultHeartbeatState } from '../heartbeat'
+import { createDefaultHeartbeatConfig } from '../heartbeat'
 import {
   CommanderSessionStore,
   DEFAULT_COMMANDER_CONTEXT_MODE,
   DEFAULT_COMMANDER_MAX_TURNS,
-  type CommanderSession,
 } from '../store'
 import type { CommanderRuntimeConfig } from '../runtime-config.shared'
 
@@ -17,30 +16,6 @@ async function createTempDir(prefix: string): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), prefix))
   tempDirs.push(dir)
   return dir
-}
-
-function createBaseSession(input: {
-  id: string
-  host: string
-  created: string
-}): CommanderSession {
-  return {
-    id: input.id,
-    host: input.host,
-    pid: null,
-    state: 'idle',
-    created: input.created,
-    agentType: 'claude',
-    maxTurns: DEFAULT_COMMANDER_MAX_TURNS,
-    contextMode: DEFAULT_COMMANDER_CONTEXT_MODE,
-    heartbeat: createDefaultHeartbeatState(),
-    lastHeartbeat: null,
-    heartbeatTickCount: 0,
-    taskSource: null,
-    currentTask: null,
-    completedTasks: 0,
-    totalCostUsd: 0,
-  }
 }
 
 afterEach(async () => {
@@ -61,157 +36,6 @@ describe('CommanderSessionStore', () => {
     },
   }
 
-  it('persists and restores sessions with and without channel metadata', async () => {
-    const dir = await createTempDir('hammurabi-commander-store-')
-    const storePath = join(dir, 'sessions.json')
-    const store = new CommanderSessionStore(storePath)
-
-    await store.create(createBaseSession({
-      id: 'legacy',
-      host: 'legacy-host',
-      created: '2026-03-18T00:00:00.000Z',
-    }))
-
-    await store.create({
-      ...createBaseSession({
-        id: 'channel',
-        host: 'telegram-group-supergroup-9876543',
-        created: '2026-03-18T00:00:01.000Z',
-      }),
-      channelMeta: {
-        provider: 'telegram',
-        chatType: 'forum-topic',
-        accountId: 'default',
-        peerId: 'supergroup-9876543',
-        threadId: '42',
-        sessionKey: 'telegram:default:forum-topic:supergroup-9876543:thread:42',
-        displayName: 'Ops Group / Deploys',
-        subject: 'Deploys',
-      },
-      lastRoute: {
-        channel: 'telegram',
-        to: 'supergroup-9876543',
-        accountId: 'default',
-        threadId: '42',
-      },
-    })
-
-    const reloaded = new CommanderSessionStore(storePath)
-    const sessions = await reloaded.list()
-
-    expect(sessions).toHaveLength(2)
-    const legacy = sessions.find((session) => session.id === 'legacy')
-    expect(legacy?.channelMeta).toBeUndefined()
-    expect(legacy?.lastRoute).toBeUndefined()
-
-    const channel = sessions.find((session) => session.id === 'channel')
-    expect(channel?.channelMeta).toEqual({
-      provider: 'telegram',
-      chatType: 'forum-topic',
-      accountId: 'default',
-      peerId: 'supergroup-9876543',
-      threadId: '42',
-      sessionKey: 'telegram:default:forum-topic:supergroup-9876543:thread:42',
-      displayName: 'Ops Group / Deploys',
-      subject: 'Deploys',
-    })
-    expect(channel?.lastRoute).toEqual({
-      channel: 'telegram',
-      to: 'supergroup-9876543',
-      accountId: 'default',
-      threadId: '42',
-    })
-  })
-
-  it('findOrCreateBySessionKey creates on miss and updates lastRoute on hit', async () => {
-    const dir = await createTempDir('hammurabi-commander-upsert-')
-    const store = new CommanderSessionStore(join(dir, 'sessions.json'))
-
-    const first = await store.findOrCreateBySessionKey(
-      'whatsapp:default:direct:15551234567',
-      {
-        channelMeta: {
-          provider: 'whatsapp',
-          chatType: 'direct',
-          accountId: 'default',
-          peerId: '15551234567',
-          sessionKey: 'whatsapp:default:direct:15551234567',
-          displayName: '+1 555 123 4567',
-        },
-        lastRoute: {
-          channel: 'whatsapp',
-          to: '15551234567',
-          accountId: 'default',
-        },
-        host: 'whatsapp-direct-15551234567',
-      },
-    )
-
-    expect(first.created).toBe(true)
-    expect(first.commander.channelMeta?.sessionKey).toBe('whatsapp:default:direct:15551234567')
-
-    const second = await store.findOrCreateBySessionKey(
-      'whatsapp:default:direct:15551234567',
-      {
-        channelMeta: {
-          provider: 'whatsapp',
-          chatType: 'direct',
-          accountId: 'default',
-          peerId: '15551234567',
-          sessionKey: 'whatsapp:default:direct:15551234567',
-          displayName: '+1 555 123 4567',
-        },
-        lastRoute: {
-          channel: 'whatsapp',
-          to: '15550000000',
-          accountId: 'default',
-        },
-      },
-    )
-
-    expect(second.created).toBe(false)
-    expect(second.commander.id).toBe(first.commander.id)
-    expect(second.commander.lastRoute).toEqual({
-      channel: 'whatsapp',
-      to: '15550000000',
-      accountId: 'default',
-    })
-  })
-
-  it('findOrCreateBySessionKey is safe under concurrent upserts', async () => {
-    const dir = await createTempDir('hammurabi-commander-concurrency-')
-    const store = new CommanderSessionStore(join(dir, 'sessions.json'))
-    const sessionKey = 'telegram:default:group:supergroup-1'
-
-    const results = await Promise.all(
-      Array.from({ length: 10 }, (_, index) =>
-        store.findOrCreateBySessionKey(sessionKey, {
-          channelMeta: {
-            provider: 'telegram',
-            chatType: 'group',
-            accountId: 'default',
-            peerId: 'supergroup-1',
-            sessionKey,
-            displayName: 'Ops Group',
-          },
-          lastRoute: {
-            channel: 'telegram',
-            to: `supergroup-1:${index}`,
-            accountId: 'default',
-          },
-        }),
-      ),
-    )
-
-    const commanderIds = new Set(results.map((result) => result.commander.id))
-    expect(commanderIds.size).toBe(1)
-
-    const sessions = await store.list()
-    expect(sessions).toHaveLength(1)
-    expect(sessions[0]?.channelMeta?.sessionKey).toBe(sessionKey)
-    expect(sessions[0]?.lastRoute?.to.startsWith('supergroup-1:')).toBe(true)
-  })
-
   it('defaults maxTurns and contextMode when loading legacy sessions.json entries', async () => {
     const dir = await createTempDir('hammurabi-commander-legacy-defaults-')
     const storePath = join(dir, 'sessions.json')
@@ -225,7 +49,7 @@ describe('CommanderSessionStore', () => {
             pid: null,
             state: 'idle',
             created: '2026-03-18T00:00:00.000Z',
-            heartbeat: createDefaultHeartbeatState(),
+            heartbeat: createDefaultHeartbeatConfig(),
             lastHeartbeat: null,
             heartbeatTickCount: 0,
             taskSource: null,
@@ -245,31 +69,36 @@ describe('CommanderSessionStore', () => {
     expect(session?.contextMode).toBe(DEFAULT_COMMANDER_CONTEXT_MODE)
   })
 
-  it('uses config-backed default maxTurns when creating channel-scoped commanders', async () => {
+  it('uses config-backed default maxTurns when loading legacy sessions without maxTurns', async () => {
     const dir = await createTempDir('hammurabi-commander-config-default-max-turns-')
-    const store = new CommanderSessionStore(join(dir, 'sessions.json'), { runtimeConfig })
-
-    const created = await store.findOrCreateBySessionKey(
-      'telegram:default:group:supergroup-42',
-      {
-        channelMeta: {
-          provider: 'telegram',
-          chatType: 'group',
-          accountId: 'default',
-          peerId: 'supergroup-42',
-          sessionKey: 'telegram:default:group:supergroup-42',
-          displayName: 'Ops Group',
-        },
-        lastRoute: {
-          channel: 'telegram',
-          to: 'supergroup-42',
-          accountId: 'default',
-        },
-      },
+    const storePath = join(dir, 'sessions.json')
+    await writeFile(
+      storePath,
+      JSON.stringify({
+        sessions: [
+          {
+            id: 'legacy-config-defaults',
+            host: 'legacy-config-defaults-host',
+            pid: null,
+            state: 'idle',
+            created: '2026-03-18T00:00:00.000Z',
+            heartbeat: createDefaultHeartbeatConfig(),
+            lastHeartbeat: null,
+            heartbeatTickCount: 0,
+            taskSource: null,
+            currentTask: null,
+            completedTasks: 0,
+            totalCostUsd: 0,
+          },
+        ],
+      }),
+      'utf8',
     )
 
-    expect(created.created).toBe(true)
-    expect(created.commander.maxTurns).toBe(18)
+    const store = new CommanderSessionStore(storePath, { runtimeConfig })
+    const [session] = await store.list()
+
+    expect(session?.maxTurns).toBe(18)
   })
 
   it('clamps persisted maxTurns to the configured runtime limit when loading sessions.json', async () => {
@@ -285,7 +114,7 @@ describe('CommanderSessionStore', () => {
             pid: null,
             state: 'idle',
             created: '2026-03-18T00:00:00.000Z',
-            heartbeat: createDefaultHeartbeatState(),
+            heartbeat: createDefaultHeartbeatConfig(),
             lastHeartbeat: null,
             heartbeatTickCount: 0,
             taskSource: null,
@@ -303,5 +132,173 @@ describe('CommanderSessionStore', () => {
     const [session] = await store.list()
 
     expect(session?.maxTurns).toBe(25)
+  })
+
+  it('roundtrips commander heartbeat config through save and load', async () => {
+    const dir = await createTempDir('hammurabi-commander-heartbeat-roundtrip-')
+    const storePath = join(dir, 'sessions.json')
+    const heartbeat = {
+      intervalMs: 3_600_000,
+      messageTemplate: '[HB {{timestamp}}] Keep going.',
+      intervalOverridden: true,
+    }
+    const store = new CommanderSessionStore(storePath)
+
+    await store.create({
+      id: 'heartbeat-roundtrip',
+      host: 'heartbeat-host',
+      state: 'idle',
+      created: '2026-05-01T00:00:00.000Z',
+      agentType: 'claude',
+      maxTurns: DEFAULT_COMMANDER_MAX_TURNS,
+      contextMode: DEFAULT_COMMANDER_CONTEXT_MODE,
+      heartbeat,
+      taskSource: null,
+    })
+
+    const reloaded = new CommanderSessionStore(storePath)
+    const session = await reloaded.get('heartbeat-roundtrip')
+    expect(session?.heartbeat).toEqual(heartbeat)
+
+    const persisted = JSON.parse(await readFile(storePath, 'utf8')) as {
+      sessions: Array<{ id: string; heartbeat?: unknown }>
+    }
+    expect(persisted.sessions.find((entry) => entry.id === 'heartbeat-roundtrip')?.heartbeat).toEqual(heartbeat)
+  })
+
+  it('loads legacy commander heartbeat lastSentAt and drops it on serialize', async () => {
+    const dir = await createTempDir('hammurabi-commander-heartbeat-last-sent-discard-')
+    const storePath = join(dir, 'sessions.json')
+    await writeFile(
+      storePath,
+      JSON.stringify({
+        sessions: [
+          {
+            id: 'heartbeat-legacy-last-sent',
+            host: 'heartbeat-legacy-host',
+            state: 'idle',
+            created: '2026-05-01T00:00:00.000Z',
+            agentType: 'claude',
+            maxTurns: DEFAULT_COMMANDER_MAX_TURNS,
+            contextMode: DEFAULT_COMMANDER_CONTEXT_MODE,
+            heartbeat: {
+              intervalMs: 60_000,
+              messageTemplate: '[HB {{timestamp}}] Legacy',
+              lastSentAt: '2026-05-01T12:00:00Z',
+            },
+            taskSource: null,
+          },
+        ],
+      }, null, 2),
+      'utf8',
+    )
+
+    const store = new CommanderSessionStore(storePath)
+    const loaded = await store.get('heartbeat-legacy-last-sent')
+
+    expect(loaded?.heartbeat).toEqual({
+      intervalMs: 60_000,
+      messageTemplate: '[HB {{timestamp}}] Legacy',
+    })
+
+    await store.update('heartbeat-legacy-last-sent', (current) => current)
+    const persisted = JSON.parse(await readFile(storePath, 'utf8')) as {
+      sessions: Array<{ id: string; heartbeat?: Record<string, unknown> }>
+    }
+    const serialized = persisted.sessions.find((entry) => entry.id === 'heartbeat-legacy-last-sent')
+    expect(serialized?.heartbeat).toEqual({
+      intervalMs: 60_000,
+      messageTemplate: '[HB {{timestamp}}] Legacy',
+    })
+    expect(serialized?.heartbeat).not.toHaveProperty('lastSentAt')
+    expect(JSON.stringify(persisted)).not.toContain('lastSentAt')
+  })
+
+  it('migrates a missing commander heartbeat from the most recent legacy conversation heartbeat', async () => {
+    const dir = await createTempDir('hammurabi-commander-heartbeat-migration-')
+    const storePath = join(dir, 'sessions.json')
+    const commanderId = '00000000-0000-4000-a000-000000000135'
+    const conversationDir = join(dir, commanderId, 'conversations')
+    await mkdir(conversationDir, { recursive: true })
+    await writeFile(
+      storePath,
+      JSON.stringify({
+        sessions: [
+          {
+            id: commanderId,
+            host: 'legacy-heartbeat-host',
+            state: 'idle',
+            created: '2026-05-01T00:00:00.000Z',
+            maxTurns: DEFAULT_COMMANDER_MAX_TURNS,
+            contextMode: DEFAULT_COMMANDER_CONTEXT_MODE,
+            taskSource: null,
+          },
+        ],
+      }, null, 2),
+      'utf8',
+    )
+    await writeFile(
+      join(conversationDir, '11111111-1111-4111-8111-111111111111.json'),
+      JSON.stringify({
+        id: '11111111-1111-4111-8111-111111111111',
+        commanderId,
+        surface: 'ui',
+        name: 'older',
+        status: 'idle',
+        currentTask: null,
+        lastHeartbeat: null,
+        heartbeat: {
+          intervalMs: 1_800_000,
+          messageTemplate: '[OLDER {{timestamp}}]',
+        },
+        heartbeatTickCount: 0,
+        completedTasks: 0,
+        totalCostUsd: 0,
+        createdAt: '2026-05-01T00:05:00.000Z',
+        lastMessageAt: '2026-05-01T00:10:00.000Z',
+      }, null, 2),
+      'utf8',
+    )
+    await writeFile(
+      join(conversationDir, '22222222-2222-4222-8222-222222222222.json'),
+      JSON.stringify({
+        id: '22222222-2222-4222-8222-222222222222',
+        commanderId,
+        surface: 'ui',
+        name: 'newer',
+        status: 'idle',
+        currentTask: null,
+        lastHeartbeat: '2026-05-01T00:30:00.000Z',
+        heartbeat: {
+          intervalMs: 7_200_000,
+          messageTemplate: '[NEWER {{timestamp}}]',
+          lastSentAt: '2026-05-01T00:35:00.000Z',
+        },
+        heartbeatTickCount: 2,
+        completedTasks: 0,
+        totalCostUsd: 0,
+        createdAt: '2026-05-01T00:15:00.000Z',
+        lastMessageAt: '2026-05-01T00:20:00.000Z',
+      }, null, 2),
+      'utf8',
+    )
+
+    const store = new CommanderSessionStore(storePath)
+    const migrated = await store.get(commanderId)
+
+    expect(migrated?.heartbeat).toEqual({
+      intervalMs: 7_200_000,
+      messageTemplate: '[NEWER {{timestamp}}]',
+    })
+
+    const persistedAfterFirstLoad = await readFile(storePath, 'utf8')
+    const persisted = JSON.parse(persistedAfterFirstLoad) as {
+      sessions: Array<{ id: string; heartbeat?: unknown }>
+    }
+    expect(persisted.sessions.find((entry) => entry.id === commanderId)?.heartbeat).toEqual(migrated?.heartbeat)
+
+    const reloaded = new CommanderSessionStore(storePath)
+    await reloaded.list()
+    expect(await readFile(storePath, 'utf8')).toBe(persistedAfterFirstLoad)
   })
 })

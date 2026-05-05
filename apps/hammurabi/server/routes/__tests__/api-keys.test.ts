@@ -10,7 +10,7 @@ import {
 } from '../../api-keys/store'
 import { OpenAITranscriptionKeyStore } from '../../api-keys/transcription-store'
 import { createApiKeysRouter } from '../api-keys'
-import { createTelemetryRouter } from '../../../modules/telemetry/routes'
+import { createTelemetryRouterWithHub } from '../../../modules/telemetry/routes'
 
 interface RunningServer {
   baseUrl: string
@@ -82,8 +82,8 @@ async function startServer(): Promise<RunningServer> {
         permissions: ['telemetry:read'],
       },
     }],
-    // Bootstrap admin: 10 of 11 scopes — every API_KEY_SCOPES entry EXCEPT
-    // `agents:admin`. Mirrors the actual bootstrap master key shape per
+    // Bootstrap admin: every API_KEY_SCOPES entry EXCEPT `agents:admin`.
+    // Mirrors the actual bootstrap master key shape per
     // `DEFAULT_BOOTSTRAP_MASTER_KEY_SCOPES`. Used to test that master-key
     // management routes (`/keys`) still require `agents:admin` while operator
     // transcription routes (`/transcription/openai`) accept this caller.
@@ -125,11 +125,11 @@ async function startServer(): Promise<RunningServer> {
   )
   app.use(
     '/api/telemetry',
-    createTelemetryRouter({
+    createTelemetryRouterWithHub({
       dataFilePath: telemetryStorePath,
       apiKeyStore,
       verifyAuth0Token,
-    }),
+    }).router,
   )
 
   const server = await new Promise<ReturnType<typeof app.listen>>((resolve) => {
@@ -205,39 +205,25 @@ describe('api key auth routes', () => {
     expect(listed[0]?.scopes).toEqual(['telemetry:write'])
     expect(listed[0]).not.toHaveProperty('key')
 
-    const ingestByApiKey = await fetch(`${server.baseUrl}/api/telemetry/ingest`, {
+    const ingestByApiKey = await fetch(`${server.baseUrl}/api/telemetry/compact`, {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
         'x-hammurabi-api-key': created.key,
       },
-      body: JSON.stringify({
-        sessionId: 'session-with-key',
-        agentName: 'codex',
-        model: 'o3',
-        inputTokens: 1,
-        outputTokens: 1,
-        cost: 0.001,
-      }),
+      body: JSON.stringify({ retentionDays: 30 }),
     })
-    expect(ingestByApiKey.status).toBe(202)
+    expect(ingestByApiKey.status).toBe(200)
 
-    const ingestByAuth0 = await fetch(`${server.baseUrl}/api/telemetry/ingest`, {
+    const ingestByAuth0 = await fetch(`${server.baseUrl}/api/telemetry/compact`, {
       method: 'POST',
       headers: {
         authorization: 'Bearer valid-auth0-admin-token',
         'content-type': 'application/json',
       },
-      body: JSON.stringify({
-        sessionId: 'session-with-auth0',
-        agentName: 'claude',
-        model: 'sonnet',
-        inputTokens: 1,
-        outputTokens: 1,
-        cost: 0.001,
-      }),
+      body: JSON.stringify({ retentionDays: 30 }),
     })
-    expect(ingestByAuth0.status).toBe(202)
+    expect(ingestByAuth0.status).toBe(200)
 
     const revokeResponse = await fetch(
       `${server.baseUrl}/api/auth/keys/${encodeURIComponent(created.id)}`,
@@ -250,20 +236,13 @@ describe('api key auth routes', () => {
     )
     expect(revokeResponse.status).toBe(204)
 
-    const ingestAfterRevoke = await fetch(`${server.baseUrl}/api/telemetry/ingest`, {
+    const ingestAfterRevoke = await fetch(`${server.baseUrl}/api/telemetry/compact`, {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
         'x-hammurabi-api-key': created.key,
       },
-      body: JSON.stringify({
-        sessionId: 'session-after-revoke',
-        agentName: 'codex',
-        model: 'o3',
-        inputTokens: 1,
-        outputTokens: 1,
-        cost: 0.001,
-      }),
+      body: JSON.stringify({ retentionDays: 30 }),
     })
     expect(ingestAfterRevoke.status).toBe(401)
 
@@ -296,6 +275,28 @@ describe('api key auth routes', () => {
     await server.close()
   })
 
+  it('accepts org:write as a valid API key scope', async () => {
+    const server = await startServer()
+
+    const response = await fetch(`${server.baseUrl}/api/auth/keys`, {
+      method: 'POST',
+      headers: {
+        authorization: 'Bearer valid-auth0-admin-token',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        name: 'Org Identity Key',
+        scopes: ['org:write'],
+      }),
+    })
+
+    expect(response.status).toBe(201)
+    const created = (await response.json()) as { scopes: string[] }
+    expect(created.scopes).toEqual(['org:write'])
+
+    await server.close()
+  })
+
   it('requires full admin permissions to manage API keys', async () => {
     const server = await startServer()
 
@@ -316,42 +317,28 @@ describe('api key auth routes', () => {
   it('enforces telemetry write permission for Auth0 callers at the route level', async () => {
     const server = await startServer()
 
-    const denied = await fetch(`${server.baseUrl}/api/telemetry/ingest`, {
+    const denied = await fetch(`${server.baseUrl}/api/telemetry/compact`, {
       method: 'POST',
       headers: {
         authorization: 'Bearer valid-auth0-telemetry-read-token',
         'content-type': 'application/json',
       },
-      body: JSON.stringify({
-        sessionId: 'session-with-read-only-auth0',
-        agentName: 'claude',
-        model: 'sonnet',
-        inputTokens: 1,
-        outputTokens: 1,
-        cost: 0.001,
-      }),
+      body: JSON.stringify({ retentionDays: 30 }),
     })
     expect(denied.status).toBe(403)
     expect(await denied.json()).toEqual({
       error: 'Insufficient permissions',
     })
 
-    const allowed = await fetch(`${server.baseUrl}/api/telemetry/ingest`, {
+    const allowed = await fetch(`${server.baseUrl}/api/telemetry/compact`, {
       method: 'POST',
       headers: {
         authorization: 'Bearer valid-auth0-telemetry-write-token',
         'content-type': 'application/json',
       },
-      body: JSON.stringify({
-        sessionId: 'session-with-write-auth0',
-        agentName: 'claude',
-        model: 'sonnet',
-        inputTokens: 1,
-        outputTokens: 1,
-        cost: 0.001,
-      }),
+      body: JSON.stringify({ retentionDays: 30 }),
     })
-    expect(allowed.status).toBe(202)
+    expect(allowed.status).toBe(200)
 
     await server.close()
   })
@@ -422,7 +409,7 @@ describe('api key auth routes', () => {
   //
   // Before #1221 the entire /api/auth/* router was gated behind
   // `auth0Middleware({ requiredPermissions: API_KEY_SCOPES })` which forced
-  // every external caller to hold ALL 11 scopes — including `agents:admin`,
+  // every external caller to hold every known scope — including `agents:admin`,
   // which `DEFAULT_BOOTSTRAP_MASTER_KEY_SCOPES` intentionally excludes. That
   // produced a paradox: the bootstrap master key (the ostensibly-most-
   // privileged caller) couldn't save the OpenAI transcription key.

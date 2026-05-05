@@ -29,6 +29,86 @@ const config = createHammurabiConfig({
   configuredAt: new Date('2026-03-01T00:00:00.000Z'),
 })
 
+const providerRegistryPayload = [
+  {
+    id: 'claude',
+    label: 'Claude',
+    eventProvider: 'claude',
+    capabilities: {
+      supportsAutomation: true,
+      supportsCommanderConversation: true,
+      supportsWorkerDispatch: true,
+    },
+    machineAuth: {
+      cliBinaryName: 'claude',
+      installPackageName: '@anthropic-ai/claude-code',
+      authEnvKeys: ['CLAUDE_CODE_OAUTH_TOKEN'],
+      supportedAuthModes: ['setup-token'],
+      requiresSecretModes: ['setup-token'],
+      loginStatusCommand: 'claude auth status',
+    },
+  },
+  {
+    id: 'codex',
+    label: 'Codex',
+    eventProvider: 'codex',
+    capabilities: {
+      supportsAutomation: true,
+      supportsCommanderConversation: true,
+      supportsWorkerDispatch: true,
+    },
+    machineAuth: {
+      cliBinaryName: 'codex',
+      installPackageName: '@openai/codex',
+      authEnvKeys: ['OPENAI_API_KEY'],
+      supportedAuthModes: ['api-key', 'device-auth'],
+      requiresSecretModes: ['api-key'],
+      loginStatusCommand: 'codex login status',
+    },
+  },
+  {
+    id: 'gemini',
+    label: 'Gemini',
+    eventProvider: 'gemini',
+    capabilities: {
+      supportsAutomation: true,
+      supportsCommanderConversation: true,
+      supportsWorkerDispatch: true,
+    },
+    machineAuth: {
+      cliBinaryName: 'gemini',
+      installPackageName: '@google/gemini-cli',
+      authEnvKeys: ['GEMINI_API_KEY', 'GOOGLE_API_KEY'],
+      supportedAuthModes: ['api-key'],
+      requiresSecretModes: ['api-key'],
+      loginStatusCommand: null,
+    },
+  },
+]
+
+function jsonResponse(body: unknown, status: number = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { 'content-type': 'application/json' },
+  })
+}
+
+function createProviderAwareFetch(
+  handlers: Record<string, Response>,
+): ReturnType<typeof vi.fn<typeof fetch>> {
+  return vi.fn<typeof fetch>().mockImplementation(async (input) => {
+    const url = String(input)
+    if (url === 'https://hervald.gehirn.ai/api/providers') {
+      return jsonResponse(providerRegistryPayload)
+    }
+    const response = handlers[url]
+    if (response) {
+      return response
+    }
+    throw new Error(`Unexpected URL: ${url}`)
+  })
+}
+
 describe('runMachinesCli', () => {
   it('lists registered machines in table form', async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
@@ -173,29 +253,23 @@ describe('runMachinesCli', () => {
   })
 
   it('prints machine health for check', async () => {
-    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
-      new Response(
-        JSON.stringify({
-          machineId: 'gpu-1',
-          mode: 'ssh',
-          ssh: {
-            ok: true,
-            destination: 'builder@10.0.1.50',
-          },
-          tools: {
-            claude: { ok: true, version: '1.0.31', raw: '1.0.31' },
-            codex: { ok: false, version: null, raw: 'missing' },
-            gemini: { ok: true, version: '0.1.18', raw: '0.1.18' },
-            git: { ok: true, version: 'git version 2.45.1', raw: 'git version 2.45.1' },
-            node: { ok: true, version: 'v22.14.0', raw: 'v22.14.0' },
-          },
-        }),
-        {
-          status: 200,
-          headers: { 'content-type': 'application/json' },
+    const fetchImpl = createProviderAwareFetch({
+      'https://hervald.gehirn.ai/api/agents/machines/gpu-1/health': jsonResponse({
+        machineId: 'gpu-1',
+        mode: 'ssh',
+        ssh: {
+          ok: true,
+          destination: 'builder@10.0.1.50',
         },
-      ),
-    )
+        tools: {
+          claude: { ok: true, version: '1.0.31', raw: '1.0.31' },
+          codex: { ok: false, version: null, raw: 'missing' },
+          gemini: { ok: true, version: '0.1.18', raw: '0.1.18' },
+          git: { ok: true, version: 'git version 2.45.1', raw: 'git version 2.45.1' },
+          node: { ok: true, version: 'v22.14.0', raw: 'v22.14.0' },
+        },
+      }),
+    })
     const stdout = createBufferWriter()
     const stderr = createBufferWriter()
 
@@ -245,48 +319,32 @@ describe('runMachinesCli', () => {
   })
 
   it('bootstraps a remote machine and prints service health proof', async () => {
-    const fetchImpl = vi
-      .fn<typeof fetch>()
-      .mockResolvedValueOnce(
-        new Response(
-          JSON.stringify([
-            {
-              id: 'gpu-1',
-              label: 'GPU',
-              host: '10.0.1.50',
-              user: 'builder',
-              port: 2222,
-            },
-          ]),
-          {
-            status: 200,
-            headers: { 'content-type': 'application/json' },
-          },
-        ),
-      )
-      .mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({
-            machineId: 'gpu-1',
-            mode: 'ssh',
-            ssh: {
-              ok: true,
-              destination: 'builder@10.0.1.50',
-            },
-            tools: {
-              claude: { ok: true, version: '1.0.31', raw: '1.0.31' },
-              codex: { ok: true, version: '0.1.2503271400', raw: '0.1.2503271400' },
-              gemini: { ok: true, version: '0.1.18', raw: '0.1.18' },
-              git: { ok: true, version: 'git version 2.45.1', raw: 'git version 2.45.1' },
-              node: { ok: true, version: 'v22.14.0', raw: 'v22.14.0' },
-            },
-          }),
-          {
-            status: 200,
-            headers: { 'content-type': 'application/json' },
-          },
-        ),
-      )
+    const fetchImpl = createProviderAwareFetch({
+      'https://hervald.gehirn.ai/api/agents/machines': jsonResponse([
+        {
+          id: 'gpu-1',
+          label: 'GPU',
+          host: '10.0.1.50',
+          user: 'builder',
+          port: 2222,
+        },
+      ]),
+      'https://hervald.gehirn.ai/api/agents/machines/gpu-1/health': jsonResponse({
+        machineId: 'gpu-1',
+        mode: 'ssh',
+        ssh: {
+          ok: true,
+          destination: 'builder@10.0.1.50',
+        },
+        tools: {
+          claude: { ok: true, version: '1.0.31', raw: '1.0.31' },
+          codex: { ok: true, version: '0.1.2503271400', raw: '0.1.2503271400' },
+          gemini: { ok: true, version: '0.1.18', raw: '0.1.18' },
+          git: { ok: true, version: 'git version 2.45.1', raw: 'git version 2.45.1' },
+          node: { ok: true, version: 'v22.14.0', raw: 'v22.14.0' },
+        },
+      }),
+    })
     const runCommand = vi.fn().mockResolvedValue({
       stdout: 'telemetry:configured\ninstalled:claude:1.0.31\ninstalled:codex:0.1.2503271400\nbootstrap:ok\n',
       stderr: '',
@@ -340,39 +398,29 @@ describe('runMachinesCli', () => {
     // hits `sudo -n true` failure it emits `sshd:skipped:no-sudo` and continues.
     // Without remote `AcceptEnv HAMMURABI_INTERNAL_TOKEN HAMMURABI_MACHINE_ENV_*`,
     // the Claude approval bridge breaks downstream — operator must see this loudly.
-    const fetchImpl = vi
-      .fn<typeof fetch>()
-      .mockResolvedValueOnce(
-        new Response(
-          JSON.stringify([
-            {
-              id: 'gpu-1',
-              label: 'GPU',
-              host: '10.0.1.50',
-              user: 'builder',
-              port: 2222,
-            },
-          ]),
-          { status: 200, headers: { 'content-type': 'application/json' } },
-        ),
-      )
-      .mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({
-            machineId: 'gpu-1',
-            mode: 'ssh',
-            ssh: { ok: true, destination: 'builder@10.0.1.50' },
-            tools: {
-              claude: { ok: true, version: '1.0.31', raw: '1.0.31' },
-              codex: { ok: true, version: '0.1.2503271400', raw: '0.1.2503271400' },
-              gemini: { ok: true, version: '0.1.18', raw: '0.1.18' },
-              git: { ok: true, version: 'git version 2.45.1', raw: 'git version 2.45.1' },
-              node: { ok: true, version: 'v22.14.0', raw: 'v22.14.0' },
-            },
-          }),
-          { status: 200, headers: { 'content-type': 'application/json' } },
-        ),
-      )
+    const fetchImpl = createProviderAwareFetch({
+      'https://hervald.gehirn.ai/api/agents/machines': jsonResponse([
+        {
+          id: 'gpu-1',
+          label: 'GPU',
+          host: '10.0.1.50',
+          user: 'builder',
+          port: 2222,
+        },
+      ]),
+      'https://hervald.gehirn.ai/api/agents/machines/gpu-1/health': jsonResponse({
+        machineId: 'gpu-1',
+        mode: 'ssh',
+        ssh: { ok: true, destination: 'builder@10.0.1.50' },
+        tools: {
+          claude: { ok: true, version: '1.0.31', raw: '1.0.31' },
+          codex: { ok: true, version: '0.1.2503271400', raw: '0.1.2503271400' },
+          gemini: { ok: true, version: '0.1.18', raw: '0.1.18' },
+          git: { ok: true, version: 'git version 2.45.1', raw: 'git version 2.45.1' },
+          node: { ok: true, version: 'v22.14.0', raw: 'v22.14.0' },
+        },
+      }),
+    })
     const runCommand = vi.fn().mockResolvedValue({
       stdout: [
         'sshd:skipped:no-sudo',
@@ -412,31 +460,23 @@ describe('runMachinesCli', () => {
   it('does NOT surface the sshd-hardening warning when bootstrap successfully configured sshd', async () => {
     // Negative case: when `sshd:configured:changed` (or unchanged) is in the
     // bootstrap output, the warning must NOT fire — the hardening was applied.
-    const fetchImpl = vi
-      .fn<typeof fetch>()
-      .mockResolvedValueOnce(
-        new Response(
-          JSON.stringify([{ id: 'gpu-1', label: 'GPU', host: '10.0.1.50', user: 'builder', port: 2222 }]),
-          { status: 200, headers: { 'content-type': 'application/json' } },
-        ),
-      )
-      .mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({
-            machineId: 'gpu-1',
-            mode: 'ssh',
-            ssh: { ok: true, destination: 'builder@10.0.1.50' },
-            tools: {
-              claude: { ok: true, version: '1.0.31', raw: '1.0.31' },
-              codex: { ok: true, version: '0.1.2503271400', raw: '0.1.2503271400' },
-              gemini: { ok: true, version: '0.1.18', raw: '0.1.18' },
-              git: { ok: true, version: 'git version 2.45.1', raw: 'git version 2.45.1' },
-              node: { ok: true, version: 'v22.14.0', raw: 'v22.14.0' },
-            },
-          }),
-          { status: 200, headers: { 'content-type': 'application/json' } },
-        ),
-      )
+    const fetchImpl = createProviderAwareFetch({
+      'https://hervald.gehirn.ai/api/agents/machines': jsonResponse([
+        { id: 'gpu-1', label: 'GPU', host: '10.0.1.50', user: 'builder', port: 2222 },
+      ]),
+      'https://hervald.gehirn.ai/api/agents/machines/gpu-1/health': jsonResponse({
+        machineId: 'gpu-1',
+        mode: 'ssh',
+        ssh: { ok: true, destination: 'builder@10.0.1.50' },
+        tools: {
+          claude: { ok: true, version: '1.0.31', raw: '1.0.31' },
+          codex: { ok: true, version: '0.1.2503271400', raw: '0.1.2503271400' },
+          gemini: { ok: true, version: '0.1.18', raw: '0.1.18' },
+          git: { ok: true, version: 'git version 2.45.1', raw: 'git version 2.45.1' },
+          node: { ok: true, version: 'v22.14.0', raw: 'v22.14.0' },
+        },
+      }),
+    })
     const runCommand = vi.fn().mockResolvedValue({
       stdout: 'sshd:configured:changed\ntelemetry:configured\ninstalled:claude:1.0.31\nbootstrap:ok\n',
       stderr: '',
@@ -498,57 +538,51 @@ describe('runMachinesCli', () => {
   })
 
   it('prints provider auth status for a worker', async () => {
-    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
-      new Response(
-        JSON.stringify({
-          machineId: 'gpu-1',
-          envFile: '/Users/builder/.hammurabi-env',
-          checkedAt: '2026-04-29T18:00:00.000Z',
-          providers: {
-            claude: {
-              provider: 'claude',
-              label: 'Claude',
-              installed: true,
-              version: '1.0.31',
-              envConfigured: true,
-              envSourceKey: 'CLAUDE_CODE_OAUTH_TOKEN',
-              loginConfigured: false,
-              configured: true,
-              currentMethod: 'setup-token',
-              verificationCommand: 'claude --version && (test -n "$CLAUDE_CODE_OAUTH_TOKEN" || claude auth status)',
-            },
-            codex: {
-              provider: 'codex',
-              label: 'Codex',
-              installed: true,
-              version: '0.1.2503271400',
-              envConfigured: false,
-              envSourceKey: null,
-              loginConfigured: true,
-              configured: true,
-              currentMethod: 'device-auth',
-              verificationCommand: 'codex --version && (test -n "$OPENAI_API_KEY" || codex login status)',
-            },
-            gemini: {
-              provider: 'gemini',
-              label: 'Gemini',
-              installed: false,
-              version: null,
-              envConfigured: false,
-              envSourceKey: null,
-              loginConfigured: false,
-              configured: false,
-              currentMethod: 'missing',
-              verificationCommand: 'gemini --version && (test -n "$GEMINI_API_KEY" || test -n "$GOOGLE_API_KEY")',
-            },
+    const fetchImpl = createProviderAwareFetch({
+      'https://hervald.gehirn.ai/api/agents/machines/gpu-1/auth-status': jsonResponse({
+        machineId: 'gpu-1',
+        envFile: '/Users/builder/.hammurabi-env',
+        checkedAt: '2026-04-29T18:00:00.000Z',
+        providers: {
+          claude: {
+            provider: 'claude',
+            label: 'Claude',
+            installed: true,
+            version: '1.0.31',
+            envConfigured: true,
+            envSourceKey: 'CLAUDE_CODE_OAUTH_TOKEN',
+            loginConfigured: false,
+            configured: true,
+            currentMethod: 'setup-token',
+            verificationCommand: 'claude --version && (test -n "$CLAUDE_CODE_OAUTH_TOKEN" || claude auth status)',
           },
-        }),
-        {
-          status: 200,
-          headers: { 'content-type': 'application/json' },
+          codex: {
+            provider: 'codex',
+            label: 'Codex',
+            installed: true,
+            version: '0.1.2503271400',
+            envConfigured: false,
+            envSourceKey: null,
+            loginConfigured: true,
+            configured: true,
+            currentMethod: 'device-auth',
+            verificationCommand: 'codex --version && (test -n "$OPENAI_API_KEY" || codex login status)',
+          },
+          gemini: {
+            provider: 'gemini',
+            label: 'Gemini',
+            installed: false,
+            version: null,
+            envConfigured: false,
+            envSourceKey: null,
+            loginConfigured: false,
+            configured: false,
+            currentMethod: 'missing',
+            verificationCommand: 'gemini --version && (test -n "$GEMINI_API_KEY" || test -n "$GOOGLE_API_KEY")',
+          },
         },
-      ),
-    )
+      }),
+    })
     const stdout = createBufferWriter()
     const stderr = createBufferWriter()
 
@@ -574,57 +608,51 @@ describe('runMachinesCli', () => {
   })
 
   it('posts provider auth setup and prints the updated status', async () => {
-    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
-      new Response(
-        JSON.stringify({
-          machineId: 'gpu-1',
-          envFile: '/Users/builder/.hammurabi-env',
-          checkedAt: '2026-04-29T18:00:00.000Z',
-          providers: {
-            claude: {
-              provider: 'claude',
-              label: 'Claude',
-              installed: true,
-              version: '1.0.31',
-              envConfigured: true,
-              envSourceKey: 'CLAUDE_CODE_OAUTH_TOKEN',
-              loginConfigured: false,
-              configured: true,
-              currentMethod: 'setup-token',
-              verificationCommand: 'claude --version && (test -n "$CLAUDE_CODE_OAUTH_TOKEN" || claude auth status)',
-            },
-            codex: {
-              provider: 'codex',
-              label: 'Codex',
-              installed: true,
-              version: '0.1.2503271400',
-              envConfigured: false,
-              envSourceKey: null,
-              loginConfigured: false,
-              configured: false,
-              currentMethod: 'missing',
-              verificationCommand: 'codex --version && (test -n "$OPENAI_API_KEY" || codex login status)',
-            },
-            gemini: {
-              provider: 'gemini',
-              label: 'Gemini',
-              installed: true,
-              version: '0.1.18',
-              envConfigured: false,
-              envSourceKey: null,
-              loginConfigured: false,
-              configured: false,
-              currentMethod: 'missing',
-              verificationCommand: 'gemini --version && (test -n "$GEMINI_API_KEY" || test -n "$GOOGLE_API_KEY")',
-            },
+    const fetchImpl = createProviderAwareFetch({
+      'https://hervald.gehirn.ai/api/agents/machines/gpu-1/auth-setup': jsonResponse({
+        machineId: 'gpu-1',
+        envFile: '/Users/builder/.hammurabi-env',
+        checkedAt: '2026-04-29T18:00:00.000Z',
+        providers: {
+          claude: {
+            provider: 'claude',
+            label: 'Claude',
+            installed: true,
+            version: '1.0.31',
+            envConfigured: true,
+            envSourceKey: 'CLAUDE_CODE_OAUTH_TOKEN',
+            loginConfigured: false,
+            configured: true,
+            currentMethod: 'setup-token',
+            verificationCommand: 'claude --version && (test -n "$CLAUDE_CODE_OAUTH_TOKEN" || claude auth status)',
           },
-        }),
-        {
-          status: 200,
-          headers: { 'content-type': 'application/json' },
+          codex: {
+            provider: 'codex',
+            label: 'Codex',
+            installed: true,
+            version: '0.1.2503271400',
+            envConfigured: false,
+            envSourceKey: null,
+            loginConfigured: false,
+            configured: false,
+            currentMethod: 'missing',
+            verificationCommand: 'codex --version && (test -n "$OPENAI_API_KEY" || codex login status)',
+          },
+          gemini: {
+            provider: 'gemini',
+            label: 'Gemini',
+            installed: true,
+            version: '0.1.18',
+            envConfigured: false,
+            envSourceKey: null,
+            loginConfigured: false,
+            configured: false,
+            currentMethod: 'missing',
+            verificationCommand: 'gemini --version && (test -n "$GEMINI_API_KEY" || test -n "$GOOGLE_API_KEY")',
+          },
         },
-      ),
-    )
+      }),
+    })
     const stdout = createBufferWriter()
     const stderr = createBufferWriter()
 

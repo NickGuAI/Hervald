@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import type { ApiKeyStoreLike } from '../../../server/api-keys/store'
 import type { CommanderSessionsInterface } from '../../agents/routes'
+import type { AgentType } from '../../agents/types'
 import {
   createCommandersRouter,
   type CommanderChannelReplyDispatchInput,
@@ -33,11 +34,13 @@ interface RunningServer {
 }
 
 interface ActiveSessionState {
-  agentType: 'claude' | 'codex' | 'gemini'
+  agentType: AgentType
   conversationId?: string
-  claudeSessionId?: string
-  codexThreadId?: string
-  geminiSessionId?: string
+  providerContext?: {
+    providerId: AgentType
+    sessionId?: string
+    threadId?: string
+  }
   usage: {
     inputTokens: number
     outputTokens: number
@@ -123,15 +126,20 @@ function createMockSessionsInterface(): MockSessionsInterface {
       activeSessions.set(params.name, {
         agentType: params.agentType,
         conversationId: params.conversationId,
-        claudeSessionId: params.agentType === 'claude'
-          ? `claude-${params.conversationId ?? params.name}`
-          : undefined,
-        codexThreadId: params.agentType === 'codex'
-          ? `codex-${params.conversationId ?? params.name}`
-          : undefined,
-        geminiSessionId: params.agentType === 'gemini'
-          ? `gemini-${params.conversationId ?? params.name}`
-          : undefined,
+        providerContext: params.agentType === 'claude'
+          ? {
+            providerId: 'claude',
+            sessionId: `claude-${params.conversationId ?? params.name}`,
+          }
+          : params.agentType === 'codex'
+            ? {
+              providerId: 'codex',
+              threadId: `codex-${params.conversationId ?? params.name}`,
+            }
+            : {
+              providerId: 'gemini',
+              sessionId: `gemini-${params.conversationId ?? params.name}`,
+            },
         usage: {
           inputTokens: 0,
           outputTokens: 0,
@@ -166,9 +174,7 @@ function createMockSessionsInterface(): MockSessionsInterface {
         name,
         agentType: active.agentType,
         conversationId: active.conversationId,
-        claudeSessionId: active.claudeSessionId,
-        codexThreadId: active.codexThreadId,
-        geminiSessionId: active.geminiSessionId,
+        providerContext: active.providerContext,
         usage: { ...active.usage },
       } as unknown as ReturnType<CommanderSessionsInterface['getSession']>
     },
@@ -626,7 +632,7 @@ describe('POST /api/commanders/channel-message', () => {
   it('resolves a new channel conversation by commander name when exactly one commander matches', async () => {
     const dir = await createTempDir('hammurabi-channel-name-match-')
     const storePath = join(dir, 'sessions.json')
-    await seedCommander(storePath, COMMANDER_A, { host: 'athena' })
+    await seedCommander(storePath, COMMANDER_A, { host: 'atlas' })
 
     const mock = createMockSessionsInterface()
     const server = await startServer({
@@ -643,7 +649,7 @@ describe('POST /api/commanders/channel-message', () => {
         parentPeerId: 'chan-ops',
         threadId: 'thread-333',
         displayName: '#partner-support / Engineering',
-        message: '@athena please take this thread',
+        message: '@atlas please take this thread',
       })
       expect(response.status).toBe(201)
       const body = await response.json() as { commanderId: string; created: boolean }
@@ -657,8 +663,8 @@ describe('POST /api/commanders/channel-message', () => {
   it('returns 409 when a new channel conversation matches multiple commanders', async () => {
     const dir = await createTempDir('hammurabi-channel-name-ambiguous-')
     const storePath = join(dir, 'sessions.json')
-    await seedCommander(storePath, COMMANDER_A, { host: 'athena' })
-    await seedCommander(storePath, COMMANDER_B, { host: 'athena' })
+    await seedCommander(storePath, COMMANDER_A, { host: 'atlas' })
+    await seedCommander(storePath, COMMANDER_B, { host: 'atlas' })
 
     const mock = createMockSessionsInterface()
     const server = await startServer({
@@ -675,7 +681,7 @@ describe('POST /api/commanders/channel-message', () => {
         parentPeerId: 'chan-ops',
         threadId: 'thread-444',
         displayName: '#partner-support / Engineering',
-        message: '@athena please take this thread',
+        message: '@atlas please take this thread',
       })
       expect(response.status).toBe(409)
       const body = await response.json() as { error: string }

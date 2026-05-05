@@ -1,5 +1,10 @@
-import { appendFile, mkdir, readFile, writeFile } from 'node:fs/promises'
+import { appendFile, mkdir, open, readFile, rm } from 'node:fs/promises'
 import * as path from 'node:path'
+import {
+  migrateProviderContext,
+  migratedProviderContextChanged,
+} from '../../migrations/provider-context.js'
+import { writeJsonFileAtomically } from '../../migrations/write-json-file-atomically.js'
 
 export interface TranscriptEvent {
   type: string
@@ -68,36 +73,20 @@ async function queueWrite(filePath: string, write: () => Promise<void>): Promise
   return current
 }
 
-function parseJsonlLines(raw: string): TranscriptEvent[] {
-  const events: TranscriptEvent[] = []
-  for (const line of raw.split('\n')) {
-    const trimmed = line.trim()
-    if (!trimmed) continue
-    try {
-      const parsed = JSON.parse(trimmed) as unknown
-      if (parsed && typeof parsed === 'object' && typeof (parsed as { type?: unknown }).type === 'string') {
-        events.push(parsed as TranscriptEvent)
-      }
-    } catch {
-      continue
-    }
-  }
-  return events
-}
-
-function splitCompletedTurns(events: TranscriptEvent[]): { completedTurns: TranscriptEvent[][]; trailingPartial: TranscriptEvent[] } {
-  const completedTurns: TranscriptEvent[][] = []
-  let currentTurn: TranscriptEvent[] = []
-
-  for (const event of events) {
-    currentTurn.push(event)
-    if (event.type === 'result') {
-      completedTurns.push(currentTurn)
-      currentTurn = []
-    }
+function parseTranscriptEvent(raw: Buffer): TranscriptEvent | null {
+  const trimmed = raw.toString('utf8').trim()
+  if (!trimmed) {
+    return null
   }
 
-  return { completedTurns, trailingPartial: currentTurn }
+  try {
+    const parsed = JSON.parse(trimmed) as unknown
+    return parsed && typeof parsed === 'object' && typeof (parsed as { type?: unknown }).type === 'string'
+      ? parsed as TranscriptEvent
+      : null
+  } catch {
+    return null
+  }
 }
 
 export function setTranscriptStoreRoot(rootDir: string): void {
@@ -112,6 +101,10 @@ export function getTranscriptStoreRoot(): string {
   return transcriptRoot ?? defaultTranscriptRoot()
 }
 
+export async function deleteSessionTranscript(sessionName: string): Promise<void> {
+  await rm(resolveSessionDir(sessionName), { recursive: true, force: true })
+}
+
 export async function appendTranscriptEvent(sessionName: string, event: TranscriptEvent): Promise<void> {
   const transcriptPath = resolveTranscriptPath(sessionName)
   const line = `${JSON.stringify(event)}\n`
@@ -124,30 +117,82 @@ export async function appendTranscriptEvent(sessionName: string, event: Transcri
 
 export async function readTranscriptTail(sessionName: string, maxTurns: number): Promise<TranscriptEvent[]> {
   const transcriptPath = resolveTranscriptPath(sessionName)
-  let raw = ''
+  const turnsToKeep = Math.max(0, Math.floor(maxTurns))
   try {
-    raw = await readFile(transcriptPath, 'utf8')
+    const fileHandle = await open(transcriptPath, 'r')
+    try {
+      const { size } = await fileHandle.stat()
+      if (size === 0) {
+        return []
+      }
+
+      const chunkSize = 64 * 1024
+      const eventsInReverse: TranscriptEvent[] = []
+      let completedTurnsKept = 0
+      let position = size
+      let remainder = Buffer.alloc(0)
+      let reachedBoundary = false
+
+      while (position > 0 && !reachedBoundary) {
+        const bytesToRead = Math.min(chunkSize, position)
+        position -= bytesToRead
+        const chunk = Buffer.allocUnsafe(bytesToRead)
+        const { bytesRead } = await fileHandle.read(chunk, 0, bytesToRead, position)
+        let combined = Buffer.concat([chunk.subarray(0, bytesRead), remainder])
+        let lineEnd = combined.length
+
+        for (let idx = combined.length - 1; idx >= 0; idx -= 1) {
+          if (combined[idx] !== 0x0a) {
+            continue
+          }
+
+          const parsed = parseTranscriptEvent(combined.subarray(idx + 1, lineEnd))
+          lineEnd = idx
+          if (!parsed) {
+            continue
+          }
+          if (parsed.type === 'result') {
+            if (completedTurnsKept >= turnsToKeep) {
+              reachedBoundary = true
+              break
+            }
+            completedTurnsKept += 1
+          }
+          eventsInReverse.push(parsed)
+        }
+
+        remainder = combined.subarray(0, lineEnd)
+      }
+
+      if (!reachedBoundary && remainder.length > 0) {
+        const parsed = parseTranscriptEvent(remainder)
+        if (parsed) {
+          if (parsed.type !== 'result' || completedTurnsKept < turnsToKeep) {
+            if (parsed.type === 'result') {
+              completedTurnsKept += 1
+            }
+            eventsInReverse.push(parsed)
+          }
+        }
+      }
+
+      return eventsInReverse.reverse()
+    } finally {
+      await fileHandle.close()
+    }
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
       return []
     }
     throw error
   }
-
-  const events = parseJsonlLines(raw)
-  const { completedTurns, trailingPartial } = splitCompletedTurns(events)
-  const turnsToKeep = Math.max(0, Math.floor(maxTurns))
-  const selectedTurns = turnsToKeep === 0 ? [] : completedTurns.slice(-turnsToKeep)
-  return [...selectedTurns.flat(), ...trailingPartial]
 }
 
 export async function writeSessionMeta(sessionName: string, meta: TranscriptMeta): Promise<void> {
   const metaPath = resolveMetaPath(sessionName)
-  const payload = `${JSON.stringify(meta, null, 2)}\n`
 
   await queueWrite(metaPath, async () => {
-    await mkdir(path.dirname(metaPath), { recursive: true })
-    await writeFile(metaPath, payload, 'utf8')
+    await writeJsonFileAtomically(metaPath, meta, { trailingNewline: true })
   })
 }
 
@@ -168,7 +213,17 @@ export async function readSessionMeta(sessionName: string): Promise<TranscriptMe
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
       return null
     }
-    return parsed as TranscriptMeta
+    const { cleaned } = migrateProviderContext(parsed as Record<string, unknown>)
+    if (migratedProviderContextChanged(parsed as Record<string, unknown>, cleaned)) {
+      await queueWrite(metaPath, async () => {
+        await writeJsonFileAtomically(metaPath, cleaned, {
+          backup: true,
+          trailingNewline: true,
+        })
+      })
+      console.warn(`[agents][migration] Migrated providerContext in "${metaPath}" (records=1)`)
+    }
+    return cleaned as TranscriptMeta
   } catch {
     return null
   }

@@ -11,6 +11,7 @@ export const API_KEY_SCOPES = [
   'agents:admin',
   'commanders:read',
   'commanders:write',
+  'org:write',
   'services:read',
   'services:write',
   'skills:read',
@@ -120,6 +121,13 @@ function hasSameScopes(left: readonly string[], right: readonly string[]): boole
 
   const rightSet = new Set(right)
   return left.every((scope) => rightSet.has(scope))
+}
+
+function mergeBootstrapMasterKeyScopes(scopes: readonly string[]): string[] {
+  const normalizedScopes = normalizeScopes(scopes)
+  const bootstrapScopeSet = new Set<string>(DEFAULT_BOOTSTRAP_MASTER_KEY_SCOPES)
+  const extraScopes = normalizedScopes.filter((scope) => !bootstrapScopeSet.has(scope))
+  return [...DEFAULT_BOOTSTRAP_MASTER_KEY_SCOPES, ...extraScopes]
 }
 
 function toPersistedCollection(value: unknown): PersistedApiKeyCollection {
@@ -234,10 +242,7 @@ export class ApiKeyJsonStore implements ApiKeyStoreLike {
       )
 
       if (matchingRecord) {
-        const nextScopes = normalizeScopes([
-          ...matchingRecord.scopes,
-          ...DEFAULT_BOOTSTRAP_MASTER_KEY_SCOPES,
-        ])
+        const nextScopes = mergeBootstrapMasterKeyScopes(matchingRecord.scopes)
         if (
           matchingRecord.createdBy === 'system'
           && !hasSameScopes(matchingRecord.scopes, nextScopes)

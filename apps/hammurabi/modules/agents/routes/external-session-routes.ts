@@ -1,6 +1,7 @@
 import type { RequestHandler, Router } from 'express'
 import { MAX_STREAM_EVENTS } from '../constants.js'
-import { parseAgentType, parseSessionName } from '../session/input.js'
+import { parseSessionName } from '../session/input.js'
+import { parseProviderId } from '../providers/registry.js'
 import type {
   AnySession,
   ExternalSession,
@@ -36,7 +37,7 @@ export function registerExternalSessionRoutes(deps: ExternalSessionRouteDeps): v
       return
     }
 
-    const agentType = parseAgentType(req.body?.agentType)
+    const agentType = parseProviderId(req.body?.agentType) ?? 'claude'
     const machine = typeof req.body?.machine === 'string' ? req.body.machine.trim() : ''
     const cwd = typeof req.body?.cwd === 'string' ? req.body.cwd.trim() : ''
     const task = typeof req.body?.task === 'string' ? req.body.task.trim() : undefined

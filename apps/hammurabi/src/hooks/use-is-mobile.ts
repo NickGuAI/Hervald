@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 
-const MOBILE_QUERY = '(max-width: 767px)'
+const NARROW_QUERY = '(max-width: 767px)'
+const COARSE_PHONE_QUERY = '(pointer: coarse) and (max-width: 932px)'
 
 function readSurfaceOverride(): boolean | null {
   if (typeof window === 'undefined') {
@@ -27,13 +28,17 @@ function readIsMobile(): boolean {
     return false
   }
 
-  return window.matchMedia(MOBILE_QUERY).matches
+  return (
+    window.matchMedia(NARROW_QUERY).matches
+    || window.matchMedia(COARSE_PHONE_QUERY).matches
+  )
 }
 
 /**
- * Returns true when the viewport is narrower than 768px (below the `md` breakpoint).
- * `?surface=mobile` and `?surface=desktop` override the viewport check so the mobile
- * shell can be exercised from a desktop browser.
+ * Returns true when the viewport is narrower than 768px or when a coarse-pointer
+ * phone remains within the landscape mobile envelope. `?surface=mobile` and
+ * `?surface=desktop` override the viewport check so the mobile shell can be
+ * exercised from a desktop browser.
  */
 export function useIsMobile() {
   const [isMobile, setIsMobile] = useState(readIsMobile)
@@ -43,16 +48,19 @@ export function useIsMobile() {
       return undefined
     }
 
-    const mql = window.matchMedia(MOBILE_QUERY)
+    const narrowMql = window.matchMedia(NARROW_QUERY)
+    const coarsePhoneMql = window.matchMedia(COARSE_PHONE_QUERY)
     const update = () => setIsMobile(readIsMobile())
     const handler = () => update()
 
     update()
-    mql.addEventListener('change', handler)
+    narrowMql.addEventListener('change', handler)
+    coarsePhoneMql.addEventListener('change', handler)
     window.addEventListener('popstate', update)
 
     return () => {
-      mql.removeEventListener('change', handler)
+      narrowMql.removeEventListener('change', handler)
+      coarsePhoneMql.removeEventListener('change', handler)
       window.removeEventListener('popstate', update)
     }
   }, [])

@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
-import { act, createElement } from 'react'
+import { createElement, type ReactElement } from 'react'
+import { flushSync } from 'react-dom'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -34,13 +35,10 @@ vi.mock('@/hooks/use-speech-recognition', () => ({
 
 vi.mock('@modules/agents/page-shell/use-session-draft', () => ({
   useSessionDraft: () => ({
-    inputMode: 'edit',
     inputText: '',
-    resizeTextarea: vi.fn(),
-    setInputMode: vi.fn(),
     setInputText: vi.fn(),
     showDraftSaved: false,
-    switchToEditMode: vi.fn(),
+    focusTextarea: vi.fn(),
     textareaRef: { current: null },
     clearDraft: vi.fn(),
   }),
@@ -85,11 +83,11 @@ vi.mock('../QueueDock', () => ({
 let root: Root | null = null
 let container: HTMLDivElement | null = null
 
-async function render(element: React.ReactElement) {
+async function render(element: ReactElement) {
   container = document.createElement('div')
   document.body.appendChild(container)
   root = createRoot(container)
-  await act(async () => {
+  flushSync(() => {
     root?.render(element)
   })
 }
@@ -97,8 +95,8 @@ async function render(element: React.ReactElement) {
 function buildProps(overrides: Partial<CenterColumnProps> = {}): CenterColumnProps {
   return {
     commander: {
-      id: 'athena-id',
-      name: 'athena',
+      id: 'atlas-id',
+      name: 'atlas',
       status: 'running',
       agentType: 'codex',
       description: 'engineering commander',
@@ -111,7 +109,7 @@ function buildProps(overrides: Partial<CenterColumnProps> = {}): CenterColumnPro
     setActiveTab: vi.fn(),
     crons: [],
     onAnswer: vi.fn(),
-    composerSessionName: 'athena',
+    composerSessionName: 'atlas',
     composerEnabled: true,
     composerSendReady: true,
     canQueueDraft: true,
@@ -141,7 +139,7 @@ describe('CenterColumn redesign', () => {
 
   afterEach(async () => {
     if (root) {
-      await act(async () => {
+      flushSync(() => {
         root?.unmount()
       })
     }
@@ -169,8 +167,8 @@ describe('CenterColumn redesign', () => {
       <CenterColumn
         {...buildProps({
           commander: {
-            id: 'athena-id',
-            name: 'athena',
+            id: 'atlas-id',
+            name: 'atlas',
             status: 'idle',
             agentType: 'codex',
           },
@@ -179,6 +177,47 @@ describe('CenterColumn redesign', () => {
     )
 
     expect(document.querySelector('[data-testid="commander-stop-button"]')).toBeNull()
+  })
+
+  it('shows a Create Conversation panel with a provider dropdown, and only POSTs on explicit Create click', async () => {
+    const onCreateChat = vi.fn()
+    await render(
+      <CenterColumn
+        {...buildProps({
+          hasSelectedConversation: false,
+          activeChatSession: null,
+          onCreateChat,
+        })}
+      />,
+    )
+
+    expect(document.querySelector('[data-testid="start-conversation-panel"]')).not.toBeNull()
+    expect(document.body.textContent).toContain('Create chat')
+    expect(document.body.textContent).not.toContain('CommanderStartControl')
+
+    // Per #1362 contract: rendering the panel must NOT create an idle artifact.
+    expect(onCreateChat).not.toHaveBeenCalled()
+
+    const select = document.querySelector('[data-testid="create-chat-provider-select"]') as HTMLSelectElement | null
+    expect(select).not.toBeNull()
+    // Default is the commander's persisted agentType (codex in buildProps).
+    expect(select?.value).toBe('codex')
+
+    // User picks a different provider.
+    flushSync(() => {
+      if (select) {
+        select.value = 'claude'
+        select.dispatchEvent(new Event('change', { bubbles: true }))
+      }
+    })
+
+    const button = document.querySelector('[data-testid="create-chat-panel-button"]') as HTMLButtonElement | null
+    expect(button).not.toBeNull()
+    flushSync(() => {
+      button?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    expect(onCreateChat).toHaveBeenCalledTimes(1)
+    expect(onCreateChat).toHaveBeenCalledWith('claude')
   })
 
   it('shows the composer workspace shortcut when onOpenWorkspace is provided', async () => {

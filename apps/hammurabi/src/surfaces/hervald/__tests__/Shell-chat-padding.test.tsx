@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act } from 'react'
+import { flushSync } from 'react-dom'
 import { createRoot, type Root } from 'react-dom/client'
 import { MemoryRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -50,7 +50,7 @@ async function renderShell(pathname: string) {
     },
   })
 
-  await act(async () => {
+  flushSync(() => {
     root?.render(
       <QueryClientProvider client={queryClient}>
         <MemoryRouter initialEntries={[pathname]}>
@@ -79,7 +79,7 @@ describe('Shell — mobile chat padding gate (#1152)', () => {
 
   afterEach(async () => {
     if (root) {
-      await act(async () => {
+      flushSync(() => {
         root?.unmount()
       })
     }

@@ -1,15 +1,13 @@
 import {
   forwardRef,
-  useEffect,
   useImperativeHandle,
+  useEffect,
   useRef,
   useState,
   type ChangeEvent,
   type ClipboardEvent,
   type KeyboardEvent,
 } from 'react'
-import ReactMarkdown from 'react-markdown'
-import remarkGfm from 'remark-gfm'
 import { ArrowUp, ListPlus, Mic, Paperclip, Plus, Zap } from 'lucide-react'
 import { useOpenAITranscription, useOpenAITranscriptionConfig } from '@/hooks/use-openai-transcription'
 import { useSpeechRecognition } from '@/hooks/use-speech-recognition'
@@ -86,13 +84,10 @@ export const SessionComposer = forwardRef<SessionComposerHandle, SessionComposer
   onQueue,
 }, ref) {
   const {
-    inputMode,
     inputText,
-    resizeTextarea,
-    setInputMode,
     setInputText,
     showDraftSaved,
-    switchToEditMode,
+    focusTextarea,
     textareaRef,
     clearDraft,
   } = useSessionDraft(sessionName)
@@ -149,7 +144,7 @@ export const SessionComposer = forwardRef<SessionComposerHandle, SessionComposer
   useImperativeHandle(ref, () => ({
     seedText(nextText: string) {
       setInputText(nextText)
-      switchToEditMode(true)
+      focusTextarea()
     },
     openImagePicker() {
       fileInputRef.current?.click()
@@ -157,33 +152,7 @@ export const SessionComposer = forwardRef<SessionComposerHandle, SessionComposer
     openSkillsPicker() {
       setShowSkills(true)
     },
-  }), [setInputText, setShowSkills, switchToEditMode])
-
-  useEffect(() => {
-    function handleTogglePreview(event: globalThis.KeyboardEvent) {
-      const isToggleShortcut =
-        (event.metaKey || event.ctrlKey)
-        && event.shiftKey
-        && event.key.toLowerCase() === 'p'
-      if (!isToggleShortcut) {
-        return
-      }
-      event.preventDefault()
-      setInputMode((prev) => {
-        const nextMode = prev === 'edit' ? 'preview' : 'edit'
-        if (nextMode === 'edit') {
-          requestAnimationFrame(() => {
-            resizeTextarea()
-            textareaRef.current?.focus()
-          })
-        }
-        return nextMode
-      })
-    }
-
-    window.addEventListener('keydown', handleTogglePreview)
-    return () => window.removeEventListener('keydown', handleTogglePreview)
-  }, [resizeTextarea, setInputMode, textareaRef])
+  }), [focusTextarea, setInputText])
 
   useEffect(() => {
     const normalizedTranscript = speechTranscript.trim()
@@ -195,8 +164,8 @@ export const SessionComposer = forwardRef<SessionComposerHandle, SessionComposer
       const currentText = prev.trimEnd()
       return currentText ? `${currentText} ${normalizedTranscript}` : normalizedTranscript
     })
-    switchToEditMode(true)
-  }, [setInputText, speechTranscript, switchToEditMode])
+    focusTextarea()
+  }, [focusTextarea, setInputText, speechTranscript])
 
   function clearComposer() {
     setPendingImages([])
@@ -276,14 +245,6 @@ export const SessionComposer = forwardRef<SessionComposerHandle, SessionComposer
     textarea.style.height = `${Math.min(textarea.scrollHeight, 120)}px`
   }
 
-  function handlePreviewKeyDown(event: KeyboardEvent<HTMLDivElement>) {
-    if (event.key !== 'Enter') {
-      return
-    }
-    event.preventDefault()
-    switchToEditMode(true)
-  }
-
   function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
     if (queueDraftsSupported && event.key === 'Tab' && !event.shiftKey && canQueueDraft) {
       event.preventDefault()
@@ -326,38 +287,18 @@ export const SessionComposer = forwardRef<SessionComposerHandle, SessionComposer
   }
 
   function renderComposerField() {
-    if (inputMode === 'edit') {
-      return (
-        <textarea
-          ref={textareaRef}
-          className="input-field"
-          rows={1}
-          placeholder={placeholder}
-          value={inputText}
-          onChange={handleTextareaInput}
-          onKeyDown={handleKeyDown}
-          onPaste={handlePaste}
-          disabled={disabled}
-        />
-      )
-    }
-
     return (
-      <div
-        className="composer-preview input-field overflow-y-auto whitespace-pre-wrap"
-        tabIndex={disabled ? -1 : 0}
-        role="region"
-        aria-label="Markdown preview"
-        onKeyDown={handlePreviewKeyDown}
-      >
-        {inputText.trim() ? (
-          <div className="composer-preview-markdown break-words">
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>{inputText}</ReactMarkdown>
-          </div>
-        ) : (
-          <p className="composer-preview-empty text-sm text-sumi-mist">Nothing to preview yet.</p>
-        )}
-      </div>
+      <textarea
+        ref={textareaRef}
+        className="input-field"
+        rows={1}
+        placeholder={placeholder}
+        value={inputText}
+        onChange={handleTextareaInput}
+        onKeyDown={handleKeyDown}
+        onPaste={handlePaste}
+        disabled={disabled}
+      />
     )
   }
 
@@ -407,41 +348,6 @@ export const SessionComposer = forwardRef<SessionComposerHandle, SessionComposer
             ))}
           </div>
         )}
-
-        <div className="composer-toolbar mb-1 flex items-center justify-between px-1">
-          <div className="composer-mode-toggle inline-flex items-center rounded-md border border-[var(--msg-border)] bg-[var(--msg-surface)] p-0.5">
-            <button
-              type="button"
-              className={cn(
-                'composer-mode-button rounded px-2 py-1 font-mono text-[10px] uppercase tracking-wide transition-colors',
-                inputMode === 'edit'
-                  ? 'bg-[var(--msg-surface-elevated)] text-[var(--msg-text)]'
-                  : 'text-[var(--msg-text-muted)] hover:text-[var(--msg-text-secondary)]',
-              )}
-              onClick={() => switchToEditMode(true)}
-              aria-pressed={inputMode === 'edit'}
-            >
-              Edit
-            </button>
-            <button
-              type="button"
-              className={cn(
-                'composer-mode-button rounded px-2 py-1 font-mono text-[10px] uppercase tracking-wide transition-colors',
-                inputMode === 'preview'
-                  ? 'bg-[var(--msg-surface-elevated)] text-[var(--msg-text)]'
-                  : 'text-[var(--msg-text-muted)] hover:text-[var(--msg-text-secondary)]',
-              )}
-              onClick={() => setInputMode('preview')}
-              aria-pressed={inputMode === 'preview'}
-            >
-              Preview
-            </button>
-          </div>
-          <span className="composer-shortcut-hint font-mono text-[10px] text-[var(--msg-text-muted)]">
-            {navigator.platform?.includes('Mac') ? '\u2318' : 'Ctrl+'}Shift+P
-          </span>
-        </div>
-
         <input
           ref={fileInputRef}
           type="file"
@@ -596,7 +502,7 @@ export const SessionComposer = forwardRef<SessionComposerHandle, SessionComposer
         theme={theme}
         onSelectSkill={(command) => {
           setInputText(`${command} `)
-          switchToEditMode(true)
+          focusTextarea()
         }}
         onClose={() => setShowSkills(false)}
       />

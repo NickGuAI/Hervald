@@ -9,13 +9,16 @@ import {
 describe('agents/machine-auth', () => {
   it('builds provider verification commands that match the supported auth methods', () => {
     expect(buildProviderVerificationCommand('claude')).toBe(
-      'claude --version && (test -n "$CLAUDE_CODE_OAUTH_TOKEN" || claude auth status)',
+      'claude --version && (test -n "$CLAUDE_CODE_OAUTH_TOKEN" || test -n "$ANTHROPIC_API_KEY" || test -n "$ANTHROPIC_AUTH_TOKEN" || claude auth status)',
     )
     expect(buildProviderVerificationCommand('codex')).toBe(
       'codex --version && (test -n "$OPENAI_API_KEY" || codex login status)',
     )
     expect(buildProviderVerificationCommand('gemini')).toBe(
       'gemini --version && (test -n "$GEMINI_API_KEY" || test -n "$GOOGLE_API_KEY")',
+    )
+    expect(buildProviderVerificationCommand('opencode')).toBe(
+      'opencode --version && (test -n "$OPENCODE_API_KEY")',
     )
   })
 
@@ -33,6 +36,9 @@ describe('agents/machine-auth', () => {
         'version:gemini:0.1.18',
         'env:gemini:GOOGLE_API_KEY',
         'login:gemini:n/a',
+        'version:opencode:missing',
+        'env:opencode:missing',
+        'login:opencode:n/a',
       ].join('\n'),
     })
 
@@ -42,6 +48,8 @@ describe('agents/machine-auth', () => {
     expect(report.providers.codex.currentMethod).toBe('device-auth')
     expect(report.providers.gemini.configured).toBe(true)
     expect(report.providers.gemini.currentMethod).toBe('api-key')
+    expect(report.providers.opencode.configured).toBe(false)
+    expect(report.providers.opencode.currentMethod).toBe('missing')
   })
 
   it('upserts exported env vars without keeping removed secrets', () => {

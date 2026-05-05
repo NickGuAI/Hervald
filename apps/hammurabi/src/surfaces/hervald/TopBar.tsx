@@ -7,6 +7,8 @@
  */
 import { NavLink, useLocation } from 'react-router-dom'
 import { type CSSProperties, useEffect, useRef, useState } from 'react'
+import { Moon, Sun } from 'lucide-react'
+import { useTheme } from '@/lib/theme-context'
 
 interface NavItem {
   name: string
@@ -144,12 +146,26 @@ const overflowMenuStyle: CSSProperties = {
   zIndex: 20,
 }
 
+const iconButtonStyle: CSSProperties = {
+  width: 30,
+  height: 30,
+  border: '1px solid rgba(250, 248, 245, 0.16)',
+  borderRadius: 8,
+  background: 'rgba(250, 248, 245, 0.04)',
+  color: 'var(--washi-white)',
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  cursor: 'pointer',
+}
+
 function isModuleActive(module: NavItem, pathname: string) {
   return pathname === module.path || pathname.startsWith(module.path + '/')
 }
 
 export function TopBar({ modules, counts }: TopBarProps) {
   const location = useLocation()
+  const { theme, toggleTheme, isSaving } = useTheme()
   const [showOverflow, setShowOverflow] = useState(false)
   const overflowRef = useRef<HTMLDivElement | null>(null)
 
@@ -269,19 +285,21 @@ export function TopBar({ modules, counts }: TopBarProps) {
         <span>
           <b style={countValueStyle}>{running}</b> running
         </span>
-        <span style={{ color: '#3a3a3d' }}>·</span>
-        <span>
-          <b style={countValueStyle}>{stale}</b> stale
-        </span>
-        <span style={{ color: '#3a3a3d' }}>·</span>
-        <span>
-          <b style={countValueStyle}>{exited}</b> exited
-        </span>
-        <span style={{ color: '#3a3a3d' }}>·</span>
-        <span style={{ color: 'var(--vermillion-seal)' }}>
-          <b style={{ fontWeight: 500 }}>{pending}</b> pending
-        </span>
       </div>
+
+      <button
+        type="button"
+        style={{
+          ...iconButtonStyle,
+          opacity: isSaving ? 0.65 : 1,
+        }}
+        onClick={toggleTheme}
+        aria-label={theme === 'dark' ? 'Use light theme' : 'Use dark theme'}
+        title={theme === 'dark' ? 'Use light theme' : 'Use dark theme'}
+        disabled={isSaving}
+      >
+        {theme === 'dark' ? <Sun size={15} /> : <Moon size={15} />}
+      </button>
     </header>
   )
 }

@@ -35,7 +35,6 @@ describe('CommanderSentinelsTab', () => {
           heartbeat: {
             intervalMs: 900_000,
             messageTemplate: 'Check status',
-            lastSentAt: null,
           },
           lastHeartbeat: null,
           taskSource: null,

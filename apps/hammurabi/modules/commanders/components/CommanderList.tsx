@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Clock3, ExternalLink, MessageSquare, Plus, Square, Trash2, Triangle } from 'lucide-react'
+import { useProviderRegistry } from '@/hooks/use-providers'
 import { cn, formatCost, timeAgo } from '@/lib/utils'
 import { fetchJson } from '../../../src/lib/api'
 import type {
@@ -93,10 +94,7 @@ function removeKey(record: Record<string, string>, key: string): Record<string, 
 }
 
 function resolveAgentType(agentType: CommanderSession['agentType']): CommanderAgentType {
-  if (agentType === 'codex' || agentType === 'gemini') {
-    return agentType
-  }
-  return 'claude'
+  return agentType ?? 'claude'
 }
 
 export function CommanderList({
@@ -128,6 +126,7 @@ export function CommanderList({
   isStartPending?: boolean
   isStopPending?: boolean
 }) {
+  const { data: providers = [] } = useProviderRegistry()
   const queryClient = useQueryClient()
   const [agentTypeByCommander, setAgentTypeByCommander] = useState<Record<string, CommanderAgentType>>({})
   const [manualHeartbeatRunIdByCommander, setManualHeartbeatRunIdByCommander] = useState<Record<string, string>>({})
@@ -311,21 +310,19 @@ export function CommanderList({
                     value={selectedAgentType}
                     onChange={(event) => {
                       event.stopPropagation()
-                      const nextValue = event.target.value
-                      const nextAgentType = nextValue === 'codex' || nextValue === 'gemini'
-                        ? nextValue
-                        : 'claude'
                       setAgentTypeByCommander((current) => ({
                         ...current,
-                        [session.id]: nextAgentType,
+                        [session.id]: event.target.value,
                       }))
                     }}
                     onClick={(event) => event.stopPropagation()}
                     className="bg-transparent text-sumi-black focus:outline-none"
                   >
-                    <option value="claude">claude</option>
-                    <option value="codex">codex</option>
-                    <option value="gemini">gemini</option>
+                    {providers.map((provider) => (
+                      <option key={provider.id} value={provider.id}>
+                        {provider.label.toLowerCase()}
+                      </option>
+                    ))}
                   </select>
                 </label>
                 {!isRunning && onStartCommander && (

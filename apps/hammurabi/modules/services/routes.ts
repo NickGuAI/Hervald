@@ -342,8 +342,8 @@ function normalizeVercelStatus(value: unknown): VercelDeploymentStatus {
 }
 
 function readVercelConfig(env: NodeJS.ProcessEnv): VercelConfig | null {
-  // Canonical names: VERCEL_TOKEN / VERCEL_TEAM_ID. Legacy GEHIRN-prefixed
-  // names supported as a back-compat shim while internal envs migrate.
+  // Canonical names: VERCEL_TOKEN / VERCEL_TEAM_ID. Older GEHIRN-prefixed
+  // names remain accepted while internal envs migrate.
   const token =
     parseTrimmedString(env.VERCEL_TOKEN) ?? parseTrimmedString(env.VERCEL_GEHIRN_MASTER_TOKEN)
   const teamId =

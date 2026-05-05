@@ -10,13 +10,15 @@ import {
   runCapturedCommand,
   shellEscape,
 } from './machines.js'
+import {
+  listMachineProviders,
+  type MachineAuthMethod,
+  type MachineAuthMode,
+  type MachineProviderAdapter,
+} from './providers/machine-provider-adapter.js'
 import type { CapturedCommandResult, MachineConfig } from './types.js'
 
-export const MACHINE_AUTH_PROVIDERS = ['claude', 'codex', 'gemini'] as const
-
-export type MachineAuthProvider = (typeof MACHINE_AUTH_PROVIDERS)[number]
-export type MachineAuthMode = 'setup-token' | 'api-key' | 'device-auth'
-export type MachineAuthMethod = MachineAuthMode | 'login' | 'missing'
+export type MachineAuthProvider = string
 
 export interface MachineProviderAuthStatus {
   provider: MachineAuthProvider
@@ -35,81 +37,64 @@ export interface MachineAuthStatusReport {
   machineId: string
   envFile: string | null
   checkedAt: string
-  providers: Record<MachineAuthProvider, MachineProviderAuthStatus>
+  providers: Record<string, MachineProviderAuthStatus>
 }
 
-const MACHINE_AUTH_LABELS: Record<MachineAuthProvider, string> = {
-  claude: 'Claude',
-  codex: 'Codex',
-  gemini: 'Gemini',
-}
-
-const MACHINE_AUTH_VERSION_COMMANDS: Record<MachineAuthProvider, string> = {
-  claude: 'claude --version',
-  codex: 'codex --version',
-  gemini: 'gemini --version',
-}
-
-const MACHINE_AUTH_LOGIN_COMMANDS: Partial<Record<MachineAuthProvider, string>> = {
-  claude: 'claude auth status',
-  codex: 'codex login status',
-}
-
-const MACHINE_AUTH_VERIFICATION_COMMANDS: Record<MachineAuthProvider, string> = {
-  claude: 'claude --version && (test -n "$CLAUDE_CODE_OAUTH_TOKEN" || claude auth status)',
-  codex: 'codex --version && (test -n "$OPENAI_API_KEY" || codex login status)',
-  gemini: 'gemini --version && (test -n "$GEMINI_API_KEY" || test -n "$GOOGLE_API_KEY")',
-}
-
-function buildProviderEnvSourceCommand(provider: MachineAuthProvider): string {
-  switch (provider) {
-    case 'claude':
-      return [
-        'if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then echo CLAUDE_CODE_OAUTH_TOKEN',
-        'elif [ -n "${ANTHROPIC_API_KEY:-}" ]; then echo ANTHROPIC_API_KEY',
-        'elif [ -n "${ANTHROPIC_AUTH_TOKEN:-}" ]; then echo ANTHROPIC_AUTH_TOKEN',
-        'else echo missing',
-        'fi',
-      ].join('; ')
-    case 'codex':
-      return 'if [ -n "${OPENAI_API_KEY:-}" ]; then echo OPENAI_API_KEY; else echo missing; fi'
-    case 'gemini':
-      return [
-        'if [ -n "${GEMINI_API_KEY:-}" ]; then echo GEMINI_API_KEY',
-        'elif [ -n "${GOOGLE_API_KEY:-}" ]; then echo GOOGLE_API_KEY',
-        'else echo missing',
-        'fi',
-      ].join('; ')
+function getMachineProviderOrThrow(providerId: string): MachineProviderAdapter {
+  const provider = listMachineProviders().find((entry) => entry.id === providerId)
+  if (!provider) {
+    throw new Error(`Unknown machine auth provider "${providerId}"`)
   }
+  return provider
+}
+
+function buildProviderEnvSourceCommand(provider: MachineProviderAdapter): string {
+  if (provider.authEnvKeys.length === 0) {
+    return 'echo missing'
+  }
+
+  const checks = provider.authEnvKeys.map((key, index) => {
+    const prefix = index === 0 ? 'if' : 'elif'
+    return `${prefix} [ -n "\${${key}:-}" ]; then echo ${key}`
+  })
+  return [...checks, 'else echo missing', 'fi'].join('; ')
 }
 
 export function buildProviderVersionCommand(provider: MachineAuthProvider): string {
-  return MACHINE_AUTH_VERSION_COMMANDS[provider]
+  const resolvedProvider = getMachineProviderOrThrow(provider)
+  return `${resolvedProvider.cliBinaryName} --version`
 }
 
 export function buildProviderLoginStatusCommand(provider: MachineAuthProvider): string | null {
-  return MACHINE_AUTH_LOGIN_COMMANDS[provider] ?? null
+  return getMachineProviderOrThrow(provider).loginStatusCommand
 }
 
 export function buildProviderVerificationCommand(provider: MachineAuthProvider): string {
-  return MACHINE_AUTH_VERIFICATION_COMMANDS[provider]
+  const resolvedProvider = getMachineProviderOrThrow(provider)
+  const envChecks = resolvedProvider.authEnvKeys
+    .map((key) => `test -n "$${key}"`)
+    .join(' || ')
+  const authClause = resolvedProvider.loginStatusCommand
+    ? `${envChecks ? `${envChecks} || ` : ''}${resolvedProvider.loginStatusCommand}`
+    : (envChecks || 'true')
+  return `${resolvedProvider.cliBinaryName} --version && (${authClause})`
 }
 
 export function buildMachineAuthProbeScript(): string {
   const lines = ['set +e']
-  for (const provider of MACHINE_AUTH_PROVIDERS) {
-    const versionCommand = buildProviderVersionCommand(provider)
+  for (const provider of listMachineProviders()) {
+    const versionCommand = buildProviderVersionCommand(provider.id)
     lines.push(
-      `printf 'version:${provider}:'; if command -v ${provider} >/dev/null 2>&1; then ${versionCommand} | head -n 1; else echo missing; fi`,
-      `printf 'env:${provider}:'; ${buildProviderEnvSourceCommand(provider)}`,
+      `printf 'version:${provider.id}:'; if command -v ${provider.cliBinaryName} >/dev/null 2>&1; then ${versionCommand} | head -n 1; else echo missing; fi`,
+      `printf 'env:${provider.id}:'; ${buildProviderEnvSourceCommand(provider)}`,
     )
-    const loginStatusCommand = buildProviderLoginStatusCommand(provider)
+    const loginStatusCommand = buildProviderLoginStatusCommand(provider.id)
     if (loginStatusCommand) {
       lines.push(
-        `printf 'login:${provider}:'; if command -v ${provider} >/dev/null 2>&1; then ${loginStatusCommand} >/dev/null 2>&1; echo $?; else echo missing; fi`,
+        `printf 'login:${provider.id}:'; if command -v ${provider.cliBinaryName} >/dev/null 2>&1; then ${loginStatusCommand} >/dev/null 2>&1; echo $?; else echo missing; fi`,
       )
     } else {
-      lines.push(`printf 'login:${provider}:'; echo n/a`)
+      lines.push(`printf 'login:${provider.id}:'; echo n/a`)
     }
   }
   return lines.join('\n')
@@ -120,9 +105,12 @@ export function parseMachineAuthProbeOutput(args: {
   envFile: string | null
   output: string
 }): MachineAuthStatusReport {
-  const versions = new Map<MachineAuthProvider, string>()
-  const envSources = new Map<MachineAuthProvider, string>()
-  const logins = new Map<MachineAuthProvider, string>()
+  const registeredProviders = listMachineProviders()
+  const providerIds = registeredProviders.map((provider) => provider.id)
+  const versions = new Map<string, string>()
+  const envSources = new Map<string, string>()
+  const logins = new Map<string, string>()
+  const categoryPattern = new RegExp(`^(version|env|login):(${providerIds.join('|')}):(.*)$`)
 
   for (const rawLine of args.output.split(/\r?\n/g)) {
     const line = rawLine.trim()
@@ -130,13 +118,13 @@ export function parseMachineAuthProbeOutput(args: {
       continue
     }
 
-    const match = /^(version|env|login):(claude|codex|gemini):(.*)$/.exec(line)
+    const match = categoryPattern.exec(line)
     if (!match) {
       continue
     }
 
     const [, category, providerValue, payloadValue] = match
-    const provider = providerValue as MachineAuthProvider
+    const provider = providerValue.trim()
     const payload = payloadValue.trim()
     if (category === 'version') {
       versions.set(provider, payload)
@@ -147,23 +135,23 @@ export function parseMachineAuthProbeOutput(args: {
     }
   }
 
-  const providers = Object.fromEntries(
-    MACHINE_AUTH_PROVIDERS.map((provider) => {
-      const versionRaw = versions.get(provider) ?? 'missing'
+  const providerStatuses = Object.fromEntries(
+    registeredProviders.map((provider) => {
+      const versionRaw = versions.get(provider.id) ?? 'missing'
       const installed = versionRaw !== 'missing'
       const version = installed ? versionRaw : null
-      const envSourceRaw = envSources.get(provider) ?? 'missing'
+      const envSourceRaw = envSources.get(provider.id) ?? 'missing'
       const envSourceKey = envSourceRaw !== 'missing' ? envSourceRaw : null
       const envConfigured = envSourceKey !== null
-      const loginRaw = logins.get(provider) ?? 'n/a'
+      const loginRaw = logins.get(provider.id) ?? 'n/a'
       const loginConfigured = loginRaw === '0'
-      const currentMethod = resolveCurrentMethod(provider, envSourceKey, loginConfigured)
+      const currentMethod = provider.classifyAuthMethod({ envSourceKey, loginConfigured })
 
       return [
-        provider,
+        provider.id,
         {
-          provider,
-          label: MACHINE_AUTH_LABELS[provider],
+          provider: provider.id,
+          label: provider.label,
           installed,
           version,
           envConfigured,
@@ -171,46 +159,18 @@ export function parseMachineAuthProbeOutput(args: {
           loginConfigured,
           configured: installed && (envConfigured || loginConfigured),
           currentMethod,
-          verificationCommand: buildProviderVerificationCommand(provider),
+          verificationCommand: buildProviderVerificationCommand(provider.id),
         } satisfies MachineProviderAuthStatus,
       ]
     }),
-  ) as Record<MachineAuthProvider, MachineProviderAuthStatus>
+  ) as Record<string, MachineProviderAuthStatus>
 
   return {
     machineId: args.machineId,
     envFile: args.envFile,
     checkedAt: new Date().toISOString(),
-    providers,
+    providers: providerStatuses,
   }
-}
-
-function resolveCurrentMethod(
-  provider: MachineAuthProvider,
-  envSourceKey: string | null,
-  loginConfigured: boolean,
-): MachineAuthMethod {
-  if (provider === 'claude') {
-    if (envSourceKey === 'CLAUDE_CODE_OAUTH_TOKEN') {
-      return 'setup-token'
-    }
-    if (envSourceKey === 'ANTHROPIC_API_KEY' || envSourceKey === 'ANTHROPIC_AUTH_TOKEN') {
-      return 'api-key'
-    }
-    return loginConfigured ? 'login' : 'missing'
-  }
-
-  if (provider === 'codex') {
-    if (envSourceKey === 'OPENAI_API_KEY') {
-      return 'api-key'
-    }
-    return loginConfigured ? 'device-auth' : 'missing'
-  }
-
-  if (envSourceKey === 'GEMINI_API_KEY' || envSourceKey === 'GOOGLE_API_KEY') {
-    return 'api-key'
-  }
-  return 'missing'
 }
 
 export async function runMachineAuthStatus(machine: MachineConfig): Promise<MachineAuthStatusReport> {
@@ -421,7 +381,7 @@ async function runMachineShellScript(
   //     missing `.enc` is treated as empty entries by the helper, not as a
   //     hard failure (codex-review on PR #1270).
   //
-  //   - Plaintext (or absent) envFiles keep the legacy `. <file> || true`
+  //   - Plaintext (or absent) envFiles keep the existing `. <file> || true`
   //     shell-source pattern via `buildLoginShellBootstrap(envFile)` so shell
   //     expansions are evaluated correctly. This matches behavior before the
   //     `.enc` fix on PR #1269.
@@ -468,7 +428,7 @@ async function runMachineShellScript(
     })
   }
 
-  // Plaintext or absent envFile path — preserve legacy shell-source semantics
+  // Plaintext or absent envFile path — preserve the existing shell-source semantics
   // so shell expansions in the env file evaluate against the live shell env.
   if (isRemoteMachine(machine)) {
     return await runCapturedCommand(

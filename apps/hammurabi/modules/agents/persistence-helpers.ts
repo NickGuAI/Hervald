@@ -21,7 +21,7 @@ import { readFile } from 'node:fs/promises'
 import {
   COMMAND_ROOM_COMPLETED_SESSION_TTL_MS,
 } from './constants.js'
-import { buildLegacyCommanderConversationId } from '../commanders/store.js'
+import { buildDefaultCommanderConversationId } from '../commanders/store.js'
 import {
   buildPersistedEntryFromExitedSession,
   getWorldAgentStatus,
@@ -37,6 +37,7 @@ import {
   markCodexTurnHealthy,
 } from './adapters/codex/helpers.js'
 import type { MachineRegistryStore } from './machines.js'
+import { getProvider } from './providers/registry.js'
 import type {
   AnySession,
   CompletedSession,
@@ -59,29 +60,12 @@ export type ApplyStreamUsageEvent = (
   event: StreamJsonEvent,
 ) => void
 
-/**
- * Router-local Claude stream session creator passed through to the
- * persistence/restore helper. Exact shape matches the one created inside
- * `createAgentsRouter()` — restore can only rehydrate sessions the router
- * can itself create.
- */
-export type ClaudeSessionRestorer = (
+export type ProviderSessionRestorer = (
   entry: PersistedStreamSession,
   machine: MachineConfig | undefined,
 ) => Promise<StreamSession>
 
-export type CodexSessionRestorer = (
-  entry: PersistedStreamSession,
-  machine: MachineConfig | undefined,
-) => Promise<StreamSession>
-
-export type GeminiSessionRestorer = (
-  entry: PersistedStreamSession,
-  machine: MachineConfig | undefined,
-) => Promise<StreamSession>
-
-/** Teardown for codex runtime used during prune. */
-export type CodexSessionTeardown = (
+export type ProviderSessionTeardown = (
   session: StreamSession,
   reason: string,
 ) => Promise<void>
@@ -94,10 +78,8 @@ export interface PersistenceHelpersContext {
   completedSessions: Map<string, CompletedSession>
   exitedStreamSessions: Map<string, ExitedStreamSessionState>
   applyStreamUsageEvent: ApplyStreamUsageEvent
-  createClaudeSession: ClaudeSessionRestorer
-  createCodexSession: CodexSessionRestorer
-  createGeminiSession: GeminiSessionRestorer
-  teardownCodexSessionRuntime: CodexSessionTeardown
+  restoreProviderSession: ProviderSessionRestorer
+  teardownProviderSession: ProviderSessionTeardown
   isExitedSessionResumeAvailable(
     entry: ReturnType<typeof buildPersistedEntryFromExitedSession>,
   ): Promise<boolean>
@@ -123,6 +105,7 @@ export interface SessionPruneCandidate {
 
 export interface PersistenceHelpers {
   schedulePersistedSessionsWrite: () => void
+  flushPersistedSessionsWrite: () => Promise<void>
   readPersistedSessionsState: () => Promise<PersistedSessionsState>
   restorePersistedSessions: () => Promise<void>
   getStaleCronSessionCandidates: (nowMs?: number) => SessionPruneCandidate[]
@@ -131,8 +114,6 @@ export interface PersistenceHelpers {
   getStaleNonHumanSessionCandidates: (config: SessionPrunerConfig, nowMs?: number) => Promise<SessionPruneCandidate[]>
   pruneStaleNonHumanSessions: (config: SessionPrunerConfig, nowMs?: number) => Promise<number>
 }
-
-const LEGACY_PARENT_SESSION_KEY = `parent${'Session'}`
 
 /**
  * Build the 4 persistence helpers backed by the given context. Keeps the
@@ -150,10 +131,8 @@ export function createPersistenceHelpers(
     completedSessions,
     exitedStreamSessions,
     applyStreamUsageEvent,
-    createClaudeSession,
-    createCodexSession,
-    createGeminiSession,
-    teardownCodexSessionRuntime,
+    restoreProviderSession,
+    teardownProviderSession,
     isExitedSessionResumeAvailable,
     isLiveSessionResumeAvailable,
   } = ctx
@@ -164,15 +143,32 @@ export function createPersistenceHelpers(
   // poisoning every subsequent call.
   let persistSessionStateQueue: Promise<void> = Promise.resolve()
 
+  function isBenignPersistedSessionWriteError(error: unknown): boolean {
+    return (error as NodeJS.ErrnoException | null)?.code === 'ENOENT'
+  }
+
   function schedulePersistedSessionsWrite(): void {
     persistSessionStateQueue = persistSessionStateQueue
       .catch(() => undefined)
       .then(async () => {
-        await writePersistedSessionsStateToStore(
-          sessionStorePath,
-          serializePersistedSessionsStateForStore({ sessions, exitedStreamSessions }),
-        )
+        try {
+          await writePersistedSessionsStateToStore(
+            sessionStorePath,
+            serializePersistedSessionsStateForStore({ sessions, exitedStreamSessions }),
+          )
+        } catch (error) {
+          // Test teardown and process shutdown can remove ephemeral data dirs
+          // before this queued write drains. Treat that as a benign stop case.
+          if (isBenignPersistedSessionWriteError(error)) {
+            return
+          }
+          throw error
+        }
       })
+  }
+
+  async function flushPersistedSessionsWrite(): Promise<void> {
+    await persistSessionStateQueue.catch(() => undefined)
   }
 
   async function readPersistedSessionsState(): Promise<PersistedSessionsState> {
@@ -181,45 +177,14 @@ export function createPersistenceHelpers(
 
   async function restorePersistedSessions(): Promise<void> {
     const persisted = await readPersistedSessionsStateFromStore(sessionStorePath)
-    const legacyParentSessions = await readLegacyParentSessionMap(sessionStorePath)
-    const backfilledSessions = persisted.sessions.map((entry) => {
-      const legacySpawnSource = legacyParentSessions.get(entry.name)
-      const migrationEntry = legacySpawnSource
-        ? { ...entry, [LEGACY_PARENT_SESSION_KEY]: legacySpawnSource }
-        : entry
-      const base = entry.creator && entry.sessionType
-        ? { ...entry }
-        : backfillPersistedSession(
-            migrationEntry as PersistedStreamSession & Record<string, unknown>,
-          )
-
-      if (
-        !base.conversationId &&
-        base.sessionType === 'commander' &&
-        base.creator?.kind === 'commander' &&
-        typeof base.creator.id === 'string' &&
-        base.creator.id.trim().length > 0
-      ) {
-        base.conversationId = buildLegacyCommanderConversationId(base.creator.id.trim())
-        console.info(
-          `[agents] Backfilled persisted session "${entry.name}" conversationId=${base.conversationId}`,
-        )
-      }
-
-      if (!entry.creator || !entry.sessionType) {
-        const creatorKind = base.creator?.kind ?? 'unknown'
-        const creatorId = base.creator?.id ? `/${base.creator.id}` : ''
-        console.info(
-          `[agents] Backfilled persisted session "${entry.name}" creator=${creatorKind}${creatorId} sessionType=${base.sessionType}`,
-        )
-      }
-
-      return base
-    })
-    const backfilledState = { sessions: backfilledSessions }
-    const changed = JSON.stringify(backfilledState) !== JSON.stringify(persisted)
+    const migrationSourceEntries = await readStoredSessionMigrationEntries(sessionStorePath)
+    const migratedSessions = persisted.sessions.map((entry) =>
+      migratePersistedSessionEntry(entry, migrationSourceEntries.get(entry.name)),
+    )
+    const migratedState = { sessions: migratedSessions }
+    const changed = JSON.stringify(migratedState) !== JSON.stringify(persisted)
     if (changed) {
-      await writePersistedSessionsStateToStore(sessionStorePath, backfilledState)
+      await writePersistedSessionsStateToStore(sessionStorePath, migratedState, { backup: true })
     }
 
     await restorePersistedSessionsFromStore({
@@ -230,9 +195,7 @@ export function createPersistenceHelpers(
       sessionStorePath,
       machineRegistry,
       applyUsageEvent: applyStreamUsageEvent,
-      createClaudeSession,
-      createCodexSession,
-      createGeminiSession,
+      restoreProviderSession,
     })
   }
 
@@ -241,7 +204,7 @@ export function createPersistenceHelpers(
 
     for (const [sessionName, session] of sessions) {
       if (session.kind !== 'stream') continue
-      if (session.sessionType !== 'cron') continue
+      if (session.sessionType !== 'cron' && session.sessionType !== 'automation') continue
       if (!session.lastTurnCompleted || !session.finalResultEvent) continue
 
       const completedAtMs = Date.parse(session.completedTurnAt ?? session.createdAt)
@@ -270,20 +233,22 @@ export function createPersistenceHelpers(
 
     for (const candidate of candidates) {
       const session = sessions.get(candidate.name)
-      if (!session || session.kind !== 'stream' || session.sessionType !== 'cron') {
+      if (
+        !session ||
+        session.kind !== 'stream' ||
+        (session.sessionType !== 'cron' && session.sessionType !== 'automation')
+      ) {
         continue
       }
 
       for (const client of session.clients) {
         client.close(1000, 'Session ended')
       }
-      if (session.agentType === 'codex') {
+      if (getProvider(session.agentType)?.id === 'codex') {
         clearCodexTurnWatchdog(session)
         markCodexTurnHealthy(session)
-        void teardownCodexSessionRuntime(session, 'Pruning stale cron session')
-      } else {
-        session.process.kill('SIGTERM')
       }
+      void teardownProviderSession(session, 'Pruning stale automation session')
       sessions.delete(candidate.name)
     }
 
@@ -400,13 +365,11 @@ export function createPersistenceHelpers(
         for (const client of liveSession.clients) {
           client.close(1000, 'Session pruned')
         }
-        if (liveSession.agentType === 'codex') {
+        if (getProvider(liveSession.agentType)?.id === 'codex') {
           clearCodexTurnWatchdog(liveSession)
           markCodexTurnHealthy(liveSession)
-          await teardownCodexSessionRuntime(liveSession, 'Pruning stale non-human session')
-        } else {
-          liveSession.process.kill('SIGTERM')
         }
+        await teardownProviderSession(liveSession, 'Pruning stale non-human session')
         sessions.delete(candidate.name)
         continue
       }
@@ -423,6 +386,7 @@ export function createPersistenceHelpers(
 
   return {
     schedulePersistedSessionsWrite,
+    flushPersistedSessionsWrite,
     readPersistedSessionsState,
     restorePersistedSessions,
     getStaleCronSessionCandidates,
@@ -433,67 +397,69 @@ export function createPersistenceHelpers(
   }
 }
 
-function backfillPersistedSession(
-  entry: PersistedStreamSession & Record<string, unknown>,
-): PersistedStreamSession & { creator: SessionCreator; sessionType: SessionType } {
-  const creatorAndType = inferLegacySessionCreator(entry)
-  const legacySpawnSource = typeof entry[LEGACY_PARENT_SESSION_KEY] === 'string' && entry[LEGACY_PARENT_SESSION_KEY].trim().length > 0
-    ? entry[LEGACY_PARENT_SESSION_KEY].trim()
-    : undefined
-  return {
-    ...entry,
-    sessionType: creatorAndType.sessionType,
-    creator: creatorAndType.creator,
-    spawnedBy: entry.spawnedBy ?? legacySpawnSource,
-  }
+function asMigrationRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null
 }
 
-function inferLegacySessionCreator(
-  entry: PersistedStreamSession & Record<string, unknown>,
-): { creator: SessionCreator; sessionType: SessionType } {
-  const legacyParentSessionValue = (entry as { parentSession?: string }).parentSession
-  const legacyParentSession = typeof legacyParentSessionValue === 'string'
-    && legacyParentSessionValue.trim().length > 0
-    ? legacyParentSessionValue.trim()
+function parseOptionalTrimmedString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim().length > 0
+    ? value.trim()
     : undefined
-  if (entry.name.startsWith('command-room-')) {
+}
+
+function inferPersistedSessionSource(
+  sessionName: string,
+  rawEntry?: Record<string, unknown>,
+): { creator: SessionCreator; sessionType: SessionType; spawnedBy?: string } {
+  const parentSession = parseOptionalTrimmedString(rawEntry?.parentSession)
+    ?? parseOptionalTrimmedString(rawEntry?.spawnedBy)
+  if (sessionName.startsWith('command-room-')) {
     return {
       creator: { kind: 'cron', id: '<unknown-cron-task>' },
       sessionType: 'cron',
     }
   }
-  if (entry.name.startsWith('sentinel-')) {
+  if (sessionName.startsWith('automation-')) {
+    return {
+      creator: { kind: 'automation', id: '<unknown-automation>' },
+      sessionType: 'automation',
+    }
+  }
+  if (sessionName.startsWith('sentinel-')) {
     return {
       creator: { kind: 'sentinel', id: '<unknown-sentinel>' },
       sessionType: 'sentinel',
     }
   }
-  if (entry.name.startsWith('worker-') || legacyParentSession) {
+  if (sessionName.startsWith('worker-') || parentSession) {
     return {
       creator: {
         kind: 'commander',
-        id: legacyParentSession ? legacyCommanderIdFromSessionName(legacyParentSession) ?? 'unknown' : 'unknown',
+        id: parentSession ? commanderIdFromSessionName(parentSession) ?? 'unknown' : 'unknown',
       },
       sessionType: 'worker',
+      ...(parentSession ? { spawnedBy: parentSession } : {}),
     }
   }
-  if (entry.name.startsWith('commander-')) {
+  if (sessionName.startsWith('commander-')) {
     return {
       creator: {
         kind: 'commander',
-        id: legacyCommanderIdFromSessionName(entry.name) ?? entry.name,
+        id: commanderIdFromSessionName(sessionName) ?? sessionName,
       },
       sessionType: 'commander',
     }
   }
 
   return {
-    creator: { kind: 'human', id: '<legacy-unknown-user>' },
-    sessionType: entry.sessionType ?? 'worker',
+    creator: { kind: 'human', id: '<unknown-user>' },
+    sessionType: 'worker',
   }
 }
 
-function legacyCommanderIdFromSessionName(sessionName: string | null | undefined): string | null {
+function commanderIdFromSessionName(sessionName: string | null | undefined): string | null {
   const normalized = sessionName?.trim() ?? ''
   if (!normalized.startsWith('commander-')) {
     return null
@@ -503,7 +469,52 @@ function legacyCommanderIdFromSessionName(sessionName: string | null | undefined
   return commanderId.length > 0 ? commanderId : null
 }
 
-async function readLegacyParentSessionMap(sessionStorePath: string): Promise<Map<string, string>> {
+function migratePersistedSessionEntry(
+  entry: PersistedStreamSession,
+  rawEntry?: Record<string, unknown>,
+): PersistedStreamSession {
+  const inferred = inferPersistedSessionSource(entry.name, rawEntry)
+  const next: PersistedStreamSession = { ...entry }
+  const changedFields: string[] = []
+
+  if (!next.sessionType) {
+    next.sessionType = inferred.sessionType
+    changedFields.push('sessionType')
+  }
+
+  if (!next.creator) {
+    next.creator = inferred.creator
+    changedFields.push('creator')
+  }
+
+  if (!next.spawnedBy && inferred.spawnedBy) {
+    next.spawnedBy = inferred.spawnedBy
+    changedFields.push('spawnedBy')
+  }
+
+  if (
+    !next.conversationId &&
+    next.sessionType === 'commander' &&
+    next.creator?.kind === 'commander' &&
+    typeof next.creator.id === 'string' &&
+    next.creator.id.trim().length > 0
+  ) {
+    next.conversationId = buildDefaultCommanderConversationId(next.creator.id.trim())
+    changedFields.push('conversationId')
+  }
+
+  if (changedFields.length > 0) {
+    console.info(
+      `[agents][migration] Backfilled persisted session "${entry.name}": ${changedFields.join(', ')}`,
+    )
+  }
+
+  return next
+}
+
+async function readStoredSessionMigrationEntries(
+  sessionStorePath: string,
+): Promise<Map<string, Record<string, unknown>>> {
   let raw: string
   try {
     raw = await readFile(sessionStorePath, 'utf8')
@@ -522,23 +533,20 @@ async function readLegacyParentSessionMap(sessionStorePath: string): Promise<Map
     return new Map()
   }
 
-  const legacyParents = new Map<string, string>()
+  const entriesByName = new Map<string, Record<string, unknown>>()
   for (const rawEntry of (parsed as { sessions: unknown[] }).sessions) {
-    if (typeof rawEntry !== 'object' || rawEntry === null) {
+    const entry = asMigrationRecord(rawEntry)
+    if (!entry) {
       continue
     }
 
-    const name = typeof (rawEntry as { name?: unknown }).name === 'string'
-      ? (rawEntry as { name: string }).name.trim()
-      : ''
-    const legacyParentValue = (rawEntry as Record<string, unknown>)[LEGACY_PARENT_SESSION_KEY]
-    const legacyParent = typeof legacyParentValue === 'string' ? legacyParentValue.trim() : ''
-    if (!name || !legacyParent) {
+    const name = parseOptionalTrimmedString(entry.name)
+    if (!name) {
       continue
     }
 
-    legacyParents.set(name, legacyParent)
+    entriesByName.set(name, entry)
   }
 
-  return legacyParents
+  return entriesByName
 }

@@ -184,7 +184,7 @@ describe('Hervald SessionsColumn', () => {
     container.remove()
   })
 
-  it('renders separate Workers, Cron, and Sentinel section headers with cron/sentinel collapsed by default', () => {
+  it('renders separate Workers and Automations section headers with automations collapsed by default', () => {
     const container = document.createElement('div')
     document.body.appendChild(container)
     const root = createRoot(container)
@@ -227,25 +227,25 @@ describe('Hervald SessionsColumn', () => {
     })
 
     expect(container.textContent).toContain('Workers')
-    expect(container.textContent).toContain('Cron')
-    expect(container.textContent).toContain('Sentinels')
+    expect(container.textContent).toContain('Automations')
 
     // Workers section is expanded by default.
     expect(container.textContent).toContain('swe-mbp')
 
-    // Cron and sentinels are collapsed by default — session rows are hidden.
+    // Automations are collapsed by default — cron and sentinel rows stay hidden.
     expect(container.textContent).not.toContain('command-room-nightly')
     expect(container.textContent).not.toContain('sentinel-bug-scrub')
 
-    // Expanding Cron reveals its rows.
-    const cronHeader = Array.from(container.querySelectorAll('button')).find((b) =>
-      b.textContent?.includes('Cron'),
+    // Expanding Automations reveals both cron and sentinel rows.
+    const automationHeader = Array.from(container.querySelectorAll('button')).find((button) =>
+      button.textContent?.includes('Automations'),
     )
-    if (!cronHeader) throw new Error('expected Cron section header')
+    if (!automationHeader) throw new Error('expected Automations section header')
     flushSync(() => {
-      cronHeader.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      automationHeader.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
     expect(container.textContent).toContain('command-room-nightly')
+    expect(container.textContent).toContain('sentinel-bug-scrub')
 
     flushSync(() => {
       root.unmount()

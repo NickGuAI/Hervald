@@ -1,6 +1,8 @@
+import type { AgentType } from '../agents/types.js'
+
 export type SentinelStatus = 'active' | 'paused' | 'completed' | 'cancelled'
 
-export type SentinelAgentType = 'claude' | 'codex' | 'gemini'
+export type SentinelAgentType = AgentType
 
 export interface SentinelHistoryEntry {
   timestamp: string

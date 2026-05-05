@@ -7,6 +7,7 @@ import type {
   StreamJsonEvent,
   StreamSession,
 } from '../../types.js'
+import { readCodexRuntime } from '../../providers/provider-session-context.js'
 import { buildCodexApprovalDecisionEvent, markCodexTurnHealthy } from './helpers.js'
 
 interface CodexApprovalReplyDeps {
@@ -78,7 +79,7 @@ export function sendCodexApprovalReply(
     }
   }
 
-  const runtime = session.codexRuntime
+  const runtime = readCodexRuntime(session)
   if (!runtime) {
     return { ok: false, code: 'unavailable', reason: 'Codex runtime is unavailable' }
   }

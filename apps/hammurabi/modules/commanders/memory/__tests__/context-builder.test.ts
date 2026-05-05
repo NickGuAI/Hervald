@@ -1,10 +1,23 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>()
+  return {
+    ...actual,
+    readFile: vi.fn(actual.readFile),
+  }
+})
+
+import * as fsPromises from 'node:fs/promises'
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { MemoryContextBuilder, type Message } from '../context-builder.js'
+import { memoryContextCache } from '../context-cache.js'
 import type { PromptTask } from '../prompt-task.js'
 import { WorkingMemoryStore } from '../working-memory.js'
+
+const readFileMock = vi.mocked(fsPromises.readFile)
 
 describe('MemoryContextBuilder.build()', () => {
   let tmpDir: string
@@ -13,6 +26,8 @@ describe('MemoryContextBuilder.build()', () => {
   let commanderRoot: string
 
   beforeEach(async () => {
+    vi.clearAllMocks()
+    memoryContextCache.clear()
     tmpDir = await mkdtemp(join(tmpdir(), 'context-builder-test-'))
     commanderId = '00000000-0000-4000-a000-000000000001'
     commanderRoot = join(tmpDir, commanderId)
@@ -22,6 +37,7 @@ describe('MemoryContextBuilder.build()', () => {
   })
 
   afterEach(async () => {
+    memoryContextCache.clear()
     await rm(tmpDir, { recursive: true, force: true })
   })
 
@@ -139,5 +155,33 @@ describe('MemoryContextBuilder.build()', () => {
     expect(built.systemPromptSection).toContain('- memory line 240')
     expect(built.systemPromptSection).toContain('_...truncated to last 200 lines._')
     expect(built.systemPromptSection).not.toContain('- memory line 40\n')
+  })
+
+  it('reuses cached context when the task key and memory mtimes are unchanged', async () => {
+    await writeFile(join(memoryRoot, 'MEMORY.md'), '# Commander Memory\n\n- Keep context warm.\n', 'utf-8')
+    await writeFile(join(memoryRoot, 'LONG_TERM_MEM.md'), '# Narrative\n\nWarm cache.\n', 'utf-8')
+    await writeFile(join(memoryRoot, 'GOALS.md'), '# Active Goals\n\n## [cache] Keep cache hot\n', 'utf-8')
+    await writeFile(join(memoryRoot, 'backlog', 'thin-index.md'), '- #55 Reuse cache', 'utf-8')
+
+    const builder = new MemoryContextBuilder(commanderId, tmpDir)
+    readFileMock.mockClear()
+    const options = {
+      currentTask: {
+        number: 55,
+        title: 'Reuse cache',
+        body: 'Avoid re-reading unchanged commander memory files.',
+        owner: 'NickGuAI',
+        repo: 'example-repo',
+      } satisfies PromptTask,
+      recentConversation: [] as Message[],
+    }
+
+    await builder.build(options)
+    const initialReadCount = readFileMock.mock.calls.length
+    expect(initialReadCount).toBeGreaterThan(0)
+
+    await builder.build(options)
+
+    expect(readFileMock.mock.calls.length).toBe(initialReadCount)
   })
 })

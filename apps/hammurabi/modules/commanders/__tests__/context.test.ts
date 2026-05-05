@@ -6,7 +6,7 @@ import {
 } from '../routes/context'
 import type { CommanderRuntime } from '../routes/types'
 import type { CommanderSessionsInterface } from '../../agents/routes'
-import { mergeHeartbeatState, createDefaultHeartbeatState } from '../heartbeat'
+import { mergeHeartbeatConfig, createDefaultHeartbeatConfig } from '../heartbeat'
 
 function createRuntime(): CommanderRuntime {
   return {
@@ -70,11 +70,11 @@ describe('sendQueuedInternalUserMessage', () => {
 
 describe('resolveEffectiveHeartbeat', () => {
   it('returns the stored session heartbeat without consulting workflow frontmatter', () => {
-    const storedHeartbeat = mergeHeartbeatState(createDefaultHeartbeatState(), {
+    const storedHeartbeat = mergeHeartbeatConfig(createDefaultHeartbeatConfig(), {
       intervalMs: 42_000,
       messageTemplate: '[SESSION {{timestamp}}]',
     })
 
-    expect(resolveEffectiveHeartbeat(storedHeartbeat)).toEqual(storedHeartbeat)
+    expect(resolveEffectiveHeartbeat({ heartbeat: storedHeartbeat })).toEqual(storedHeartbeat)
   })
 })

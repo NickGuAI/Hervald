@@ -4,7 +4,6 @@ import { promisify } from 'node:util'
 import { PolicyStore } from './store.js'
 import {
   createStandingApprovalEntry,
-  getLegacyStandingApprovalAudit,
   getPermanentStandingApprovalReason,
   SEND_EMAIL_ACTION_ID,
   type StandingApprovalEntry,
@@ -13,6 +12,84 @@ import { isRecord, normalizeStringArray, readJsonFile } from './shared.js'
 
 const execFileAsync = promisify(execFile)
 const LEGACY_REPO_ALLOWLIST_PATH = 'agent-skills/guards/data/email-allowlist.json'
+interface LegacyStandingApprovalAuditEntry {
+  email: string
+  decision: 'keep' | 'purge'
+  reason: string
+}
+
+const LEGACY_STANDING_APPROVAL_AUDIT: LegacyStandingApprovalAuditEntry[] = [
+  {
+    email: 'nickgu@google.com',
+    decision: 'purge',
+    reason: 'Purged stale Apr 10 google.com approval-queue test mistake.',
+  },
+  {
+    email: 'birthdays@lsc.org',
+    decision: 'purge',
+    reason: 'Purged one-off birthday party inquiry from Apr 9, 2026.',
+  },
+  {
+    email: 'birthdays@gritsportstraining.com',
+    decision: 'purge',
+    reason: 'Purged one-off birthday party inquiry from Apr 9, 2026.',
+  },
+  {
+    email: 'funzytangram@gmail.com',
+    decision: 'purge',
+    reason: 'Purged one-off birthday party inquiry from Apr 9, 2026.',
+  },
+  {
+    email: 'jerseycity@catchair.com',
+    decision: 'purge',
+    reason: 'Purged one-off birthday party inquiry from Apr 9, 2026.',
+  },
+  {
+    email: 'info@tinyartisanjc.com',
+    decision: 'purge',
+    reason: 'Purged one-off birthday party inquiry from Apr 9, 2026.',
+  },
+  {
+    email: 'create@lunadepapel.us',
+    decision: 'purge',
+    reason: 'Purged one-off birthday party inquiry from Apr 9, 2026.',
+  },
+  {
+    email: 'ruth@lunadepapel.us',
+    decision: 'purge',
+    reason: 'Purged one-off birthday party inquiry from Apr 9, 2026.',
+  },
+  {
+    email: 'lonnnghy@gmail.com',
+    decision: 'purge',
+    reason: 'Purged after Gmail audit: Heyang / Pioneer Track Session 1 reminder on Apr 9-10, 2026.',
+  },
+  {
+    email: 'lima01@gmail.com',
+    decision: 'purge',
+    reason: 'Purged after Gmail audit: Li Ma collaborator thread and Pioneer Track reminder, but not a permanent-bypass recipient.',
+  },
+  {
+    email: 'dvora5018@gmail.com',
+    decision: 'purge',
+    reason: 'Purged after Gmail audit: Jingyun / Pioneer Track Session 1 reminder on Apr 9, 2026.',
+  },
+  {
+    email: 'injune1123@gmail.com',
+    decision: 'purge',
+    reason: 'Purged after Gmail audit: Jun Yin event registration and Pioneer Track reminder, but not a permanent-bypass recipient.',
+  },
+  {
+    email: 'estella.qixin.ho@gmail.com',
+    decision: 'purge',
+    reason: 'Purged after Gmail audit: Estella Ho event registration and Pioneer Track reminder, but not a permanent-bypass recipient.',
+  },
+  {
+    email: 'zhangchong186@126.com',
+    decision: 'purge',
+    reason: 'Purged after Gmail audit: Chong / Pioneer Track payment reminder on Apr 9, 2026.',
+  },
+]
 
 export interface LegacyEmailAllowlistMigrationOptions {
   sourceFilePath: string
@@ -80,6 +157,11 @@ function readLegacyStandingApproval(payload: unknown): string[] {
   return normalizeStringArray(payload.standing_approval)
 }
 
+function getLegacyStandingApprovalAudit(email: string): LegacyStandingApprovalAuditEntry | null {
+  const normalized = email.trim().toLowerCase()
+  return LEGACY_STANDING_APPROVAL_AUDIT.find((entry) => entry.email.trim().toLowerCase() === normalized) ?? null
+}
+
 export async function migrateLegacyEmailAllowlist(
   options: LegacyEmailAllowlistMigrationOptions,
 ): Promise<LegacyEmailAllowlistMigrationResult> {
@@ -108,7 +190,7 @@ export async function migrateLegacyEmailAllowlist(
         email,
         now: currentTime,
         added_at: await resolveAddedAt(email),
-        added_by: options.addedBy ?? 'legacy-migration',
+        added_by: options.addedBy ?? 'email-allowlist-migration',
         reason: permanentReason,
         permanent: true,
       })
@@ -133,7 +215,7 @@ export async function migrateLegacyEmailAllowlist(
       email,
       now: currentTime,
       added_at: await resolveAddedAt(email),
-      added_by: options.addedBy ?? 'legacy-migration',
+      added_by: options.addedBy ?? 'email-allowlist-migration',
       reason: audit.reason,
     })
     if (entry) {
@@ -153,7 +235,7 @@ export async function migrateLegacyEmailAllowlist(
     allowlist: kept.map((entry) => entry.email),
     standing_approval: kept,
     blocklist: existingSendEmail?.blocklist ?? [],
-    updatedBy: options.addedBy ?? 'legacy-migration',
+    updatedBy: options.addedBy ?? 'email-allowlist-migration',
   })
 
   return {

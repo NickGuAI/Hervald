@@ -2,15 +2,9 @@ import type { AuthUser } from '@gehirn/auth-providers'
 import type { Request, RequestHandler, Response as ExpressResponse, Router } from 'express'
 import type { ApiKeyStoreLike } from '../../../server/api-keys/store.js'
 import type { CommanderSessionsInterface } from '../../agents/routes.js'
-import type {
-  CommandRoomRunStore,
-} from '../../command-room/run-store.js'
-import type {
-  CommandRoomTaskStore,
-  CronTask as CommandRoomCronTask,
-  CreateCronTaskInput,
-  CommandRoomTaskType,
-} from '../../command-room/task-store.js'
+import type { AutomationStore } from '../../automations/store.js'
+import type { AutomationScheduler } from '../../automations/scheduler.js'
+import type { ProviderSessionContext } from '../../agents/providers/provider-session-context.js'
 import type {
   CommanderEmailConfigStore,
   CommanderEmailStateStore,
@@ -18,7 +12,7 @@ import type {
 import type { EmailPoller, CommanderEmailClient } from '../email-poller.js'
 import type {
   CommanderHeartbeatManager,
-  CommanderHeartbeatState,
+  CommanderHeartbeatConfig,
 } from '../heartbeat.js'
 import type { HeartbeatLog } from '../heartbeat-log.js'
 import type { CommanderSubagentLifecycleEvent, CommanderManager } from '../manager.js'
@@ -63,10 +57,9 @@ export interface CommandersRouterOptions {
   heartbeatLog?: HeartbeatLog
   fetchImpl?: typeof fetch
   sessionsInterface?: CommanderSessionsInterface
-  commandRoomTaskStore?: CommandRoomTaskStore
-  commandRoomRunStore?: CommandRoomRunStore
-  commandRoomScheduler?: CommanderCronScheduler
-  commandRoomSchedulerInitialized?: Promise<void>
+  automationStore?: AutomationStore
+  automationScheduler?: AutomationScheduler
+  automationSchedulerInitialized?: Promise<void>
   apiKeyStore?: ApiKeyStoreLike
   auth0Domain?: string
   auth0Audience?: string
@@ -148,7 +141,7 @@ export interface CommanderSessionStats {
 }
 
 export interface CommanderConversationRuntimeView {
-  heartbeat: CommanderHeartbeatState
+  heartbeat: CommanderHeartbeatConfig
   lastHeartbeat: string | null
   heartbeatTickCount: number
   currentTask: CommanderCurrentTask | null
@@ -156,9 +149,7 @@ export interface CommanderConversationRuntimeView {
   totalCostUsd: number
   channelMeta?: CommanderChannelMeta
   lastRoute?: CommanderLastRoute
-  claudeSessionId?: string
-  codexThreadId?: string
-  geminiSessionId?: string
+  providerContext?: ProviderSessionContext
 }
 
 export type CommanderSessionResponseBase = Omit<CommanderSession, 'remoteOrigin'> & CommanderConversationRuntimeView & {
@@ -180,46 +171,6 @@ export type CommanderSessionResponse = CommanderSessionResponseBase &
     ui?: CommanderUiPublic
     avatarUrl?: string | null
   }
-
-export interface CommanderCronTaskResponse {
-  id: string
-  commanderId: string
-  schedule: string
-  instruction: string
-  taskType: CommandRoomTaskType
-  enabled: boolean
-  lastRun: string | null
-  nextRun: string | null
-  agentType: 'claude' | 'codex' | 'gemini'
-  sessionType?: 'stream' | 'pty'
-  permissionMode?: string
-  workDir?: string
-  machine?: string
-}
-
-export interface CommanderCronStores {
-  taskStore: CommandRoomTaskStore
-  runStore: CommandRoomRunStore
-}
-
-export interface CommanderCronScheduler {
-  createTask(input: CreateCronTaskInput): Promise<CommandRoomCronTask>
-  updateTask(
-    taskId: string,
-    update: {
-      schedule?: string
-      instruction?: string
-      enabled?: boolean
-    },
-  ): Promise<CommandRoomCronTask | null>
-  deleteTask(taskId: string): Promise<boolean>
-  getNextRun?(taskId: string): Date | null
-}
-
-export interface CommanderCronTaskRecord {
-  task: CommandRoomCronTask
-  stores: CommanderCronStores
-}
 
 export type RemoteSyncAuthResult =
   | { ok: true }
@@ -245,7 +196,8 @@ export interface CommanderRoutesContext {
   requireReadAccess: RequestHandler
   requireWriteAccess: RequestHandler
   /**
-   * Auth gate for `POST /:id/workers` (commander-attributed worker dispatch).
+   * Auth gate for commander-scoped writes where the `:id` path segment is the
+   * authority boundary, such as `POST /:id/workers` and quest claim routes.
    * Requires both `agents:write` (creates an agent session) and
    * `commanders:write` (acts on behalf of a commander). See issue #1223.
    */
@@ -255,22 +207,12 @@ export interface CommanderRoutesContext {
   activeCommanderSessions: Map<string, { sessionName: string; startedAt: string }>
   heartbeatFiredAtByConversation: Map<string, string>
   avatarUpload: { single(fieldname: string): RequestHandler }
-  commandRoomScheduler?: CommanderCronScheduler
-  commandRoomSchedulerInitialized: Promise<void>
+  automationStore: AutomationStore
+  automationScheduler?: AutomationScheduler
+  automationSchedulerInitialized: Promise<void>
   sendWorkspaceError: (res: ExpressResponse, error: unknown) => void
   resolveCommanderWorkspace: (rawCommanderId: unknown) => Promise<ResolvedWorkspace>
   getCommanderSessionStats: (commanderId: string) => Promise<CommanderSessionStats>
-  listCommanderCronRunStores: (commanderId: string) => CommandRoomRunStore[]
-  listCommanderCronTaskStores: (commanderId: string) => CommandRoomTaskStore[]
-  listCommanderCronTasksWithStores: (commanderId: string) => Promise<CommanderCronTaskRecord[]>
-  findCommanderCronTaskWithStores: (
-    commanderId: string,
-    taskId: string,
-  ) => Promise<CommanderCronTaskRecord | null>
-  buildCommanderCronTask: (
-    task: CommandRoomCronTask,
-    fallbackCommanderId: string,
-  ) => Promise<CommanderCronTaskResponse>
   onSubagentLifecycleEvent: (
     commanderId: string,
     event: CommanderSubagentLifecycleEvent,
@@ -317,13 +259,12 @@ export interface CommanderRoutesContext {
     commanderId: string,
     conversationId?: string,
   ) => Promise<Conversation | null>
-  resolveLegacyConversation: (commanderId: string) => Promise<Conversation | null>
+  resolveDefaultConversation: (commanderId: string) => Promise<Conversation | null>
   resolveCommanderRuntimeView: (commanderId: string) => Promise<CommanderConversationRuntimeView>
-  ensureLegacyConversation: (
+  ensureDefaultConversation: (
     session: CommanderSession,
     options?: {
       surface?: Conversation['surface']
-      heartbeat?: CommanderHeartbeatState
       currentTask?: CommanderCurrentTask | null
     },
   ) => Promise<Conversation>

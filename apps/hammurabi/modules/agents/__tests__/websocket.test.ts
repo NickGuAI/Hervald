@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { WebSocket } from 'ws'
+import { WS_REPLAY_TAIL_LIMIT } from '../websocket'
 import {
   AUTH_HEADERS,
   connectWs,
+  connectWsWithReplay,
   createMockChildProcess,
   mockedSpawn,
   startServer,
@@ -39,7 +41,7 @@ describe('agents websocket', () => {
       await createStreamSession(server.baseUrl, 'ws-auth-required')
 
       const wsUrl = server.baseUrl.replace('http://', 'ws://') +
-        '/api/agents/sessions/ws-auth-required/terminal?api_key=bad-key'
+        '/api/agents/sessions/ws-auth-required/ws?api_key=bad-key'
       const ws = new WebSocket(wsUrl)
 
       const statusCode = await new Promise<number>((resolve, reject) => {
@@ -125,6 +127,39 @@ describe('agents websocket', () => {
           content: 'Ship issue 921 phase P8',
         },
       })
+
+      ws.close()
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('replays only the buffered event tail and sets more when truncated', async () => {
+    const mock = createMockChildProcess()
+    mockedSpawn.mockReturnValueOnce(mock.cp as never)
+    const server = await startServer()
+
+    try {
+      await createStreamSession(server.baseUrl, 'ws-replay-tail')
+      const session = server.agents.sessionsInterface.getSession('ws-replay-tail')
+      expect(session?.kind).toBe('stream')
+      if (!session || session.kind !== 'stream') {
+        throw new Error('Expected stream session for replay test')
+      }
+
+      session.events = Array.from({ length: WS_REPLAY_TAIL_LIMIT + 25 }, (_, index) => ({
+        type: 'system',
+        marker: index + 1,
+      })) as typeof session.events
+
+      const { ws, replay } = await connectWsWithReplay(server.baseUrl, 'ws-replay-tail')
+      const replayFrame = replay as typeof replay & { more?: boolean; events: Array<{ marker: number }> }
+
+      expect(replayFrame.type).toBe('replay')
+      expect(replayFrame.more).toBe(true)
+      expect(replayFrame.events).toHaveLength(WS_REPLAY_TAIL_LIMIT)
+      expect(replayFrame.events[0]?.marker).toBe(26)
+      expect(replayFrame.events.at(-1)?.marker).toBe(WS_REPLAY_TAIL_LIMIT + 25)
 
       ws.close()
     } finally {

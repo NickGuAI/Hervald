@@ -14,8 +14,8 @@ import type {
   AgentSessionTransportMode,
   AgentType,
   CreatedAgentSession,
-} from './tools/agent-session.js'
-import { AgentSessionClient } from './tools/agent-session.js'
+} from '@gehirn/ai-services'
+import { AgentSessionClient } from '@gehirn/ai-services'
 
 export interface Commander {
   id: string

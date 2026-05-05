@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
-import { act, createElement } from 'react'
+import { createElement } from 'react'
+import { act } from 'react-dom/test-utils'
 import { createRoot, type Root } from 'react-dom/client'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -76,7 +77,7 @@ describe('useCreateConversation', () => {
   it('posts to the commander conversations route, updates both caches, and returns the created conversation', async () => {
     await renderHook()
 
-    const commanderId = 'commander/athena'
+    const commanderId = 'commander/atlas'
     const existingConversation: ConversationRecord = {
       id: 'conv-existing',
       commanderId,

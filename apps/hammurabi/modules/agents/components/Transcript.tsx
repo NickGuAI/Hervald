@@ -45,16 +45,30 @@ export const Transcript = forwardRef<TranscriptHandle, TranscriptProps>(function
   } = useStreamEventProcessor({})
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const messagesAreaRef = useRef<HTMLDivElement>(null)
+  const scrollHostRef = useRef<HTMLElement | null>(null)
+  const isColdLoadRef = useRef(true)
   const autoScrollRef = useRef(true)
   const directMessages = messages
   const useDirectMessages = directMessages !== undefined
   const renderedMessages = useDirectMessages ? directMessages : processedMessages
 
-  function scrollToBottom(): void {
-    const anchor = messagesEndRef.current
-    if (anchor && typeof anchor.scrollIntoView === 'function') {
-      anchor.scrollIntoView({ behavior: 'smooth' })
+  function scrollToBottom(instant = false): void {
+    const host = scrollHostRef.current
+    if (!host) {
+      return
     }
+
+    if (instant) {
+      host.scrollTop = host.scrollHeight
+      return
+    }
+
+    if (typeof host.scrollTo !== 'function') {
+      host.scrollTop = host.scrollHeight
+      return
+    }
+
+    host.scrollTo({ top: host.scrollHeight, behavior: 'smooth' })
   }
 
   useEffect(() => {
@@ -69,25 +83,52 @@ export const Transcript = forwardRef<TranscriptHandle, TranscriptProps>(function
   }, [events, processEvent, resetMessages, sessionId, useDirectMessages])
 
   useEffect(() => {
+    const start = messagesAreaRef.current
+    if (!start) {
+      return
+    }
+
+    let host: HTMLElement | null = start
+    while (host && host !== document.body) {
+      const overflowY = getComputedStyle(host).overflowY
+      if (overflowY === 'auto' || overflowY === 'scroll') {
+        break
+      }
+      host = host.parentElement
+    }
+
+    const resolvedHost = host && host !== document.body ? host : start
+    scrollHostRef.current = resolvedHost
+
+    const onScroll = () => {
+      autoScrollRef.current =
+        resolvedHost.scrollHeight - resolvedHost.scrollTop - resolvedHost.clientHeight <= 120
+    }
+
+    resolvedHost.addEventListener('scroll', onScroll, { passive: true })
+    return () => {
+      resolvedHost.removeEventListener('scroll', onScroll)
+    }
+  }, [])
+
+  useEffect(() => {
     autoScrollRef.current = true
-    scrollToBottom()
+    isColdLoadRef.current = true
+    requestAnimationFrame(() => {
+      scrollToBottom(true)
+      isColdLoadRef.current = false
+    })
   }, [sessionId])
 
   useEffect(() => {
+    if (isColdLoadRef.current) {
+      return
+    }
+
     if (autoScrollRef.current) {
       scrollToBottom()
     }
   }, [renderedMessages])
-
-  function handleScroll() {
-    const area = messagesAreaRef.current
-    if (!area) {
-      return
-    }
-
-    autoScrollRef.current =
-      area.scrollHeight - area.scrollTop - area.clientHeight < 60
-  }
 
   useImperativeHandle(ref, () => ({
     resetAutoScroll() {
@@ -100,7 +141,6 @@ export const Transcript = forwardRef<TranscriptHandle, TranscriptProps>(function
     <div
       ref={messagesAreaRef}
       className={cn('messages-area', dark && 'hv-dark', className)}
-      onScroll={handleScroll}
     >
       <SessionMessageList
         messages={renderedMessages}

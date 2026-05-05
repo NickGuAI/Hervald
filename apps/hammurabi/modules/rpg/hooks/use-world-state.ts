@@ -1,10 +1,10 @@
 import { useQuery } from '@tanstack/react-query'
 import { fetchJson } from '../../../src/lib/api'
+import type { AgentType } from '@/types'
 
 export type WorldAgentStatus = 'active' | 'idle' | 'stale' | 'completed'
 export type WorldAgentPhase = 'idle' | 'thinking' | 'tool_use' | 'blocked' | 'completed'
 export type SessionTransportType = 'pty' | 'stream' | 'external'
-export type AgentType = 'claude' | 'codex' | 'gemini'
 
 export interface WorldAgent {
   id: string

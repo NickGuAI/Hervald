@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
+import { parseProviderId } from '../../providers/registry'
 import {
   parseActiveSkillInvocation,
-  parseAgentType,
   parseClaudeAdaptiveThinking,
   parseClaudeEffort,
   parseClaudePermissionMode,
@@ -21,12 +21,12 @@ import {
 } from '../../session/input'
 
 describe('agents/session/input', () => {
-  it('parses supported agent types and defaults unknown values to claude', () => {
-    expect(parseAgentType('codex')).toBe('codex')
-    expect(parseAgentType('gemini')).toBe('gemini')
-    expect(parseAgentType('openclaw')).toBe('claude')
-    expect(parseAgentType('claude')).toBe('claude')
-    expect(parseAgentType('something-else')).toBe('claude')
+  it('parses registered provider ids and rejects unknown values', () => {
+    expect(parseProviderId('codex')).toBe('codex')
+    expect(parseProviderId('gemini')).toBe('gemini')
+    expect(parseProviderId('claude')).toBe('claude')
+    expect(parseProviderId('openclaw')).toBeNull()
+    expect(parseProviderId('something-else')).toBeNull()
   })
 
   it('validates required and optional session names', () => {
@@ -43,6 +43,9 @@ describe('agents/session/input', () => {
   it('parses permission and approval enums', () => {
     expect(parseClaudePermissionMode('default')).toBe('default')
     expect(parseClaudePermissionMode('nope')).toBeNull()
+    expect(parseClaudePermissionMode('bypassPermissions')).toBeNull()
+    expect(parseClaudePermissionMode('dangerouslySkipPermissions')).toBeNull()
+    expect(parseClaudePermissionMode('acceptEdits')).toBeNull()
 
     expect(parseCodexApprovalDecision('accept')).toBe('accept')
     expect(parseCodexApprovalDecision('decline')).toBe('decline')
@@ -125,58 +128,5 @@ describe('agents/session/input', () => {
 
     expect(parseCodexTurnWatchdogTimeoutMs('90000')).toBe(90000)
     expect(parseCodexTurnWatchdogTimeoutMs(undefined)).toBe(300_000)
-  })
-})
-
-// On-disk validators consume migrateLegacyPermissionMode at the parse boundary
-// of every JSON store. The helper migrates the deprecated literal pre-#1186
-// (bypassPermissions / dangerouslySkipPermissions / acceptEdits) to 'default'
-// so legacy entries normalize cleanly instead of silently dropping. See #1222.
-describe('agents/session/input: migrateLegacyPermissionMode', () => {
-  it('migrates each deprecated alias to default with the legacy literal recorded', async () => {
-    const { migrateLegacyPermissionMode } = await import('../../session/input')
-    for (const legacy of ['dangerouslySkipPermissions', 'bypassPermissions', 'acceptEdits']) {
-      const result = migrateLegacyPermissionMode(legacy)
-      expect(result).toEqual({
-        changed: true,
-        value: 'default',
-        legacyLiteral: legacy,
-      })
-    }
-  })
-
-  it('trims surrounding whitespace before recognizing a legacy literal', async () => {
-    const { migrateLegacyPermissionMode } = await import('../../session/input')
-    const result = migrateLegacyPermissionMode('  bypassPermissions  ')
-    expect(result.changed).toBe(true)
-    expect(result.value).toBe('default')
-    expect(result.legacyLiteral).toBe('bypassPermissions')
-  })
-
-  it('passes through a valid default with changed=false', async () => {
-    const { migrateLegacyPermissionMode } = await import('../../session/input')
-    const result = migrateLegacyPermissionMode('default')
-    expect(result).toEqual({ changed: false, value: 'default' })
-  })
-
-  it('returns changed=false with value=undefined for empty/missing inputs', async () => {
-    const { migrateLegacyPermissionMode } = await import('../../session/input')
-    expect(migrateLegacyPermissionMode(undefined)).toEqual({ changed: false, value: undefined })
-    expect(migrateLegacyPermissionMode(null)).toEqual({ changed: false, value: undefined })
-    expect(migrateLegacyPermissionMode('')).toEqual({ changed: false, value: undefined })
-    expect(migrateLegacyPermissionMode('   ')).toEqual({ changed: false, value: undefined })
-  })
-
-  it('returns changed=false with value=null for genuinely-invalid strings (not just legacy)', async () => {
-    const { migrateLegacyPermissionMode } = await import('../../session/input')
-    expect(migrateLegacyPermissionMode('plan')).toEqual({ changed: false, value: null })
-    expect(migrateLegacyPermissionMode('something-else')).toEqual({ changed: false, value: null })
-  })
-
-  it('returns changed=false with value=null for non-string inputs', async () => {
-    const { migrateLegacyPermissionMode } = await import('../../session/input')
-    expect(migrateLegacyPermissionMode(42)).toEqual({ changed: false, value: null })
-    expect(migrateLegacyPermissionMode(true)).toEqual({ changed: false, value: null })
-    expect(migrateLegacyPermissionMode([])).toEqual({ changed: false, value: null })
   })
 })

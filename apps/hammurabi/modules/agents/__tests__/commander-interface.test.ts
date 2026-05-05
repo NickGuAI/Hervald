@@ -6,12 +6,15 @@
  * we can verify:
  *   1. createCommanderSession calls the right creator based on agentType
  *      and wires the resulting session into the sessions Map.
- *   2. sendToSession routes immediate sends to sendImmediateTextToStreamSession
+ *   2. replaceCommanderSession tears down the old runtime, preserves
+ *      replay state + event subscriptions keyed by session name, and
+ *      swaps in the new provider implementation under the same slot.
+ *   3. sendToSession routes immediate sends to sendImmediateTextToStreamSession
  *      and queued sends to enqueueQueuedMessage + scheduleQueuedMessageDrain.
- *   3. deleteSession tears down codex vs gemini vs claude sessions via the
+ *   4. deleteSession tears down codex vs gemini vs claude sessions via the
  *      right teardown closure and strips sessions + handlers afterwards.
- *   4. subscribeToEvents adds + removes handlers correctly.
- *   5. shutdown fans out to both runtime shutdowns.
+ *   5. subscribeToEvents adds + removes handlers correctly.
+ *   6. shutdown fans out to both runtime shutdowns.
  *
  * These tests pin the contract between the router and the extracted
  * interface so future refactors can't silently drop a closure dependency.
@@ -22,8 +25,11 @@ import {
   createCommanderSessionsInterface,
   type CommanderInterfaceContext,
 } from '../commander-interface'
-import type { AnySession, StreamJsonEvent, StreamSession } from '../types'
+import { createCodexProviderContext } from '../providers/provider-session-context'
+import type { AgentType, AnySession, StreamJsonEvent, StreamSession } from '../types'
 import type { QueuedMessage } from '../message-queue'
+
+type SessionClient = StreamSession['clients'] extends Set<infer T> ? T : never
 
 function makeClaudeStreamSession(name: string): StreamSession {
   // The sessionsInterface only reads .kind, .agentType, .clients, .process
@@ -53,20 +59,46 @@ function makeCodexStreamSession(name: string): StreamSession {
   } as unknown as StreamSession
 }
 
+interface TestCommanderInterfaceContext extends CommanderInterfaceContext {
+  createClaudeSessionMock: ReturnType<typeof vi.fn>
+  createCodexSessionMock: ReturnType<typeof vi.fn>
+  createGeminiSessionMock: ReturnType<typeof vi.fn>
+  teardownProviderSessionMock: ReturnType<typeof vi.fn>
+  shutdownProviderRuntimesMock: ReturnType<typeof vi.fn>
+}
+
 function makeBaseContext(
-  overrides: Partial<CommanderInterfaceContext> = {},
-): CommanderInterfaceContext {
-  const defaults: CommanderInterfaceContext = {
+  overrides: Partial<TestCommanderInterfaceContext> = {},
+): TestCommanderInterfaceContext {
+  const createClaudeSessionMock = vi.fn(async (name: string) => makeClaudeStreamSession(name))
+  const createCodexSessionMock = vi.fn(async (name: string) => makeCodexStreamSession(name))
+  const createGeminiSessionMock = vi.fn(async (name: string) => {
+    const session = makeClaudeStreamSession(name)
+    ;(session as unknown as { agentType: string }).agentType = 'gemini'
+    return session
+  })
+  const teardownProviderSessionMock = vi.fn(async (session: StreamSession) => {
+    if (session.agentType === 'claude') {
+      session.process.kill('SIGTERM')
+    }
+  })
+  const shutdownProviderRuntimesMock = vi.fn(async () => undefined)
+  const defaults: TestCommanderInterfaceContext = {
     sessions: new Map(),
     sessionEventHandlers: new Map(),
     schedulePersistedSessionsWrite: vi.fn(),
-    createCodexAppServerSession: vi.fn(async (name) => makeCodexStreamSession(name)),
-    createGeminiAcpSession: vi.fn(async (name) => {
-      const s = makeClaudeStreamSession(name)
-      ;(s as unknown as { agentType: string }).agentType = 'gemini'
-      return s
+    createClaudeSessionMock,
+    createCodexSessionMock,
+    createGeminiSessionMock,
+    createProviderStreamSession: vi.fn(async (name, _mode, _task, _cwd, _machine, agentType) => {
+      if (agentType === 'codex') {
+        return createCodexSessionMock(name)
+      }
+      if (agentType === 'gemini') {
+        return createGeminiSessionMock(name)
+      }
+      return createClaudeSessionMock(name)
     }),
-    createStreamSession: vi.fn((name) => makeClaudeStreamSession(name)),
     createQueuedMessage: vi.fn((text, priority) => ({
       id: 'queued-1',
       text,
@@ -80,10 +112,10 @@ function makeBaseContext(
       queued: false,
       message: { id: 'm', text: '' } as unknown as QueuedMessage,
     })),
-    teardownCodexSessionRuntime: vi.fn(async () => undefined),
-    teardownGeminiSessionRuntime: vi.fn(async () => undefined),
-    shutdownCodexRuntimes: vi.fn(async () => undefined),
-    shutdownGeminiRuntimes: vi.fn(async () => undefined),
+    teardownProviderSession: teardownProviderSessionMock,
+    teardownProviderSessionMock,
+    shutdownProviderRuntimes: shutdownProviderRuntimesMock,
+    shutdownProviderRuntimesMock,
   }
   return { ...defaults, ...overrides }
 }
@@ -100,14 +132,14 @@ describe('createCommanderSessionsInterface — createCommanderSession', () => {
       agentType: 'claude',
     })
 
-    expect(ctx.createStreamSession).toHaveBeenCalledTimes(1)
-    expect(ctx.createCodexAppServerSession).not.toHaveBeenCalled()
-    expect(ctx.createGeminiAcpSession).not.toHaveBeenCalled()
+    expect(ctx.createClaudeSessionMock).toHaveBeenCalledTimes(1)
+    expect(ctx.createCodexSessionMock).not.toHaveBeenCalled()
+    expect(ctx.createGeminiSessionMock).not.toHaveBeenCalled()
     expect(ctx.sessions.get('commander-claude')).toBe(session)
     expect(ctx.schedulePersistedSessionsWrite).toHaveBeenCalledTimes(1)
   })
 
-  it('routes codex to createCodexAppServerSession', async () => {
+  it('routes codex through the provider registry creator', async () => {
     const ctx = makeBaseContext()
     const iface = createCommanderSessionsInterface(ctx)
 
@@ -118,12 +150,12 @@ describe('createCommanderSessionsInterface — createCommanderSession', () => {
       agentType: 'codex',
     })
 
-    expect(ctx.createCodexAppServerSession).toHaveBeenCalledTimes(1)
-    expect(ctx.createStreamSession).not.toHaveBeenCalled()
+    expect(ctx.createCodexSessionMock).toHaveBeenCalledTimes(1)
+    expect(ctx.createClaudeSessionMock).not.toHaveBeenCalled()
     expect(ctx.sessions.has('commander-codex')).toBe(true)
   })
 
-  it('routes gemini to createGeminiAcpSession', async () => {
+  it('routes gemini through the provider registry creator', async () => {
     const ctx = makeBaseContext()
     const iface = createCommanderSessionsInterface(ctx)
 
@@ -134,20 +166,29 @@ describe('createCommanderSessionsInterface — createCommanderSession', () => {
       agentType: 'gemini',
     })
 
-    expect(ctx.createGeminiAcpSession).toHaveBeenCalledTimes(1)
+    expect(ctx.createGeminiSessionMock).toHaveBeenCalledTimes(1)
     expect(ctx.sessions.has('commander-gemini')).toBe(true)
   })
 
   it('falls back to a fresh codex thread when resume fails', async () => {
     let callCount = 0
     const ctx = makeBaseContext({
-      createCodexAppServerSession: vi.fn(async (name) => {
+      createCodexSessionMock: vi.fn(async (name: string) => {
         callCount += 1
         if (callCount === 1) {
           throw new Error('resume rollout missing')
         }
         return makeCodexStreamSession(name)
       }),
+    })
+    ctx.createProviderStreamSession = vi.fn(async (name, _mode, _task, _cwd, _machine, agentType) => {
+      if (agentType === 'codex') {
+        return ctx.createCodexSessionMock(name)
+      }
+      if (agentType === 'gemini') {
+        return ctx.createGeminiSessionMock(name)
+      }
+      return ctx.createClaudeSessionMock(name)
     })
     const iface = createCommanderSessionsInterface(ctx)
 
@@ -156,12 +197,111 @@ describe('createCommanderSessionsInterface — createCommanderSession', () => {
       commanderId: 'codex-resume',
       systemPrompt: 'hi',
       agentType: 'codex',
-      resumeCodexThreadId: 'stale-thread',
+      resumeProviderContext: createCodexProviderContext({ threadId: 'stale-thread' }),
     })
 
-    expect(ctx.createCodexAppServerSession).toHaveBeenCalledTimes(2)
+    expect(ctx.createCodexSessionMock).toHaveBeenCalledTimes(2)
     expect(ctx.sessions.has('commander-codex-resume')).toBe(true)
   })
+})
+
+describe('createCommanderSessionsInterface — replaceCommanderSession', () => {
+  const providerSwapPairs: Array<[AgentType, AgentType]> = [
+    ['claude', 'codex'],
+    ['claude', 'gemini'],
+    ['codex', 'claude'],
+    ['codex', 'gemini'],
+    ['gemini', 'claude'],
+    ['gemini', 'codex'],
+  ]
+
+  it.each(providerSwapPairs)(
+    'swaps %s to %s in place while preserving name-bound event handlers',
+    async (fromAgentType, toAgentType) => {
+      const name = `${fromAgentType}-to-${toAgentType}`
+      const ctx = makeBaseContext()
+      const iface = createCommanderSessionsInterface(ctx)
+      const handler = vi.fn()
+      const unsubscribe = iface.subscribeToEvents(name, handler)
+      const handlersBeforeSwap = ctx.sessionEventHandlers.get(name)
+
+      const previous = await iface.createCommanderSession({
+        name,
+        commanderId: name,
+        systemPrompt: 'before',
+        agentType: fromAgentType,
+      })
+
+      const previousEvents = [
+        { type: 'user', text: `from-${fromAgentType}` } as unknown as StreamJsonEvent,
+        { type: 'assistant', text: `to-${toAgentType}` } as unknown as StreamJsonEvent,
+      ]
+      previous.events = previousEvents
+      previous.usage = {
+        inputTokens: 13,
+        outputTokens: 21,
+        costUsd: 5,
+      }
+      previous.conversationEntryCount = 3
+      previous.autoRotatePending = true
+
+      const firstClient = { close: vi.fn() } as unknown as SessionClient
+      const secondClient = { close: vi.fn() } as unknown as SessionClient
+      previous.clients.add(firstClient)
+      previous.clients.add(secondClient)
+
+      const claudeKillSpy = vi.fn()
+      if (fromAgentType === 'claude') {
+        ;(previous as { process: { kill: typeof claudeKillSpy } }).process = {
+          kill: claudeKillSpy,
+        }
+      }
+
+      const replacement = await iface.replaceCommanderSession({
+        name,
+        commanderId: name,
+        systemPrompt: 'after',
+        agentType: toAgentType,
+      })
+
+      expect(ctx.sessions.get(name)).toBe(replacement)
+      expect(replacement).not.toBe(previous)
+      expect(replacement.agentType).toBe(toAgentType)
+      expect(replacement.events).toEqual(previousEvents)
+      expect(replacement.events).not.toBe(previousEvents)
+      expect(replacement.usage).toEqual(previous.usage)
+      expect(replacement.usage).not.toBe(previous.usage)
+      expect(replacement.conversationEntryCount).toBe(previous.conversationEntryCount)
+      expect(replacement.autoRotatePending).toBe(previous.autoRotatePending)
+      expect(replacement.clients.has(firstClient)).toBe(true)
+      expect(replacement.clients.has(secondClient)).toBe(true)
+      expect(previous.clients.size).toBe(0)
+      expect((firstClient as { close: ReturnType<typeof vi.fn> }).close).not.toHaveBeenCalled()
+      expect((secondClient as { close: ReturnType<typeof vi.fn> }).close).not.toHaveBeenCalled()
+      expect(ctx.schedulePersistedSessionsWrite).toHaveBeenCalledTimes(2)
+
+      expect(ctx.teardownProviderSessionMock).toHaveBeenCalledTimes(1)
+      expect(ctx.teardownProviderSessionMock).toHaveBeenCalledWith(
+        previous,
+        `Provider swap on session "${name}"`,
+      )
+      if (fromAgentType === 'claude') {
+        expect(claudeKillSpy).toHaveBeenCalledWith('SIGTERM')
+      } else {
+        expect(claudeKillSpy).not.toHaveBeenCalled()
+      }
+
+      const handlersAfterSwap = ctx.sessionEventHandlers.get(name)
+      expect(handlersAfterSwap).toBe(handlersBeforeSwap)
+      expect(handlersAfterSwap?.has(handler)).toBe(true)
+
+      const event = { type: 'assistant', text: 'provider swapped' } as unknown as StreamJsonEvent
+      handlersAfterSwap?.forEach((listener) => listener(event))
+      expect(handler).toHaveBeenCalledWith(event)
+
+      unsubscribe()
+    },
+  )
 })
 
 describe('createCommanderSessionsInterface — sendToSession', () => {
@@ -218,7 +358,7 @@ describe('createCommanderSessionsInterface — sendToSession', () => {
 })
 
 describe('createCommanderSessionsInterface — deleteSession', () => {
-  it('tears down a codex session via teardownCodexSessionRuntime', () => {
+  it('tears down a codex session via teardownProviderSession', () => {
     const session = makeCodexStreamSession('codex-1')
     const sessions = new Map<string, AnySession>([['codex-1', session]])
     const sessionEventHandlers = new Map<string, Set<(e: StreamJsonEvent) => void>>([
@@ -229,14 +369,16 @@ describe('createCommanderSessionsInterface — deleteSession', () => {
 
     iface.deleteSession('codex-1')
 
-    expect(ctx.teardownCodexSessionRuntime).toHaveBeenCalledTimes(1)
-    expect(ctx.teardownGeminiSessionRuntime).not.toHaveBeenCalled()
+    expect(ctx.teardownProviderSessionMock).toHaveBeenCalledWith(
+      session,
+      'Commander stopped session "codex-1"',
+    )
     expect(sessions.has('codex-1')).toBe(false)
     expect(sessionEventHandlers.has('codex-1')).toBe(false)
     expect(ctx.schedulePersistedSessionsWrite).toHaveBeenCalledTimes(1)
   })
 
-  it('tears down a claude session via process.kill(SIGTERM)', () => {
+  it('tears down a claude session via teardownProviderSession', () => {
     const session = makeClaudeStreamSession('claude-1')
     const killSpy = vi.fn()
     ;(session as unknown as { process: { kill: typeof killSpy } }).process = { kill: killSpy }
@@ -246,9 +388,11 @@ describe('createCommanderSessionsInterface — deleteSession', () => {
 
     iface.deleteSession('claude-1')
 
+    expect(ctx.teardownProviderSessionMock).toHaveBeenCalledWith(
+      session,
+      'Commander stopped session "claude-1"',
+    )
     expect(killSpy).toHaveBeenCalledWith('SIGTERM')
-    expect(ctx.teardownCodexSessionRuntime).not.toHaveBeenCalled()
-    expect(ctx.teardownGeminiSessionRuntime).not.toHaveBeenCalled()
     expect(sessions.has('claude-1')).toBe(false)
   })
 
@@ -258,8 +402,7 @@ describe('createCommanderSessionsInterface — deleteSession', () => {
 
     iface.deleteSession('does-not-exist')
 
-    expect(ctx.teardownCodexSessionRuntime).not.toHaveBeenCalled()
-    expect(ctx.teardownGeminiSessionRuntime).not.toHaveBeenCalled()
+    expect(ctx.teardownProviderSessionMock).not.toHaveBeenCalled()
     expect(ctx.schedulePersistedSessionsWrite).not.toHaveBeenCalled()
   })
 })
@@ -278,13 +421,12 @@ describe('createCommanderSessionsInterface — subscribeToEvents + shutdown', ()
     expect(ctx.sessionEventHandlers.has('session-x')).toBe(false)
   })
 
-  it('shutdown awaits both runtime shutdowns in parallel', async () => {
+  it('shutdown delegates to shutdownProviderRuntimes', async () => {
     const ctx = makeBaseContext()
     const iface = createCommanderSessionsInterface(ctx)
 
     await iface.shutdown?.()
 
-    expect(ctx.shutdownCodexRuntimes).toHaveBeenCalledTimes(1)
-    expect(ctx.shutdownGeminiRuntimes).toHaveBeenCalledTimes(1)
+    expect(ctx.shutdownProviderRuntimesMock).toHaveBeenCalledTimes(1)
   })
 })

@@ -4,7 +4,10 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { getAccessToken } from '@/lib/api'
 import { cn } from '@/lib/utils'
-import type { WorkspaceFilePreview as WorkspaceFilePreviewData } from '../types'
+import type {
+  WorkspaceFilePreview as WorkspaceFilePreviewData,
+  WorkspaceSourceDescriptor,
+} from '../types'
 
 interface WorkspaceFilePreviewProps {
   selectedPath: string | null
@@ -27,11 +30,30 @@ export function buildWorkspacePdfPreviewUrl(
   path: string,
   accessToken?: string | null,
 ): string {
+  return buildWorkspaceRawUrl(
+    {
+      kind: 'agent-session',
+      id: sessionId,
+      label: sessionId,
+    },
+    path,
+    accessToken,
+  )
+}
+
+export function buildWorkspaceRawUrl(
+  source: WorkspaceSourceDescriptor,
+  path: string,
+  accessToken?: string | null,
+): string {
   const query = new URLSearchParams({ path })
   if (accessToken) {
     query.set('access_token', accessToken)
   }
-  return `/api/agents/sessions/${encodeURIComponent(sessionId)}/workspace/raw?${query.toString()}`
+  const basePath = source.kind === 'agent-session'
+    ? `/api/agents/sessions/${encodeURIComponent(source.id)}/workspace/raw`
+    : `/api/commanders/${encodeURIComponent(source.id)}/workspace/raw`
+  return `${basePath}?${query.toString()}`
 }
 
 export function WorkspaceFilePreview({
@@ -52,15 +74,16 @@ export function WorkspaceFilePreview({
   const dark = variant === 'dark'
   const isMarkdownPreview = preview?.kind === 'text' && readOnly && preview.path.toLowerCase().endsWith('.md')
   const [pdfPreviewUrl, setPdfPreviewUrl] = useState<string | null>(null)
-  const pdfPreviewSessionId = preview?.kind === 'pdf' && preview.workspace.source.kind === 'agent-session'
-    ? preview.workspace.source.id
+  const pdfPreviewSource = preview?.kind === 'pdf'
+    && (preview.workspace.source.kind === 'agent-session' || preview.workspace.source.kind === 'commander')
+    ? preview.workspace.source
     : null
   const pdfPreviewPath = preview?.kind === 'pdf' ? preview.path : null
 
   useEffect(() => {
     let cancelled = false
 
-    if (!pdfPreviewSessionId || !pdfPreviewPath) {
+    if (!pdfPreviewSource || !pdfPreviewPath) {
       setPdfPreviewUrl(null)
       return () => {
         cancelled = true
@@ -73,8 +96,8 @@ export function WorkspaceFilePreview({
         if (cancelled) {
           return
         }
-        setPdfPreviewUrl(buildWorkspacePdfPreviewUrl(
-          pdfPreviewSessionId,
+        setPdfPreviewUrl(buildWorkspaceRawUrl(
+          pdfPreviewSource,
           pdfPreviewPath,
           token,
         ))
@@ -83,8 +106,8 @@ export function WorkspaceFilePreview({
         if (cancelled) {
           return
         }
-        setPdfPreviewUrl(buildWorkspacePdfPreviewUrl(
-          pdfPreviewSessionId,
+        setPdfPreviewUrl(buildWorkspaceRawUrl(
+          pdfPreviewSource,
           pdfPreviewPath,
         ))
       })
@@ -92,7 +115,7 @@ export function WorkspaceFilePreview({
     return () => {
       cancelled = true
     }
-  }, [pdfPreviewPath, pdfPreviewSessionId])
+  }, [pdfPreviewPath, pdfPreviewSource])
 
   if (!selectedPath) {
     return (
@@ -176,12 +199,11 @@ export function WorkspaceFilePreview({
 
       {preview.kind === 'pdf' && (
         pdfPreviewUrl ? (
-          <iframe
-            src={pdfPreviewUrl}
-            className="flex-1 w-full border-0"
-            title={preview.path}
-          />
-        ) : pdfPreviewSessionId && pdfPreviewPath ? (
+          <object data={pdfPreviewUrl} type="application/pdf" className="flex-1 w-full">
+            <embed src={pdfPreviewUrl} type="application/pdf" className="w-full h-full" />
+            <p className="p-4 text-sm">Your browser doesn't support inline PDF preview. <a href={pdfPreviewUrl} className="underline">Open the PDF</a>.</p>
+          </object>
+        ) : pdfPreviewSource && pdfPreviewPath ? (
           <div className="flex flex-1 items-center justify-center px-4 text-sm text-sumi-diluted">
             <Loader2 size={16} className="mr-2 animate-spin" />
             Loading PDF preview…

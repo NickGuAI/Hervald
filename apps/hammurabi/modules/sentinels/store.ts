@@ -2,10 +2,10 @@ import { randomUUID } from 'node:crypto'
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import {
-  migrateLegacyPermissionMode,
   parseClaudePermissionMode,
   parseOptionalClaudePermissionMode,
 } from '../agents/session/input.js'
+import { parseProviderId } from '../agents/providers/registry.js'
 import type {
   CreateSentinelInput,
   Sentinel,
@@ -107,14 +107,34 @@ function parseStatus(raw: unknown): SentinelStatus | null {
   return null
 }
 
-function isSentinelAgentType(raw: unknown): raw is 'claude' | 'codex' | 'gemini' {
-  return raw === 'claude' || raw === 'codex' || raw === 'gemini'
-}
-
 interface SentinelMigrationRecord {
   id: string
   name: string
-  legacyLiteral: string
+  aliasLiteral: string
+}
+
+const PERMISSION_MODE_ALIAS_LITERALS = new Set([
+  'dangerouslySkipPermissions',
+  'bypassPermissions',
+  'acceptEdits',
+])
+
+function coerceStoredPermissionMode(
+  raw: unknown,
+): { value: unknown; aliasLiteral?: string } {
+  if (typeof raw !== 'string') {
+    return { value: raw }
+  }
+
+  const trimmed = raw.trim()
+  if (!PERMISSION_MODE_ALIAS_LITERALS.has(trimmed)) {
+    return { value: raw }
+  }
+
+  return {
+    value: 'default',
+    aliasLiteral: trimmed,
+  }
 }
 
 function parseSentinel(
@@ -125,12 +145,9 @@ function parseSentinel(
     return null
   }
 
-  // Migrate deprecated `permissionMode` literals to 'default' BEFORE the strict
-  // parser short-circuits the entry. Tracked migrations get persisted on disk
-  // by the caller + a structured warn. See migrateLegacyPermissionMode + #1222.
-  const migration = migrateLegacyPermissionMode(entry.permissionMode)
-  if (migration.changed) {
-    entry.permissionMode = 'default'
+  const permissionModeInput = coerceStoredPermissionMode(entry.permissionMode)
+  if (permissionModeInput.aliasLiteral !== undefined) {
+    entry.permissionMode = permissionModeInput.value
   }
 
   const id = asTrimmedString(entry.id)
@@ -192,7 +209,7 @@ function parseSentinel(
     skills,
     seedMemory: typeof entry.seedMemory === 'string' ? entry.seedMemory : '',
     permissionMode,
-    agentType: isSentinelAgentType(entry.agentType) ? entry.agentType : 'claude',
+    agentType: parseProviderId(entry.agentType) ?? 'claude',
   }
 
   const timezone = asTrimmedString(entry.timezone)
@@ -214,11 +231,11 @@ function parseSentinel(
     sentinel.observations = observations
   }
 
-  if (migration.changed && migration.legacyLiteral !== undefined && migrations) {
+  if (permissionModeInput.aliasLiteral !== undefined && migrations) {
     migrations.push({
       id: sentinel.id,
       name: sentinel.name,
-      legacyLiteral: migration.legacyLiteral,
+      aliasLiteral: permissionModeInput.aliasLiteral,
     })
   }
 
@@ -553,18 +570,18 @@ export class SentinelStore {
 
     const { sentinels, migrationsApplied } = parseSentinelCollection(parsed)
 
-    // One-time, idempotent on-disk backfill of deprecated permissionMode
+    // One-time, idempotent on-disk backfill of retired permissionMode
     // literals. Emit a structured warn per migrated row, then persist the
     // upgraded collection so subsequent reads are a no-op. See #1222.
     if (migrationsApplied.length > 0) {
       for (const migration of migrationsApplied) {
         console.warn(
-          '[sentinels/store] migrated legacy permissionMode',
+          '[sentinels/store] migrated retired permissionMode',
           {
             sentinelId: migration.id,
             sentinelName: migration.name,
             filePath: this.filePath,
-            from: migration.legacyLiteral,
+            from: migration.aliasLiteral,
             to: 'default',
           },
         )

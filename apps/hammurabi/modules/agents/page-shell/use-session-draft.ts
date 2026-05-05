@@ -5,11 +5,8 @@ const DRAFT_MAX_BYTES = 50 * 1024
 const DRAFT_SAVE_DEBOUNCE_MS = 500
 const DRAFT_SAVED_LABEL_MS = 2000
 
-export type SessionInputMode = 'edit' | 'preview'
-
 export function useSessionDraft(sessionName: string) {
   const [inputText, setInputText] = useState('')
-  const [inputMode, setInputMode] = useState<SessionInputMode>('edit')
   const [showDraftSaved, setShowDraftSaved] = useState(false)
 
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -78,13 +75,10 @@ export function useSessionDraft(sessionName: string) {
     }
   }, [draftStorageKey, showDraftSavedIndicator])
 
-  const switchToEditMode = useCallback((focusTextarea = false) => {
-    setInputMode('edit')
+  const focusTextarea = useCallback(() => {
     requestAnimationFrame(() => {
       resizeTextarea()
-      if (focusTextarea) {
-        textareaRef.current?.focus()
-      }
+      textareaRef.current?.focus()
     })
   }, [resizeTextarea])
 
@@ -98,7 +92,6 @@ export function useSessionDraft(sessionName: string) {
       // Ignore localStorage errors.
     }
     setInputText('')
-    setInputMode('edit')
     setShowDraftSaved(false)
     requestAnimationFrame(() => {
       resizeTextarea()
@@ -106,12 +99,8 @@ export function useSessionDraft(sessionName: string) {
   }, [clearDraftSaveTimer, clearDraftSavedIndicatorTimer, draftStorageKey, resizeTextarea])
 
   useEffect(() => {
-    if (inputMode !== 'edit') {
-      return
-    }
-
     resizeTextarea()
-  }, [inputMode, inputText, resizeTextarea])
+  }, [inputText, resizeTextarea])
 
   useEffect(() => {
     latestInputTextRef.current = inputText
@@ -120,7 +109,6 @@ export function useSessionDraft(sessionName: string) {
   useEffect(() => {
     const previousInput = latestInputTextRef.current
     setShowDraftSaved(false)
-    setInputMode('edit')
 
     let restoredDraft = ''
     try {
@@ -174,14 +162,12 @@ export function useSessionDraft(sessionName: string) {
   }, [clearDraftSaveTimer, clearDraftSavedIndicatorTimer, persistDraft])
 
   return {
-    inputMode,
     inputText,
     latestInputTextRef,
     resizeTextarea,
-    setInputMode,
     setInputText,
     showDraftSaved,
-    switchToEditMode,
+    focusTextarea,
     textareaRef,
     clearDraft,
   }

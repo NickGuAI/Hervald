@@ -6,10 +6,12 @@ import {
   setupMachineAuth,
   useMachineAuthStatus,
 } from '@/hooks/use-agents'
+import { useProviderRegistry } from '@/hooks/use-providers'
 import type {
   Machine,
   MachineAuthMode,
   MachineAuthProvider,
+  ProviderRegistryEntry,
 } from '@/types'
 import { ModalFormContainer } from '@modules/components/ModalFormContainer'
 
@@ -17,7 +19,6 @@ const INPUT_CLASS =
   'w-full rounded-lg border border-ink-border px-3 py-2 text-[16px] md:text-sm bg-washi-white focus:outline-none focus:ring-1 focus:ring-sumi-black/20 placeholder:text-sumi-mist'
 const TEXTAREA_CLASS = `${INPUT_CLASS} min-h-[96px] resize-y`
 const GUIDE_URL = 'https://github.com/NickGuAI/Hervald/blob/main/apps/hammurabi/docs/provider-auth-setup.md'
-const PROVIDER_ORDER: MachineAuthProvider[] = ['claude', 'codex', 'gemini']
 
 interface AddWorkerWizardProps {
   open: boolean
@@ -31,33 +32,6 @@ interface ProviderDraftState {
   secret: string
   isSubmitting: boolean
   error: string | null
-}
-
-const INITIAL_PROVIDER_DRAFTS: Record<MachineAuthProvider, ProviderDraftState> = {
-  claude: {
-    mode: 'setup-token',
-    secret: '',
-    isSubmitting: false,
-    error: null,
-  },
-  codex: {
-    mode: 'api-key',
-    secret: '',
-    isSubmitting: false,
-    error: null,
-  },
-  gemini: {
-    mode: 'api-key',
-    secret: '',
-    isSubmitting: false,
-    error: null,
-  },
-}
-
-const INITIAL_PROVIDER_SELECTION: Record<MachineAuthProvider, boolean> = {
-  claude: true,
-  codex: true,
-  gemini: true,
 }
 
 function slugifyMachineId(value: string): string {
@@ -79,17 +53,66 @@ function buildSshCommand(machine: Machine, innerCommand: string): string {
   return `ssh ${portPart}${destination} ${shellQuote(innerCommand)}`
 }
 
-function providerActionLabel(provider: MachineAuthProvider, mode: MachineAuthMode): string {
-  if (provider === 'codex' && mode === 'device-auth') {
+function buildInitialProviderDrafts(
+  providers: readonly ProviderRegistryEntry[],
+): Record<string, ProviderDraftState> {
+  return Object.fromEntries(
+    providers
+      .filter((provider) => provider.machineAuth)
+      .map((provider) => [
+        provider.id,
+        {
+          mode: provider.machineAuth?.supportedAuthModes[0] ?? 'api-key',
+          secret: '',
+          isSubmitting: false,
+          error: null,
+        } satisfies ProviderDraftState,
+      ]),
+  )
+}
+
+function buildInitialProviderSelection(
+  providers: readonly ProviderRegistryEntry[],
+): Record<string, boolean> {
+  return Object.fromEntries(
+    providers
+      .filter((provider) => provider.machineAuth)
+      .map((provider) => [provider.id, true]),
+  )
+}
+
+function providerActionLabel(mode: MachineAuthMode): string {
+  if (mode === 'device-auth') {
     return 'Prepare device auth'
   }
-  if (provider === 'claude') {
+  if (mode === 'setup-token') {
     return 'Save token and verify'
   }
-  if (provider === 'codex') {
-    return 'Save API key and verify'
-  }
   return 'Save API key and verify'
+}
+
+function modeLabel(mode: MachineAuthMode): string {
+  if (mode === 'setup-token') {
+    return 'Setup token'
+  }
+  if (mode === 'device-auth') {
+    return 'Device auth'
+  }
+  return 'API key'
+}
+
+function buildManualAuthCommand(
+  provider: ProviderRegistryEntry,
+  mode: MachineAuthMode,
+): string {
+  const cli = provider.machineAuth?.cliBinaryName ?? provider.id
+  if (mode === 'setup-token') {
+    return `${cli} setup-token`
+  }
+  if (mode === 'device-auth') {
+    return `${cli} login --device-auth`
+  }
+  return cli
 }
 
 export function AddWorkerWizard({
@@ -98,6 +121,11 @@ export function AddWorkerWizard({
   onMachineReady,
   initialMachine = null,
 }: AddWorkerWizardProps) {
+  const { data: providers = [] } = useProviderRegistry()
+  const machineProviders = useMemo(
+    () => providers.filter((provider) => provider.machineAuth),
+    [providers],
+  )
   const queryClient = useQueryClient()
   const [step, setStep] = useState<1 | 2>(initialMachine ? 2 : 1)
   const [connectionError, setConnectionError] = useState<string | null>(null)
@@ -108,12 +136,8 @@ export function AddWorkerWizard({
   const [cwd, setCwd] = useState(initialMachine?.cwd ?? '')
   const [isCreating, setIsCreating] = useState(false)
   const [machine, setMachine] = useState<Machine | null>(initialMachine)
-  const [selectedProviders, setSelectedProviders] = useState<Record<MachineAuthProvider, boolean>>(
-    INITIAL_PROVIDER_SELECTION,
-  )
-  const [providerDrafts, setProviderDrafts] = useState<Record<MachineAuthProvider, ProviderDraftState>>(
-    INITIAL_PROVIDER_DRAFTS,
-  )
+  const [selectedProviders, setSelectedProviders] = useState<Record<string, boolean>>({})
+  const [providerDrafts, setProviderDrafts] = useState<Record<string, ProviderDraftState>>({})
 
   useEffect(() => {
     if (!open) {
@@ -129,9 +153,9 @@ export function AddWorkerWizard({
     setCwd(initialMachine?.cwd ?? '')
     setIsCreating(false)
     setMachine(initialMachine)
-    setSelectedProviders(INITIAL_PROVIDER_SELECTION)
-    setProviderDrafts(INITIAL_PROVIDER_DRAFTS)
-  }, [initialMachine, open])
+    setSelectedProviders(buildInitialProviderSelection(machineProviders))
+    setProviderDrafts(buildInitialProviderDrafts(machineProviders))
+  }, [initialMachine, machineProviders, open])
 
   const derivedMachineId = useMemo(
     () => slugifyMachineId(label.trim() || host.trim()),
@@ -143,11 +167,11 @@ export function AddWorkerWizard({
   const machineLabel = (machine?.label ?? label.trim()) || 'Worker'
   const machineHost = machine?.host ?? host.trim()
 
-  const canFinish = PROVIDER_ORDER.every((provider) => {
-    if (!selectedProviders[provider]) {
+  const canFinish = machineProviders.every((provider) => {
+    if (!selectedProviders[provider.id]) {
       return true
     }
-    return authStatus?.providers[provider].configured === true
+    return authStatus?.providers[provider.id]?.configured === true
   })
 
   async function handleCreateMachine(): Promise<void> {
@@ -229,9 +253,7 @@ export function AddWorkerWizard({
       })
       await queryClient.invalidateQueries({ queryKey: ['agents', 'machines'] })
       await authStatusQuery.refetch()
-      if (provider !== 'codex' || draft.mode !== 'device-auth') {
-        updateProviderDraft(provider, { secret: '' })
-      }
+      updateProviderDraft(provider, { secret: '' })
     } catch (error) {
       updateProviderDraft(
         provider,
@@ -270,8 +292,8 @@ export function AddWorkerWizard({
         </div>
         <div className="mt-1 text-sm text-sumi-black">
           {step === 1
-            ? 'Register the worker first, then configure provider auth on the same machine.'
-            : `Configure Claude, Codex, and Gemini on ${machineLabel}.`}
+          ? 'Register the worker first, then configure provider auth on the same machine.'
+            : `Configure provider auth on ${machineLabel}.`}
         </div>
       </div>
 
@@ -405,20 +427,21 @@ export function AddWorkerWizard({
             </div>
           ) : null}
 
-          {PROVIDER_ORDER.map((provider) => {
-            const status = authStatus?.providers[provider]
-            const draft = providerDrafts[provider]
-            const selected = selectedProviders[provider]
+          {machineProviders.map((provider) => {
+            const status = authStatus?.providers[provider.id]
+            const draft = providerDrafts[provider.id]
+            if (!draft) {
+              return null
+            }
+            const selected = selectedProviders[provider.id]
             const sshCommand = machine
-              ? provider === 'claude'
-                ? buildSshCommand(machine, 'claude setup-token')
-                : provider === 'codex'
-                  ? buildSshCommand(machine, 'codex login --device-auth')
-                  : buildSshCommand(machine, 'gemini')
+              ? buildSshCommand(machine, buildManualAuthCommand(provider, draft.mode))
               : ''
+            const supportedAuthModes = provider.machineAuth?.supportedAuthModes ?? []
+            const requiresSecret = provider.machineAuth?.requiresSecretModes.includes(draft.mode) ?? true
 
             return (
-              <div key={provider} className="rounded-xl border border-ink-border bg-washi-white px-4 py-4">
+              <div key={provider.id} className="rounded-xl border border-ink-border bg-washi-white px-4 py-4">
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <label className="flex items-start gap-3">
                     <input
@@ -426,14 +449,14 @@ export function AddWorkerWizard({
                       checked={selected}
                       onChange={(event) => setSelectedProviders((current) => ({
                         ...current,
-                        [provider]: event.target.checked,
+                        [provider.id]: event.target.checked,
                       }))}
                       className="mt-1 h-4 w-4 rounded border-ink-border"
                     />
                     <div>
                       <div className="flex flex-wrap items-center gap-2">
                         <div className="font-medium text-sumi-black">
-                          {status?.label ?? provider}
+                        {status?.label ?? provider.label}
                         </div>
                         <a
                           href={GUIDE_URL}
@@ -446,11 +469,11 @@ export function AddWorkerWizard({
                         </a>
                       </div>
                       <div className="mt-1 text-sm text-sumi-diluted">
-                        {provider === 'claude'
-                          ? 'Run setup-token on the worker, paste the token here, then verify before dispatching Claude sessions.'
-                          : provider === 'codex'
-                            ? 'Use an OpenAI API key or device-auth on the worker. Device-auth keeps the Codex auth cache on disk.'
-                            : 'Paste a Gemini API key. The wizard also enables file-backed Gemini storage on the worker.'}
+                        {supportedAuthModes.includes('setup-token')
+                          ? 'Run setup-token on the worker, paste the resulting token here, then verify before dispatching sessions.'
+                          : supportedAuthModes.includes('device-auth')
+                            ? 'Use an API key or device auth on the worker. Device auth keeps provider credentials on disk.'
+                            : 'Paste an API key here, then verify the worker before dispatching sessions.'}
                       </div>
                     </div>
                   </label>
@@ -475,24 +498,27 @@ export function AddWorkerWizard({
 
                 {selected ? (
                   <div className="mt-4 space-y-3">
-                    {provider === 'codex' ? (
+                    {supportedAuthModes.length > 1 ? (
                       <label className="space-y-1 text-sm text-sumi-black">
                         <span className="text-whisper uppercase tracking-wide text-sumi-diluted">Auth mode</span>
                         <select
                           value={draft.mode}
-                          onChange={(event) => updateProviderDraft(provider, {
-                            mode: event.target.value === 'device-auth' ? 'device-auth' : 'api-key',
+                          onChange={(event) => updateProviderDraft(provider.id, {
+                            mode: event.target.value as MachineAuthMode,
                             error: null,
                           })}
                           className={INPUT_CLASS}
                         >
-                          <option value="api-key">OpenAI API key</option>
-                          <option value="device-auth">Device auth</option>
+                          {supportedAuthModes.map((mode) => (
+                            <option key={mode} value={mode}>
+                              {modeLabel(mode)}
+                            </option>
+                          ))}
                         </select>
                       </label>
                     ) : null}
 
-                    {provider === 'claude' ? (
+                    {draft.mode === 'setup-token' ? (
                       <div className="rounded-lg border border-dashed border-ink-border px-3 py-2 text-sm text-sumi-diluted">
                         1. Run on the worker:
                         <div className="mt-2 font-mono text-xs text-sumi-black">{sshCommand}</div>
@@ -500,34 +526,28 @@ export function AddWorkerWizard({
                       </div>
                     ) : null}
 
-                    {provider === 'codex' && draft.mode === 'device-auth' ? (
+                    {draft.mode === 'device-auth' ? (
                       <div className="rounded-lg border border-dashed border-ink-border px-3 py-2 text-sm text-sumi-diluted">
-                        1. Click <strong>Prepare device auth</strong> once so the worker stores Codex credentials in <span className="font-mono">~/.codex/auth.json</span>.
+                        1. Click <strong>Prepare device auth</strong> once so the worker can store credentials on disk.
                         <div className="mt-2">2. Run on the worker:</div>
                         <div className="mt-2 font-mono text-xs text-sumi-black">{sshCommand}</div>
                         <div className="mt-2">3. Complete the device-code prompt, then refresh status here.</div>
                       </div>
                     ) : null}
 
-                    {provider === 'gemini' ? (
-                      <div className="rounded-lg border border-dashed border-ink-border px-3 py-2 text-sm text-sumi-diluted">
-                        This phase 1 flow stores <span className="font-mono">GEMINI_API_KEY</span> in the worker env file and sets <span className="font-mono">GEMINI_FORCE_FILE_STORAGE=1</span>.
-                      </div>
-                    ) : null}
-
-                    {(provider !== 'codex' || draft.mode !== 'device-auth') ? (
+                    {requiresSecret ? (
                       <label className="space-y-1 text-sm text-sumi-black">
                         <span className="text-whisper uppercase tracking-wide text-sumi-diluted">
-                          {provider === 'claude' ? 'Setup token' : 'API key'}
+                          {modeLabel(draft.mode)}
                         </span>
                         <textarea
                           value={draft.secret}
-                          onChange={(event) => updateProviderDraft(provider, {
+                          onChange={(event) => updateProviderDraft(provider.id, {
                             secret: event.target.value,
                             error: null,
                           })}
                           className={TEXTAREA_CLASS}
-                          placeholder={provider === 'claude' ? 'Paste CLAUDE_CODE_OAUTH_TOKEN' : 'Paste provider API key'}
+                          placeholder={draft.mode === 'setup-token' ? 'Paste setup token' : 'Paste provider secret'}
                         />
                       </label>
                     ) : null}
@@ -554,12 +574,12 @@ export function AddWorkerWizard({
                     <div className="flex flex-wrap items-center gap-2">
                       <button
                         type="button"
-                        onClick={() => void handleProviderSetup(provider)}
+                        onClick={() => void handleProviderSetup(provider.id)}
                         className="btn-primary inline-flex items-center gap-2"
                         disabled={draft.isSubmitting || !machine}
                       >
                         {draft.isSubmitting ? <Loader2 size={14} className="animate-spin" /> : null}
-                        {providerActionLabel(provider, draft.mode)}
+                        {providerActionLabel(draft.mode)}
                       </button>
 
                       <button
@@ -574,7 +594,7 @@ export function AddWorkerWizard({
 
                       <button
                         type="button"
-                        onClick={() => handleProviderSkip(provider)}
+                        onClick={() => handleProviderSkip(provider.id)}
                         className="btn-ghost"
                       >
                         Skip for now

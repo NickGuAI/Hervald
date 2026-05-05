@@ -1,4 +1,14 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>()
+  return {
+    ...actual,
+    readFile: vi.fn(actual.readFile),
+  }
+})
+
+import * as fsPromises from 'node:fs/promises'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -12,8 +22,10 @@ import {
 } from '../transcript-store'
 
 let transcriptRoot = ''
+const readFileMock = vi.mocked(fsPromises.readFile)
 
 beforeEach(async () => {
+  vi.clearAllMocks()
   transcriptRoot = await mkdtemp(join(tmpdir(), 'hammurabi-transcript-store-'))
   setTranscriptStoreRoot(transcriptRoot)
 })
@@ -77,7 +89,10 @@ describe('transcript-store', () => {
       agentType: 'codex',
       cwd: '/home/builder/projects/demo',
       createdAt: '2026-04-08T00:00:00.000Z',
-      codexThreadId: 'thread-123',
+      providerContext: {
+        providerId: 'codex',
+        threadId: 'thread-123',
+      },
       host: 'local',
     }
 
@@ -88,5 +103,32 @@ describe('transcript-store', () => {
     const metaPath = join(transcriptRoot, sessionName, 'meta.json')
     const raw = await readFile(metaPath, 'utf8')
     expect(JSON.parse(raw)).toEqual(meta)
+  })
+
+  it('reads transcript tails without loading the full JSONL via readFile', async () => {
+    const sessionName = 'streaming-tail-session'
+    const events = [
+      { type: 'message', marker: 't1-user' },
+      { type: 'result', marker: 't1-result' },
+      { type: 'message', marker: 't2-user' },
+      { type: 'message', marker: 't2-assistant' },
+      { type: 'result', marker: 't2-result' },
+      { type: 'message', marker: 'partial-user' },
+    ]
+
+    for (const event of events) {
+      await appendTranscriptEvent(sessionName, event)
+    }
+
+    readFileMock.mockClear()
+    const tail = await readTranscriptTail(sessionName, 1)
+
+    expect(tail).toEqual([
+      events[2],
+      events[3],
+      events[4],
+      events[5],
+    ])
+    expect(readFileMock).not.toHaveBeenCalled()
   })
 })

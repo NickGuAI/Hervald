@@ -8,16 +8,16 @@ export default {
     extend: {
       colors: {
         sumi: {
-          black: '#1C1C1C',
-          gray: '#4A4A4A',
-          diluted: '#8B8B8B',
-          mist: '#C4C4C4',
-          stone: '#A8A19A',
+          black: 'var(--hv-fg)',
+          gray: 'var(--hv-fg-muted)',
+          diluted: 'var(--hv-fg-subtle)',
+          mist: 'var(--hv-fg-faint)',
+          stone: 'var(--hv-fg-faint)',
         },
         washi: {
-          white: '#FAF8F5',
-          aged: '#F0EBE3',
-          shadow: '#E8E4DC',
+          white: 'var(--hv-bg)',
+          aged: 'var(--hv-bg-raised)',
+          shadow: 'var(--hv-bg-sunken)',
         },
         accent: {
           vermillion: '#C23B22',
@@ -26,10 +26,10 @@ export default {
           indigo: '#4A5899',
         },
         ink: {
-          wash: 'rgba(28, 28, 28, 0.03)',
-          border: 'rgba(28, 28, 28, 0.06)',
-          'border-hover': 'rgba(28, 28, 28, 0.12)',
-          focus: 'rgba(28, 28, 28, 0.04)',
+          wash: 'var(--hv-ink-wash-01)',
+          border: 'var(--hv-border-hair)',
+          'border-hover': 'var(--hv-border-soft)',
+          focus: 'var(--hv-ink-wash-02)',
         },
       },
       fontFamily: {
@@ -50,10 +50,10 @@ export default {
         sculptural: '40% 4px 35% 4px / 4px 40% 4px 35%',
       },
       boxShadow: {
-        'ink-sm': '0 2px 4px rgba(28, 28, 28, 0.02), 0 12px 40px rgba(28, 28, 28, 0.03)',
-        'ink-md': '0 4px 20px rgba(28, 28, 28, 0.04)',
-        'ink-lg': '0 8px 32px rgba(28, 28, 28, 0.06)',
-        'ink-hover': '0 4px 20px rgba(28, 28, 28, 0.08)',
+        'ink-sm': 'var(--hv-shadow-rest)',
+        'ink-md': 'var(--hv-shadow-lift)',
+        'ink-lg': 'var(--hv-shadow-float)',
+        'ink-hover': 'var(--hv-shadow-lift)',
       },
       transitionTimingFunction: {
         'out-expo': 'cubic-bezier(0.19, 1, 0.22, 1)',

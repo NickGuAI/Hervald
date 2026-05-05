@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
-import { act, createElement, type ReactNode } from 'react'
+import { createElement, type ReactNode } from 'react'
+import { flushSync } from 'react-dom'
 import { createRoot, type Root } from 'react-dom/client'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -166,14 +167,14 @@ let container: HTMLDivElement | null = null
 function buildCommander() {
   return {
     id: 'cmd-1',
-    host: 'athena',
+    host: 'atlas',
     displayName: 'Test Commander',
     pid: null,
     state: 'running',
     created: '2026-04-20T16:00:00.000Z',
     agentType: 'claude',
     effort: 'medium',
-    cwd: '/tmp/athena',
+    cwd: '/tmp/atlas',
     persona: 'Primary commander',
     heartbeat: {
       intervalMs: 900_000,
@@ -204,7 +205,7 @@ async function renderRoom() {
     },
   })
 
-  await act(async () => {
+  flushSync(() => {
     root?.render(
       <QueryClientProvider client={queryClient}>
         <MemoryRouter initialEntries={['/command-room']}>
@@ -273,6 +274,7 @@ describe('CommandRoom context file wiring', () => {
     mocks.useAgentSessionStream.mockReturnValue({
       messages: [],
       sendInput: vi.fn(async () => true),
+      sendDispatcher: { mode: 'ws-direct', send: vi.fn(async () => true) },
       answerQuestion: vi.fn(),
       status: 'connected',
     })
@@ -281,7 +283,7 @@ describe('CommandRoom context file wiring', () => {
 
   afterEach(async () => {
     if (root) {
-      await act(async () => {
+      flushSync(() => {
         root?.unmount()
       })
     }
@@ -301,7 +303,7 @@ describe('CommandRoom context file wiring', () => {
 
     expect(contextPaths()).toBe('')
 
-    await act(async () => {
+    flushSync(() => {
       ;(document.body.querySelector('[data-testid="open-workspace"]') as HTMLButtonElement).click()
     })
 
@@ -309,7 +311,7 @@ describe('CommandRoom context file wiring', () => {
       expect(document.body.querySelector('[data-testid="insert-path"]')).not.toBeNull()
     })
 
-    await act(async () => {
+    flushSync(() => {
       ;(document.body.querySelector('[data-testid="insert-path"]') as HTMLButtonElement).click()
     })
 
@@ -317,7 +319,7 @@ describe('CommandRoom context file wiring', () => {
       expect(contextPaths()).toBe('docs/spec.md')
     })
 
-    await act(async () => {
+    flushSync(() => {
       ;(document.body.querySelector('[data-testid="select-chat"]') as HTMLButtonElement).click()
     })
 

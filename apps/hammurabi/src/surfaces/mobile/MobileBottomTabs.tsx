@@ -9,7 +9,7 @@ interface MobileBottomTabsProps {
 
 /**
  * Canonical Hervald mobile bottom tab bar — the single source of the
- * Sessions · Automations · Inbox · Settings IA specified in
+ * Org · Sessions · Automations · Inbox · Settings IA specified in
  * `assets/mock/Hervald App/Hervald Prototype.html`.
  *
  * Mounted by `src/surfaces/hervald/Shell.tsx` on any Hervald mobile route
@@ -28,6 +28,12 @@ export function MobileBottomTabs({ pendingCount }: MobileBottomTabsProps) {
 
   const modules = useMemo(
     () => [
+      {
+        name: 'org',
+        label: 'Org',
+        icon: 'Users',
+        path: '/org',
+      },
       {
         name: 'sessions',
         label: 'Sessions',

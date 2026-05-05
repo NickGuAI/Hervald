@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Check, Loader2, ShieldAlert, X } from 'lucide-react'
+import { getProviderLabel, useProviderRegistry } from '@/hooks/use-providers'
 import {
   type PendingApproval,
   useApprovalDecision,
@@ -8,12 +9,16 @@ import {
 } from '@/hooks/use-approvals'
 import { cn, timeAgo } from '@/lib/utils'
 
-function formatSourceLabel(source: string): string {
+function formatSourceLabel(
+  source: string,
+  providers: Parameters<typeof getProviderLabel>[0],
+): string {
   const normalized = source.trim().toLowerCase()
-  if (normalized === 'codex') return 'Codex'
-  if (normalized === 'claude') return 'Claude'
   if (normalized === 'approval') return 'Queue'
-  return source.replace(/[-_]+/g, ' ')
+  const label = getProviderLabel(providers, normalized)
+  return label === normalized
+    ? source.replace(/[-_]+/g, ' ')
+    : label
 }
 
 interface SessionApprovalsButtonProps {
@@ -22,6 +27,9 @@ interface SessionApprovalsButtonProps {
     approval: PendingApproval,
     decision: 'approve' | 'reject',
   ) => void | Promise<void>
+  layout?: 'icon' | 'row'
+  rootClassName?: string
+  buttonClassName?: string
 }
 
 interface SessionApprovalsButtonViewProps {
@@ -35,6 +43,9 @@ interface SessionApprovalsButtonViewProps {
   mutationError: string | null
   isPending: boolean
   decisionTargetId: string | null
+  layout?: 'icon' | 'row'
+  rootClassName?: string
+  buttonClassName?: string
 }
 
 function SessionApprovalsButtonView({
@@ -45,9 +56,14 @@ function SessionApprovalsButtonView({
   mutationError,
   isPending,
   decisionTargetId,
+  layout = 'icon',
+  rootClassName,
+  buttonClassName,
 }: SessionApprovalsButtonViewProps) {
+  const { data: providers = [] } = useProviderRegistry()
   const pendingCount = approvals.length
   const hasPending = pendingCount > 0
+  const countLabel = pendingCount > 9 ? '9+' : String(pendingCount)
 
   useEffect(() => {
     if (!open) return
@@ -60,19 +76,33 @@ function SessionApprovalsButtonView({
   }, [onOpenChange, open])
 
   return (
-    <div className="relative shrink-0">
+    <div
+      className={cn(
+        layout === 'row' ? 'relative w-full shrink-0' : 'relative h-9 w-9 shrink-0',
+        rootClassName,
+      )}
+    >
       <button
         type="button"
-        className={cn('session-approvals-btn', hasPending && 'has-pending')}
+        className={cn('session-approvals-btn', buttonClassName, hasPending && 'has-pending')}
         onClick={() => onOpenChange(!open)}
         aria-label={hasPending ? `Approvals (${pendingCount} pending)` : 'Approvals'}
         aria-expanded={open}
         title={hasPending ? `${pendingCount} pending approval${pendingCount === 1 ? '' : 's'}` : 'Approvals'}
       >
         <ShieldAlert size={16} />
-        {hasPending && (
+        {layout === 'row' ? (
+          <>
+            <span className="ml-2 flex-1 text-left text-xs">Approvals</span>
+            {hasPending && (
+              <span className="font-mono text-[10px] opacity-75">
+                {countLabel}
+              </span>
+            )}
+          </>
+        ) : hasPending && (
           <span className="session-approvals-badge">
-            {pendingCount > 9 ? '9+' : pendingCount}
+            {countLabel}
           </span>
         )}
       </button>
@@ -132,7 +162,7 @@ function SessionApprovalsButtonView({
                         </p>
                         <p className="mt-0.5 truncate text-[10px] text-sumi-diluted">
                           <span className="font-mono uppercase tracking-wide">
-                            {formatSourceLabel(approval.source)}
+                            {formatSourceLabel(approval.source, providers)}
                           </span>
                           {' · '}
                           {approval.commanderName ?? approval.sessionName ?? 'Unknown agent'}
@@ -204,7 +234,10 @@ function HookedSessionApprovalsButton() {
 function ControlledSessionApprovalsButton({
   approvals,
   onDecision,
-}: Required<Pick<SessionApprovalsButtonProps, 'approvals' | 'onDecision'>>) {
+  layout,
+  rootClassName,
+  buttonClassName,
+}: Required<Pick<SessionApprovalsButtonProps, 'approvals' | 'onDecision'>> & Pick<SessionApprovalsButtonProps, 'layout' | 'rootClassName' | 'buttonClassName'>) {
   const [open, setOpen] = useState(false)
   const [decisionTargetId, setDecisionTargetId] = useState<string | null>(null)
   const [mutationError, setMutationError] = useState<string | null>(null)
@@ -228,6 +261,9 @@ function ControlledSessionApprovalsButton({
       mutationError={mutationError}
       isPending={decisionTargetId !== null}
       decisionTargetId={decisionTargetId}
+      layout={layout}
+      rootClassName={rootClassName}
+      buttonClassName={buttonClassName}
     />
   )
 }
@@ -235,12 +271,18 @@ function ControlledSessionApprovalsButton({
 export function SessionApprovalsButton({
   approvals,
   onDecision,
+  layout,
+  rootClassName,
+  buttonClassName,
 }: SessionApprovalsButtonProps = {}) {
   if (approvals && onDecision) {
     return (
       <ControlledSessionApprovalsButton
         approvals={approvals}
         onDecision={onDecision}
+        layout={layout}
+        rootClassName={rootClassName}
+        buttonClassName={buttonClassName}
       />
     )
   }

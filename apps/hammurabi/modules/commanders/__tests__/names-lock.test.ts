@@ -3,7 +3,7 @@ import { access, mkdtemp, readFile, rm } from 'node:fs/promises'
 import { constants } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { createDefaultHeartbeatState } from '../heartbeat'
+import { createDefaultHeartbeatConfig } from '../heartbeat'
 import {
   setCommanderDisplayName,
   UnknownCommanderError,
@@ -36,7 +36,7 @@ function createBaseSession(input: {
     state: 'idle',
     created: input.created,
     agentType: 'claude',
-    heartbeat: createDefaultHeartbeatState(),
+    heartbeat: createDefaultHeartbeatConfig(),
     lastHeartbeat: null,
     heartbeatTickCount: 0,
     taskSource: null,

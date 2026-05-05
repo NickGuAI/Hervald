@@ -191,22 +191,23 @@ export function createApprovalsRouter(options: ApprovalsRouterOptions): {
     const source = req.query.source === 'claude' || req.query.source === 'codex'
       ? req.query.source
       : undefined
-    const from = typeof req.query.from === 'string' && req.query.from.trim().length > 0
-      ? req.query.from.trim()
-      : undefined
+    const rawFrom = typeof req.query.from === 'string' ? req.query.from.trim() : ''
+    const from = rawFrom.length > 0 ? rawFrom : undefined
     const to = typeof req.query.to === 'string' && req.query.to.trim().length > 0
       ? req.query.to.trim()
       : undefined
 
+    const historyFilter = {
+      ...(commanderId ? { commanderId } : {}),
+      ...(actionId ? { actionId } : {}),
+      ...(source ? { source } : {}),
+      ...(from ? { from } : {}),
+      ...(to ? { to } : {}),
+      ...(typeof limit === 'number' && Number.isFinite(limit) ? { limit } : {}),
+    }
+
     res.json({
-      history: await options.approvalCoordinator.listHistory({
-        ...(commanderId ? { commanderId } : {}),
-        ...(actionId ? { actionId } : {}),
-        ...(source ? { source } : {}),
-        ...(from ? { from } : {}),
-        ...(to ? { to } : {}),
-        ...(typeof limit === 'number' && Number.isFinite(limit) ? { limit } : {}),
-      }),
+      history: await options.approvalCoordinator.listHistory(historyFilter),
     })
   })
 

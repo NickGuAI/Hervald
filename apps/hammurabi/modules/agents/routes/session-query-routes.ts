@@ -31,7 +31,6 @@ interface SessionQueryRouteDeps {
   isExitedSessionResumeAvailable(entry: ReturnType<typeof buildPersistedEntryFromExitedSession>): Promise<boolean>
   parseSessionName: typeof parseSessionName
   pruneStaleCronSessions?(): number
-  /** @deprecated Use pruneStaleCronSessions. */
   pruneStaleCommandRoomSessions?(): number
   pruneStaleNonHumanSessions?(): Promise<number>
   getWorkerStates(sourceSessionName: string): WorkerState[]
@@ -320,7 +319,7 @@ export function registerSessionQueryRoutes(deps: SessionQueryRouteDeps): void {
     for (const [name, session] of deps.sessions) {
       if (
         session.kind === 'stream' &&
-        session.sessionType === 'cron' &&
+        (session.sessionType === 'cron' || session.sessionType === 'automation') &&
         session.lastTurnCompleted &&
         session.finalResultEvent
       ) {
@@ -363,7 +362,7 @@ export function registerSessionQueryRoutes(deps: SessionQueryRouteDeps): void {
     }
 
     for (const [name, exited] of deps.exitedStreamSessions) {
-      if (deps.sessions.has(name) || exited.sessionType === 'cron') {
+      if (deps.sessions.has(name) || exited.sessionType === 'cron' || exited.sessionType === 'automation') {
         continue
       }
 

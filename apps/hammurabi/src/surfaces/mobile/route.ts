@@ -13,15 +13,23 @@ export interface MobileRoute {
   tab: MobileTab
   inChat: boolean
   commanderId: string | null
+  conversationId: string | null
   redirectTo: string | null
 }
 
-export function parseMobileRoute(pathname: string): MobileRoute {
+function parseConversationId(search: string): string | null {
+  const params = new URLSearchParams(search)
+  const conversationId = params.get('conversation')?.trim()
+  return conversationId ? conversationId : null
+}
+
+export function parseMobileRoute(pathname: string, search = ''): MobileRoute {
   if (pathname === '/command-room' || pathname === '/command-room/') {
     return {
       tab: 'sessions',
       inChat: false,
       commanderId: null,
+      conversationId: null,
       redirectTo: '/command-room/sessions',
     }
   }
@@ -32,27 +40,53 @@ export function parseMobileRoute(pathname: string): MobileRoute {
       tab: 'sessions',
       inChat: true,
       commanderId: decodeURIComponent(sessionsMatch[1]),
+      conversationId: parseConversationId(search),
       redirectTo: null,
     }
   }
 
   if (pathname.startsWith('/command-room/sessions')) {
-    return { tab: 'sessions', inChat: false, commanderId: null, redirectTo: null }
+    return {
+      tab: 'sessions',
+      inChat: false,
+      commanderId: null,
+      conversationId: null,
+      redirectTo: null,
+    }
   }
   if (pathname.startsWith('/command-room/automations')) {
-    return { tab: 'automations', inChat: false, commanderId: null, redirectTo: null }
+    return {
+      tab: 'automations',
+      inChat: false,
+      commanderId: null,
+      conversationId: null,
+      redirectTo: null,
+    }
   }
   if (pathname.startsWith('/command-room/inbox')) {
-    return { tab: 'inbox', inChat: false, commanderId: null, redirectTo: null }
+    return {
+      tab: 'inbox',
+      inChat: false,
+      commanderId: null,
+      conversationId: null,
+      redirectTo: null,
+    }
   }
   if (pathname.startsWith('/command-room/settings')) {
-    return { tab: 'settings', inChat: false, commanderId: null, redirectTo: null }
+    return {
+      tab: 'settings',
+      inChat: false,
+      commanderId: null,
+      conversationId: null,
+      redirectTo: null,
+    }
   }
 
   return {
     tab: 'sessions',
     inChat: false,
     commanderId: null,
+    conversationId: null,
     redirectTo: '/command-room/sessions',
   }
 }
@@ -65,4 +99,15 @@ export function buildSearchWithSurface(search: string): string {
     nextParams.set('surface', surface)
   }
   return nextParams.toString()
+}
+
+export function buildConversationSearch(
+  search: string,
+  conversationId: string | null,
+): string {
+  const params = new URLSearchParams(buildSearchWithSurface(search))
+  if (conversationId) {
+    params.set('conversation', conversationId)
+  }
+  return params.toString()
 }

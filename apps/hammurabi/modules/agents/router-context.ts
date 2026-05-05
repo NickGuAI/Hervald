@@ -5,6 +5,7 @@ import type { WebSocketServer } from 'ws'
 import { combinedAuth } from '../../server/middleware/combined-auth.js'
 import { createAuth0Verifier } from '../../server/middleware/auth0.js'
 import type { MachineRegistryStore } from './machines.js'
+import type { ProviderCreateOptions } from './providers/provider-adapter.js'
 import type {
   AnySession,
   AgentsRouterOptions,
@@ -38,24 +39,17 @@ export interface AgentsSessionCallbacks {
     agentType?: StreamSession['agentType'],
     options?: Record<string, unknown>,
   ): StreamSession
-  createCodexAppServerSession(
+  createProviderStreamSession(
     sessionName: string,
     mode: StreamSession['mode'],
     task: string,
     cwd: string | undefined,
-    options?: Record<string, unknown>,
+    machine: MachineConfig | undefined,
+    agentType?: StreamSession['agentType'],
+    options?: Omit<ProviderCreateOptions, 'sessionName' | 'mode' | 'task' | 'cwd' | 'machine'>,
   ): Promise<StreamSession>
-  createGeminiAcpSession(
-    sessionName: string,
-    mode: StreamSession['mode'],
-    task: string,
-    cwd: string | undefined,
-    options?: Record<string, unknown>,
-  ): Promise<StreamSession>
-  teardownCodexSessionRuntime(session: StreamSession, reason: string): Promise<void>
-  teardownGeminiSessionRuntime(session: StreamSession, reason: string): Promise<void>
-  shutdownCodexRuntimes(reason?: string): Promise<void>
-  shutdownGeminiRuntimes(reason?: string): Promise<void>
+  teardownProviderSession(session: StreamSession, reason: string): Promise<void>
+  shutdownProviderRuntimes(reason?: string): Promise<void>
   applyCodexApprovalDecision(
     session: StreamSession,
     requestId: number,
@@ -89,7 +83,7 @@ export interface AgentsRouteContext {
     persistedState: PersistedSessionsState,
   ) => { source?: { source: PersistedStreamSession; liveSession?: StreamSession }; error?: { status: number; message: string } }
   clearCodexResumeMetadata: (sessionName: string) => void
-  retireLiveCodexSessionForResume: (sessionName: string, session: StreamSession) => void
+  retireLiveSessionForResume: (sessionName: string, session: StreamSession) => void
   getWorkerStates: (sourceSessionName: string) => import('./types.js').WorkerState[]
   launchers: AgentsSessionCallbacks
 }

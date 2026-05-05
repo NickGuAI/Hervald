@@ -17,19 +17,12 @@ import {
 } from '../constants.js'
 import type {
   ActiveSkillInvocation,
-  AgentType,
   ClaudePermissionMode,
   CodexApprovalDecision,
   SessionCreator,
   SessionType,
   SessionTransportType,
 } from '../types.js'
-
-export function parseAgentType(raw: unknown): AgentType {
-  if (raw === 'codex') return 'codex'
-  if (raw === 'gemini') return 'gemini'
-  return 'claude'
-}
 
 export function parseSessionName(rawSessionName: unknown): string | null {
   if (typeof rawSessionName !== 'string') {
@@ -55,60 +48,6 @@ export function parseOptionalSessionName(rawSessionName: unknown): string | null
 export function parseClaudePermissionMode(rawMode: unknown): ClaudePermissionMode | null {
   const parsedMode = parseOptionalClaudePermissionMode(rawMode)
   return parsedMode === undefined ? 'default' : parsedMode
-}
-
-/**
- * Deprecated string literals that older on-disk JSON stores (cron tasks,
- * sentinels, quests) carry from before commit f84b6cac collapsed
- * `ClaudePermissionMode` to `'default'`. None of these are valid
- * permission-mode values anymore — they all map to `'default'` post-#1186.
- *
- * Used by `migrateLegacyPermissionMode` so on-disk validators can normalize
- * legacy entries instead of silently dropping them.
- */
-export const LEGACY_PERMISSION_MODE_ALIASES: ReadonlySet<string> = new Set([
-  'dangerouslySkipPermissions',
-  'bypassPermissions',
-  'acceptEdits',
-])
-
-/**
- * Migration result for an on-disk validator. `changed` is `true` when the
- * caller should treat the entry as upgraded (and persist the upgraded form to
- * disk + warn once); `value` is the canonical mode after migration.
- */
-export interface LegacyPermissionModeMigration {
-  changed: boolean
-  value: ClaudePermissionMode | null | undefined
-  legacyLiteral?: string
-}
-
-/**
- * On-disk JSON loader companion to `parseOptionalClaudePermissionMode`. When
- * an entry holds a deprecated alias, return `{ changed: true, value: 'default',
- * legacyLiteral }` so the caller can rewrite the on-disk literal once and emit
- * a structured warn. Otherwise this is a thin pass-through to the strict
- * parser. Use this at the parse boundary of every validator that checks
- * `permissionMode`; never silently drop a row whose only fault is a
- * deprecated literal.
- */
-export function migrateLegacyPermissionMode(
-  value: unknown,
-): LegacyPermissionModeMigration {
-  if (typeof value === 'string') {
-    const trimmed = value.trim()
-    if (LEGACY_PERMISSION_MODE_ALIASES.has(trimmed)) {
-      return {
-        changed: true,
-        value: 'default',
-        legacyLiteral: trimmed,
-      }
-    }
-  }
-  return {
-    changed: false,
-    value: parseOptionalClaudePermissionMode(value),
-  }
 }
 
 export function parseOptionalClaudePermissionMode(
@@ -187,7 +126,8 @@ export function parseSessionType(rawSessionType: unknown): SessionType | null | 
     normalized === 'commander' ||
     normalized === 'worker' ||
     normalized === 'cron' ||
-    normalized === 'sentinel'
+    normalized === 'sentinel' ||
+    normalized === 'automation'
   ) {
     return normalized
   }
@@ -207,7 +147,8 @@ export function parseSessionCreator(rawCreator: unknown): SessionCreator | null 
     kind !== 'human' &&
     kind !== 'commander' &&
     kind !== 'cron' &&
-    kind !== 'sentinel'
+    kind !== 'sentinel' &&
+    kind !== 'automation'
   ) {
     return null
   }

@@ -258,7 +258,7 @@ describe('runConversationsCli', () => {
 })
 
 describe('hammurabi root help', () => {
-  it('mentions the conversations command', async () => {
+  it('mentions the conversations and automation commands without legacy groups', async () => {
     const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
 
     try {
@@ -266,6 +266,9 @@ describe('hammurabi root help', () => {
       expect(exitCode).toBe(1)
       const output = stdoutSpy.mock.calls.map(([chunk]) => String(chunk)).join('')
       expect(output).toContain('hammurabi conversations <command>')
+      expect(output).toContain('hammurabi automation <command>')
+      expect(output).not.toContain('hammurabi cron <command>')
+      expect(output).not.toContain('hammurabi sentinel <command>')
     } finally {
       stdoutSpy.mockRestore()
     }

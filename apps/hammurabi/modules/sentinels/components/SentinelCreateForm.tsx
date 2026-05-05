@@ -1,8 +1,10 @@
 import { type FormEvent, useMemo, useState } from 'react'
 import { AlertTriangle, Plus } from 'lucide-react'
+import { useProviderRegistry } from '@/hooks/use-providers'
+import type { AgentType } from '@/types'
 import { ScheduleExpressionField } from '../../components/ScheduleExpressionField'
+import type { SkillOption } from '../../automations/hooks/useAutomations'
 import type { CreateSentinelInput } from '../types'
-import type { SkillOption } from '../hooks/useSentinels'
 
 type SentinelCreateFormInput = Omit<CreateSentinelInput, 'parentCommanderId'>
 
@@ -12,6 +14,8 @@ interface SentinelCreateFormProps {
   error: string | null
   onSubmit: (input: SentinelCreateFormInput) => Promise<unknown>
   onCancel: () => void
+  submitLabel?: string
+  seedMemoryPlaceholder?: string
 }
 
 export function SentinelCreateForm({
@@ -20,6 +24,8 @@ export function SentinelCreateForm({
   error,
   onSubmit,
   onCancel,
+  submitLabel = 'Create Automation',
+  seedMemoryPlaceholder = 'Context this automation should remember across runs.',
 }: SentinelCreateFormProps) {
   const [name, setName] = useState('')
   const [schedule, setSchedule] = useState('')
@@ -27,9 +33,10 @@ export function SentinelCreateForm({
   const [skills, setSkills] = useState<string[]>([])
   const [seedMemory, setSeedMemory] = useState('')
   const [maxRuns, setMaxRuns] = useState('')
-  const [agentType, setAgentType] = useState<'claude' | 'codex' | 'gemini'>('claude')
+  const [agentType, setAgentType] = useState<AgentType>('claude')
   const [permissionMode] = useState<'default'>('default')
   const [formError, setFormError] = useState<string | null>(null)
+  const { data: providers = [] } = useProviderRegistry()
 
   const sortedSkillOptions = useMemo(
     () => [...skillOptions].sort((left, right) => left.label.localeCompare(right.label)),
@@ -154,7 +161,7 @@ export function SentinelCreateForm({
           value={seedMemory}
           onChange={(event) => setSeedMemory(event.target.value)}
           className="w-full min-h-24 px-3 py-2 rounded-lg border border-ink-border bg-washi-aged text-[16px] md:text-sm focus:outline-none focus:border-ink-border-hover"
-          placeholder="Context this sentinel should remember across runs."
+          placeholder={seedMemoryPlaceholder}
         />
       </div>
 
@@ -175,13 +182,15 @@ export function SentinelCreateForm({
         <label className="section-title block mb-2">Agent Type</label>
         <select
           value={agentType}
-          onChange={(event) => setAgentType(event.target.value as 'claude' | 'codex' | 'gemini')}
+          onChange={(event) => setAgentType(event.target.value)}
           className="w-full px-3 py-2 rounded-lg border border-ink-border bg-washi-aged text-[16px] md:text-sm focus:outline-none focus:border-ink-border-hover"
           required
         >
-          <option value="claude">Claude</option>
-          <option value="codex">Codex</option>
-          <option value="gemini">Gemini</option>
+          {providers.map((provider) => (
+            <option key={provider.id} value={provider.id}>
+              {provider.label}
+            </option>
+          ))}
         </select>
       </div>
 
@@ -207,7 +216,7 @@ export function SentinelCreateForm({
           className="btn-primary disabled:opacity-60 disabled:cursor-not-allowed inline-flex items-center gap-2"
         >
           <Plus size={14} />
-          {isSubmitting ? 'Creating...' : 'Create Sentinel'}
+          {isSubmitting ? 'Creating...' : submitLabel}
         </button>
         <button
           type="button"

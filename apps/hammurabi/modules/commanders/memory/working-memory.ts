@@ -10,7 +10,7 @@ const MAX_SUMMARY_CHARS = 280
 const EXPLICIT_WORKING_MEMORY_SOURCES = ['append', 'api', 'cli', 'sync', 'system'] as const
 type ExplicitWorkingMemorySource = (typeof EXPLICIT_WORKING_MEMORY_SOURCES)[number]
 
-const LEGACY_LIFECYCLE_SOURCES = new Set(['start', 'message', 'heartbeat', 'stop', 'flush'])
+const INTERNAL_LIFECYCLE_SOURCES = new Set(['start', 'message', 'heartbeat', 'stop', 'flush'])
 const EXPLICIT_WORKING_MEMORY_SOURCE_SET = new Set<string>(EXPLICIT_WORKING_MEMORY_SOURCES)
 
 export type WorkingMemorySource = ExplicitWorkingMemorySource | (string & {})
@@ -79,7 +79,7 @@ function normalizeSource(source: string | null | undefined): ExplicitWorkingMemo
   if (EXPLICIT_WORKING_MEMORY_SOURCE_SET.has(normalized)) {
     return normalized as ExplicitWorkingMemorySource
   }
-  if (LEGACY_LIFECYCLE_SOURCES.has(normalized)) {
+  if (INTERNAL_LIFECYCLE_SOURCES.has(normalized)) {
     return 'system'
   }
   return 'system'

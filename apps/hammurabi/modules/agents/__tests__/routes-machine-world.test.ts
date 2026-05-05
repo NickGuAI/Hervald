@@ -106,7 +106,7 @@ describe("agents routes", () => {
         body: JSON.stringify({
           name: 'world-stream-01',
           mode: 'default',
-          sessionType: 'stream',
+          transportType: 'stream',
           task: 'Fix login retries',
         }),
       })
@@ -161,7 +161,7 @@ describe("agents routes", () => {
             body: JSON.stringify({
               name: 'world-status-01',
               mode: 'default',
-              sessionType: 'stream',
+              transportType: 'stream',
             }),
           })
           expect(createResponse.status).toBe(201)
@@ -573,6 +573,7 @@ describe("agents routes", () => {
               'claude:1.0.31',
               'codex:0.1.2503271400',
               'gemini:missing',
+              'opencode:missing',
               'git:git version 2.45.1',
               'node:v22.14.0',
               '',
@@ -598,6 +599,7 @@ describe("agents routes", () => {
             claude: { ok: true, version: '1.0.31', raw: '1.0.31' },
             codex: { ok: true, version: '0.1.2503271400', raw: '0.1.2503271400' },
             gemini: { ok: false, version: null, raw: 'missing' },
+            opencode: { ok: false, version: null, raw: 'missing' },
             git: { ok: true, version: 'git version 2.45.1', raw: 'git version 2.45.1' },
             node: { ok: true, version: 'v22.14.0', raw: 'v22.14.0' },
           },
@@ -665,6 +667,9 @@ describe("agents routes", () => {
               'version:gemini:0.1.18',
               'env:gemini:GEMINI_API_KEY',
               'login:gemini:n/a',
+              'version:opencode:missing',
+              'env:opencode:missing',
+              'login:opencode:n/a',
               '',
             ].join('\n'))
             mock.emitExit(0)
@@ -692,7 +697,7 @@ describe("agents routes", () => {
               loginConfigured: false,
               configured: true,
               currentMethod: 'setup-token',
-              verificationCommand: 'claude --version && (test -n "$CLAUDE_CODE_OAUTH_TOKEN" || claude auth status)',
+              verificationCommand: 'claude --version && (test -n "$CLAUDE_CODE_OAUTH_TOKEN" || test -n "$ANTHROPIC_API_KEY" || test -n "$ANTHROPIC_AUTH_TOKEN" || claude auth status)',
             },
             codex: {
               provider: 'codex',
@@ -717,6 +722,18 @@ describe("agents routes", () => {
               configured: true,
               currentMethod: 'api-key',
               verificationCommand: 'gemini --version && (test -n "$GEMINI_API_KEY" || test -n "$GOOGLE_API_KEY")',
+            },
+            opencode: {
+              provider: 'opencode',
+              label: 'OpenCode',
+              installed: false,
+              version: null,
+              envConfigured: false,
+              envSourceKey: null,
+              loginConfigured: false,
+              configured: false,
+              currentMethod: 'missing',
+              verificationCommand: 'opencode --version && (test -n "$OPENCODE_API_KEY")',
             },
           },
         })

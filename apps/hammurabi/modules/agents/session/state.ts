@@ -6,12 +6,18 @@ import type { Response } from 'express'
 import { CommanderSessionStore, type CommanderSession } from '../../commanders/store.js'
 import { resolveCommanderNamesPath } from '../../commanders/paths.js'
 import {
+  parseCanonicalProviderContext,
+  sanitizeProviderContextForPersistence,
+} from '../../../migrations/provider-context.js'
+import {
   DEFAULT_CLAUDE_ADAPTIVE_THINKING_MODE,
   normalizeClaudeAdaptiveThinkingMode,
+  type ClaudeAdaptiveThinkingMode,
 } from '../../claude-adaptive-thinking.js'
 import {
   DEFAULT_CLAUDE_EFFORT_LEVEL,
   normalizeClaudeEffortLevel,
+  type ClaudeEffortLevel,
 } from '../../claude-effort.js'
 import {
   getMimeType,
@@ -29,6 +35,8 @@ import {
   parseSessionCreator,
   parseSessionType,
 } from './input.js'
+import type { ProviderSessionContext } from '../providers/provider-session-context.js'
+import { getProvider, parseProviderId } from '../providers/registry.js'
 import type {
   ActiveSkillInvocation,
   AnySession,
@@ -166,6 +174,49 @@ function parseQueuedMessages(value: unknown): QueuedMessage[] | undefined {
     .filter((message): message is QueuedMessage => message !== null)
 }
 
+function parsePersistedProviderContext(
+  agentType: string,
+  entry: Record<string, unknown>,
+  effort?: ClaudeEffortLevel,
+  adaptiveThinking?: ClaudeAdaptiveThinkingMode,
+) {
+  const canonicalContext = parseCanonicalProviderContext(entry.providerContext, {
+    effort,
+    adaptiveThinking,
+  })
+  if (canonicalContext) {
+    return canonicalContext
+  }
+
+  const migratedContext = getProvider(agentType)?.migrateLegacyContext?.(entry)
+  if (migratedContext) {
+    return sanitizeProviderContextForPersistence(migratedContext, {
+      effort,
+      adaptiveThinking,
+    }) ?? migratedContext
+  }
+
+  const provider = getProvider(agentType)
+  const fallback: ProviderSessionContext & Record<string, unknown> = {
+    providerId: agentType,
+  }
+  if ((provider?.uiCapabilities.supportsEffort ?? true) && effort) {
+    fallback.effort = effort
+  }
+  if ((provider?.uiCapabilities.supportsAdaptiveThinking ?? true) && adaptiveThinking) {
+    fallback.adaptiveThinking = adaptiveThinking
+  }
+  return fallback
+}
+
+function providerSupportsEffort(agentType: string): boolean {
+  return getProvider(agentType)?.uiCapabilities.supportsEffort ?? false
+}
+
+function providerSupportsAdaptiveThinking(agentType: string): boolean {
+  return getProvider(agentType)?.uiCapabilities.supportsAdaptiveThinking ?? false
+}
+
 export function parsePersistedStreamSessionEntry(value: unknown): PersistedStreamSession | null {
   const entry = asObject(value)
   if (!entry) {
@@ -181,9 +232,7 @@ export function parsePersistedStreamSessionEntry(value: unknown): PersistedStrea
     return null
   }
 
-  const agentType = entry.agentType === 'codex' || entry.agentType === 'gemini'
-    ? entry.agentType
-    : 'claude'
+  const agentType = parseProviderId(entry.agentType) ?? 'claude'
   const mode = 'default'
   const cwd = typeof entry.cwd === 'string' && entry.cwd.trim().length > 0
     ? entry.cwd.trim()
@@ -240,6 +289,14 @@ export function parsePersistedStreamSessionEntry(value: unknown): PersistedStrea
   const activeTurnId = typeof entry.activeTurnId === 'string' && entry.activeTurnId.trim().length > 0
     ? entry.activeTurnId.trim()
     : undefined
+  const supportsEffort = providerSupportsEffort(agentType)
+  const supportsAdaptiveThinking = providerSupportsAdaptiveThinking(agentType)
+  const providerContext = parsePersistedProviderContext(
+    agentType,
+    entry,
+    supportsEffort ? effort : undefined,
+    supportsAdaptiveThinking ? adaptiveThinking : undefined,
+  )
 
   return {
     name,
@@ -247,17 +304,15 @@ export function parsePersistedStreamSessionEntry(value: unknown): PersistedStrea
     creator,
     conversationId,
     agentType,
-    effort: agentType === 'claude' ? effort : undefined,
-    adaptiveThinking: agentType === 'claude' ? adaptiveThinking : undefined,
+    effort: supportsEffort ? effort : undefined,
+    adaptiveThinking: supportsAdaptiveThinking ? adaptiveThinking : undefined,
     mode,
     cwd,
     host: host ?? undefined,
     currentSkillInvocation,
     createdAt,
-    claudeSessionId: typeof entry.claudeSessionId === 'string' ? entry.claudeSessionId.trim() || undefined : undefined,
-    codexThreadId: typeof entry.codexThreadId === 'string' ? entry.codexThreadId.trim() || undefined : undefined,
+    providerContext,
     activeTurnId,
-    geminiSessionId: typeof entry.geminiSessionId === 'string' ? entry.geminiSessionId.trim() || undefined : undefined,
     conversationEntryCount,
     events,
     spawnedBy,
@@ -507,10 +562,7 @@ export function mergePersistedSessionWithTranscriptMeta(
     return entry
   }
 
-  let agentType = entry.agentType
-  if (meta.agentType === 'claude' || meta.agentType === 'codex' || meta.agentType === 'gemini') {
-    agentType = meta.agentType
-  }
+  const agentType = parseProviderId(meta.agentType) ?? entry.agentType
   const effort = normalizeClaudeEffortLevel(
     meta.effort,
     entry.effort ?? DEFAULT_CLAUDE_EFFORT_LEVEL,
@@ -527,30 +579,30 @@ export function mergePersistedSessionWithTranscriptMeta(
   const metaCreatedAt = typeof meta.createdAt === 'string' && meta.createdAt.trim().length > 0
     ? meta.createdAt
     : entry.createdAt
-  const claudeSessionId = typeof meta.claudeSessionId === 'string' && meta.claudeSessionId.trim().length > 0
-    ? meta.claudeSessionId.trim()
-    : entry.claudeSessionId
-  const codexThreadId = typeof meta.codexThreadId === 'string' && meta.codexThreadId.trim().length > 0
-    ? meta.codexThreadId.trim()
-    : entry.codexThreadId
-  const geminiSessionId = typeof meta.geminiSessionId === 'string' && meta.geminiSessionId.trim().length > 0
-    ? meta.geminiSessionId.trim()
-    : entry.geminiSessionId
   const spawnedBy = typeof meta.spawnedBy === 'string' && meta.spawnedBy.trim().length > 0
     ? meta.spawnedBy.trim()
     : entry.spawnedBy
+  const supportsEffort = providerSupportsEffort(agentType)
+  const supportsAdaptiveThinking = providerSupportsAdaptiveThinking(agentType)
+  const providerContext = parsePersistedProviderContext(
+    agentType,
+    {
+      ...entry,
+      providerContext: meta.providerContext ?? entry.providerContext,
+    },
+    supportsEffort ? effort : undefined,
+    supportsAdaptiveThinking ? adaptiveThinking : undefined,
+  )
 
   return {
     ...entry,
     agentType,
-    effort: agentType === 'claude' ? effort : undefined,
-    adaptiveThinking: agentType === 'claude' ? adaptiveThinking : undefined,
+    effort: supportsEffort ? effort : undefined,
+    adaptiveThinking: supportsAdaptiveThinking ? adaptiveThinking : undefined,
     cwd,
     host: host ?? undefined,
     createdAt: metaCreatedAt,
-    claudeSessionId,
-    codexThreadId,
-    geminiSessionId,
+    providerContext,
     spawnedBy,
   }
 }
@@ -866,27 +918,19 @@ export async function sendWorkspaceRawFile(
 }
 
 export function hasResumeIdentifier(entry: PersistedStreamSession): boolean {
-  if (entry.agentType === 'claude') {
-    return Boolean(entry.claudeSessionId)
-  }
-  if (entry.agentType === 'codex') {
-    return Boolean(entry.codexThreadId)
-  }
-  if (entry.agentType === 'gemini') {
-    return Boolean(entry.geminiSessionId)
-  }
-  return false
+  return getProvider(entry.agentType)?.hasResumeIdentifier(entry) ?? false
 }
 
 export function canResumeLiveStreamSession(session: StreamSession): boolean {
-  return (
-    session.agentType === 'codex' &&
-    Boolean(session.codexThreadId) &&
-    Boolean(session.codexTurnStaleAt)
-  )
+  return getProvider(session.agentType)?.canResumeLiveSession(session) ?? false
 }
 
 export function snapshotExitedStreamSession(session: StreamSession): ExitedStreamSessionState {
+  const providerSnapshot = getProvider(session.agentType)?.snapshotExited(session)
+  if (providerSnapshot) {
+    return providerSnapshot
+  }
+
   return {
     phase: 'exited',
     hadResult: Boolean(session.finalResultEvent),
@@ -903,10 +947,11 @@ export function snapshotExitedStreamSession(session: StreamSession): ExitedStrea
     conversationId: session.conversationId,
     spawnedWorkers: [...session.spawnedWorkers],
     createdAt: session.createdAt,
-    claudeSessionId: session.claudeSessionId,
-    codexThreadId: session.codexThreadId,
+    providerContext: sanitizeProviderContextForPersistence(session.providerContext, {
+      effort: session.effort,
+      adaptiveThinking: session.adaptiveThinking,
+    }) ?? session.providerContext,
     activeTurnId: session.activeTurnId,
-    geminiSessionId: session.geminiSessionId,
     resumedFrom: session.resumedFrom,
     conversationEntryCount: session.conversationEntryCount,
     events: [...session.events],
@@ -917,42 +962,32 @@ export function snapshotExitedStreamSession(session: StreamSession): ExitedStrea
 }
 
 export function snapshotDeletedResumableStreamSession(session: StreamSession): ExitedStreamSessionState | null {
-  const claudeSessionId = session.agentType === 'claude' && session.lastTurnCompleted
-    ? session.claudeSessionId
-    : undefined
-  const codexThreadId = session.agentType === 'codex'
-    ? session.codexThreadId
-    : undefined
-  const geminiSessionId = session.agentType === 'gemini'
-    ? session.geminiSessionId
-    : undefined
-
-  if (!claudeSessionId && !codexThreadId && !geminiSessionId) {
+  const provider = getProvider(session.agentType)
+  const persisted = provider?.snapshotForPersist(session)
+  if (!provider || !persisted || !provider.hasResumeIdentifier(persisted)) {
     return null
   }
 
   return {
     phase: 'exited',
     hadResult: Boolean(session.finalResultEvent),
-    sessionType: session.sessionType,
-    creator: session.creator,
-    agentType: session.agentType,
-    effort: session.effort,
-    adaptiveThinking: session.adaptiveThinking,
-    mode: session.mode,
-    cwd: session.cwd,
-    host: session.host,
-    currentSkillInvocation: cloneActiveSkillInvocation(session.currentSkillInvocation),
-    spawnedBy: session.spawnedBy,
-    conversationId: session.conversationId,
-    spawnedWorkers: [...session.spawnedWorkers],
-    createdAt: session.createdAt,
-    claudeSessionId,
-    codexThreadId,
-    activeTurnId: session.activeTurnId,
-    geminiSessionId,
-    resumedFrom: session.resumedFrom,
-    conversationEntryCount: session.conversationEntryCount,
+    sessionType: persisted.sessionType ?? session.sessionType,
+    creator: persisted.creator ?? session.creator,
+    agentType: persisted.agentType,
+    effort: persisted.effort,
+    adaptiveThinking: persisted.adaptiveThinking,
+    mode: persisted.mode,
+    cwd: persisted.cwd,
+    host: persisted.host,
+    currentSkillInvocation: cloneActiveSkillInvocation(persisted.currentSkillInvocation),
+    spawnedBy: persisted.spawnedBy,
+    conversationId: persisted.conversationId,
+    spawnedWorkers: [...(persisted.spawnedWorkers ?? session.spawnedWorkers)],
+    createdAt: persisted.createdAt,
+    providerContext: persisted.providerContext,
+    activeTurnId: persisted.activeTurnId,
+    resumedFrom: persisted.resumedFrom,
+    conversationEntryCount: persisted.conversationEntryCount ?? session.conversationEntryCount,
     events: [...session.events],
     queuedMessages: session.messageQueue.list(),
     currentQueuedMessage: session.currentQueuedMessage,
@@ -977,10 +1012,11 @@ export function buildPersistedEntryFromExitedSession(
     host: exited.host,
     currentSkillInvocation: cloneActiveSkillInvocation(exited.currentSkillInvocation),
     createdAt: exited.createdAt,
-    claudeSessionId: exited.claudeSessionId,
-    codexThreadId: exited.codexThreadId,
+    providerContext: sanitizeProviderContextForPersistence(exited.providerContext, {
+      effort: exited.effort,
+      adaptiveThinking: exited.adaptiveThinking,
+    }) ?? exited.providerContext,
     activeTurnId: exited.activeTurnId,
-    geminiSessionId: exited.geminiSessionId,
     spawnedBy: exited.spawnedBy,
     spawnedWorkers: [...exited.spawnedWorkers],
     resumedFrom: exited.resumedFrom,
@@ -998,6 +1034,14 @@ export function buildPersistedEntryFromLiveStreamSession(
   sessionName: string,
   session: StreamSession,
 ): PersistedStreamSession {
+  const providerSnapshot = getProvider(session.agentType)?.snapshotForPersist(session)
+  if (providerSnapshot) {
+    return {
+      ...providerSnapshot,
+      name: sessionName,
+    }
+  }
+
   return {
     name: sessionName,
     sessionType: session.sessionType,
@@ -1011,10 +1055,11 @@ export function buildPersistedEntryFromLiveStreamSession(
     host: session.host,
     currentSkillInvocation: cloneActiveSkillInvocation(session.currentSkillInvocation),
     createdAt: session.createdAt,
-    claudeSessionId: session.claudeSessionId,
-    codexThreadId: session.codexThreadId,
+    providerContext: sanitizeProviderContextForPersistence(session.providerContext, {
+      effort: session.effort,
+      adaptiveThinking: session.adaptiveThinking,
+    }) ?? session.providerContext,
     activeTurnId: session.activeTurnId,
-    geminiSessionId: session.geminiSessionId,
     spawnedBy: session.spawnedBy,
     spawnedWorkers: [...session.spawnedWorkers],
     resumedFrom: session.resumedFrom,

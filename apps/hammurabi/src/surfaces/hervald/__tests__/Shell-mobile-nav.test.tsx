@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act } from 'react'
+import { flushSync } from 'react-dom'
 import { createRoot, type Root } from 'react-dom/client'
 import { MemoryRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -50,7 +50,7 @@ async function renderShell(pathname: string) {
     },
   })
 
-  await act(async () => {
+  flushSync(() => {
     root?.render(
       <QueryClientProvider client={queryClient}>
         <MemoryRouter initialEntries={[pathname]}>
@@ -72,7 +72,7 @@ describe('Shell — canonical mobile tab bar ownership', () => {
 
   afterEach(async () => {
     if (root) {
-      await act(async () => {
+      flushSync(() => {
         root?.unmount()
       })
     }
@@ -84,7 +84,7 @@ describe('Shell — canonical mobile tab bar ownership', () => {
     vi.clearAllMocks()
   })
 
-  it('renders the 4-tab bar on mobile non-chat routes, with no Fleet leak', async () => {
+  it('renders the 5-tab bar on mobile non-chat routes, with no Fleet leak', async () => {
     window.matchMedia = buildMatchMedia(true)
     await renderShell('/command-room/inbox')
 
@@ -95,7 +95,8 @@ describe('Shell — canonical mobile tab bar ownership', () => {
       .map((span) => span.textContent?.trim().toUpperCase())
       .filter((text): text is string => Boolean(text))
 
-    // Canonical 4-tab IA from the mock.
+    // Canonical 5-tab IA from the org-surface update.
+    expect(labels).toContain('ORG')
     expect(labels).toContain('SESSIONS')
     expect(labels).toContain('AUTOMATIONS')
     expect(labels).toContain('INBOX')
@@ -111,7 +112,7 @@ describe('Shell — canonical mobile tab bar ownership', () => {
 
   it('self-hides the mobile tab bar on the immersive chat route', async () => {
     window.matchMedia = buildMatchMedia(true)
-    await renderShell('/command-room/sessions/athena')
+    await renderShell('/command-room/sessions/atlas')
 
     expect(document.body.querySelectorAll('[data-testid="hervald-mobile-tabs"]').length).toBe(0)
   })
@@ -132,6 +133,7 @@ describe('Shell — canonical mobile tab bar ownership', () => {
     const labels = Array.from(tabs[0]!.querySelectorAll('span'))
       .map((span) => span.textContent?.trim().toUpperCase())
       .filter((text): text is string => Boolean(text))
+    expect(labels).toContain('ORG')
     expect(labels).toContain('SESSIONS')
     expect(labels).toContain('AUTOMATIONS')
     expect(labels).toContain('INBOX')

@@ -1,6 +1,6 @@
 import express from 'express'
 import { createServer } from 'node:http'
-import { access, mkdtemp, readFile, rm } from 'node:fs/promises'
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -90,6 +90,22 @@ async function startServer(
       })
     },
   }
+}
+
+async function createCommander(server: RunningServer, host: string): Promise<{ id: string }> {
+  const createResponse = await fetch(`${server.baseUrl}/api/commanders`, {
+    method: 'POST',
+    headers: {
+      ...AUTH_HEADERS,
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({
+      host,
+      persona: 'Archived runtime guard test commander',
+    }),
+  })
+  expect(createResponse.status).toBe(201)
+  return (await createResponse.json()) as { id: string }
 }
 
 describe('commanders identity routes', () => {
@@ -198,6 +214,243 @@ describe('commanders identity routes', () => {
       expect(response.status).toBe(400)
       expect(await response.json()).toEqual({
         error: 'persona must be a string up to 500 characters',
+      })
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('archives, restores, exports, and imports commander templates', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'hammurabi-commanders-template-'))
+    tempDirs.push(dir)
+    const storePath = join(dir, 'sessions.json')
+    const memoryBasePath = join(dir, 'memory')
+
+    const server = await startServer({ sessionStorePath: storePath, memoryBasePath })
+    try {
+      const createResponse = await fetch(`${server.baseUrl}/api/commanders`, {
+        method: 'POST',
+        headers: {
+          ...AUTH_HEADERS,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          host: 'template-source',
+          displayName: 'Template Source',
+          roleKey: 'engineering',
+          persona: 'Template export test commander',
+          maxTurns: 42,
+          contextMode: 'fat',
+        }),
+      })
+      expect(createResponse.status).toBe(201)
+      const created = (await createResponse.json()) as { id: string; displayName?: string }
+
+      const commanderRoot = join(memoryBasePath, created.id)
+      await mkdir(join(commanderRoot, '.memory'), { recursive: true })
+      await writeFile(join(commanderRoot, 'COMMANDER.md'), '# Exported Commander\n', 'utf8')
+      await writeFile(join(commanderRoot, '.memory', 'MEMORY.md'), '# Commander Memory\n\n- exported fact\n', 'utf8')
+
+      const archiveResponse = await fetch(`${server.baseUrl}/api/commanders/${created.id}/archive`, {
+        method: 'POST',
+        headers: AUTH_HEADERS,
+      })
+      expect(archiveResponse.status).toBe(200)
+      expect(await archiveResponse.json()).toMatchObject({
+        id: created.id,
+        archived: true,
+      })
+
+      const restoreResponse = await fetch(`${server.baseUrl}/api/commanders/${created.id}/restore`, {
+        method: 'POST',
+        headers: AUTH_HEADERS,
+      })
+      expect(restoreResponse.status).toBe(200)
+      expect(await restoreResponse.json()).toMatchObject({
+        id: created.id,
+        archived: false,
+        archivedAt: null,
+      })
+
+      const exportResponse = await fetch(`${server.baseUrl}/api/commanders/${created.id}/export`, {
+        headers: AUTH_HEADERS,
+      })
+      expect(exportResponse.status).toBe(200)
+      const exported = (await exportResponse.json()) as {
+        schemaVersion: number
+        sourceCommanderId: string
+        commander: { displayName: string; roleKey?: string; maxTurns?: number }
+        commanderMd: string
+        memorySnapshot: { memoryMd: string; syncRevision: number }
+        skillBindings: unknown[]
+      }
+      expect(exported).toMatchObject({
+        schemaVersion: 1,
+        sourceCommanderId: created.id,
+        commander: {
+          displayName: 'Template Source',
+          roleKey: 'engineering',
+          maxTurns: 42,
+        },
+      })
+      expect(exported.commanderMd).toBe('# Exported Commander\n')
+      expect(exported.memorySnapshot.memoryMd).toContain('exported fact')
+      expect(exported.skillBindings).toEqual([])
+
+      const importResponse = await fetch(`${server.baseUrl}/api/commanders/import`, {
+        method: 'POST',
+        headers: {
+          ...AUTH_HEADERS,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify(exported),
+      })
+      expect(importResponse.status).toBe(201)
+      const imported = (await importResponse.json()) as {
+        id: string
+        displayName: string
+        templateId?: string
+        url?: string
+      }
+      expect(imported.id).not.toBe(created.id)
+      expect(imported.displayName).toBe('Template Source Copy')
+      expect(imported.templateId).toBe(created.id)
+      expect(imported.url).toBe(`/command-room?commander=${imported.id}`)
+
+      await expect(readFile(join(memoryBasePath, imported.id, 'COMMANDER.md'), 'utf8')).resolves.toBe('# Exported Commander\n')
+      await expect(readFile(join(memoryBasePath, imported.id, '.memory', 'MEMORY.md'), 'utf8')).resolves.toContain('exported fact')
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('rejects POST /:id/start when commander is archived', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'hammurabi-commanders-archived-start-'))
+    tempDirs.push(dir)
+    const storePath = join(dir, 'sessions.json')
+    const memoryBasePath = join(dir, 'memory')
+
+    const server = await startServer({ sessionStorePath: storePath, memoryBasePath })
+    try {
+      const created = await createCommander(server, 'archived-start-worker')
+
+      const archiveResponse = await fetch(`${server.baseUrl}/api/commanders/${created.id}/archive`, {
+        method: 'POST',
+        headers: AUTH_HEADERS,
+      })
+      expect(archiveResponse.status).toBe(200)
+
+      const startResponse = await fetch(`${server.baseUrl}/api/commanders/${created.id}/start`, {
+        method: 'POST',
+        headers: AUTH_HEADERS,
+      })
+
+      expect(startResponse.status).toBe(409)
+      expect(await startResponse.json()).toEqual({
+        error: 'Commander is archived. Restore it first via POST /:id/restore.',
+      })
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('rejects POST /:id/run-now when commander is archived', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'hammurabi-commanders-archived-run-now-'))
+    tempDirs.push(dir)
+    const storePath = join(dir, 'sessions.json')
+    const memoryBasePath = join(dir, 'memory')
+
+    const server = await startServer({ sessionStorePath: storePath, memoryBasePath })
+    try {
+      const created = await createCommander(server, 'archived-run-now-worker')
+
+      const archiveResponse = await fetch(`${server.baseUrl}/api/commanders/${created.id}/archive`, {
+        method: 'POST',
+        headers: AUTH_HEADERS,
+      })
+      expect(archiveResponse.status).toBe(200)
+
+      const runNowResponse = await fetch(`${server.baseUrl}/api/commanders/${created.id}/run-now`, {
+        method: 'POST',
+        headers: {
+          ...AUTH_HEADERS,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          message: 'Run this now',
+        }),
+      })
+
+      expect(runNowResponse.status).toBe(409)
+      expect(await runNowResponse.json()).toEqual({
+        error: 'Commander is archived. Restore it first via POST /:id/restore.',
+      })
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('rejects template import with memorySnapshot but missing memoryMd', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'hammurabi-commanders-import-missing-memory-md-'))
+    tempDirs.push(dir)
+    const storePath = join(dir, 'sessions.json')
+    const memoryBasePath = join(dir, 'memory')
+
+    const server = await startServer({ sessionStorePath: storePath, memoryBasePath })
+    try {
+      const response = await fetch(`${server.baseUrl}/api/commanders/import`, {
+        method: 'POST',
+        headers: {
+          ...AUTH_HEADERS,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          schemaVersion: 1,
+          commander: {
+            displayName: 'Missing Memory Markdown',
+          },
+          memorySnapshot: { syncRevision: 0 },
+        }),
+      })
+
+      expect(response.status).toBe(400)
+      expect(await response.json()).toEqual({
+        error: 'memorySnapshot.memoryMd must be a string when memorySnapshot is present',
+      })
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('rejects template import with memorySnapshot.memoryMd as non-string', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'hammurabi-commanders-import-invalid-memory-md-'))
+    tempDirs.push(dir)
+    const storePath = join(dir, 'sessions.json')
+    const memoryBasePath = join(dir, 'memory')
+
+    const server = await startServer({ sessionStorePath: storePath, memoryBasePath })
+    try {
+      const response = await fetch(`${server.baseUrl}/api/commanders/import`, {
+        method: 'POST',
+        headers: {
+          ...AUTH_HEADERS,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          schemaVersion: 1,
+          commander: {
+            displayName: 'Invalid Memory Markdown',
+          },
+          memorySnapshot: {
+            syncRevision: 0,
+            memoryMd: 42,
+          },
+        }),
+      })
+
+      expect(response.status).toBe(400)
+      expect(await response.json()).toEqual({
+        error: 'memorySnapshot.memoryMd must be a string when memorySnapshot is present',
       })
     } finally {
       await server.close()

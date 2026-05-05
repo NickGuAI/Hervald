@@ -7,9 +7,9 @@ import {
 
 describe('session creator contract helpers', () => {
   it('normalizes valid session creators and trims ids', () => {
-    expect(normalizeSessionCreator({ kind: 'commander', id: '  cmdr-athena  ' })).toEqual({
+    expect(normalizeSessionCreator({ kind: 'commander', id: '  cmdr-atlas  ' })).toEqual({
       kind: 'commander',
-      id: 'cmdr-athena',
+      id: 'cmdr-atlas',
     })
     expect(normalizeSessionCreator({ kind: 'human' })).toEqual({ kind: 'human' })
   })
@@ -20,17 +20,24 @@ describe('session creator contract helpers', () => {
     expect(normalizeSessionCreator({ kind: 'commander', id: '   ' })).toEqual({
       kind: 'commander',
     })
+    expect(normalizeSessionCreator({ kind: 'sentinel', id: ' auto-1 ' })).toEqual({
+      kind: 'automation',
+      id: 'auto-1',
+    })
     expect(normalizeSessionType('worker')).toBe('worker')
+    expect(normalizeSessionType('cron')).toBe('automation')
+    expect(normalizeSessionType('sentinel')).toBe('automation')
+    expect(normalizeSessionType('automation')).toBe('automation')
     expect(normalizeSessionType('invalid')).toBeNull()
   })
 
   it('checks commander ownership from creator only', () => {
     expect(isOwnedByCommander({
-      creator: { kind: 'commander', id: 'cmdr-athena' },
-    }, 'cmdr-athena')).toBe(true)
+      creator: { kind: 'commander', id: 'cmdr-atlas' },
+    }, 'cmdr-atlas')).toBe(true)
 
     expect(isOwnedByCommander({
       creator: { kind: 'human', id: 'api-key' },
-    }, 'cmdr-athena')).toBe(false)
+    }, 'cmdr-atlas')).toBe(false)
   })
 })

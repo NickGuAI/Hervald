@@ -64,7 +64,7 @@ describe('SentinelStore: legacy permissionMode migration', () => {
       expect(sentinels[0]?.id).toBe('sentinel-test-id')
 
       const migrationWarns = warnSpy.mock.calls.filter((call) =>
-        typeof call[0] === 'string' && call[0].includes('migrated legacy permissionMode'),
+        typeof call[0] === 'string' && call[0].includes('migrated retired permissionMode'),
       )
       expect(migrationWarns).toHaveLength(1)
       expect(migrationWarns[0]?.[1]).toMatchObject({
@@ -99,7 +99,7 @@ describe('SentinelStore: legacy permissionMode migration', () => {
       expect(sentinels.every((s) => s.permissionMode === 'default')).toBe(true)
 
       const migrationWarns = warnSpy.mock.calls.filter((call) =>
-        typeof call[0] === 'string' && call[0].includes('migrated legacy permissionMode'),
+        typeof call[0] === 'string' && call[0].includes('migrated retired permissionMode'),
       )
       expect(migrationWarns).toHaveLength(2)
     } finally {
@@ -118,7 +118,7 @@ describe('SentinelStore: legacy permissionMode migration', () => {
     try {
       await store.list()
       const firstWarns = warnSpy.mock.calls.filter((call) =>
-        typeof call[0] === 'string' && call[0].includes('migrated legacy permissionMode'),
+        typeof call[0] === 'string' && call[0].includes('migrated retired permissionMode'),
       ).length
       expect(firstWarns).toBe(1)
 
@@ -127,7 +127,7 @@ describe('SentinelStore: legacy permissionMode migration', () => {
       warnSpy.mockClear()
       await store.list()
       const secondWarns = warnSpy.mock.calls.filter((call) =>
-        typeof call[0] === 'string' && call[0].includes('migrated legacy permissionMode'),
+        typeof call[0] === 'string' && call[0].includes('migrated retired permissionMode'),
       ).length
       expect(secondWarns).toBe(0)
 
@@ -149,7 +149,7 @@ describe('SentinelStore: legacy permissionMode migration', () => {
     try {
       await store.list()
       const migrationWarns = warnSpy.mock.calls.filter((call) =>
-        typeof call[0] === 'string' && call[0].includes('migrated legacy permissionMode'),
+        typeof call[0] === 'string' && call[0].includes('migrated retired permissionMode'),
       )
       expect(migrationWarns).toHaveLength(0)
     } finally {

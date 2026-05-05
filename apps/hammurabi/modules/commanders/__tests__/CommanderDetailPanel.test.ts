@@ -32,7 +32,6 @@ describe('CommanderDetailPanel', () => {
           heartbeat: {
             intervalMs: 900_000,
             messageTemplate: 'Check status',
-            lastSentAt: null,
           },
           lastHeartbeat: null,
           taskSource: null,
@@ -87,7 +86,6 @@ describe('CommanderDetailPanel', () => {
           heartbeat: {
             intervalMs: 900_000,
             messageTemplate: 'Check status',
-            lastSentAt: null,
           },
           lastHeartbeat: null,
           taskSource: null,

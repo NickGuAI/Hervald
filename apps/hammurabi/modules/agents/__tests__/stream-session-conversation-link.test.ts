@@ -63,7 +63,7 @@ describe('stream session conversation links', () => {
               kind: string
               id?: string
             }
-            claudeSessionId?: string
+            providerContext?: { sessionId?: string }
           }>
         }
         const saved = parsed.sessions.find((session) => session.name === 'commander-conversation-link-01')
@@ -74,8 +74,8 @@ describe('stream session conversation links', () => {
             kind: 'commander',
             id: COMMANDER_ID,
           },
-          claudeSessionId: 'claude-conversation-link-123',
         }))
+        expect(saved?.providerContext?.sessionId).toBe('claude-conversation-link-123')
       })
 
       await firstServer.close()
@@ -171,14 +171,14 @@ describe('stream session conversation links', () => {
           sessions: Array<{
             name: string
             conversationId?: string
-            claudeSessionId?: string
+            providerContext?: { sessionId?: string }
           }>
         }
         const saved = parsed.sessions.find((session) => session.name === sessionName)
         expect(saved).toEqual(expect.objectContaining({
           conversationId: CONVERSATION_ID,
-          claudeSessionId: 'claude-rotation-new',
         }))
+        expect(saved?.providerContext?.sessionId).toBe('claude-rotation-new')
       })
     } finally {
       if (server) {

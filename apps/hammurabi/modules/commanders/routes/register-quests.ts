@@ -11,15 +11,17 @@ import {
   parseQuestStatus,
   parseSessionId,
 } from '../route-parsers.js'
-import type {
-  CommanderQuestSource,
-  CommanderQuestStatus,
-  QuestArtifact,
+import {
+  QuestAlreadyClaimedError,
+  QuestUpdateError,
+  type CommanderQuestSource,
+  type CommanderQuestStatus,
+  type QuestArtifact,
 } from '../quest-store.js'
 import {
   buildQuestInstructionFromGitHubIssue,
 } from './context.js'
-import { buildLegacyCommanderConversationId } from '../store.js'
+import { buildDefaultCommanderConversationId } from '../store.js'
 import type { CommanderRoutesContext } from './types.js'
 
 export function registerQuestRoutes(
@@ -67,12 +69,63 @@ export function registerQuestRoutes(
 
     try {
       const conversationId = parseTrimmedString(req.query.conversationId)
-        ?? buildLegacyCommanderConversationId(commanderId)
+        ?? buildDefaultCommanderConversationId(commanderId)
       const quest = await context.questStore.claimNext(commanderId, conversationId)
       res.json({ quest })
     } catch (error) {
       res.status(500).json({
         error: error instanceof Error ? error.message : 'Failed to claim next quest',
+      })
+    }
+  })
+
+  // Claim acts on behalf of the commander named in the URL, so it uses the
+  // commander-scoped write gate rather than generic agents:write.
+  router.post('/:id/quests/:questId/claim', context.requireWorkerDispatchAccess, async (req, res) => {
+    const commanderId = parseSessionId(req.params.id)
+    if (!commanderId) {
+      res.status(400).json({ error: 'Invalid commander id' })
+      return
+    }
+
+    const questId = parseQuestId(req.params.questId)
+    if (!questId) {
+      res.status(400).json({ error: 'Invalid quest id' })
+      return
+    }
+
+    const commanderSession = await context.sessionStore.get(commanderId)
+    if (!commanderSession) {
+      res.status(404).json({ error: `Commander "${commanderId}" not found` })
+      return
+    }
+
+    const body = isObject(req.body) ? req.body : {}
+    const conversationId = parseTrimmedString(body.conversationId)
+    if (!conversationId) {
+      res.status(400).json({ error: 'conversationId is required' })
+      return
+    }
+
+    try {
+      const claimed = await context.questStore.claim(commanderId, questId, conversationId)
+      if (!claimed) {
+        res.status(404).json({ error: `Quest "${questId}" not found` })
+        return
+      }
+
+      res.json(claimed)
+    } catch (error) {
+      if (error instanceof QuestAlreadyClaimedError) {
+        res.status(409).json({
+          error: error.message,
+          claimedBy: error.claimedBy,
+        })
+        return
+      }
+
+      res.status(500).json({
+        error: error instanceof Error ? error.message : 'Failed to claim quest',
       })
     }
   })
@@ -283,6 +336,11 @@ export function registerQuestRoutes(
 
       res.json(updated)
     } catch (error) {
+      if (error instanceof QuestUpdateError) {
+        res.status(400).json({ error: error.message })
+        return
+      }
+
       res.status(500).json({
         error: error instanceof Error ? error.message : 'Failed to update quest',
       })

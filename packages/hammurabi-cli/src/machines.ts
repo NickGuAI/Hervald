@@ -1,5 +1,12 @@
 import { spawn } from 'node:child_process'
 import { type HammurabiConfig, normalizeEndpoint, readHammurabiConfig } from './config.js'
+import {
+  findProvider,
+  listMachineAuthProviders,
+  loadProviderRegistry,
+  type MachineAuthMode,
+  type ProviderRegistryEntry,
+} from './providers.js'
 
 interface Writable {
   write(chunk: string): boolean
@@ -28,15 +35,13 @@ interface MachineHealthPayload {
     ok: boolean
     destination?: string
   }
-  tools: Record<'claude' | 'codex' | 'gemini' | 'git' | 'node', MachineToolStatus>
+  tools: Record<string, MachineToolStatus>
 }
 
-type MachineAuthProvider = 'claude' | 'codex' | 'gemini'
-type MachineAuthMode = 'setup-token' | 'api-key' | 'device-auth'
 type MachineAuthMethod = MachineAuthMode | 'login' | 'missing'
 
 interface MachineProviderAuthStatus {
-  provider: MachineAuthProvider
+  provider: string
   label: string
   installed: boolean
   version: string | null
@@ -52,7 +57,7 @@ interface MachineAuthStatusPayload {
   machineId: string
   envFile: string | null
   checkedAt: string
-  providers: Record<MachineAuthProvider, MachineProviderAuthStatus>
+  providers: Record<string, MachineProviderAuthStatus>
 }
 
 interface AddOptions {
@@ -67,7 +72,7 @@ interface AddOptions {
 
 interface BootstrapOptions {
   id: string
-  tools: BootstrapTool[]
+  tools: string[]
   configureTelemetry: boolean
   telemetryEndpoint: string
   telemetryApiKey: string
@@ -79,7 +84,7 @@ interface AuthStatusOptions {
 
 interface AuthSetupOptions {
   machineId: string
-  provider: MachineAuthProvider
+  provider: string
   mode: MachineAuthMode
   secret?: string
 }
@@ -103,16 +108,6 @@ export interface MachinesCliDependencies {
   stderr?: Writable
   runCommand?: CommandRunner
 }
-
-const TOOL_PACKAGE_NAMES = {
-  claude: '@anthropic-ai/claude-code',
-  codex: '@openai/codex',
-  gemini: '@google/gemini-cli',
-} as const
-
-type BootstrapTool = keyof typeof TOOL_PACKAGE_NAMES
-
-const DEFAULT_BOOTSTRAP_TOOLS: BootstrapTool[] = ['claude', 'codex', 'gemini']
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
@@ -199,9 +194,9 @@ function printUsage(stdout: Writable): void {
   stdout.write('  hammurabi machine add --id <id> --label <label> (--host <host> | --tailscale-hostname <hostname>) [--user <user>] [--port <port>] [--cwd <cwd>]\n')
   stdout.write('  hammurabi machine check <id>\n')
   stdout.write('  hammurabi machine remove <id>\n')
-  stdout.write('  hammurabi machine bootstrap <id> [--tools claude,codex] [--skip-telemetry]\n')
+  stdout.write('  hammurabi machine bootstrap <id> [--tools <provider-a,provider-b>] [--skip-telemetry]\n')
   stdout.write('  hammurabi machine auth-status --machine <id>\n')
-  stdout.write('  hammurabi machine auth-setup --machine <id> --provider <claude|codex|gemini> [--mode <setup-token|api-key|device-auth>] [--secret <value>]\n')
+  stdout.write('  hammurabi machine auth-setup --machine <id> --provider <provider> [--mode <setup-token|api-key|device-auth>] [--secret <value>]\n')
 }
 
 function parseMachines(payload: unknown): MachineConfigPayload[] {
@@ -247,13 +242,9 @@ function parseHealth(payload: unknown): MachineHealthPayload | null {
     return null
   }
 
-  const tools: MachineHealthPayload['tools'] = {
-    claude: parseToolStatus(toolsRaw.claude),
-    codex: parseToolStatus(toolsRaw.codex),
-    gemini: parseToolStatus(toolsRaw.gemini),
-    git: parseToolStatus(toolsRaw.git),
-    node: parseToolStatus(toolsRaw.node),
-  }
+  const tools = Object.fromEntries(
+    Object.entries(toolsRaw).map(([key, value]) => [key, parseToolStatus(value)]),
+  ) as MachineHealthPayload['tools']
 
   return {
     machineId,
@@ -316,7 +307,11 @@ function printMachinesTable(stdout: Writable, machines: readonly MachineConfigPa
   }
 }
 
-function printHealth(stdout: Writable, health: MachineHealthPayload): void {
+function printHealth(
+  stdout: Writable,
+  health: MachineHealthPayload,
+  providers: readonly ProviderRegistryEntry[],
+): void {
   stdout.write(`Machine: ${health.machineId}\n`)
   stdout.write(`Mode: ${health.mode}\n`)
   stdout.write(`SSH: ${health.ssh.ok ? 'ok' : 'failed'}`)
@@ -324,17 +319,32 @@ function printHealth(stdout: Writable, health: MachineHealthPayload): void {
     stdout.write(` (${health.ssh.destination})`)
   }
   stdout.write('\n')
-  for (const tool of ['claude', 'codex', 'gemini', 'git', 'node'] as const) {
-    stdout.write(`- ${tool}: ${health.tools[tool].ok ? health.tools[tool].raw : 'missing'}\n`)
+  const toolOrder = [
+    ...listMachineAuthProviders(providers)
+      .map((provider) => provider.machineAuth?.cliBinaryName)
+      .filter((tool): tool is string => typeof tool === 'string' && tool.length > 0),
+    'git',
+    'node',
+  ]
+  for (const tool of toolOrder) {
+    const status = health.tools[tool]
+    stdout.write(`- ${tool}: ${status?.ok ? status.raw : 'missing'}\n`)
   }
 }
 
-function printAuthStatus(stdout: Writable, payload: MachineAuthStatusPayload): void {
+function printAuthStatus(
+  stdout: Writable,
+  payload: MachineAuthStatusPayload,
+  providers: readonly ProviderRegistryEntry[],
+): void {
   stdout.write(`Machine: ${payload.machineId}\n`)
   stdout.write(`Env file: ${payload.envFile ?? 'not set'}\n`)
   stdout.write(`Checked at: ${payload.checkedAt}\n`)
-  for (const provider of ['claude', 'codex', 'gemini'] as const) {
-    const status = payload.providers[provider]
+  for (const provider of listMachineAuthProviders(providers)) {
+    const status = payload.providers[provider.id]
+    if (!status) {
+      continue
+    }
     stdout.write(
       `- ${status.label}: ${status.configured ? 'ready' : 'missing'} (${status.currentMethod})`,
     )
@@ -418,20 +428,25 @@ function parseAddOptions(args: readonly string[]): AddOptions | null {
   return { id, label, host, tailscaleHostname, user, port, cwd }
 }
 
-function parseBootstrapToolList(value: string): BootstrapTool[] | null {
+function parseBootstrapToolList(
+  value: string,
+  providers: readonly ProviderRegistryEntry[],
+): string[] | null {
+  const validTools = new Set(
+    listMachineAuthProviders(providers)
+      .filter((provider) => provider.machineAuth?.installPackageName)
+      .map((provider) => provider.id),
+  )
   const rawItems = value
     .split(',')
     .map((item) => item.trim())
     .filter((item) => item.length > 0)
-  const tools = rawItems.filter((item): item is BootstrapTool => (
-    item === 'claude' || item === 'codex' || item === 'gemini'
-  ))
 
-  if (tools.length === 0 || tools.length !== rawItems.length) {
+  if (rawItems.length === 0 || rawItems.some((item) => !validTools.has(item))) {
     return null
   }
 
-  return [...new Set(tools)]
+  return [...new Set(rawItems)]
 }
 
 function parseAuthStatusOptions(args: readonly string[]): AuthStatusOptions | null {
@@ -447,9 +462,12 @@ function parseAuthStatusOptions(args: readonly string[]): AuthStatusOptions | nu
   return { machineId }
 }
 
-function parseAuthSetupOptions(args: readonly string[]): AuthSetupOptions | null {
+function parseAuthSetupOptions(
+  args: readonly string[],
+  providers: readonly ProviderRegistryEntry[],
+): AuthSetupOptions | null {
   let machineId: string | undefined
-  let provider: MachineAuthProvider | undefined
+  let provider: string | undefined
   let mode: MachineAuthMode | undefined
   let secret: string | undefined
 
@@ -466,7 +484,8 @@ function parseAuthSetupOptions(args: readonly string[]): AuthSetupOptions | null
       continue
     }
     if (flag === '--provider') {
-      if (value !== 'claude' && value !== 'codex' && value !== 'gemini') {
+      const providerEntry = findProvider(providers, value)
+      if (!providerEntry?.machineAuth) {
         return null
       }
       provider = value
@@ -490,20 +509,21 @@ function parseAuthSetupOptions(args: readonly string[]): AuthSetupOptions | null
     return null
   }
 
+  const machineAuth = findProvider(providers, provider)?.machineAuth
+  if (!machineAuth) {
+    return null
+  }
   const resolvedMode = mode
-    ?? (provider === 'claude' ? 'setup-token' : 'api-key')
-
-  if (provider === 'claude' && resolvedMode !== 'setup-token') {
-    return null
-  }
-  if (provider === 'gemini' && resolvedMode !== 'api-key') {
-    return null
-  }
-  if (provider === 'codex' && resolvedMode !== 'api-key' && resolvedMode !== 'device-auth') {
+    ?? (machineAuth.supportedAuthModes.includes('setup-token')
+      ? 'setup-token'
+      : (machineAuth.supportedAuthModes.includes('api-key')
+        ? 'api-key'
+        : machineAuth.supportedAuthModes[0]))
+  if (!resolvedMode || !machineAuth.supportedAuthModes.includes(resolvedMode)) {
     return null
   }
 
-  const requiresSecret = resolvedMode !== 'device-auth'
+  const requiresSecret = machineAuth.requiresSecretModes.includes(resolvedMode)
   if (requiresSecret && (!secret || secret.length < 12)) {
     return null
   }
@@ -519,13 +539,19 @@ function parseAuthSetupOptions(args: readonly string[]): AuthSetupOptions | null
   }
 }
 
-function parseBootstrapOptions(args: readonly string[], config: HammurabiConfig): BootstrapOptions | null {
+function parseBootstrapOptions(
+  args: readonly string[],
+  config: HammurabiConfig,
+  providers: readonly ProviderRegistryEntry[],
+): BootstrapOptions | null {
   const id = args[0]?.trim()
   if (!id) {
     return null
   }
 
-  let tools = [...DEFAULT_BOOTSTRAP_TOOLS]
+  let tools = listMachineAuthProviders(providers)
+    .filter((provider) => provider.machineAuth?.installPackageName)
+    .map((provider) => provider.id)
   let configureTelemetry = true
   let telemetryEndpoint = config.endpoint
   let telemetryApiKey = config.apiKey
@@ -543,7 +569,7 @@ function parseBootstrapOptions(args: readonly string[], config: HammurabiConfig)
     }
 
     if (flag === '--tools') {
-      const parsed = parseBootstrapToolList(value)
+      const parsed = parseBootstrapToolList(value, providers)
       if (!parsed) {
         return null
       }
@@ -575,9 +601,12 @@ function buildSshDestination(machine: MachineConfigPayload & { host: string }): 
 
 function buildBootstrapScript(
   options: BootstrapOptions,
+  providers: readonly ProviderRegistryEntry[],
   bootstrapOptions: { configureRemoteSshHardening: boolean },
 ): string {
-  const packages = options.tools.map((tool) => TOOL_PACKAGE_NAMES[tool])
+  const packages = options.tools
+    .map((tool) => findProvider(providers, tool)?.machineAuth?.installPackageName)
+    .filter((entry): entry is string => typeof entry === 'string' && entry.length > 0)
   const scriptLines = [
     'set -eu',
     'PREFIX="$HOME/.hammurabi/tools"',
@@ -660,9 +689,11 @@ function buildBootstrapScript(
     )
   }
 
-  scriptLines.push(
-    `npm install --global --prefix "$PREFIX" ${packages.map((pkg) => shellEscape(pkg)).join(' ')}`,
-  )
+  if (packages.length > 0) {
+    scriptLines.push(
+      `npm install --global --prefix "$PREFIX" ${packages.map((pkg) => shellEscape(pkg)).join(' ')}`,
+    )
+  }
 
   if (options.configureTelemetry) {
     const telemetryJson = JSON.stringify({
@@ -791,7 +822,10 @@ async function fetchMachineHealth(
   }
 }
 
-function parseMachineAuthStatus(payload: unknown): MachineAuthStatusPayload | null {
+function parseMachineAuthStatus(
+  payload: unknown,
+  providers: readonly ProviderRegistryEntry[],
+): MachineAuthStatusPayload | null {
   if (!isObject(payload)) {
     return null
   }
@@ -806,23 +840,24 @@ function parseMachineAuthStatus(payload: unknown): MachineAuthStatusPayload | nu
     return null
   }
 
-  const providers = {
-    claude: parseProviderAuthStatus(providersRaw.claude, 'claude', 'Claude'),
-    codex: parseProviderAuthStatus(providersRaw.codex, 'codex', 'Codex'),
-    gemini: parseProviderAuthStatus(providersRaw.gemini, 'gemini', 'Gemini'),
-  }
+  const parsedProviders = Object.fromEntries(
+    listMachineAuthProviders(providers).map((provider) => [
+      provider.id,
+      parseProviderAuthStatus(providersRaw[provider.id], provider.id, provider.label),
+    ]),
+  )
 
   return {
     machineId,
     envFile,
     checkedAt,
-    providers,
+    providers: parsedProviders,
   }
 }
 
 function parseProviderAuthStatus(
   value: unknown,
-  provider: MachineAuthProvider,
+  provider: string,
   label: string,
 ): MachineProviderAuthStatus {
   if (!isObject(value)) {
@@ -867,6 +902,7 @@ async function fetchMachineAuthStatus(
   config: HammurabiConfig,
   fetchImpl: typeof fetch,
   machineId: string,
+  providers: readonly ProviderRegistryEntry[],
 ): Promise<{ ok: true; data: MachineAuthStatusPayload } | { ok: true; data: null } | { ok: false; response: Response }> {
   const result = await fetchJson(
     fetchImpl,
@@ -881,7 +917,7 @@ async function fetchMachineAuthStatus(
     return result
   }
 
-  const payload = parseMachineAuthStatus(result.data)
+  const payload = parseMachineAuthStatus(result.data, providers)
   if (!payload) {
     return { ok: true, data: null }
   }
@@ -941,6 +977,7 @@ async function runCheck(
   config: HammurabiConfig,
   fetchImpl: typeof fetch,
   machineId: string,
+  providers: readonly ProviderRegistryEntry[],
   stdout: Writable,
   stderr: Writable,
 ): Promise<number> {
@@ -956,7 +993,7 @@ async function runCheck(
     return 1
   }
 
-  printHealth(stdout, result.data)
+  printHealth(stdout, result.data, providers)
   return 0
 }
 
@@ -990,10 +1027,11 @@ async function runAuthStatus(
   config: HammurabiConfig,
   fetchImpl: typeof fetch,
   options: AuthStatusOptions,
+  providers: readonly ProviderRegistryEntry[],
   stdout: Writable,
   stderr: Writable,
 ): Promise<number> {
-  const result = await fetchMachineAuthStatus(config, fetchImpl, options.machineId)
+  const result = await fetchMachineAuthStatus(config, fetchImpl, options.machineId, providers)
   if (!result.ok) {
     const detail = await readErrorDetail(result.response)
     stderr.write(detail ? `Request failed (${result.response.status}): ${detail}\n` : `Request failed (${result.response.status}).\n`)
@@ -1005,7 +1043,7 @@ async function runAuthStatus(
     return 1
   }
 
-  printAuthStatus(stdout, result.data)
+  printAuthStatus(stdout, result.data, providers)
   return 0
 }
 
@@ -1013,6 +1051,7 @@ async function runAuthSetup(
   config: HammurabiConfig,
   fetchImpl: typeof fetch,
   options: AuthSetupOptions,
+  providers: readonly ProviderRegistryEntry[],
   stdout: Writable,
   stderr: Writable,
 ): Promise<number> {
@@ -1036,16 +1075,17 @@ async function runAuthSetup(
     return 1
   }
 
-  const payload = parseMachineAuthStatus(result.data)
+  const payload = parseMachineAuthStatus(result.data, providers)
   if (!payload) {
     stderr.write('Auth setup response was empty.\n')
     return 1
   }
 
   stdout.write(`Updated ${options.provider} auth on ${options.machineId}.\n`)
-  printAuthStatus(stdout, payload)
-  if (options.provider === 'codex' && options.mode === 'device-auth') {
-    stdout.write('Next: SSH into the worker and run `codex login --device-auth`, then re-run `hammurabi machine auth-status --machine ')
+  printAuthStatus(stdout, payload, providers)
+  const cliBinaryName = findProvider(providers, options.provider)?.machineAuth?.cliBinaryName
+  if (options.mode === 'device-auth' && cliBinaryName) {
+    stdout.write(`Next: SSH into the worker and run \`${cliBinaryName} login --device-auth\`, then re-run \`hammurabi machine auth-status --machine `)
     stdout.write(options.machineId)
     stdout.write('`.\n')
   }
@@ -1057,6 +1097,7 @@ async function runBootstrap(
   fetchImpl: typeof fetch,
   runCommand: CommandRunner,
   options: BootstrapOptions,
+  providers: readonly ProviderRegistryEntry[],
   stdout: Writable,
   stderr: Writable,
 ): Promise<number> {
@@ -1073,7 +1114,7 @@ async function runBootstrap(
     return 1
   }
 
-  const script = buildBootstrapScript(options, {
+  const script = buildBootstrapScript(options, providers, {
     configureRemoteSshHardening: Boolean(machine.host),
   })
   const commandResult = machine.host
@@ -1118,7 +1159,7 @@ async function runBootstrap(
   }
 
   stdout.write('Service health after bootstrap:\n')
-  printHealth(stdout, healthResult.data)
+  printHealth(stdout, healthResult.data, providers)
 
   // Codex audit on PR/1269: `configure_sshd_hardening` silently emits
   // `sshd:skipped:no-sudo` when passwordless sudo is unavailable, leaving
@@ -1153,12 +1194,19 @@ async function runBootstrap(
   stdout.write('- Remote SSH access must already work from the machine running this CLI.\n')
   stdout.write('- The target must already have Node.js and npm installed.\n')
   stdout.write('- Remote SSH hardening auto-applies only when passwordless sudo is available on the target.\n')
-  stdout.write('- Claude/Codex login state is still manual on the target (`claude login`, `codex login`).\n')
+  stdout.write('- Some provider login/device-auth flows still require a manual CLI login on the target.\n')
   stdout.write(`- Inspect provider auth: hammurabi machine auth-status --machine ${options.id}\n`)
-  stdout.write(`- Save a Claude setup token: hammurabi machine auth-setup --machine ${options.id} --provider claude --mode setup-token --secret '<token>'\n`)
-  stdout.write(`- Save a Codex API key: hammurabi machine auth-setup --machine ${options.id} --provider codex --mode api-key --secret '<api-key>'\n`)
-  stdout.write(`- Prepare Codex device auth: hammurabi machine auth-setup --machine ${options.id} --provider codex --mode device-auth\n`)
-  stdout.write(`- Save a Gemini API key: hammurabi machine auth-setup --machine ${options.id} --provider gemini --mode api-key --secret '<api-key>'\n`)
+  for (const provider of listMachineAuthProviders(providers)) {
+    for (const mode of provider.machineAuth?.supportedAuthModes ?? []) {
+      if (mode === 'device-auth') {
+        stdout.write(`- Prepare ${provider.label} device auth: hammurabi machine auth-setup --machine ${options.id} --provider ${provider.id} --mode ${mode}\n`)
+        continue
+      }
+
+      const secretLabel = mode === 'setup-token' ? 'token' : 'api-key'
+      stdout.write(`- Save a ${provider.label} ${mode}: hammurabi machine auth-setup --machine ${options.id} --provider ${provider.id} --mode ${mode} --secret '<${secretLabel}>'\n`)
+    }
+  }
   stdout.write('- Bootstrap writes `~/.hammurabi.json` plus PATH setup; agent-specific OTEL env merges remain manual.\n')
   return 0
 }
@@ -1185,6 +1233,22 @@ export async function runMachinesCli(
     return 1
   }
 
+  let providers: ProviderRegistryEntry[] = []
+  const needsProviderRegistry =
+    command === 'check'
+    || command === 'bootstrap'
+    || command === 'auth-status'
+    || command === 'auth-setup'
+  if (needsProviderRegistry) {
+    try {
+      ;({ providers } = await loadProviderRegistry(config, { fetchImpl }))
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error'
+      stderr.write(`Failed to load provider registry: ${message}\n`)
+      return 1
+    }
+  }
+
   if (command === 'list') {
     if (args.length !== 1) {
       printUsage(stdout)
@@ -1209,7 +1273,7 @@ export async function runMachinesCli(
       printUsage(stdout)
       return 1
     }
-    return runCheck(config, fetchImpl, machineId, stdout, stderr)
+    return runCheck(config, fetchImpl, machineId, providers, stdout, stderr)
   }
 
   if (command === 'remove') {
@@ -1227,22 +1291,22 @@ export async function runMachinesCli(
       printUsage(stdout)
       return 1
     }
-    return runAuthStatus(config, fetchImpl, options, stdout, stderr)
+    return runAuthStatus(config, fetchImpl, options, providers, stdout, stderr)
   }
 
   if (command === 'auth-setup') {
-    const options = parseAuthSetupOptions(args.slice(1))
+    const options = parseAuthSetupOptions(args.slice(1), providers)
     if (!options) {
       printUsage(stdout)
       return 1
     }
-    return runAuthSetup(config, fetchImpl, options, stdout, stderr)
+    return runAuthSetup(config, fetchImpl, options, providers, stdout, stderr)
   }
 
-  const options = parseBootstrapOptions(args.slice(1), config)
+  const options = parseBootstrapOptions(args.slice(1), config, providers)
   if (!options) {
     printUsage(stdout)
     return 1
   }
-  return runBootstrap(config, fetchImpl, runCommand, options, stdout, stderr)
+  return runBootstrap(config, fetchImpl, runCommand, options, providers, stdout, stderr)
 }

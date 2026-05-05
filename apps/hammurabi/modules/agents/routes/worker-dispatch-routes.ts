@@ -1,20 +1,19 @@
 import type { RequestHandler, Router } from 'express'
 import {
   parseActiveSkillInvocation,
-  parseAgentType,
   parseCwd,
   parseOptionalHost,
   parseSessionCreator,
   parseSessionName,
 } from '../session/input.js'
+import type { ProviderCreateOptions } from '../providers/provider-adapter.js'
+import { getProvider, parseProviderId } from '../providers/registry.js'
 import type {
+  AgentType,
   AnySession,
   ClaudePermissionMode,
-  CodexSessionCreateOptions,
-  GeminiSessionCreateOptions,
   MachineConfig,
   StreamSession,
-  StreamSessionCreateOptions,
 } from '../types.js'
 
 interface WorkerDispatchRouteDeps {
@@ -22,38 +21,47 @@ interface WorkerDispatchRouteDeps {
   requireDispatchWorkerAccess: RequestHandler
   maxSessions: number
   sessions: Map<string, AnySession>
-  createCodexAppServerSession(
-    sessionName: string,
-    mode: ClaudePermissionMode,
-    task: string,
-    cwd: string | undefined,
-    options?: CodexSessionCreateOptions,
-  ): Promise<StreamSession>
-  createGeminiAcpSession(
-    sessionName: string,
-    mode: ClaudePermissionMode,
-    task: string,
-    cwd: string | undefined,
-    options?: GeminiSessionCreateOptions,
-  ): Promise<StreamSession>
-  createStreamSession(
+  createProviderStreamSession(
     sessionName: string,
     mode: ClaudePermissionMode,
     task: string,
     cwd: string | undefined,
     machine: MachineConfig | undefined,
-    agentType?: 'claude',
-    options?: StreamSessionCreateOptions,
-  ): StreamSession
+    agentType?: AgentType,
+    options?: Omit<ProviderCreateOptions, 'sessionName' | 'mode' | 'task' | 'cwd' | 'machine'>,
+  ): Promise<StreamSession>
   readMachineRegistry(): Promise<MachineConfig[]>
   schedulePersistedSessionsWrite(): void
 }
+
+const ALLOWED_WORKER_DISPATCH_BODY_KEYS = new Set([
+  'agentType',
+  'creator',
+  'currentSkillInvocation',
+  'cwd',
+  'host',
+  'spawnedBy',
+  'task',
+])
 
 export function registerWorkerDispatchRoutes(deps: WorkerDispatchRouteDeps): void {
   const { router, requireDispatchWorkerAccess, maxSessions, sessions } = deps
 
   router.post('/sessions/dispatch-worker', requireDispatchWorkerAccess, async (req, res) => {
-    const rawSpawnSource = req.body?.spawnedBy
+    const requestBody = req.body !== null && typeof req.body === 'object' && !Array.isArray(req.body)
+      ? req.body as Record<string, unknown>
+      : undefined
+    if (requestBody) {
+      const unknownKeys = Object.keys(requestBody).filter((key) => !ALLOWED_WORKER_DISPATCH_BODY_KEYS.has(key))
+      if (unknownKeys.length > 0) {
+        res.status(400).json({
+          error: `Unknown request body properties: ${unknownKeys.join(', ')}`,
+        })
+        return
+      }
+    }
+
+    const rawSpawnSource = requestBody?.spawnedBy
     const hasSpawnSourceValue =
       rawSpawnSource !== undefined && rawSpawnSource !== null && rawSpawnSource !== ''
     const spawnSourceName = hasSpawnSourceValue ? parseSessionName(rawSpawnSource) : undefined
@@ -72,15 +80,15 @@ export function registerWorkerDispatchRoutes(deps: WorkerDispatchRouteDeps): voi
       sourceSession = candidate
     }
 
-    const requestedCreator = parseSessionCreator(req.body?.creator)
+    const requestedCreator = parseSessionCreator(requestBody?.creator)
     if (requestedCreator === null) {
       res.status(400).json({ error: 'Invalid creator. Expected { kind, id? }' })
       return
     }
 
-    const requestedMachine = parseOptionalHost(req.body?.machine)
-    if (requestedMachine === null) {
-      res.status(400).json({ error: 'Invalid machine: expected machine ID string' })
+    const requestedHost = parseOptionalHost(requestBody?.host)
+    if (requestedHost === null) {
+      res.status(400).json({ error: 'Invalid host: expected machine ID string' })
       return
     }
 
@@ -90,16 +98,21 @@ export function registerWorkerDispatchRoutes(deps: WorkerDispatchRouteDeps): voi
     }
 
     const hasRequestedAgentType =
-      typeof req.body?.agentType === 'string' && req.body.agentType.trim().length > 0
-    const parsedAgentType = parseAgentType(req.body?.agentType)
-    const workerAgentType: 'claude' | 'codex' | 'gemini' = hasRequestedAgentType
-      ? (parsedAgentType === 'codex' || parsedAgentType === 'gemini' ? parsedAgentType : 'claude')
-      : (sourceSession?.agentType === 'codex' || sourceSession?.agentType === 'gemini'
-          ? sourceSession.agentType
-          : 'claude')
+      typeof requestBody?.agentType === 'string' && requestBody.agentType.trim().length > 0
+    const parsedAgentType = parseProviderId(requestBody?.agentType)
+    const workerAgentType: AgentType = hasRequestedAgentType
+      ? (parsedAgentType ?? 'claude')
+      : (sourceSession?.agentType ?? 'claude')
+    const provider = getProvider(workerAgentType)
+    if (!provider?.capabilities.supportsWorkerDispatch) {
+      res.status(400).json({
+        error: `Provider ${workerAgentType} cannot dispatch worker sessions`,
+      })
+      return
+    }
     const workerMode: ClaudePermissionMode = sourceSession?.mode ?? 'default'
 
-    const targetMachineId = requestedMachine ?? sourceSession?.host
+    const targetMachineId = requestedHost ?? sourceSession?.host
     let targetMachine: MachineConfig | undefined
     if (targetMachineId !== undefined) {
       try {
@@ -117,13 +130,12 @@ export function registerWorkerDispatchRoutes(deps: WorkerDispatchRouteDeps): voi
       }
     }
 
-    const rawTask = typeof req.body?.task === 'string' ? req.body.task.trim() : ''
+    const rawTask = typeof requestBody?.task === 'string' ? requestBody.task.trim() : ''
     const currentSkillInvocationOverrideRequested = Boolean(
-      req.body
-      && typeof req.body === 'object'
-      && Object.prototype.hasOwnProperty.call(req.body, 'currentSkillInvocation'),
+      requestBody
+      && Object.prototype.hasOwnProperty.call(requestBody, 'currentSkillInvocation'),
     )
-    const rawCurrentSkillInvocation = req.body?.currentSkillInvocation
+    const rawCurrentSkillInvocation = requestBody?.currentSkillInvocation
     const parsedCurrentSkillInvocation = rawCurrentSkillInvocation === null
       ? undefined
       : parseActiveSkillInvocation(rawCurrentSkillInvocation)
@@ -138,7 +150,7 @@ export function registerWorkerDispatchRoutes(deps: WorkerDispatchRouteDeps): voi
       return
     }
 
-    const requestedCwd = parseCwd(req.body?.cwd)
+    const requestedCwd = parseCwd(requestBody?.cwd)
     if (requestedCwd === null) {
       res.status(400).json({ error: 'Invalid cwd: must be an absolute path' })
       return
@@ -153,7 +165,7 @@ export function registerWorkerDispatchRoutes(deps: WorkerDispatchRouteDeps): voi
     }
 
     try {
-      const inheritedWorkerCwd = requestedMachine !== undefined
+      const inheritedWorkerCwd = requestedHost !== undefined
         ? (targetMachine?.cwd ?? sourceSession?.cwd)
         : (sourceSession?.cwd ?? targetMachine?.cwd)
       const workerCwd = requestedCwd ?? inheritedWorkerCwd
@@ -181,39 +193,15 @@ export function registerWorkerDispatchRoutes(deps: WorkerDispatchRouteDeps): voi
             }
           : {}),
       }
-      const workerSession = workerAgentType === 'codex'
-        ? await deps.createCodexAppServerSession(
-          workerSessionName,
-          workerMode,
-          rawTask,
-          workerCwd,
-          {
-            ...workerOptions,
-            machine: targetMachine,
-          },
-        )
-        : workerAgentType === 'gemini'
-          ? await deps.createGeminiAcpSession(
-            workerSessionName,
-            workerMode,
-            rawTask,
-            workerCwd,
-            {
-              ...workerOptions,
-              machine: targetMachine,
-            },
-          )
-          : deps.createStreamSession(
-            workerSessionName,
-            workerMode,
-            rawTask,
-            workerCwd,
-            targetMachine,
-            workerAgentType,
-            {
-              ...workerOptions,
-            },
-          )
+      const workerSession = await deps.createProviderStreamSession(
+        workerSessionName,
+        workerMode,
+        rawTask,
+        workerCwd,
+        targetMachine,
+        workerAgentType,
+        workerOptions,
+      )
 
       sessions.set(workerSessionName, workerSession)
       if (sourceSession && !sourceSession.spawnedWorkers.includes(workerSessionName)) {

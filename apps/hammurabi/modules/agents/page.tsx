@@ -11,6 +11,7 @@ import {
   useAgentSessions,
   useMachines,
 } from '@/hooks/use-agents'
+import { findProviderEntry, useProviderRegistry } from '@/hooks/use-providers'
 import { cn } from '@/lib/utils'
 import { useIsMobile } from '@/hooks/use-is-mobile'
 import type { AgentType, SessionTransportType } from '@/types'
@@ -40,6 +41,7 @@ export default function AgentsPage() {
   const [searchParams, setSearchParams] = useSearchParams()
   const { data: sessions, isLoading, isFetching } = useAgentSessions()
   const { data: machines } = useMachines()
+  const { data: providers = [] } = useProviderRegistry()
   const [selectedSession, setSelectedSession] = useState<string | null>(null)
   const [showNewSessionForm, setShowNewSessionForm] = useState(false)
   const [name, setName] = useState('')
@@ -61,6 +63,8 @@ export default function AgentsPage() {
   const machineList = machines ?? []
   const sessionList = (sessions ?? []) as AgentSessionWithWorkers[]
   const machineMap = new Map(machineList.map((machine) => [machine.id, machine]))
+  const dispatchProviders = providers.filter((provider) => provider.capabilities.supportsWorkerDispatch)
+  const defaultAgentType = (dispatchProviders[0]?.id ?? 'claude') as AgentType
   const resumableSessions = sessionList
     .filter((session) => session.resumeAvailable)
     .sort((left, right) => Date.parse(right.created) - Date.parse(left.created))
@@ -75,8 +79,8 @@ export default function AgentsPage() {
       if (paramCwd) setCwd(paramCwd)
       if (paramName) setName(paramName)
       if (paramSession) setSelectedSession(paramSession)
-      if (paramAgentType === 'codex' || paramAgentType === 'claude' || paramAgentType === 'gemini') {
-        setAgentType(paramAgentType)
+      if (typeof paramAgentType === 'string' && paramAgentType.trim().length > 0) {
+        setAgentType(paramAgentType.trim() as AgentType)
       }
       if (paramCwd || paramName) setShowNewSessionForm(true)
       if (paramSession) {
@@ -85,6 +89,15 @@ export default function AgentsPage() {
       setSearchParams({}, { replace: true })
     }
   }, [queryClient, searchParams, setSearchParams])
+
+  useEffect(() => {
+    if (dispatchProviders.length === 0) {
+      return
+    }
+    if (!dispatchProviders.some((provider) => provider.id === agentType)) {
+      setAgentType(defaultAgentType)
+    }
+  }, [agentType, defaultAgentType, dispatchProviders])
 
   useEffect(() => {
     if (!selectedSession) {
@@ -128,22 +141,30 @@ export default function AgentsPage() {
       setCwd(nextCwd)
     }
 
-    if (resumeSource.agentType === 'claude') {
+    const resumeProvider = findProviderEntry(providers, resumeSource.agentType)
+    if (resumeProvider?.uiCapabilities.supportsEffort) {
       const nextEffort = resumeSource.effort ?? DEFAULT_CLAUDE_EFFORT_LEVEL
       if (effort !== nextEffort) {
         setEffort(nextEffort)
       }
+    } else if (effort !== DEFAULT_CLAUDE_EFFORT_LEVEL) {
+      setEffort(DEFAULT_CLAUDE_EFFORT_LEVEL)
+    }
+
+    if (resumeProvider?.uiCapabilities.supportsAdaptiveThinking) {
       const nextAdaptiveThinking = resumeSource.adaptiveThinking ?? DEFAULT_CLAUDE_ADAPTIVE_THINKING_MODE
       if (adaptiveThinking !== nextAdaptiveThinking) {
         setAdaptiveThinking(nextAdaptiveThinking)
       }
+    } else if (adaptiveThinking !== DEFAULT_CLAUDE_ADAPTIVE_THINKING_MODE) {
+      setAdaptiveThinking(DEFAULT_CLAUDE_ADAPTIVE_THINKING_MODE)
     }
 
     const nextHost = resumeSource.host ?? ''
     if (selectedHost !== nextHost) {
       setSelectedHost(nextHost)
     }
-  }, [adaptiveThinking, agentType, cwd, effort, resumeSource, selectedHost, transportType])
+  }, [adaptiveThinking, agentType, cwd, effort, providers, resumeSource, selectedHost, transportType])
 
   async function refreshSessions() {
     await queryClient.invalidateQueries({ queryKey: ['agents', 'sessions'] })
@@ -177,7 +198,7 @@ export default function AgentsPage() {
       setAdaptiveThinking(DEFAULT_CLAUDE_ADAPTIVE_THINKING_MODE)
       setCwd('')
       setResumeFromSession('')
-      setAgentType('claude')
+      setAgentType(defaultAgentType)
       setTransportType('stream')
       setSelectedHost('')
       setShowNewSessionForm(false)
@@ -197,6 +218,7 @@ export default function AgentsPage() {
     name,
     resumeFromSession,
     selectedHost,
+    defaultAgentType,
     transportType,
     task,
   ])

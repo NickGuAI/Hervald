@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react'
 import { useQuery } from '@tanstack/react-query'
+import { useProviderRegistry } from '@/hooks/use-providers'
+import type { AgentType } from '@/types'
 import { fetchJson } from '@/lib/api'
 import {
   CLAUDE_EFFORT_LEVELS,
@@ -32,7 +34,7 @@ type WizardStep = 1 | 2 | 3
 
 type CommanderCreateInputWithWizardFields = CommanderCreateInput & {
   displayName?: string
-  agentType?: 'claude' | 'codex' | 'gemini'
+  agentType?: AgentType
   effort?: ClaudeEffortLevel
   persona?: string
   heartbeat?: {
@@ -79,11 +81,12 @@ export function CreateCommanderWizard({
 
   const [mode, setMode] = useState<WizardMode>('choice')
   const [step, setStep] = useState<WizardStep>(1)
+  const { data: providers = [] } = useProviderRegistry()
 
   const [host, setHost] = useState('')
   const [displayName, setDisplayName] = useState('')
   const [archetypeId, setArchetypeId] = useState(initialArchetype?.id ?? 'custom')
-  const [agentType, setAgentType] = useState<'claude' | 'codex' | 'gemini'>('claude')
+  const [agentType, setAgentType] = useState<AgentType>('claude')
   const [effort, setEffort] = useState<ClaudeEffortLevel>(DEFAULT_CLAUDE_EFFORT_LEVEL)
   const [persona, setPersona] = useState(initialArchetype?.defaultPersona ?? '')
   const [cwd, setCwd] = useState('')
@@ -113,6 +116,17 @@ export function CreateCommanderWizard({
       setMaxTurns(String(runtimeConfig.defaults.maxTurns))
     }
   }, [maxTurnsDirty, runtimeConfig.defaults.maxTurns])
+
+  const currentProvider = useMemo(
+    () => providers.find((provider) => provider.id === agentType) ?? null,
+    [agentType, providers],
+  )
+
+  useEffect(() => {
+    if (providers.length > 0 && !currentProvider) {
+      setAgentType(providers[0]!.id)
+    }
+  }, [currentProvider, providers])
 
   const parsedFatPinInterval = fatPinInterval.trim()
     ? Number.parseInt(fatPinInterval.trim(), 10)
@@ -424,27 +438,31 @@ export function CreateCommanderWizard({
               <span className={`${LABEL_CLASS} mb-1 block`}>Agent type</span>
               <select
                 value={agentType}
-                onChange={(event) => setAgentType(event.target.value as 'claude' | 'codex' | 'gemini')}
+                onChange={(event) => setAgentType(event.target.value)}
                 className={INPUT_CLASS}
               >
-                <option value="claude">claude</option>
-                <option value="codex">codex</option>
-                <option value="gemini">gemini</option>
-              </select>
-            </label>
-
-            <label className="block">
-              <span className={`${LABEL_CLASS} mb-1 block`}>Claude effort</span>
-              <select
-                value={effort}
-                onChange={(event) => setEffort(event.target.value as ClaudeEffortLevel)}
-                className={INPUT_CLASS}
-              >
-                {CLAUDE_EFFORT_LEVELS.map((level) => (
-                  <option key={level} value={level}>{level}</option>
+                {providers.map((provider) => (
+                  <option key={provider.id} value={provider.id}>
+                    {provider.label.toLowerCase()}
+                  </option>
                 ))}
               </select>
             </label>
+
+            {currentProvider?.uiCapabilities.supportsEffort ? (
+              <label className="block">
+                <span className={`${LABEL_CLASS} mb-1 block`}>Claude effort</span>
+                <select
+                  value={effort}
+                  onChange={(event) => setEffort(event.target.value as ClaudeEffortLevel)}
+                  className={INPUT_CLASS}
+                >
+                  {CLAUDE_EFFORT_LEVELS.map((level) => (
+                    <option key={level} value={level}>{level}</option>
+                  ))}
+                </select>
+              </label>
+            ) : null}
           </div>
         </div>
       )}
@@ -580,7 +598,10 @@ export function CreateCommanderWizard({
         <div className="space-y-4">
           <div className="text-whisper text-sumi-diluted">
             <p>Archetype: {selectedArchetype?.label ?? 'custom'}</p>
-            <p>Agent: {agentType} · Effort: {effort}</p>
+            <p>
+              Agent: {currentProvider?.label ?? agentType}
+              {currentProvider?.uiCapabilities.supportsEffort ? ` · Effort: ${effort}` : ''}
+            </p>
             <p>
               Heartbeat: {heartbeatMinutes.trim() || DEFAULT_HEARTBEAT_MINUTES} min
               {' · '}

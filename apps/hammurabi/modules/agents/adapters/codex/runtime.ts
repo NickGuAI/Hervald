@@ -1,4 +1,4 @@
-import type { ChildProcess } from 'node:child_process'
+import { spawn, type ChildProcess } from 'node:child_process'
 import { WebSocket, type RawData } from 'ws'
 import { CODEX_RUNTIME_FORCE_KILL_WAIT_MS, CODEX_RUNTIME_TEARDOWN_TIMEOUT_MS } from '../../constants.js'
 import { isRemoteMachine } from '../../machines.js'
@@ -38,6 +38,7 @@ export class CodexSessionRuntime implements CodexSessionRuntimeHandle {
   readonly listActiveSessionNames: () => string[]
   readonly handleOwningSessionFailure: (failure: CodexRuntimeFailure) => void
   readonly wsKeepAliveIntervalMs: number
+  readonly spawnImpl: typeof spawn
   process: ChildProcess | null = null
   port = 0
   ws: WebSocket | null = null
@@ -60,6 +61,7 @@ export class CodexSessionRuntime implements CodexSessionRuntimeHandle {
     listActiveSessionNames: () => string[],
     wsKeepAliveIntervalMs: number,
     handleOwningSessionFailure: (failure: CodexRuntimeFailure) => void,
+    spawnImpl: typeof spawn = spawn,
   ) {
     this.sessionName = sessionName
     this.machine = isRemoteMachine(machine) ? machine : null
@@ -67,6 +69,7 @@ export class CodexSessionRuntime implements CodexSessionRuntimeHandle {
     this.listActiveSessionNames = listActiveSessionNames
     this.wsKeepAliveIntervalMs = wsKeepAliveIntervalMs
     this.handleOwningSessionFailure = handleOwningSessionFailure
+    this.spawnImpl = spawnImpl
   }
 
   log(level: 'info' | 'warn' | 'error', message: string, extra: Record<string, unknown> = {}): void {
@@ -403,11 +406,11 @@ export class CodexSessionRuntime implements CodexSessionRuntimeHandle {
       this.stderrTail = []
       this.lastTerminalFailure = null
       if (this.machine) {
-        const process = spawnRemoteCodexRuntime(this.machine)
+        const process = spawnRemoteCodexRuntime(this.machine, this.spawnImpl)
         this.attachProcess(process)
         this.log('info', 'Spawned remote Codex runtime process')
       } else {
-        const { port, process } = await spawnLocalCodexRuntime()
+        const { port, process } = await spawnLocalCodexRuntime(this.spawnImpl)
         this.port = port
         this.attachProcess(process)
         this.log('info', 'Spawned Codex sidecar process')

@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { readFile, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { resolveModuleDataDir } from '../data-dir.js'
 import {
@@ -31,6 +31,11 @@ function resolveDefaultPendingSnapshotPath(): string {
 function resolveDefaultPendingAuditPath(): string {
   return path.join(resolveModuleDataDir('policies'), 'audit.jsonl')
 }
+
+export const DEFAULT_APPROVAL_HISTORY_VISIBILITY_CUTOFF_MS = 24 * 60 * 60 * 1000
+export const DEFAULT_APPROVAL_AUDIT_RETENTION_MS = 7 * 24 * 60 * 60 * 1000
+
+const DEFAULT_APPROVAL_AUDIT_PRUNE_INTERVAL_MS = 24 * 60 * 60 * 1000
 
 interface PersistedPendingSnapshot {
   version: 1
@@ -74,15 +79,34 @@ interface EnqueueApprovalOptions {
   timeoutAction?: PendingApprovalResolution
 }
 
-type LegacyApprovalResolutionHandler = (
-  decision: PendingApprovalResolution,
-  options?: { timedOut?: boolean },
-) => Promise<ApprovalResolutionOutcome | void> | ApprovalResolutionOutcome | void
-
 interface ApprovalCoordinatorOptions {
   snapshotFilePath?: string
   auditFilePath?: string
+  auditRetentionMs?: number
   now?: () => Date
+}
+
+function parsePositiveInteger(raw: string | undefined): number | null {
+  if (!raw) {
+    return null
+  }
+
+  const parsed = Number.parseInt(raw, 10)
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return null
+  }
+
+  return parsed
+}
+
+function resolveDefaultApprovalAuditRetentionMs(env: NodeJS.ProcessEnv = process.env): number {
+  return parsePositiveInteger(env.HAMMURABI_APPROVAL_AUDIT_RETENTION_MS?.trim())
+    ?? DEFAULT_APPROVAL_AUDIT_RETENTION_MS
+}
+
+function parseTimestampMs(timestamp: string): number | null {
+  const parsed = Date.parse(timestamp)
+  return Number.isFinite(parsed) ? parsed : null
 }
 
 function normalizePendingApproval(entry: unknown): PendingApproval | null {
@@ -316,6 +340,8 @@ export class ApprovalCoordinator {
 
   private readonly auditFilePath: string
 
+  private readonly auditRetentionMs: number
+
   private readonly now: () => Date
 
   private readonly approvals = new Map<string, PendingApproval>()
@@ -338,6 +364,8 @@ export class ApprovalCoordinator {
 
   private mutationQueue: Promise<void> = Promise.resolve()
 
+  private lastAuditPrunedAtMs = 0
+
   constructor(options: ApprovalCoordinatorOptions = {}) {
     this.snapshotFilePath = options.snapshotFilePath
       ? path.resolve(options.snapshotFilePath)
@@ -345,6 +373,11 @@ export class ApprovalCoordinator {
     this.auditFilePath = options.auditFilePath
       ? path.resolve(options.auditFilePath)
       : resolveDefaultPendingAuditPath()
+    this.auditRetentionMs = typeof options.auditRetentionMs === 'number'
+      && Number.isFinite(options.auditRetentionMs)
+      && options.auditRetentionMs >= 0
+      ? Math.floor(options.auditRetentionMs)
+      : resolveDefaultApprovalAuditRetentionMs()
     this.now = options.now ?? (() => new Date())
   }
 
@@ -424,28 +457,20 @@ export class ApprovalCoordinator {
     currentSkillName?: string
     skillId?: string
     resolverRef?: PendingApproval['resolverRef']
-    onResolve?: LegacyApprovalResolutionHandler
   }): Promise<PendingApprovalRecord> {
-    return this.enqueue(
-      {
-        source: input.source,
-        sessionId: input.sessionId ?? input.sessionName,
-        commanderId: input.commanderId ?? input.commanderScopeId,
-        actionId: input.actionId,
-        actionLabel: input.actionLabel,
-        toolName: input.toolName,
-        toolInput: input.toolInput,
-        context: input.context,
-        currentSkillId: input.currentSkillId ?? input.skillId,
-        currentSkillName: input.currentSkillName,
-        resolverRef: input.resolverRef,
-      },
-      input.onResolve
-        ? {
-          resolutionHandler: (_approval, decision, options) => input.onResolve?.(decision, options),
-        }
-        : undefined,
-    )
+    return this.enqueue({
+      source: input.source,
+      sessionId: input.sessionId ?? input.sessionName,
+      commanderId: input.commanderId ?? input.commanderScopeId,
+      actionId: input.actionId,
+      actionLabel: input.actionLabel,
+      toolName: input.toolName,
+      toolInput: input.toolInput,
+      context: input.context,
+      currentSkillId: input.currentSkillId ?? input.skillId,
+      currentSkillName: input.currentSkillName,
+      resolverRef: input.resolverRef,
+    })
   }
 
   async list(filter?: PendingApprovalFilter): Promise<PendingApproval[]> {
@@ -483,7 +508,15 @@ export class ApprovalCoordinator {
     })
   }
 
-  async listHistory(filter: ApprovalHistoryFilter = {}): Promise<ApprovalHistoryEntry[]> {
+  async listHistory(
+    filter: ApprovalHistoryFilter = {},
+    cutoffMs?: number,
+  ): Promise<ApprovalHistoryEntry[]> {
+    const effectiveCutoffMs = typeof filter.from === 'string'
+      ? undefined
+      : typeof cutoffMs === 'number' && Number.isFinite(cutoffMs)
+        ? cutoffMs
+        : this.now().getTime() - DEFAULT_APPROVAL_HISTORY_VISIBILITY_CUTOFF_MS
     const entries = (await readJsonLines<unknown>(this.auditFilePath))
       .map((entry) => normalizeHistoryEntry(entry))
       .filter((entry): entry is ApprovalHistoryEntry => entry !== null)
@@ -496,6 +529,12 @@ export class ApprovalCoordinator {
         }
         if (filter.source && entry.source !== filter.source) {
           return false
+        }
+        if (typeof effectiveCutoffMs === 'number') {
+          const entryTimestampMs = parseTimestampMs(entry.timestamp)
+          if (entryTimestampMs === null || entryTimestampMs < effectiveCutoffMs) {
+            return false
+          }
         }
         if (filter.from && entry.timestamp < filter.from) {
           return false
@@ -512,6 +551,12 @@ export class ApprovalCoordinator {
       : 50
 
     return entries.slice(0, limit)
+  }
+
+  async pruneAuditLog(retentionMs = this.auditRetentionMs): Promise<void> {
+    await this.serializeMutation(async () => {
+      await this.pruneAuditLogInternal(this.normalizeRetentionMs(retentionMs))
+    })
   }
 
   async get(id: string): Promise<PendingApproval | null> {
@@ -800,6 +845,7 @@ export class ApprovalCoordinator {
   }
 
   private async appendAudit(entry: Record<string, unknown> | ApprovalHistoryEntry): Promise<void> {
+    await this.maybePruneAuditLog()
     await appendJsonLine(this.auditFilePath, entry as Record<string, unknown>)
   }
 
@@ -841,6 +887,8 @@ export class ApprovalCoordinator {
   }
 
   private async updateAuditDelivered(approvalId: string): Promise<void> {
+    await this.maybePruneAuditLog()
+
     let raw: string
     try {
       raw = await readFile(this.auditFilePath, 'utf8')
@@ -902,6 +950,72 @@ export class ApprovalCoordinator {
       this.resolvedOutcomes.delete(id)
     }
     return outcome
+  }
+
+  private normalizeRetentionMs(retentionMs: number): number {
+    return Number.isFinite(retentionMs) && retentionMs >= 0
+      ? Math.floor(retentionMs)
+      : this.auditRetentionMs
+  }
+
+  private async maybePruneAuditLog(): Promise<void> {
+    const nowMs = this.now().getTime()
+    if (nowMs - this.lastAuditPrunedAtMs < DEFAULT_APPROVAL_AUDIT_PRUNE_INTERVAL_MS) {
+      return
+    }
+
+    await this.pruneAuditLogInternal(this.auditRetentionMs, nowMs)
+  }
+
+  private async pruneAuditLogInternal(retentionMs: number, nowMs = this.now().getTime()): Promise<void> {
+    let raw: string
+    try {
+      raw = await readFile(this.auditFilePath, 'utf8')
+    } catch (error) {
+      const code = error instanceof Error && 'code' in error ? error.code : undefined
+      if (code === 'ENOENT') {
+        this.lastAuditPrunedAtMs = nowMs
+        return
+      }
+      throw error
+    }
+
+    const cutoffMs = nowMs - retentionMs
+    const retainedEntries = raw
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0)
+      .flatMap((line) => {
+        try {
+          const entry = JSON.parse(line) as unknown
+          if (!isRecord(entry)) {
+            return []
+          }
+
+          const normalizedEntry = normalizeHistoryEntry(entry)
+          if (!normalizedEntry) {
+            return []
+          }
+
+          const timestampMs = parseTimestampMs(normalizedEntry.timestamp)
+          if (timestampMs === null || timestampMs < cutoffMs) {
+            return []
+          }
+
+          return [entry]
+        } catch {
+          return []
+        }
+      })
+
+    await this.rewriteAuditFile(retainedEntries)
+    this.lastAuditPrunedAtMs = nowMs
+  }
+
+  private async rewriteAuditFile(entries: Record<string, unknown>[]): Promise<void> {
+    await mkdir(path.dirname(this.auditFilePath), { recursive: true })
+    const nextContents = entries.map((entry) => JSON.stringify(entry)).join('\n')
+    await writeFile(this.auditFilePath, nextContents ? `${nextContents}\n` : '', 'utf8')
   }
 
   private serializeMutation<T>(mutation: () => Promise<T>): Promise<T> {

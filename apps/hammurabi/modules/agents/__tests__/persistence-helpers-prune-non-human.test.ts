@@ -4,6 +4,10 @@ import {
   type PersistenceHelpersContext,
   type SessionPrunerConfig,
 } from '../persistence-helpers'
+import {
+  createClaudeProviderContext,
+  createCodexProviderContext,
+} from '../providers/provider-session-context'
 import type {
   AnySession,
   CompletedSession,
@@ -11,9 +15,16 @@ import type {
   StreamSession,
 } from '../types'
 
+interface TestPersistenceHelpersContext extends PersistenceHelpersContext {
+  restoreProviderSessionMock: ReturnType<typeof vi.fn>
+  teardownProviderSessionMock: ReturnType<typeof vi.fn>
+}
+
 function makeBaseContext(
-  overrides: Partial<PersistenceHelpersContext> = {},
-): PersistenceHelpersContext {
+  overrides: Partial<TestPersistenceHelpersContext> = {},
+): TestPersistenceHelpersContext {
+  const restoreProviderSessionMock = vi.fn()
+  const teardownProviderSessionMock = vi.fn(async () => undefined)
   return {
     sessionStorePath: '/tmp/test-session-store.json',
     maxSessions: 32,
@@ -22,10 +33,10 @@ function makeBaseContext(
     completedSessions: new Map<string, CompletedSession>(),
     exitedStreamSessions: new Map<string, ExitedStreamSessionState>(),
     applyStreamUsageEvent: vi.fn(),
-    createClaudeSession: vi.fn(),
-    createCodexSession: vi.fn(),
-    createGeminiSession: vi.fn(),
-    teardownCodexSessionRuntime: vi.fn(async () => undefined),
+    restoreProviderSession: restoreProviderSessionMock,
+    restoreProviderSessionMock,
+    teardownProviderSession: teardownProviderSessionMock,
+    teardownProviderSessionMock,
     isExitedSessionResumeAvailable: vi.fn(async () => false),
     isLiveSessionResumeAvailable: vi.fn(async () => false),
     ...overrides,
@@ -42,7 +53,7 @@ function makeLiveSession(
     agentType: 'claude',
     mode: 'default',
     sessionType: 'worker',
-    creator: { kind: 'commander', id: 'cmdr-athena' },
+    creator: { kind: 'commander', id: 'cmdr-atlas' },
     cwd: '/tmp',
     createdAt: '2026-04-26T08:00:00.000Z',
     lastEventAt: '2026-04-26T08:00:00.000Z',
@@ -50,6 +61,7 @@ function makeLiveSession(
     usage: { inputTokens: 0, outputTokens: 0, costUsd: 0 },
     clients: new Set(),
     spawnedWorkers: [],
+    providerContext: createClaudeProviderContext(),
     messageQueue: { list: () => [] } as StreamSession['messageQueue'],
     pendingDirectSendMessages: [],
     process: { kill: vi.fn() } as StreamSession['process'],
@@ -66,7 +78,7 @@ function makeExitedSession(
     phase: 'exited',
     hadResult: true,
     sessionType: 'worker',
-    creator: { kind: 'commander', id: 'cmdr-athena' },
+    creator: { kind: 'commander', id: 'cmdr-atlas' },
     agentType: 'claude',
     mode: 'default',
     cwd: '/tmp',
@@ -74,10 +86,10 @@ function makeExitedSession(
     spawnedBy: undefined,
     spawnedWorkers: [],
     createdAt: '2026-04-26T06:00:00.000Z',
-    claudeSessionId: `claude-${name}`,
-    codexThreadId: undefined,
+    providerContext: createClaudeProviderContext({
+      sessionId: `claude-${name}`,
+    }),
     activeTurnId: undefined,
-    geminiSessionId: undefined,
     resumedFrom: undefined,
     conversationEntryCount: 1,
     events: [
@@ -131,7 +143,7 @@ describe('prune stale non-human sessions', () => {
         [resumableSentinel.name, resumableSentinel],
       ]),
       exitedStreamSessions: new Map<string, ExitedStreamSessionState>([
-        [exitedSentinel.claudeSessionId!, exitedSentinel],
+        [exitedSentinel.name, exitedSentinel],
       ]),
       isLiveSessionResumeAvailable: vi.fn(async (session: StreamSession) => session.name === 'sentinel-resumable'),
     })
@@ -143,12 +155,12 @@ describe('prune stale non-human sessions', () => {
       expect.objectContaining({
         name: 'worker-stale-owned',
         sessionType: 'worker',
-        creator: { kind: 'commander', id: 'cmdr-athena' },
+        creator: { kind: 'commander', id: 'cmdr-atlas' },
         lifecycle: 'stale',
         reason: 'stale-non-human-ttl',
       }),
       expect.objectContaining({
-        name: exitedSentinel.claudeSessionId,
+        name: exitedSentinel.name,
         sessionType: 'sentinel',
         creator: { kind: 'sentinel', id: 'sentinel-1' },
         lifecycle: 'exited',
@@ -161,7 +173,7 @@ describe('prune stale non-human sessions', () => {
     const nowMs = Date.parse('2026-04-26T12:00:00.000Z')
     const staleCodex = makeLiveSession('worker-stale-codex', {
       agentType: 'codex',
-      codexThreadId: 'thread-1',
+      providerContext: createCodexProviderContext({ threadId: 'thread-1' }),
     })
     const completedCron = makeLiveSession('cron-completed', {
       sessionType: 'cron',
@@ -170,7 +182,6 @@ describe('prune stale non-human sessions', () => {
       completedTurnAt: '2026-04-26T08:00:00.000Z',
       finalResultEvent: { type: 'result', subtype: 'success' } as never,
     })
-    const completedCronKill = completedCron.process.kill as ReturnType<typeof vi.fn>
     const exitedCommander = makeExitedSession('worker-exited-old')
 
     const ctx = makeBaseContext({
@@ -190,7 +201,7 @@ describe('prune stale non-human sessions', () => {
           finalComment: '',
           costUsd: 0,
           sessionType: 'worker',
-          creator: { kind: 'commander', id: 'cmdr-athena' },
+          creator: { kind: 'commander', id: 'cmdr-atlas' },
         }],
       ]),
     })
@@ -199,11 +210,14 @@ describe('prune stale non-human sessions', () => {
     const pruned = await pruneStaleNonHumanSessions(PRUNER_CONFIG, nowMs)
 
     expect(pruned).toBe(3)
-    expect(ctx.teardownCodexSessionRuntime).toHaveBeenCalledWith(
+    expect(ctx.teardownProviderSessionMock).toHaveBeenCalledWith(
       staleCodex,
       'Pruning stale non-human session',
     )
-    expect(completedCronKill).toHaveBeenCalledWith('SIGTERM')
+    expect(ctx.teardownProviderSessionMock).toHaveBeenCalledWith(
+      completedCron,
+      'Pruning stale non-human session',
+    )
     expect(ctx.sessions.has(staleCodex.name)).toBe(false)
     expect(ctx.sessions.has(completedCron.name)).toBe(false)
     expect(ctx.exitedStreamSessions.has('worker-exited-old')).toBe(false)

@@ -30,11 +30,11 @@ describe('dispatch worker creator wiring', () => {
           'content-type': 'application/json',
         },
         body: JSON.stringify({
-          name: 'commander-cmdr-athena',
+          name: 'commander-cmdr-atlas',
           mode: 'default',
           transportType: 'stream',
           sessionType: 'commander',
-          creator: { kind: 'commander', id: 'cmdr-athena' },
+          creator: { kind: 'commander', id: 'cmdr-atlas' },
           cwd: '/tmp',
         }),
       })
@@ -47,7 +47,7 @@ describe('dispatch worker creator wiring', () => {
           'content-type': 'application/json',
         },
         body: JSON.stringify({
-          spawnedBy: 'commander-cmdr-athena',
+          spawnedBy: 'commander-cmdr-atlas',
           task: 'Investigate worker state drift',
         }),
       })
@@ -55,8 +55,8 @@ describe('dispatch worker creator wiring', () => {
       expect(dispatchResponse.status).toBe(202)
       expect(await dispatchResponse.json()).toEqual(expect.objectContaining({
         sessionType: 'worker',
-        spawnedBy: 'commander-cmdr-athena',
-        creator: { kind: 'commander', id: 'cmdr-athena' },
+        spawnedBy: 'commander-cmdr-atlas',
+        creator: { kind: 'commander', id: 'cmdr-atlas' },
       }))
       expect(spawned).toHaveLength(2)
     } finally {

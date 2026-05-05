@@ -8,8 +8,8 @@ describe('parseCodexApprovalId', () => {
   })
 
   it('accepts positive requestIds', () => {
-    const parsed = parseCodexApprovalId('codex:commander-athena:17')
-    expect(parsed).toEqual({ sessionName: 'commander-athena', requestId: 17 })
+    const parsed = parseCodexApprovalId('codex:commander-atlas:17')
+    expect(parsed).toEqual({ sessionName: 'commander-atlas', requestId: 17 })
   })
 
   it('rejects negative requestIds', () => {

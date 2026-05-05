@@ -3,6 +3,7 @@ import {
   type ProviderApprovalAdapter,
 } from '../../../policies/provider-approval-adapter.js'
 import { registerApprovalAdapter } from '../../../policies/types.js'
+import { createClaudeProviderContext } from '../../providers/provider-session-context.js'
 import type { StreamSession } from '../../types.js'
 
 export interface ClaudeApprovalHookEvent {
@@ -48,6 +49,7 @@ export function buildFallbackClaudeApprovalSession(sessionName = 'claude-hook'):
     agentType: 'claude',
     mode: 'default',
     cwd: process.cwd(),
+    providerContext: createClaudeProviderContext(),
     spawnedWorkers: [],
     process: {} as StreamSession['process'],
     events: [],

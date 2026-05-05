@@ -1,5 +1,6 @@
 import { formatStoredApiKeyUnauthorizedMessage } from './api-key-recovery.js'
 import { type HammurabiConfig, normalizeEndpoint, readHammurabiConfig } from './config.js'
+import { listWorkerDispatchProviderIds, loadProviderRegistry } from './providers.js'
 import {
   isOwnedByCommander,
   normalizeSessionCreator,
@@ -24,8 +25,9 @@ interface DispatchOptions {
   spawnedBy?: string
   task?: string
   machine?: string
-  agentType?: 'claude' | 'codex' | 'gemini'
+  agentType?: string
   cwd?: string
+  skipValidation?: boolean
 }
 
 interface ListOptions {
@@ -91,7 +93,7 @@ function printUsage(stdout: Writable): void {
   stdout.write('Usage:\n')
   stdout.write('  hammurabi workers list [--all] [--all-creators]\n')
   stdout.write(
-    '  hammurabi workers dispatch [--session <name>] [--task <text>] [--cwd <path>] [--machine <id>] [--agent claude|codex|gemini]\n',
+    '  hammurabi workers dispatch [--session <name>] [--task <text>] [--cwd <path>] [--machine <id>] [--agent <provider>] [--skip-validation]\n',
   )
   stdout.write('  hammurabi workers cleanup [--dry-run]\n')
   stdout.write('  hammurabi workers kill <name>\n')
@@ -201,11 +203,16 @@ function parseDispatchOptions(args: readonly string[]): DispatchOptions | null {
   let spawnedBy: string | undefined
   let task: string | undefined
   let machine: string | undefined
-  let agentType: 'claude' | 'codex' | 'gemini' | undefined
+  let agentType: string | undefined
   let cwd: string | undefined
+  let skipValidation = false
 
   for (let index = 0; index < args.length; index += 1) {
     const flag = args[index]
+    if (flag === '--skip-validation') {
+      skipValidation = true
+      continue
+    }
     const value = args[index + 1]?.trim()
 
     if (
@@ -228,9 +235,6 @@ function parseDispatchOptions(args: readonly string[]): DispatchOptions | null {
     } else if (flag === '--machine') {
       machine = value
     } else if (flag === '--agent') {
-      if (value !== 'claude' && value !== 'codex' && value !== 'gemini') {
-        return null
-      }
       agentType = value
     } else if (flag === '--cwd') {
       if (!value.startsWith('/')) {
@@ -255,6 +259,7 @@ function parseDispatchOptions(args: readonly string[]): DispatchOptions | null {
     machine,
     agentType,
     cwd,
+    skipValidation,
   }
 }
 
@@ -727,12 +732,14 @@ async function runCleanup(
 
   const payload = isObject(result.data) ? result.data : {}
   const pruned = isObject(payload.pruned) ? payload.pruned : {}
-  const cron = typeof pruned.cron === 'number' ? pruned.cron : 0
+  const automation = typeof pruned.automation === 'number'
+    ? pruned.automation
+    : (typeof pruned.cron === 'number' ? pruned.cron : 0)
   const nonHuman = typeof pruned.nonHuman === 'number' ? pruned.nonHuman : 0
 
   if (options.dryRun) {
     const candidates = parseSweepCandidates(payload)
-    stdout.write(`Sweep dry run: cron=${cron} nonHuman=${nonHuman}\n`)
+    stdout.write(`Sweep dry run: automation=${automation} nonHuman=${nonHuman}\n`)
     if (candidates.length === 0) {
       stdout.write('No prune candidates.\n')
       return 0
@@ -745,7 +752,7 @@ async function runCleanup(
     return 0
   }
 
-  stdout.write(`Sweep complete: cron=${cron} nonHuman=${nonHuman}\n`)
+  stdout.write(`Sweep complete: automation=${automation} nonHuman=${nonHuman}\n`)
   return 0
 }
 
@@ -831,6 +838,23 @@ export async function runWorkersCli(
       printUsage(stdout)
       return 1
     }
+
+    if (dispatchOptions.agentType && !dispatchOptions.skipValidation) {
+      try {
+        const { providers } = await loadProviderRegistry(config, { fetchImpl })
+        const validAgentTypes = new Set(listWorkerDispatchProviderIds(providers))
+        if (!validAgentTypes.has(dispatchOptions.agentType)) {
+          stderr.write(
+            `Invalid --agent "${dispatchOptions.agentType}". Expected one of: ${[...validAgentTypes].join(', ')}.\n`,
+          )
+          return 1
+        }
+      } catch {
+        stderr.write('Cannot validate --agent without a running Hammurabi server. Start the server first or pass --skip-validation.\n')
+        return 1
+      }
+    }
+
     return runDispatch(config, fetchImpl, dispatchOptions, stdout, stderr)
   }
 

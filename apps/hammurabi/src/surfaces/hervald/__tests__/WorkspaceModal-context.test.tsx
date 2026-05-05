@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act } from 'react'
+import { flushSync } from 'react-dom'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -30,7 +30,7 @@ async function renderModal(onInsertPath: (path: string) => void) {
   document.body.appendChild(container)
   root = createRoot(container)
 
-  await act(async () => {
+  flushSync(() => {
     root?.render(
       <WorkspaceModal
         open
@@ -49,7 +49,7 @@ describe('WorkspaceModal context wiring', () => {
 
   afterEach(async () => {
     if (root) {
-      await act(async () => {
+      flushSync(() => {
         root?.unmount()
       })
     }
@@ -66,7 +66,7 @@ describe('WorkspaceModal context wiring', () => {
 
     await renderModal(onInsertPath)
 
-    await act(async () => {
+    flushSync(() => {
       ;(document.body.querySelector('[data-testid="insert-path"]') as HTMLButtonElement).click()
     })
 

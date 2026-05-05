@@ -120,8 +120,8 @@ export function TerminalView({
 
       const wsBase = getWsBase()
       const url = wsBase
-        ? `${wsBase}/api/agents/sessions/${encodeURIComponent(sessionName)}/terminal?${params}`
-        : `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/api/agents/sessions/${encodeURIComponent(sessionName)}/terminal?${params}`
+        ? `${wsBase}/api/agents/sessions/${encodeURIComponent(sessionName)}/ws?${params}`
+        : `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/api/agents/sessions/${encodeURIComponent(sessionName)}/ws?${params}`
 
       const nextSocket = new WebSocket(url)
       nextSocket.binaryType = 'arraybuffer'

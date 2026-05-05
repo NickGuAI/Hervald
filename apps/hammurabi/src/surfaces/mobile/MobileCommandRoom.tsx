@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { useApprovalDecision, type PendingApproval } from '@/hooks/use-approvals'
 import { cn } from '@/lib/utils'
@@ -10,7 +10,7 @@ import {
 import type { SessionComposerSubmitPayload } from '@modules/agents/components/SessionComposer'
 import type { MsgItem } from '@modules/agents/messages/model'
 import type { CommanderAgentType, CommanderSession } from '@modules/commanders/hooks/useCommander'
-import type { CenterColumnProps } from '@/surfaces/hervald/CenterColumn'
+import type { ConversationRecord } from '@modules/conversation/hooks/use-conversations'
 import type { Commander, Worker } from '@/surfaces/hervald/SessionRow'
 import { MobileApprovalSheet } from './MobileApprovalSheet'
 import { MobileAutomations } from './MobileAutomations'
@@ -20,7 +20,12 @@ import { MobileSessionsList } from './MobileSessionsList'
 import { MobileSettings } from './MobileSettings'
 import { MobileTeamSheet } from './MobileTeamSheet'
 import { MobileWorkspaceSheet } from './MobileWorkspaceSheet'
-import { buildSearchWithSurface, parseMobileRoute } from './route'
+import {
+  buildConversationSearch,
+  buildSearchWithSurface,
+  parseMobileRoute,
+} from './route'
+import { orderMobileConversations } from './orderMobileConversations'
 
 type SheetKind = 'team' | 'approval' | 'workspace' | null
 
@@ -28,28 +33,7 @@ function approvalMatchesCommander(approval: PendingApproval, commander: Commande
   return approval.commanderId === commander.id || approval.commanderName === commander.name
 }
 
-type MobileCommandRoomPanelProps = Pick<
-  CenterColumnProps,
-  | 'crons'
-  | 'cronsLoading'
-  | 'cronsError'
-  | 'addCron'
-  | 'addCronPending'
-  | 'toggleCron'
-  | 'toggleCronPending'
-  | 'toggleCronId'
-  | 'updateCron'
-  | 'updateCronPending'
-  | 'updateCronId'
-  | 'triggerCron'
-  | 'triggerCronPending'
-  | 'triggerCronId'
-  | 'deleteCron'
-  | 'deleteCronPending'
-  | 'deleteCronId'
->
-
-export interface MobileCommandRoomProps extends MobileCommandRoomPanelProps {
+export interface MobileCommandRoomProps {
   commanders: Commander[]
   commanderSessions: CommanderSession[]
   workers: Worker[]
@@ -64,6 +48,11 @@ export interface MobileCommandRoomProps extends MobileCommandRoomPanelProps {
   composerEnabled: boolean
   composerSendReady: boolean
   canQueueDraft: boolean
+  theme: 'light' | 'dark'
+  onSetTheme: (theme: 'light' | 'dark') => void
+  conversations?: ConversationRecord[]
+  selectedConversationId?: string | null
+  onSelectConversationId?: (conversationId: string | null) => void
   isStreaming?: boolean
   streamStatus?: 'connecting' | 'connected' | 'disconnected' | 'closed' | null
   queueSnapshot: SessionQueueSnapshot
@@ -77,8 +66,36 @@ export interface MobileCommandRoomProps extends MobileCommandRoomPanelProps {
     payload: SessionComposerSubmitPayload,
   ) => boolean | void | Promise<boolean | void>
   workspaceSource: WorkspaceSource | null
-  onStartCommander?: (agentType: CommanderAgentType) => void
   onStopCommander?: () => void
+  onCreateChatForCommander?: (commanderId: string) => void | Promise<void>
+  onCreateConversation?: (
+    commanderId: string,
+    agentType: AgentType,
+  ) => Promise<ConversationRecord | null> | ConversationRecord | null
+  requestedNewChatCommanderId?: string | null
+  onStartConversation?: (conversationId: string) => void | Promise<void>
+  onStopConversation?: (conversationId: string) => void | Promise<void>
+  onRenameConversation?: (conversationId: string, name: string) => void | Promise<void>
+  onSwapConversationProvider?: (conversationId: string, agentType: AgentType) => void | Promise<void>
+  onArchiveConversation?: (conversationId: string) => void | Promise<void>
+  onRemoveConversation?: (conversationId: string) => void | Promise<void>
+  crons?: unknown
+  cronsLoading?: unknown
+  cronsError?: unknown
+  addCron?: unknown
+  addCronPending?: unknown
+  toggleCron?: unknown
+  toggleCronPending?: unknown
+  toggleCronId?: unknown
+  updateCron?: unknown
+  updateCronPending?: unknown
+  updateCronId?: unknown
+  triggerCron?: unknown
+  triggerCronPending?: unknown
+  triggerCronId?: unknown
+  deleteCron?: unknown
+  deleteCronPending?: unknown
+  deleteCronId?: unknown
 }
 
 export function MobileCommandRoom({
@@ -96,6 +113,11 @@ export function MobileCommandRoom({
   composerEnabled,
   composerSendReady,
   canQueueDraft,
+  theme,
+  onSetTheme,
+  conversations,
+  selectedConversationId = null,
+  onSelectConversationId = () => {},
   isStreaming = false,
   streamStatus,
   queueSnapshot,
@@ -107,13 +129,22 @@ export function MobileCommandRoom({
   onSend,
   onQueue,
   workspaceSource,
-  onStartCommander,
   onStopCommander,
-  ...automationProps
+  onCreateConversation,
+  requestedNewChatCommanderId = null,
+  onStartConversation,
+  onStopConversation,
+  onRenameConversation,
+  onSwapConversationProvider,
+  onArchiveConversation,
+  onRemoveConversation,
 }: MobileCommandRoomProps) {
   const location = useLocation()
   const navigate = useNavigate()
-  const route = useMemo(() => parseMobileRoute(location.pathname), [location.pathname])
+  const route = useMemo(
+    () => parseMobileRoute(location.pathname, location.search),
+    [location.pathname, location.search],
+  )
   const [sheet, setSheet] = useState<SheetKind>(null)
   const [selectedApprovalId, setSelectedApprovalId] = useState<string | null>(null)
   const [contextFilePaths, setContextFilePaths] = useState<string[]>([])
@@ -162,6 +193,7 @@ export function MobileCommandRoom({
       : [],
     [activeCommander, pendingApprovals],
   )
+  const hasConversationMode = Array.isArray(conversations)
   const activeCommanderWorkers = useMemo(
     () => activeCommander
       ? workers.filter((worker) => worker.commanderId === activeCommander.id)
@@ -174,6 +206,31 @@ export function MobileCommandRoom({
       : null,
     [activeCommander, commanderSessions],
   )
+  const visibleConversations = useMemo(
+    () => orderMobileConversations(
+      (conversations ?? []).filter((conversation) => (
+        conversation.commanderId === activeCommander?.id
+        && conversation.status !== 'archived'
+        && (
+          conversation.status === 'active'
+          || conversation.id === selectedConversationId
+        )
+      )),
+    ),
+    [activeCommander?.id, conversations, selectedConversationId],
+  )
+  const visibleConversationsRef = useRef<ConversationRecord[]>(visibleConversations)
+  visibleConversationsRef.current = visibleConversations
+  const selectedConversationIdRef = useRef<string | null>(selectedConversationId)
+  selectedConversationIdRef.current = selectedConversationId
+  const activeCommanderIdRef = useRef<string | null>(activeCommander?.id ?? null)
+  activeCommanderIdRef.current = activeCommander?.id ?? null
+  const locationRef = useRef({ pathname: location.pathname, search: location.search })
+  locationRef.current = { pathname: location.pathname, search: location.search }
+  const routeInChatRef = useRef(route.inChat)
+  routeInChatRef.current = route.inChat
+  const hasConversationModeRef = useRef(hasConversationMode)
+  hasConversationModeRef.current = hasConversationMode
   const [durationSec, setDurationSec] = useState<number | undefined>(undefined)
   const selectedApproval = pendingApprovals.find((approval) => approval.id === selectedApprovalId) ?? null
 
@@ -208,6 +265,33 @@ export function MobileCommandRoom({
     navigate(`${pathname}${surfaceSearch ? `?${surfaceSearch}` : ''}`)
   }
 
+  const handleSelectConversationId = useCallback((conversationId: string | null) => {
+    if (conversationId !== selectedConversationIdRef.current) {
+      onSelectConversationId(conversationId)
+    }
+
+    if (!hasConversationModeRef.current || !routeInChatRef.current) {
+      return
+    }
+
+    const activeCommanderId = activeCommanderIdRef.current
+    if (!activeCommanderId) {
+      return
+    }
+
+    const { pathname, search } = locationRef.current
+    const nextSearch = buildConversationSearch(search, conversationId)
+    const currentSearch = search.startsWith('?')
+      ? search.slice(1)
+      : search
+    const nextPathname = `/command-room/sessions/${encodeURIComponent(activeCommanderId)}`
+    if (pathname === nextPathname && currentSearch === nextSearch) {
+      return
+    }
+
+    navigate(`${nextPathname}${nextSearch ? `?${nextSearch}` : ''}`, { replace: true })
+  }, [navigate, onSelectConversationId])
+
   useEffect(() => {
     if (!route.inChat || activeCommander || commanders.length === 0) {
       return
@@ -217,6 +301,52 @@ export function MobileCommandRoom({
       { replace: true },
     )
   }, [activeCommander, commanders, navigate, route.inChat, surfaceSearch])
+
+  useEffect(() => {
+    if (!hasConversationMode) {
+      return
+    }
+    if (!route.inChat || !activeCommander) {
+      return
+    }
+    if (route.commanderId && route.commanderId !== selectedCommanderId) {
+      return
+    }
+    if (requestedNewChatCommanderId === activeCommander.id) {
+      if (selectedConversationIdRef.current !== null) {
+        handleSelectConversationId(null)
+      }
+      return
+    }
+
+    const currentVisibleConversations = visibleConversationsRef.current
+
+    if (currentVisibleConversations.length === 0) {
+      if (selectedConversationIdRef.current !== null) {
+        handleSelectConversationId(null)
+      }
+      return
+    }
+
+    const requestedConversationId = route.conversationId
+    const requestedConversation = requestedConversationId
+      ? currentVisibleConversations.find((conversation) => conversation.id === requestedConversationId)
+      : null
+    const nextConversationId = requestedConversation?.id ?? currentVisibleConversations[0]?.id ?? null
+
+    if (nextConversationId !== selectedConversationIdRef.current) {
+      handleSelectConversationId(nextConversationId)
+    }
+  }, [
+    activeCommander?.id,
+    handleSelectConversationId,
+    route.commanderId,
+    route.conversationId,
+    route.inChat,
+    requestedNewChatCommanderId,
+    selectedCommanderId,
+    hasConversationMode,
+  ])
 
   function openApproval(approvalId: string | null) {
     setSelectedApprovalId(approvalId ?? null)
@@ -260,20 +390,33 @@ export function MobileCommandRoom({
             composerEnabled={composerEnabled}
             composerSendReady={composerSendReady}
             canQueueDraft={canQueueDraft}
+            conversations={hasConversationMode ? visibleConversations : undefined}
+            selectedConversationId={hasConversationMode ? selectedConversationId : undefined}
             isStreaming={isStreaming}
             agentType={activeCommanderSession?.agentType ?? selectedCommanderAgentType}
-            startAgentType={selectedCommanderAgentType ?? activeCommanderSession?.agentType}
             wsStatus={streamStatus}
             costUsd={activeCommanderSession?.totalCostUsd}
             durationSec={durationSec}
+            theme={theme}
+            onSetTheme={onSetTheme}
             queueSnapshot={queueSnapshot}
             queueError={queueError}
             isQueueMutating={isQueueMutating}
             onBack={() => navigateTo('/command-room/sessions')}
             onOpenTeam={() => setSheet('team')}
             onOpenWorkspace={() => setSheet('workspace')}
-            onStartCommander={selectedCommanderRunning ? undefined : onStartCommander}
+            onSelectConversationId={handleSelectConversationId}
+            onCreateConversation={activeCommander
+              ? (agentType) => onCreateConversation?.(activeCommander.id, agentType)
+              : undefined}
+            onStartConversation={onStartConversation}
+            onStopConversation={onStopConversation}
+            onRenameConversation={onRenameConversation}
+            onSwapConversationProvider={onSwapConversationProvider}
+            onArchiveConversation={onArchiveConversation}
+            onRemoveConversation={onRemoveConversation}
             onStopCommander={selectedCommanderRunning ? onStopCommander : undefined}
+            showCreateConversationPanel={requestedNewChatCommanderId === activeCommander.id}
             onAnswer={onAnswer}
             onApproveApproval={(approval) => approvalDecision.mutateAsync({ approval, decision: 'approve' })}
             onDenyApproval={(approval) => approvalDecision.mutateAsync({ approval, decision: 'reject' })}
@@ -303,7 +446,6 @@ export function MobileCommandRoom({
             commanders={commanderSessions}
             selectedCommanderId={selectedCommanderId}
             onSelectCommanderId={onSelectCommanderId}
-            {...automationProps}
           />
         ) : null}
 

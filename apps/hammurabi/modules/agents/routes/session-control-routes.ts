@@ -7,23 +7,22 @@ import {
   markCodexTurnHealthy,
 } from '../adapters/codex/helpers.js'
 import type { QueuedMessage, QueuedMessageImage, QueuedMessagePriority } from '../message-queue.js'
+import type { ProviderCreateOptions } from '../providers/provider-adapter.js'
+import { getProvider } from '../providers/registry.js'
 import { parseCodexApprovalDecision, parseSessionName } from '../session/input.js'
 import { snapshotDeletedResumableStreamSession } from '../session/state.js'
 import type {
   AnySession,
   ClaudePermissionMode,
   CodexApprovalDecision,
-  CodexSessionCreateOptions,
   CompletedSession,
   ExitedStreamSessionState,
-  GeminiSessionCreateOptions,
   MachineConfig,
   PersistedStreamSession,
   PersistedSessionsState,
   ResolvedResumableSessionSource,
   StreamJsonEvent,
   StreamSession,
-  StreamSessionCreateOptions,
 } from '../types.js'
 
 interface SessionQueueSnapshot {
@@ -60,36 +59,22 @@ interface SessionControlRouteDeps {
     reason: string
   }
   clearCodexResumeMetadata(sessionName: string): void
-  createCodexAppServerSession(
-    sessionName: string,
-    mode: ClaudePermissionMode,
-    task: string,
-    cwd: string | undefined,
-    options?: CodexSessionCreateOptions,
-  ): Promise<StreamSession>
-  createGeminiAcpSession(
-    sessionName: string,
-    mode: ClaudePermissionMode,
-    task: string,
-    cwd: string | undefined,
-    options?: GeminiSessionCreateOptions,
-  ): Promise<StreamSession>
-  createStreamSession(
+  createProviderStreamSession(
     sessionName: string,
     mode: ClaudePermissionMode,
     task: string,
     cwd: string | undefined,
     machine: MachineConfig | undefined,
-    agentType?: 'claude',
-    options?: StreamSessionCreateOptions,
-  ): StreamSession
+    agentType?: StreamSession['agentType'],
+    options?: Omit<ProviderCreateOptions, 'sessionName' | 'mode' | 'task' | 'cwd' | 'machine'>,
+  ): Promise<StreamSession>
   readMachineRegistry(): Promise<MachineConfig[]>
   readPersistedSessionsState(): Promise<PersistedSessionsState>
   resolveResumableSessionSource(
     sessionName: string,
     persistedState: PersistedSessionsState,
   ): { source?: ResolvedResumableSessionSource; error?: { status: number; message: string } }
-  retireLiveCodexSessionForResume(sessionName: string, session: StreamSession): void
+  retireLiveSessionForResume(sessionName: string, session: StreamSession): void
   schedulePersistedSessionsWrite(): void
   sendImmediateTextToStreamSession(session: StreamSession, text: string): Promise<ImmediateSendResult>
   queueTextToStreamSession(
@@ -118,8 +103,7 @@ interface SessionControlRouteDeps {
     options?: { includeCurrentMessage?: boolean },
   ): void
   resumeRestoredQueueDrain(session: StreamSession): void
-  teardownCodexSessionRuntime(session: StreamSession, reason: string): Promise<void>
-  teardownGeminiSessionRuntime(session: StreamSession, reason: string): Promise<void>
+  teardownProviderSession(session: StreamSession, reason: string): Promise<void>
   initializeAutoRotationState(session: StreamSession): void
 }
 
@@ -458,15 +442,11 @@ export function registerSessionControlRoutes(deps: SessionControlRouteDeps): voi
     if (session.kind === 'pty') {
       session.pty.kill()
     } else if (session.kind === 'stream') {
-      if (session.agentType === 'codex') {
+      if (getProvider(session.agentType)?.id === 'codex') {
         clearCodexTurnWatchdog(session)
         markCodexTurnHealthy(session)
-        await deps.teardownCodexSessionRuntime(session, `Session "${sessionName}" deleted`)
-      } else if (session.agentType === 'gemini') {
-        await deps.teardownGeminiSessionRuntime(session, `Session "${sessionName}" deleted`)
-      } else {
-        session.process.kill('SIGTERM')
       }
+      await deps.teardownProviderSession(session, `Session "${sessionName}" deleted`)
     }
 
     const exitedSnapshot = session.kind === 'stream'
@@ -532,12 +512,14 @@ export function registerSessionControlRoutes(deps: SessionControlRouteDeps): voi
       }
     }
 
+    const sourceProvider = getProvider(source.agentType)
+    const sourceResumeId = sourceProvider?.getResumeId(source)
     if (
       !liveSession &&
-      source.agentType === 'codex' &&
-      source.codexThreadId &&
+      sourceProvider?.id === 'codex' &&
+      sourceResumeId &&
       !source.host &&
-      !(await hasCodexRolloutFile(source.codexThreadId, source.createdAt))
+      !(await hasCodexRolloutFile(sourceResumeId, source.createdAt))
     ) {
       deps.clearCodexResumeMetadata(originalName)
       res.status(409).json({
@@ -547,9 +529,17 @@ export function registerSessionControlRoutes(deps: SessionControlRouteDeps): voi
     }
 
     try {
-      const resumedSession = source.agentType === 'codex'
-        ? await deps.createCodexAppServerSession(originalName, source.mode, '', source.cwd, {
-          resumeSessionId: source.codexThreadId,
+      const resumedSession = await deps.createProviderStreamSession(
+        originalName,
+        source.mode,
+        '',
+        source.cwd,
+        machine,
+        source.agentType,
+        {
+          effort: source.effort,
+          adaptiveThinking: source.adaptiveThinking,
+          resumeSessionId: sourceResumeId,
           resumedFrom: source.resumedFrom,
           sessionType: source.sessionType,
           creator: source.creator,
@@ -557,45 +547,13 @@ export function registerSessionControlRoutes(deps: SessionControlRouteDeps): voi
           currentSkillInvocation: source.currentSkillInvocation,
           spawnedBy: source.spawnedBy,
           spawnedWorkers: source.spawnedWorkers,
-          machine,
-        })
-        : source.agentType === 'gemini'
-          ? await deps.createGeminiAcpSession(originalName, source.mode, '', source.cwd, {
-            resumeSessionId: source.geminiSessionId,
-            resumedFrom: source.resumedFrom,
-            sessionType: source.sessionType,
-            creator: source.creator,
-            conversationId: source.conversationId,
-            currentSkillInvocation: source.currentSkillInvocation,
-            spawnedBy: source.spawnedBy,
-            spawnedWorkers: source.spawnedWorkers,
-            machine,
-          })
-          : deps.createStreamSession(
-            originalName,
-            source.mode,
-            '',
-            source.cwd,
-            machine,
-            'claude',
-            {
-              effort: source.effort,
-              adaptiveThinking: source.adaptiveThinking,
-              resumeSessionId: source.claudeSessionId,
-              resumedFrom: source.resumedFrom,
-              sessionType: source.sessionType,
-              creator: source.creator,
-              conversationId: source.conversationId,
-              currentSkillInvocation: source.currentSkillInvocation,
-              spawnedBy: source.spawnedBy,
-              spawnedWorkers: source.spawnedWorkers,
-            },
-          )
+        },
+      )
       deps.applyRestoredQueueState(resumedSession, source, {
         includeCurrentMessage: !source.hadResult,
       })
       if (liveSession) {
-        deps.retireLiveCodexSessionForResume(originalName, liveSession)
+        deps.retireLiveSessionForResume(originalName, liveSession)
       }
       completedSessions.delete(originalName)
       sessions.set(originalName, resumedSession)

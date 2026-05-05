@@ -5,6 +5,7 @@ import { flushSync } from 'react-dom'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { PendingApproval } from '@/hooks/use-approvals'
+import type { ConversationRecord } from '@modules/conversation/hooks/use-conversations'
 import { MobileSessionShell } from '../page-shell/MobileSessionShell'
 
 const openImagePickerSpy = vi.fn()
@@ -111,7 +112,7 @@ function buildApproval(overrides: Partial<PendingApproval> = {}): PendingApprova
     source: 'codex',
     commanderId: 'cmd-1',
     commanderName: 'Test Commander',
-    sessionName: 'commander-athena',
+    sessionName: 'commander-atlas',
     requestedAt: '2026-04-21T15:00:00.000Z',
     requestId: 'approval-1',
     reason: 'Needs approval',
@@ -125,9 +126,33 @@ function buildApproval(overrides: Partial<PendingApproval> = {}): PendingApprova
   }
 }
 
+function buildConversation(overrides: Partial<ConversationRecord> = {}): ConversationRecord {
+  return {
+    id: 'conv-1',
+    commanderId: 'cmd-1',
+    surface: 'ui',
+    status: 'active',
+    currentTask: null,
+    lastHeartbeat: null,
+    heartbeat: {
+      intervalMs: 300000,
+      messageTemplate: '',
+      lastSentAt: null,
+    },
+    agentType: 'claude',
+    providerContext: null,
+    liveSession: null,
+    createdAt: '2026-05-01T08:00:00.000Z',
+    updatedAt: '2026-05-01T08:05:00.000Z',
+    lastMessageAt: '2026-05-01T08:05:00.000Z',
+    name: 'Health Coach',
+    ...overrides,
+  }
+}
+
 function buildProps(overrides: Partial<ShellProps> = {}): ShellProps {
   return {
-    sessionName: 'commander-athena',
+    sessionName: 'commander-atlas',
     sessionLabel: 'Test Commander',
     agentType: 'claude',
     wsStatus: 'connected',
@@ -152,6 +177,7 @@ function buildProps(overrides: Partial<ShellProps> = {}): ShellProps {
     composerEnabled: true,
     composerSendReady: true,
     theme: 'dark',
+    onSetTheme: vi.fn(),
     onBack: vi.fn(),
     onKill: vi.fn(async () => undefined),
     onOpenWorkspace: vi.fn(),
@@ -207,10 +233,48 @@ describe('MobileSessionShell', () => {
   it('renders the header with label and meta', async () => {
     renderShell()
 
+    const headerCenter = document.body.querySelector('.session-header-center')
+    expect(headerCenter?.textContent).toContain('Test Commander')
+    expect(headerCenter?.textContent).toContain('connected')
+    expect(headerCenter?.textContent).toContain('2m 05s')
+    expect(headerCenter?.textContent).not.toContain('$1.23')
+
+    flushSync(() => {
+      clickSelector('button[aria-label="Session actions"]')
+    })
+
     expect(document.body.textContent).toContain('Test Commander')
-    expect(document.body.textContent).toContain('connected')
     expect(document.body.textContent).toContain('$1.23')
-    expect(document.body.textContent).toContain('2m 05s')
+  })
+
+  it('renders chatLabel as a footnote under the title', async () => {
+    renderShell({ chatLabel: 'Health Coach' })
+
+    const chatLabel = document.body.querySelector('.session-header-chat')
+    expect(chatLabel?.textContent).toBe('Health Coach')
+    expect(document.body.querySelector('.session-header-name')?.textContent).toBe('Test Commander')
+  })
+
+  it('surfaces cost in the overflow menu drawer', async () => {
+    renderShell()
+
+    flushSync(() => {
+      clickSelector('button[aria-label="Session actions"]')
+    })
+
+    expect(document.body.textContent).toContain('Cost')
+    expect(document.body.textContent).toContain('$1.23')
+  })
+
+  it('omits the cost row when costUsd is undefined', async () => {
+    renderShell({ costUsd: undefined })
+
+    flushSync(() => {
+      clickSelector('button[aria-label="Session actions"]')
+    })
+
+    expect(document.body.textContent).not.toContain('Cost')
+    expect(document.body.textContent).not.toContain('$1.23')
   })
 
   it('opens the kebab menu with workers, workspace, kill, and back actions', async () => {
@@ -443,6 +507,122 @@ describe('MobileSessionShell', () => {
     expect(document.body.querySelector('[data-testid="add-to-chat-sheet"]')).toBeNull()
   })
 
+  it('renders exactly one kebab on the header right side', async () => {
+    renderShell({
+      conversation: buildConversation(),
+      onRenameConversation: vi.fn(async () => undefined),
+      onSwapConversationProvider: vi.fn(async () => undefined),
+      onArchiveConversation: vi.fn(async () => undefined),
+      onRemoveConversation: vi.fn(async () => undefined),
+    })
+
+    expect(document.body.querySelectorAll('button[aria-label="Session actions"]')).toHaveLength(1)
+    expect(document.body.querySelector('[data-testid="mobile-chat-actions-button"]')).toBeNull()
+  })
+
+  it('does not render a top-level Stop button', async () => {
+    renderShell({
+      conversation: buildConversation({ status: 'active' }),
+      onStopConversation: vi.fn(async () => undefined),
+    })
+
+    expect(document.body.querySelector('[data-testid="mobile-chat-stop-button"]')).toBeNull()
+    expect(document.body.textContent).not.toContain('Stop chat')
+  })
+
+  it('exposes a Theme toggle in the overflow drawer', async () => {
+    const onSetTheme = vi.fn()
+    renderShell({
+      theme: 'light',
+      onSetTheme,
+      rootClassName: 'session-view-overlay hv-light',
+    })
+
+    flushSync(() => {
+      clickSelector('button[aria-label="Session actions"]')
+    })
+    flushSync(() => {
+      clickSelector('button[aria-label="Use dark theme"]')
+    })
+
+    expect(onSetTheme).toHaveBeenCalledWith('dark')
+  })
+
+  it('exposes conversation Start in drawer when canStartConversation', async () => {
+    const onStartConversation = vi.fn(async () => undefined)
+    renderShell({
+      conversation: buildConversation({ status: 'idle' }),
+      onStartConversation,
+    })
+
+    flushSync(() => {
+      clickSelector('button[aria-label="Session actions"]')
+    })
+    expect(document.body.textContent).toContain('Start chat')
+
+    flushSync(() => {
+      clickButtonByText('Start chat')
+    })
+
+    expect(onStartConversation).toHaveBeenCalledWith('conv-1')
+  })
+
+  it('exposes conversation Stop in drawer when canStopConversation', async () => {
+    const onStopConversation = vi.fn(async () => undefined)
+    renderShell({
+      conversation: buildConversation({ status: 'active' }),
+      onStopConversation,
+    })
+
+    flushSync(() => {
+      clickSelector('button[aria-label="Session actions"]')
+    })
+    expect(document.body.textContent).toContain('Stop chat')
+
+    flushSync(() => {
+      clickButtonByText('Stop chat')
+    })
+
+    expect(onStopConversation).toHaveBeenCalledWith('conv-1')
+  })
+
+  it('exposes Rename, Swap provider, Close, and Remove inside the drawer', async () => {
+    renderShell({
+      conversation: buildConversation(),
+      onRenameConversation: vi.fn(async () => undefined),
+      onSwapConversationProvider: vi.fn(async () => undefined),
+      onArchiveConversation: vi.fn(async () => undefined),
+      onRemoveConversation: vi.fn(async () => undefined),
+    })
+
+    flushSync(() => {
+      clickSelector('button[aria-label="Session actions"]')
+    })
+
+    expect(document.body.querySelector('[data-testid="mobile-chat-rename-button"]')?.textContent).toContain('Rename')
+    expect(document.body.querySelector('[data-testid="mobile-chat-provider-menu-button"]')?.textContent).toContain('Swap provider')
+    expect(document.body.querySelector('[data-testid="mobile-chat-close-button"]')?.textContent).toContain('Close')
+    expect(document.body.querySelector('[data-testid="mobile-chat-remove-button"]')?.textContent).toContain('Remove')
+  })
+
+  it('moves Approvals from the header into the drawer when there are pending items', async () => {
+    renderShell({
+      approvals: [buildApproval(), buildApproval({ id: 'approval-2', decisionId: 'approval-2', requestId: 'approval-2' })],
+      onApprovalDecision: vi.fn(async () => undefined),
+    })
+
+    expect(document.body.querySelector('button[aria-label="Approvals (2 pending)"]')).toBeNull()
+
+    flushSync(() => {
+      clickSelector('button[aria-label="Session actions"]')
+    })
+
+    const approvalsButton = document.body.querySelector('button[aria-label="Approvals (2 pending)"]')
+    expect(approvalsButton).not.toBeNull()
+    expect(approvalsButton?.textContent).toContain('Approvals')
+    expect(approvalsButton?.textContent).toContain('2')
+  })
+
   it('renders approvals and forwards approve/reject callbacks', async () => {
     const approval = buildApproval()
     const onApprovalDecision = vi.fn(async () => undefined)
@@ -452,6 +632,9 @@ describe('MobileSessionShell', () => {
       onApprovalDecision,
     })
 
+    flushSync(() => {
+      clickSelector('button[aria-label="Session actions"]')
+    })
     flushSync(() => {
       clickSelector('button[aria-label="Approvals (1 pending)"]')
     })
@@ -476,6 +659,9 @@ describe('MobileSessionShell', () => {
       onApprovalDecision,
     })
 
+    flushSync(() => {
+      clickSelector('button[aria-label="Session actions"]')
+    })
     flushSync(() => {
       clickSelector('button[aria-label="Approvals (1 pending)"]')
     })

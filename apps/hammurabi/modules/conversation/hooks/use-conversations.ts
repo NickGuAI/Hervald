@@ -1,3 +1,4 @@
+import { useMemo } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { fetchJson } from '@/lib/api'
 import type { AgentSession, AgentType } from '@/types'
@@ -10,8 +11,11 @@ import type {
   ConversationSurface,
 } from '@gehirn/hammurabi-cli/session-contract'
 
-const CONVERSATIONS_POLL_INTERVAL_MS = 1000
+const CONVERSATIONS_POLL_INTERVAL_MS = 5000
+const CONVERSATION_DETAIL_STALE_MS = 30_000
+const ACTIVE_CONVERSATION_STALE_MS = 30_000
 const COMMANDER_CONVERSATIONS_QUERY_KEY = ['commanders', 'conversations'] as const
+const COMMANDER_ACTIVE_CONVERSATION_QUERY_KEY = ['commanders', 'conversations', 'active'] as const
 const CONVERSATION_DETAIL_QUERY_KEY = ['conversations', 'detail'] as const
 
 export interface ConversationRecord extends Omit<ConversationContract, 'currentTask' | 'status' | 'surface'> {
@@ -33,6 +37,7 @@ export interface CreateConversationInput {
   id?: string
   channelMeta?: Record<string, unknown>
   currentTask?: CommanderCurrentTask | null
+  agentType?: AgentType
 }
 
 export interface StartConversationInput {
@@ -48,6 +53,18 @@ export interface StopConversationInput {
   conversationId: string
 }
 
+export interface UpdateConversationInput {
+  conversationId: string
+  name?: string
+  agentType?: AgentType
+  status?: ConversationStatus
+}
+
+export interface DeleteConversationInput {
+  conversationId: string
+  hard?: boolean
+}
+
 interface ConversationMessageResponse {
   accepted: boolean
   createdSession: boolean
@@ -56,6 +73,13 @@ interface ConversationMessageResponse {
 
 interface StartConversationResponse {
   conversation: ConversationRecord
+}
+
+interface DeleteConversationResponse {
+  deleted: boolean
+  hard: boolean
+  id: string
+  commanderId: string
 }
 
 function conversationStatusPriority(status: ConversationStatus): number {
@@ -98,6 +122,10 @@ export function commanderConversationsQueryKey(commanderId: string) {
   return [...COMMANDER_CONVERSATIONS_QUERY_KEY, commanderId] as const
 }
 
+export function commanderActiveConversationQueryKey(commanderId: string) {
+  return [...COMMANDER_ACTIVE_CONVERSATION_QUERY_KEY, commanderId] as const
+}
+
 export function conversationDetailQueryKey(conversationId: string) {
   return [...CONVERSATION_DETAIL_QUERY_KEY, conversationId] as const
 }
@@ -107,6 +135,16 @@ async function fetchCommanderConversations(commanderId: string): Promise<Convers
     `/api/commanders/${encodeURIComponent(commanderId)}/conversations`,
   )
 }
+
+export async function fetchCommanderActiveConversation(
+  commanderId: string,
+): Promise<ConversationRecord | null> {
+  return fetchJson<ConversationRecord | null>(
+    `/api/commanders/${encodeURIComponent(commanderId)}/conversations/active`,
+  )
+}
+
+export const ACTIVE_CONVERSATION_FETCH_STALE_MS = ACTIVE_CONVERSATION_STALE_MS
 
 async function fetchConversation(conversationId: string): Promise<ConversationRecord> {
   return fetchJson<ConversationRecord>(
@@ -147,6 +185,7 @@ async function postCreateConversation(
         ...(input.id !== undefined ? { id: input.id } : {}),
         ...(input.channelMeta !== undefined ? { channelMeta: input.channelMeta } : {}),
         ...(input.currentTask !== undefined ? { currentTask: input.currentTask } : {}),
+        ...(input.agentType !== undefined ? { agentType: input.agentType } : {}),
       }),
     },
   )
@@ -188,6 +227,37 @@ async function postStopConversation(
   )
 }
 
+async function patchConversation(
+  input: UpdateConversationInput,
+): Promise<ConversationRecord> {
+  return fetchJson<ConversationRecord>(
+    `/api/conversations/${encodeURIComponent(input.conversationId)}`,
+    {
+      method: 'PATCH',
+      headers: {
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        ...(input.name !== undefined ? { name: input.name } : {}),
+        ...(input.agentType !== undefined ? { agentType: input.agentType } : {}),
+        ...(input.status !== undefined ? { status: input.status } : {}),
+      }),
+    },
+  )
+}
+
+async function deleteConversation(
+  input: DeleteConversationInput,
+): Promise<DeleteConversationResponse> {
+  const querySuffix = input.hard ? '?hard=true' : ''
+  return fetchJson<DeleteConversationResponse>(
+    `/api/conversations/${encodeURIComponent(input.conversationId)}${querySuffix}`,
+    {
+      method: 'DELETE',
+    },
+  )
+}
+
 export function upsertConversationList(
   current: ConversationRecord[] | undefined,
   nextConversation: ConversationRecord,
@@ -210,6 +280,27 @@ function updateConversationCaches(
     (current: ConversationRecord[] | undefined) =>
       upsertConversationList(current, conversation),
   )
+  void queryClient.invalidateQueries({
+    queryKey: commanderActiveConversationQueryKey(conversation.commanderId),
+  })
+}
+
+function removeConversationCaches(
+  queryClient: ReturnType<typeof useQueryClient>,
+  payload: DeleteConversationResponse,
+) {
+  queryClient.removeQueries({
+    queryKey: conversationDetailQueryKey(payload.id),
+    exact: true,
+  })
+  queryClient.setQueryData(
+    commanderConversationsQueryKey(payload.commanderId),
+    (current: ConversationRecord[] | undefined) =>
+      (current ?? []).filter((conversation) => conversation.id !== payload.id),
+  )
+  void queryClient.invalidateQueries({
+    queryKey: commanderActiveConversationQueryKey(payload.commanderId),
+  })
 }
 
 export function useConversations(
@@ -229,7 +320,6 @@ export function useConversations(
     queryFn: () => fetchCommanderConversations(safeCommanderId ?? ''),
     enabled: Boolean(safeCommanderId),
     refetchInterval: safeCommanderId ? CONVERSATIONS_POLL_INTERVAL_MS : false,
-    select: sortConversations,
   })
 
   const detailQuery = useQuery({
@@ -238,11 +328,14 @@ export function useConversations(
       : [...CONVERSATION_DETAIL_QUERY_KEY, 'none'],
     queryFn: () => fetchConversation(safeSelectedConversationId ?? ''),
     enabled: Boolean(safeSelectedConversationId),
-    refetchInterval: safeSelectedConversationId ? CONVERSATIONS_POLL_INTERVAL_MS : false,
+    staleTime: CONVERSATION_DETAIL_STALE_MS,
     initialData: () => listQuery.data?.find((conversation) => conversation.id === safeSelectedConversationId),
   })
 
-  const conversations = listQuery.data ?? []
+  const conversations = useMemo(
+    () => listQuery.data ? sortConversations(listQuery.data) : [],
+    [listQuery.data],
+  )
   const selectedConversation = detailQuery.data
     ?? conversations.find((conversation) => conversation.id === safeSelectedConversationId)
     ?? null
@@ -260,6 +353,24 @@ export function useConversations(
       ])
     },
   }
+}
+
+export function useActiveConversation(
+  commanderId?: string | null,
+  enabled = true,
+) {
+  const safeCommanderId = typeof commanderId === 'string' && commanderId.trim().length > 0
+    ? commanderId.trim()
+    : null
+
+  return useQuery({
+    queryKey: safeCommanderId
+      ? commanderActiveConversationQueryKey(safeCommanderId)
+      : [...COMMANDER_ACTIVE_CONVERSATION_QUERY_KEY, 'none'],
+    queryFn: () => fetchCommanderActiveConversation(safeCommanderId ?? ''),
+    enabled: Boolean(safeCommanderId) && enabled,
+    staleTime: ACTIVE_CONVERSATION_STALE_MS,
+  })
 }
 
 export function useConversationMessage() {
@@ -302,6 +413,28 @@ export function useStopConversation() {
     mutationFn: postStopConversation,
     onSuccess: (conversation) => {
       updateConversationCaches(queryClient, conversation)
+    },
+  })
+}
+
+export function useUpdateConversation() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: patchConversation,
+    onSuccess: (conversation) => {
+      updateConversationCaches(queryClient, conversation)
+    },
+  })
+}
+
+export function useDeleteConversation() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: deleteConversation,
+    onSuccess: (payload) => {
+      removeConversationCaches(queryClient, payload)
     },
   })
 }

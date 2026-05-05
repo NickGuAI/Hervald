@@ -22,8 +22,6 @@ export interface CommanderCronOptions {
   commanderIdsForCron?: string[]
   commanderIdsForCronResolver?: () => Promise<string[]>
   commanderSessionStorePath?: string
-  // Legacy no-op until out-of-scope wiring is deleted from module-registry.
-  enableS3Sync?: boolean
   enableEmailPoll?: boolean
   emailPollCron?: string
   transcriptMaintenanceCron?: string

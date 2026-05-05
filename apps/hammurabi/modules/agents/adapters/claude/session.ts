@@ -21,6 +21,10 @@ import {
   toExitBasedCompletedSession,
 } from '../../session/state.js'
 import {
+  createClaudeProviderContext,
+  ensureClaudeProviderContext,
+} from '../../providers/provider-session-context.js'
+import {
   DEFAULT_SESSION_MESSAGE_QUEUE_LIMIT,
   SessionMessageQueue,
   type QueuedMessageImage,
@@ -257,7 +261,11 @@ export function createClaudeStreamSession(
     queuedMessageDrainScheduled: false,
     queuedMessageDrainPending: false,
     queuedMessageDrainPendingForce: false,
-    claudeSessionId: options.resumeSessionId,
+    providerContext: createClaudeProviderContext({
+      sessionId: options.resumeSessionId,
+      effort,
+      adaptiveThinking,
+    }),
     activeTurnId: undefined,
     adapter: createClaudeSessionAdapter(deps),
     resumedFrom: options.resumedFrom,
@@ -374,8 +382,12 @@ export function createClaudeStreamSession(
           },
         ),
       )
-    } else if (session.sessionType === 'cron' || session.sessionType === 'sentinel') {
-      // One-shot session types (`cron`, `sentinel`) must always land in
+    } else if (
+      session.sessionType === 'cron' ||
+      session.sessionType === 'sentinel' ||
+      session.sessionType === 'automation'
+    ) {
+      // One-shot session types (`cron`, `sentinel`, `automation`) must always land in
       // `completedSessions` so the executor's GET poll resolves to
       // `completed: true` rather than the `exitedStreamSessions` 'exited'
       // branch (which the polling client maps to 'running' via completedFlag
@@ -405,7 +417,7 @@ export function createClaudeStreamSession(
       const isIdleRestoreExit =
         session.restoredIdle &&
         session.lastTurnCompleted &&
-        session.claudeSessionId !== undefined
+        ensureClaudeProviderContext(session).sessionId !== undefined
       if (!isIdleRestoreExit) {
         deps.schedulePersistedSessionsWrite()
       }
@@ -446,7 +458,7 @@ export function createClaudeStreamSession(
     }
 
     if (!session.lastTurnCompleted) {
-      session.claudeSessionId = undefined
+      ensureClaudeProviderContext(session).sessionId = undefined
     }
 
     const exitCode = code ?? -1

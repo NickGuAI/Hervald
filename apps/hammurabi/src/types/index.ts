@@ -15,10 +15,64 @@ export interface FrontendModule {
 }
 
 // Agents types
-export type AgentType = 'claude' | 'codex' | 'gemini'
-export type SessionType = 'commander' | 'worker' | 'cron' | 'sentinel'
+export type ProviderId = string
+export type AgentType = ProviderId
+export type SessionType = 'commander' | 'worker' | 'cron' | 'sentinel' | 'automation'
 export type SessionTransportType = 'pty' | 'stream' | 'external'
-export type SessionCreatorKind = 'human' | 'commander' | 'cron' | 'sentinel'
+export type SessionCreatorKind = 'human' | 'commander' | 'cron' | 'sentinel' | 'automation'
+export type ClaudePermissionMode = 'default'
+export type MachineAuthProvider = ProviderId
+export type MachineAuthMode = 'setup-token' | 'api-key' | 'device-auth'
+export type MachineAuthMethod = MachineAuthMode | 'login' | 'missing'
+
+export interface ProviderPermissionModeOption {
+  value: ClaudePermissionMode
+  label: string
+  description: string
+}
+
+export interface ProviderInfoBanner {
+  variant: 'info' | 'warn'
+  text: string
+}
+
+export interface ProviderUiCapabilities {
+  supportsEffort: boolean
+  supportsAdaptiveThinking: boolean
+  supportsSkills: boolean
+  supportsLoginMode: boolean
+  forcedTransport?: Exclude<SessionTransportType, 'external'>
+  permissionModes: ProviderPermissionModeOption[]
+  infoBanner?: ProviderInfoBanner
+}
+
+export interface ProviderCapabilities {
+  supportsAutomation: boolean
+  supportsCommanderConversation: boolean
+  supportsWorkerDispatch: boolean
+}
+
+export interface ProviderMachineAuthDescriptor {
+  cliBinaryName: string
+  installPackageName?: string
+  authEnvKeys: string[]
+  supportedAuthModes: MachineAuthMode[]
+  requiresSecretModes: MachineAuthMode[]
+  loginStatusCommand: string | null
+}
+
+export interface ProviderRegistryEntry {
+  id: ProviderId
+  label: string
+  eventProvider: string
+  capabilities: ProviderCapabilities
+  uiCapabilities: ProviderUiCapabilities
+  machineAuth?: ProviderMachineAuthDescriptor
+}
+
+export interface ProviderRegistryResponse {
+  providers: ProviderRegistryEntry[]
+}
 
 export interface SessionCreator {
   kind: SessionCreatorKind
@@ -126,10 +180,6 @@ export interface CreateMachineInput {
   cwd?: string
 }
 
-export type MachineAuthProvider = 'claude' | 'codex' | 'gemini'
-export type MachineAuthMode = 'setup-token' | 'api-key' | 'device-auth'
-export type MachineAuthMethod = MachineAuthMode | 'login' | 'missing'
-
 export interface MachineProviderAuthStatus {
   provider: MachineAuthProvider
   label: string
@@ -155,8 +205,6 @@ export interface MachineAuthSetupInput {
   mode: MachineAuthMode
   secret?: string
 }
-
-export type ClaudePermissionMode = 'default'
 
 export interface CreateSessionInput {
   name: string

@@ -8,12 +8,8 @@ import type { ApiKeyStoreLike } from '../../../server/api-keys/store'
 import { CommanderEmailConfigStore } from '../email-config'
 import { createCommandersRouter, type CommandersRouterOptions } from '../routes'
 import type { CommanderSessionsInterface } from '../../agents/routes'
-import { CommandRoomExecutor } from '../../command-room/executor'
-import { CommandRoomRunStore } from '../../command-room/run-store'
-import { CommandRoomScheduler, type CronScheduler } from '../../command-room/scheduler'
-import { CommandRoomTaskStore } from '../../command-room/task-store'
 import {
-  buildLegacyCommanderConversationId,
+  buildDefaultCommanderConversationId,
   CommanderSessionStore,
   DEFAULT_COMMANDER_MAX_TURNS,
 } from '../store'
@@ -26,12 +22,17 @@ import {
 } from '../heartbeat'
 import type { CommanderEmailClient, CommanderInboundEmail } from '../email-poller'
 import type { ClaudeEffortLevel } from '../../claude-effort'
+import type { AgentType } from '../../agents/types'
 import { COMMANDER_WIZARD_START_MESSAGE } from '../templates/wizard-prompt'
 
 vi.setConfig({ testTimeout: 60_000 })
 
 const AUTH_HEADERS = {
   'x-hammurabi-api-key': 'test-key',
+}
+
+function defaultCommanderConversationSessionName(commanderId: string): string {
+  return `${toCommanderSessionName(commanderId)}-conversation-${buildDefaultCommanderConversationId(commanderId)}`
 }
 
 interface RunningServer {
@@ -43,16 +44,17 @@ interface RunningServer {
 interface MockSessionEntry {
   name: string
   systemPrompt: string
-  agentType: 'claude' | 'codex' | 'gemini'
+  agentType: AgentType
   conversationId?: string
   effort?: ClaudeEffortLevel
   cwd?: string
   resumeSessionId?: string
+  resumeProviderContext?: unknown
   maxTurns?: number
 }
 
 interface ActiveSessionState {
-  agentType: 'claude' | 'codex' | 'gemini'
+  agentType: AgentType
   conversationId?: string
 }
 
@@ -118,19 +120,6 @@ class StubEmailClient implements CommanderEmailClient {
   }
 }
 
-interface MockCronJob {
-  stop: ReturnType<typeof vi.fn>
-  destroy: ReturnType<typeof vi.fn>
-  getNextRun: ReturnType<typeof vi.fn>
-}
-
-interface ScheduledRegistration {
-  expression: string
-  task: () => Promise<void> | void
-  options?: { name?: string; timezone?: string }
-  job: MockCronJob
-}
-
 const tempDirs: string[] = []
 
 function createTestApiKeyStore(): ApiKeyStoreLike {
@@ -173,10 +162,10 @@ function createMockSessionsInterface(opts: {
   sessionInputTokens?: number
   /** output token count that getSession() reports */
   sessionOutputTokens?: number
-  /** claudeSessionId that getSession() reports for each active session */
-  sessionClaudeSessionId?: string
-  /** codexThreadId that getSession() reports for each active session */
-  sessionCodexThreadId?: string
+  /** Claude resume session id that getSession() reports for each active session */
+  sessionClaudeResumeId?: string
+  /** Codex resume thread id that getSession() reports for each active session */
+  sessionCodexResumeThreadId?: string
   /** sessions that should be treated as already active (e.g. reconciled after restart) */
   initialActiveSessions?: string[]
   /** ordered send results returned by sendToSession before falling back to session presence */
@@ -198,7 +187,7 @@ function createMockSessionsInterface(opts: {
       { agentType: 'claude' },
     ]),
   )
-  const agentTypeBySessionName = new Map<string, 'claude' | 'codex' | 'gemini'>(
+  const agentTypeBySessionName = new Map<string, AgentType>(
     (opts.initialActiveSessions ?? []).map((sessionName) => [sessionName, 'claude']),
   )
   const eventHandlers = new Map<string, Set<(event: unknown) => void>>()
@@ -257,8 +246,15 @@ function createMockSessionsInterface(opts: {
         name,
         agentType,
         conversationId: activeState?.conversationId,
-        claudeSessionId: agentType === 'claude' ? opts.sessionClaudeSessionId : undefined,
-        codexThreadId: agentType === 'codex' ? opts.sessionCodexThreadId : undefined,
+        providerContext: agentType === 'claude'
+          ? (opts.sessionClaudeResumeId
+            ? { providerId: 'claude', sessionId: opts.sessionClaudeResumeId }
+            : undefined)
+          : agentType === 'codex'
+            ? (opts.sessionCodexResumeThreadId
+              ? { providerId: 'codex', threadId: opts.sessionCodexResumeThreadId }
+              : undefined)
+            : undefined,
         usage: { ...usage },
       } as unknown as ReturnType<CommanderSessionsInterface['getSession']>
     },
@@ -293,27 +289,6 @@ function createMockSessionsInterface(opts: {
       }
     },
   }
-}
-
-function createMockCronScheduler(nextRuns: Date[]): {
-  scheduler: CronScheduler
-  scheduled: ScheduledRegistration[]
-} {
-  const scheduled: ScheduledRegistration[] = []
-  const scheduler: CronScheduler = {
-    validate: vi.fn((expression: string) => expression !== 'invalid cron'),
-    schedule: vi.fn((expression, task, options) => {
-      const nextRun = nextRuns.shift() ?? null
-      const job: MockCronJob = {
-        stop: vi.fn(),
-        destroy: vi.fn(),
-        getNextRun: vi.fn(() => nextRun),
-      }
-      scheduled.push({ expression, task, options, job })
-      return job
-    }),
-  }
-  return { scheduler, scheduled }
 }
 
 async function startServer(
@@ -444,7 +419,14 @@ describe('commanders routes', () => {
     const dir = await createTempDir('hammurabi-commanders-panel-counts-')
     const storePath = join(dir, 'sessions.json')
     const questStore = new QuestStore(dir)
-    const commandRoomTaskStore = new CommandRoomTaskStore(join(dir, 'command-room-tasks.json'))
+    const automationStore = {
+      list: vi.fn(async () => [
+        {
+          id: 'schedule-automation-1',
+          trigger: 'schedule',
+        },
+      ]),
+    } as unknown as NonNullable<CommandersRouterOptions['automationStore']>
     await writeFile(
       storePath,
       JSON.stringify(
@@ -493,20 +475,10 @@ describe('commanders routes', () => {
         skillsToUse: [],
       },
     })
-    await commandRoomTaskStore.createTask({
-      name: '00000000-0000-4000-a000-000000000002-daily-review',
-      schedule: '0 * * * *',
-      machine: 'local',
-      workDir: '/home/builder/App',
-      agentType: 'claude',
-      instruction: 'Run commander review',
-      enabled: true,
-      commanderId: '00000000-0000-4000-a000-000000000002',
-    })
     const server = await startServer({
       sessionStorePath: storePath,
       questStore,
-      commandRoomTaskStore,
+      automationStore,
     })
     try {
       const response = await fetch(`${server.baseUrl}/api/commanders`, {
@@ -560,7 +532,6 @@ describe('commanders routes', () => {
         heartbeat: {
           intervalMs: number
           messageTemplate: string
-          lastSentAt: string | null
         }
         lastHeartbeat: string | null
       }
@@ -570,7 +541,6 @@ describe('commanders routes', () => {
       expect(created.heartbeat).toEqual({
         intervalMs: DEFAULT_HEARTBEAT_INTERVAL_MS,
         messageTemplate: DEFAULT_HEARTBEAT_MESSAGE,
-        lastSentAt: null,
       })
       expect(created.lastHeartbeat).toBeNull()
 
@@ -897,7 +867,7 @@ describe('commanders routes', () => {
         expect(mock.createCalls).toHaveLength(1)
       })
 
-      mock.triggerEvent(toCommanderSessionName(created.id), {
+      mock.triggerEvent(mock.createCalls[0]?.name ?? '', {
         type: 'result',
         subtype: 'error_max_turns',
         terminal_reason: 'max_turns',
@@ -1245,9 +1215,13 @@ describe('commanders routes', () => {
         heartbeat: {
           intervalMs: 25,
           messageTemplate: '[HEARTBEAT CUSTOM {{timestamp}}]',
-          lastSentAt: null,
+          intervalOverridden: true,
         },
-        lastHeartbeat: null,
+        conversations: [
+          expect.objectContaining({
+            lastHeartbeat: null,
+          }),
+        ],
       })
 
       await sleep(60)
@@ -1326,15 +1300,13 @@ describe('commanders routes', () => {
         heartbeat: {
           intervalMs: number
           messageTemplate: string
-          lastSentAt: string | null
         }
       }>
       const updated = sessions.find((session) => session.id === created.id)
       expect(updated?.state).toBe('running')
       expect(updated?.heartbeat.intervalMs).toBe(25)
       expect(updated?.heartbeat.messageTemplate).toBe('[HEARTBEAT QUICK {{timestamp}}]')
-      expect(updated?.heartbeat.lastSentAt).toBeTruthy()
-      expect(updated?.lastHeartbeat).toBe(updated?.heartbeat.lastSentAt)
+      expect(updated?.lastHeartbeat).toBeTruthy()
 
       const stopResponse = await fetch(`${server.baseUrl}/api/commanders/${created.id}/stop`, {
         method: 'POST',
@@ -1506,8 +1478,8 @@ describe('commanders routes', () => {
       expect(await triggerResponse.json()).toEqual(expect.objectContaining({
         runId: expect.any(String),
         timestamp: expect.any(String),
-        sessionName: `commander-${created.id}`,
-        conversationId: buildLegacyCommanderConversationId(created.id),
+        sessionName: mock.createCalls[0]?.name,
+        conversationId: buildDefaultCommanderConversationId(created.id),
         triggered: true,
       }))
 
@@ -1763,8 +1735,7 @@ describe('commanders routes', () => {
       expect(mock.createCalls[0]?.systemPrompt).toEqual(
         expect.stringContaining('## Commander Memory'),
       )
-      // Session name should match commander id pattern
-      expect(mock.createCalls[0]?.name).toBe(`commander-${created.id}`)
+      expect(mock.createCalls[0]?.name).toBe(defaultCommanderConversationSessionName(created.id))
       expect(mock.createCalls[0]?.agentType).toBe('claude')
 
       // State should be running
@@ -1851,7 +1822,7 @@ describe('commanders routes', () => {
     }
   })
 
-  it('prepends per-commander COMMANDER.md before workspace prompt and only migrates commander-local maxTurns, not workspace fallback frontmatter', async () => {
+  it('uses workspace COMMANDER.md as prompt fallback, but rejects removed commander-local runtime frontmatter after boot migration', async () => {
     const dir = await createTempDir('hammurabi-commanders-workflow-source-')
     const storePath = join(dir, 'sessions.json')
     const memoryBasePath = join(dir, 'memory')
@@ -1947,19 +1918,11 @@ describe('commanders routes', () => {
           },
         },
       )
-      expect(secondStart.status).toBe(200)
-
-      await vi.waitFor(() => {
-        expect(mock.createCalls).toHaveLength(2)
+      expect(secondStart.status).toBe(500)
+      expect(await secondStart.json()).toEqual({
+        error: 'COMMANDER.md uses removed runtime frontmatter keys: maxTurns',
       })
-      const secondPrompt = mock.createCalls[1]?.systemPrompt ?? ''
-      expect(secondPrompt).toContain('COMMANDER-DIR PROMPT SOURCE')
-      expect(secondPrompt).toContain('## Workspace Context')
-      expect(secondPrompt).toContain('WORKSPACE PROMPT SOURCE')
-      expect(secondPrompt.indexOf('COMMANDER-DIR PROMPT SOURCE')).toBeLessThan(
-        secondPrompt.indexOf('WORKSPACE PROMPT SOURCE'),
-      )
-      expect(mock.createCalls[1]?.maxTurns).toBe(7)
+      expect(mock.createCalls).toHaveLength(1)
 
       const thirdCreate = await fetch(`${server.baseUrl}/api/commanders`, {
         method: 'POST',
@@ -1977,12 +1940,7 @@ describe('commanders routes', () => {
       await mkdir(thirdCommanderRoot, { recursive: true })
       await writeFile(
         join(thirdCommanderRoot, 'COMMANDER.md'),
-        [
-          '---',
-          'maxTurns: 7',
-          '---',
-          'IDENTITY-ONLY PROMPT SOURCE',
-        ].join('\n'),
+        'IDENTITY-ONLY PROMPT SOURCE',
         'utf8',
       )
 
@@ -1999,11 +1957,11 @@ describe('commanders routes', () => {
       expect(thirdStart.status).toBe(200)
 
       await vi.waitFor(() => {
-        expect(mock.createCalls).toHaveLength(3)
+        expect(mock.createCalls).toHaveLength(2)
       })
-      expect(mock.createCalls[2]?.systemPrompt).toContain('IDENTITY-ONLY PROMPT SOURCE')
-      expect(mock.createCalls[2]?.systemPrompt).not.toContain('WORKSPACE PROMPT SOURCE')
-      expect(mock.createCalls[2]?.maxTurns).toBe(7)
+      expect(mock.createCalls[1]?.systemPrompt).toContain('IDENTITY-ONLY PROMPT SOURCE')
+      expect(mock.createCalls[1]?.systemPrompt).not.toContain('WORKSPACE PROMPT SOURCE')
+      expect(mock.createCalls[1]?.maxTurns).toBe(DEFAULT_COMMANDER_MAX_TURNS)
     } finally {
       await server.close()
     }
@@ -2101,7 +2059,8 @@ describe('commanders routes', () => {
     const memoryBasePath = join(dir, 'memory')
     const agentsSessionStorePath = join(dir, 'agents-sessions.json')
     const commanderId = '00000000-0000-4000-a000-0000000e4d8a'
-    const commanderSessionName = `commander-${commanderId}`
+    const defaultConversationId = buildDefaultCommanderConversationId(commanderId)
+    const commanderSessionName = defaultCommanderConversationSessionName(commanderId)
 
     await writeFile(
       storePath,
@@ -2116,7 +2075,6 @@ describe('commanders routes', () => {
             heartbeat: {
               intervalMs: DEFAULT_HEARTBEAT_INTERVAL_MS,
               messageTemplate: DEFAULT_HEARTBEAT_MESSAGE,
-              lastSentAt: null,
             },
             lastHeartbeat: null,
             taskSource: { owner: 'NickGuAI', repo: 'example-repo', label: 'commander' },
@@ -2132,7 +2090,12 @@ describe('commanders routes', () => {
       agentsSessionStorePath,
       JSON.stringify({
         sessions: [
-          { name: commanderSessionName },
+          {
+            name: commanderSessionName,
+            sessionType: 'commander',
+            creator: { kind: 'commander', id: commanderId },
+            conversationId: defaultConversationId,
+          },
         ],
       }),
       'utf8',
@@ -2197,7 +2160,7 @@ describe('commanders routes', () => {
     const storePath = join(dir, 'sessions.json')
     const agentsSessionStorePath = join(dir, 'agents-sessions.json')
     const commanderId = '00000000-0000-4000-a000-0000000e4d8b'
-    const commanderSessionName = toCommanderSessionName(commanderId)
+    const commanderSessionName = defaultCommanderConversationSessionName(commanderId)
     const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
 
     await writeFile(
@@ -2213,7 +2176,6 @@ describe('commanders routes', () => {
             heartbeat: {
               intervalMs: DEFAULT_HEARTBEAT_INTERVAL_MS,
               messageTemplate: DEFAULT_HEARTBEAT_MESSAGE,
-              lastSentAt: null,
             },
             lastHeartbeat: null,
             taskSource: { owner: 'NickGuAI', repo: 'example-repo', label: 'commander' },
@@ -2265,8 +2227,8 @@ describe('commanders routes', () => {
     const memoryBasePath = join(dir, 'memory')
     const agentsSessionStorePath = join(dir, 'agents-sessions.json')
     const commanderId = '00000000-0000-4000-a000-0000007e4d8a'
-    const legacyConversationId = buildLegacyCommanderConversationId(commanderId)
-    const commanderSessionName = `commander-${commanderId}`
+    const defaultConversationId = buildDefaultCommanderConversationId(commanderId)
+    const commanderSessionName = defaultCommanderConversationSessionName(commanderId)
 
     await writeFile(
       storePath,
@@ -2281,7 +2243,6 @@ describe('commanders routes', () => {
             heartbeat: {
               intervalMs: DEFAULT_HEARTBEAT_INTERVAL_MS,
               messageTemplate: DEFAULT_HEARTBEAT_MESSAGE,
-              lastSentAt: '2026-03-01T00:05:00.000Z',
             },
             lastHeartbeat: '2026-03-01T00:05:00.000Z',
             heartbeatTickCount: 1,
@@ -2301,9 +2262,34 @@ describe('commanders routes', () => {
       agentsSessionStorePath,
       JSON.stringify({
         sessions: [
-          { name: commanderSessionName },
+          {
+            name: commanderSessionName,
+            sessionType: 'commander',
+            creator: { kind: 'commander', id: commanderId },
+            conversationId: defaultConversationId,
+          },
         ],
       }),
+      'utf8',
+    )
+    const conversationDir = join(dir, commanderId, 'conversations')
+    await mkdir(conversationDir, { recursive: true })
+    await writeFile(
+      join(conversationDir, `${defaultConversationId}.json`),
+      JSON.stringify({
+        id: defaultConversationId,
+        commanderId,
+        surface: 'ui',
+        name: 'default',
+        status: 'active',
+        currentTask: null,
+        lastHeartbeat: '2026-03-01T00:05:00.000Z',
+        heartbeatTickCount: 1,
+        completedTasks: 0,
+        totalCostUsd: 0,
+        createdAt: '2026-03-01T00:00:00.000Z',
+        lastMessageAt: '2026-03-01T00:05:00.000Z',
+      }, null, 2),
       'utf8',
     )
 
@@ -2352,9 +2338,37 @@ describe('commanders routes', () => {
           id: string
           heartbeatTickCount: number
         }>
-        const updated = conversations.find((conversation) => conversation.id === legacyConversationId)
+        const updated = conversations.find((conversation) => conversation.id === defaultConversationId)
         expect(updated?.heartbeatTickCount).toBe(2)
       }, { timeout: 3000 })
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('rejects commander-owned spawn fields when starting a conversation', async () => {
+    const server = await startServer()
+    const conversationId = '33333333-3333-4333-8333-333333333333'
+
+    try {
+      for (const body of [
+        { effort: 'low' },
+        { cwd: '/tmp/other-workspace' },
+        { host: 'other-host' },
+      ]) {
+        const response = await fetch(`${server.baseUrl}/api/conversations/${conversationId}/start`, {
+          method: 'POST',
+          headers: {
+            ...AUTH_HEADERS,
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify(body),
+        })
+        const payload = (await response.json()) as { error?: string }
+
+        expect(response.status).toBe(400)
+        expect(payload.error).toContain('effort, cwd, and host are configured on the commander')
+      }
     } finally {
       await server.close()
     }
@@ -2388,7 +2402,7 @@ describe('commanders routes', () => {
       expect(createResponse.status).toBe(201)
       const created = (await createResponse.json()) as { id: string }
       const commanderId = created.id
-      const legacyConversationId = buildLegacyCommanderConversationId(commanderId)
+      const defaultConversationId = buildDefaultCommanderConversationId(commanderId)
       const secondConversationId = '33333333-3333-4333-8333-333333333333'
 
       const startResponse = await fetch(`${server.baseUrl}/api/commanders/${commanderId}/start`, {
@@ -2416,6 +2430,21 @@ describe('commanders routes', () => {
       )
       expect(createConversationResponse.status).toBe(201)
 
+      const startSecondConversationResponse = await fetch(
+        `${server.baseUrl}/api/conversations/${secondConversationId}/start`,
+        {
+          method: 'POST',
+          headers: {
+            ...AUTH_HEADERS,
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify({
+            agentType: 'claude',
+          }),
+        },
+      )
+      expect(startSecondConversationResponse.status).toBe(200)
+
       const messageResponse = await fetch(`${server.baseUrl}/api/conversations/${secondConversationId}/message`, {
         method: 'POST',
         headers: {
@@ -2435,7 +2464,7 @@ describe('commanders routes', () => {
           'content-type': 'application/json',
         },
         body: JSON.stringify({
-          conversationId: legacyConversationId,
+          conversationId: defaultConversationId,
         }),
       })
       expect(firstTriggerResponse.status).toBe(200)
@@ -2449,7 +2478,7 @@ describe('commanders routes', () => {
           id: string
           heartbeatTickCount: number
         }>
-        expect(conversations.find((conversation) => conversation.id === legacyConversationId)?.heartbeatTickCount).toBe(1)
+        expect(conversations.find((conversation) => conversation.id === defaultConversationId)?.heartbeatTickCount).toBe(1)
         expect(conversations.find((conversation) => conversation.id === secondConversationId)?.heartbeatTickCount).toBe(0)
       })
 
@@ -2500,17 +2529,14 @@ describe('commanders routes', () => {
         const conversations = (await conversationsResponse.json()) as Array<{
           id: string
           lastHeartbeat: string | null
-          heartbeat: {
-            lastSentAt: string | null
-          }
           heartbeatTickCount: number
         }>
-        const legacyConversation = conversations.find((conversation) => conversation.id === legacyConversationId)
+        const defaultConversation = conversations.find((conversation) => conversation.id === defaultConversationId)
         const secondConversation = conversations.find((conversation) => conversation.id === secondConversationId)
-        expect(legacyConversation?.heartbeatTickCount).toBe(1)
+        expect(defaultConversation?.heartbeatTickCount).toBe(1)
         expect(secondConversation?.heartbeatTickCount).toBe(2)
-        expect(legacyConversation?.lastHeartbeat).toBe(legacyConversation?.heartbeat.lastSentAt ?? null)
-        expect(secondConversation?.lastHeartbeat).toBe(secondConversation?.heartbeat.lastSentAt ?? null)
+        expect(defaultConversation?.lastHeartbeat).toBeTruthy()
+        expect(secondConversation?.lastHeartbeat).toBeTruthy()
       })
 
       const detailResponse = await fetch(`${server.baseUrl}/api/commanders/${commanderId}`, {
@@ -2520,12 +2546,9 @@ describe('commanders routes', () => {
       const detail = (await detailResponse.json()) as {
         heartbeatTickCount: number
         lastHeartbeat: string | null
-        heartbeat: {
-          lastSentAt: string | null
-        }
       }
       expect(detail.heartbeatTickCount).toBe(3)
-      expect(detail.lastHeartbeat).toBe(detail.heartbeat.lastSentAt)
+      expect(detail.lastHeartbeat).toBeTruthy()
     } finally {
       await server.close()
     }
@@ -2573,7 +2596,7 @@ describe('commanders routes', () => {
     // Mock reports 1.5 USD of session cost when getSession is called during stop
     const mock = createMockSessionsInterface({
       sessionCostUsd: 1.5,
-      sessionClaudeSessionId: 'claude-test-session-id',
+      sessionClaudeResumeId: 'claude-test-session-id',
     })
 
     const server = await startServer({
@@ -2615,11 +2638,17 @@ describe('commanders routes', () => {
       const sessions = (await listResponse.json()) as Array<{
         id: string
         totalCostUsd: number
-        claudeSessionId?: string
+        providerContext?: {
+          providerId?: string
+          sessionId?: string
+        }
       }>
       const stopped = sessions.find((s) => s.id === created.id)
       expect(stopped?.totalCostUsd).toBe(1.5)
-      expect(stopped?.claudeSessionId).toBe('claude-test-session-id')
+      expect(stopped?.providerContext).toEqual({
+        providerId: 'claude',
+        sessionId: 'claude-test-session-id',
+      })
     } finally {
       await server.close()
     }
@@ -2630,7 +2659,7 @@ describe('commanders routes', () => {
     const storePath = join(dir, 'sessions.json')
     const memoryBasePath = join(dir, 'memory')
     const mock = createMockSessionsInterface({
-      sessionClaudeSessionId: 'claude-resume-123',
+      sessionClaudeResumeId: 'claude-resume-123',
     })
 
     const server = await startServer({
@@ -2677,12 +2706,8 @@ describe('commanders routes', () => {
       expect(mock.createCalls).toHaveLength(2)
       expect(mock.createCalls[0]?.agentType).toBe('claude')
       // Second start must NOT resume — always fresh so COMMANDER.md is injected (#727)
-      expect(mock.createCalls[1]).toEqual(
-        expect.objectContaining({
-          agentType: 'claude',
-          resumeSessionId: undefined,
-        }),
-      )
+      expect(mock.createCalls[1]?.agentType).toBe('claude')
+      expect(mock.createCalls[1]?.resumeProviderContext).toBeUndefined()
     } finally {
       await server.close()
     }
@@ -2755,7 +2780,7 @@ describe('commanders routes', () => {
     const storePath = join(dir, 'sessions.json')
     const memoryBasePath = join(dir, 'memory')
     const mock = createMockSessionsInterface({
-      sessionCodexThreadId: 'codex-thread-123',
+      sessionCodexResumeThreadId: 'codex-thread-123',
     })
 
     const server = await startServer({
@@ -2791,12 +2816,8 @@ describe('commanders routes', () => {
         expect(mock.createCalls).toHaveLength(1)
         expect(mock.sendCalls.length).toBeGreaterThanOrEqual(1)
       })
-      expect(mock.createCalls[0]).toEqual(
-        expect.objectContaining({
-          agentType: 'codex',
-          resumeSessionId: undefined,
-        }),
-      )
+      expect(mock.createCalls[0]?.agentType).toBe('codex')
+      expect(mock.createCalls[0]?.resumeSessionId).toBeUndefined()
       expect(mock.sendCalls[0]?.text).toBe(
         'Commander runtime started. Acknowledge readiness and await instructions.',
       )
@@ -2813,11 +2834,17 @@ describe('commanders routes', () => {
       const sessions = (await listResponse.json()) as Array<{
         id: string
         agentType?: 'claude' | 'codex'
-        codexThreadId?: string
+        providerContext?: {
+          providerId?: string
+          threadId?: string
+        }
       }>
       const stopped = sessions.find((session) => session.id === created.id)
       expect(stopped?.agentType).toBe('codex')
-      expect(stopped?.codexThreadId).toBe('codex-thread-123')
+      expect(stopped?.providerContext).toEqual({
+        providerId: 'codex',
+        threadId: 'codex-thread-123',
+      })
 
       const secondStartResponse = await fetch(`${server.baseUrl}/api/commanders/${created.id}/start`, {
         method: 'POST',
@@ -2894,9 +2921,8 @@ describe('commanders routes', () => {
         id: created.id,
         state: 'idle',
         agentType: 'codex',
-        pid: null,
       })
-      expect(mock.activeSessions.has(`commander-${created.id}`)).toBe(false)
+      expect(mock.activeSessions.has(defaultCommanderConversationSessionName(created.id))).toBe(false)
 
       const secondStartResponse = await fetch(`${server.baseUrl}/api/commanders/${created.id}/start`, {
         method: 'POST',
@@ -2968,7 +2994,7 @@ describe('commanders routes', () => {
       await vi.waitFor(() => {
         expect(mock.sendCalls.some((call) => call.text === message)).toBe(true)
       })
-      mock.triggerEvent(toCommanderSessionName(created.id), {
+      mock.triggerEvent(mock.createCalls[0]?.name ?? '', {
         type: 'user',
         message: {
           role: 'user',
@@ -3199,7 +3225,7 @@ describe('commanders routes', () => {
         expect(await collectResponse.json()).toEqual({ accepted: true })
       }
 
-      mock.activeSessions.delete(toCommanderSessionName(created.id))
+      mock.activeSessions.delete(mock.createCalls[0]?.name ?? '')
 
       await vi.waitFor(() => {
         const queuedCollectCalls = mock.sendCalls.filter((call) =>
@@ -3279,7 +3305,7 @@ describe('commanders routes', () => {
       })
 
       for (const call of mock.sendCalls.slice(0, 2)) {
-        mock.triggerEvent(toCommanderSessionName(created.id), {
+        mock.triggerEvent(call.name, {
           type: 'user',
           message: {
             role: 'user',
@@ -3518,7 +3544,7 @@ describe('commanders routes', () => {
         assigned: true,
         currentTask: {
           issueNumber: 167,
-          issueUrl: 'https://github.com/example-org/example-repo/issues/167',
+          issueUrl: 'https://github.com/NickGuAI/example-repo/issues/167',
           startedAt: '2026-02-21T12:00:00.000Z',
         },
       })
@@ -3535,206 +3561,6 @@ describe('commanders routes', () => {
 
       const callBody = String(fetchMock.mock.calls[0]?.[1]?.body ?? '')
       expect(callBody).toContain('"labels":["commander"]')
-    } finally {
-      await server.close()
-    }
-  })
-
-  it('routes commander cron CRUD through the shared scheduler and exposes live cron metadata', async () => {
-    const dir = await createTempDir('hammurabi-commanders-cron-routes-')
-    const storePath = join(dir, 'sessions.json')
-    const taskStore = new CommandRoomTaskStore(join(dir, 'tasks.json'))
-    const runStore = new CommandRoomRunStore(join(dir, 'runs.json'))
-    const createSession = vi.fn(async () => ({ sessionId: 'session-cron-1' }))
-    const monitorSession = vi.fn(async () => ({
-      sessionId: 'session-cron-1',
-      status: 'SUCCESS' as const,
-      finalComment: 'Commander cron run done.',
-      filesChanged: 0,
-      durationMin: 1,
-      raw: { total_cost_usd: 0.09 },
-    }))
-    const now = () => new Date('2026-03-05T10:00:00.000Z')
-    const executor = new CommandRoomExecutor({
-      taskStore,
-      runStore,
-      now,
-      agentSessionFactory: () => ({
-        createSession,
-        monitorSession,
-      }),
-    })
-    const { scheduler: cronEngine, scheduled } = createMockCronScheduler([
-      new Date('2026-03-05T10:05:00.000Z'),
-      new Date('2026-03-05T10:10:00.000Z'),
-      new Date('2026-03-05T10:15:00.000Z'),
-    ])
-    const commandRoomScheduler = new CommandRoomScheduler({
-      taskStore,
-      executor,
-      scheduler: cronEngine,
-    })
-    const commandRoomSchedulerReady = commandRoomScheduler.initialize()
-
-    const server = await startServer({
-      sessionStorePath: storePath,
-      sessionStore: new CommanderSessionStore(storePath),
-      commandRoomTaskStore: taskStore,
-      commandRoomRunStore: runStore,
-      commandRoomScheduler,
-      commandRoomSchedulerReady,
-      now,
-    })
-
-    try {
-      const createCommanderResponse = await fetch(`${server.baseUrl}/api/commanders`, {
-        method: 'POST',
-        headers: {
-          ...AUTH_HEADERS,
-          'content-type': 'application/json',
-        },
-        body: JSON.stringify({
-          host: 'worker-cron-routes',
-          taskSource: { owner: 'NickGuAI', repo: 'example-repo', label: 'commander' },
-        }),
-      })
-      expect(createCommanderResponse.status).toBe(201)
-      const commander = (await createCommanderResponse.json()) as { id: string }
-
-      const createCronResponse = await fetch(`${server.baseUrl}/api/commanders/${commander.id}/crons`, {
-        method: 'POST',
-        headers: {
-          ...AUTH_HEADERS,
-          'content-type': 'application/json',
-        },
-        body: JSON.stringify({
-          schedule: '*/5 * * * *',
-          instruction: 'Check the park status.',
-          enabled: true,
-          agentType: 'claude',
-          workDir: '/tmp/example-repo',
-        }),
-      })
-      expect(createCronResponse.status).toBe(201)
-      const createdCron = (await createCronResponse.json()) as {
-        id: string
-        lastRun: string | null
-        nextRun: string | null
-      }
-      expect(createdCron.lastRun).toBeNull()
-      expect(createdCron.nextRun).toBe('2026-03-05T10:05:00.000Z')
-      expect(scheduled).toHaveLength(1)
-
-      const listBeforeRunResponse = await fetch(
-        `${server.baseUrl}/api/commanders/${commander.id}/crons`,
-        { headers: AUTH_HEADERS },
-      )
-      expect(listBeforeRunResponse.status).toBe(200)
-      const listedBeforeRun = (await listBeforeRunResponse.json()) as Array<{
-        id: string
-        lastRun: string | null
-        nextRun: string | null
-      }>
-      const listedCreatedBeforeRun = listedBeforeRun.find((entry) => entry.id === createdCron.id)
-      expect(listedCreatedBeforeRun).toEqual(expect.objectContaining({
-        id: createdCron.id,
-        lastRun: null,
-        nextRun: '2026-03-05T10:05:00.000Z',
-      }))
-
-      const scheduledCallback = scheduled
-        .find((entry) => entry.options?.name === `command-room-${createdCron.id}`)
-        ?.task
-      if (!scheduledCallback) {
-        throw new Error('Expected commander cron callback to be registered')
-      }
-      await scheduledCallback()
-
-      await vi.waitFor(async () => {
-        const runs = await runStore.listRunsForTask(createdCron.id)
-        expect(runs).toHaveLength(1)
-      })
-
-      const listAfterRunResponse = await fetch(
-        `${server.baseUrl}/api/commanders/${commander.id}/crons`,
-        { headers: AUTH_HEADERS },
-      )
-      expect(listAfterRunResponse.status).toBe(200)
-      const listedAfterRun = (await listAfterRunResponse.json()) as Array<{
-        id: string
-        lastRun: string | null
-        nextRun: string | null
-      }>
-      const listedCreatedAfterRun = listedAfterRun.find((entry) => entry.id === createdCron.id)
-      expect(listedCreatedAfterRun).toEqual(expect.objectContaining({
-        id: createdCron.id,
-        lastRun: '2026-03-05T10:00:00.000Z',
-        nextRun: '2026-03-05T10:05:00.000Z',
-      }))
-      expect(createSession).toHaveBeenCalledTimes(1)
-      expect(monitorSession).toHaveBeenCalledWith('session-cron-1', undefined)
-
-      const updateCronResponse = await fetch(
-        `${server.baseUrl}/api/commanders/${commander.id}/crons/${createdCron.id}`,
-        {
-          method: 'PATCH',
-          headers: {
-            ...AUTH_HEADERS,
-            'content-type': 'application/json',
-          },
-          body: JSON.stringify({
-            schedule: '0 11 * * *',
-          }),
-        },
-      )
-      expect(updateCronResponse.status).toBe(200)
-      const updatedCron = (await updateCronResponse.json()) as {
-        nextRun: string | null
-      }
-      expect(updatedCron.nextRun).toBe('2026-03-05T10:10:00.000Z')
-      expect(scheduled).toHaveLength(2)
-      expect(scheduled[0]?.job.stop).toHaveBeenCalledTimes(1)
-      expect(scheduled[0]?.job.destroy).toHaveBeenCalledTimes(1)
-
-      const disableCronResponse = await fetch(
-        `${server.baseUrl}/api/commanders/${commander.id}/crons/${createdCron.id}`,
-        {
-          method: 'PATCH',
-          headers: {
-            ...AUTH_HEADERS,
-            'content-type': 'application/json',
-          },
-          body: JSON.stringify({
-            enabled: false,
-          }),
-        },
-      )
-      expect(disableCronResponse.status).toBe(200)
-      const disabledCron = (await disableCronResponse.json()) as {
-        nextRun: string | null
-      }
-      expect(disabledCron.nextRun).toBeNull()
-      expect(scheduled[1]?.job.stop).toHaveBeenCalledTimes(1)
-      expect(scheduled[1]?.job.destroy).toHaveBeenCalledTimes(1)
-
-      const deleteCronResponse = await fetch(
-        `${server.baseUrl}/api/commanders/${commander.id}/crons/${createdCron.id}`,
-        {
-          method: 'DELETE',
-          headers: AUTH_HEADERS,
-        },
-      )
-      expect(deleteCronResponse.status).toBe(204)
-
-      expect(await runStore.listRunsForTask(createdCron.id)).toEqual([])
-
-      const emptyListResponse = await fetch(`${server.baseUrl}/api/commanders/${commander.id}/crons`, {
-        headers: AUTH_HEADERS,
-      })
-      expect(emptyListResponse.status).toBe(200)
-      const remaining = await emptyListResponse.json() as Array<{ id: string; taskType?: string }>
-      expect(remaining.some((task) => task.id === createdCron.id)).toBe(false)
-      expect(remaining).toEqual([])
     } finally {
       await server.close()
     }
@@ -3800,7 +3626,7 @@ describe('commanders routes', () => {
       expect(listed).toHaveLength(1)
       expect(listed[0]?.id).toBe(createdQuest.id)
 
-      const patchResponse = await fetch(
+      const invalidPatchResponse = await fetch(
         `${server.baseUrl}/api/commanders/${commander.id}/quests/${createdQuest.id}`,
         {
           method: 'PATCH',
@@ -3810,6 +3636,44 @@ describe('commanders routes', () => {
           },
           body: JSON.stringify({
             status: 'active',
+            note: 'Started working on the route implementation',
+          }),
+        },
+      )
+      expect(invalidPatchResponse.status).toBe(400)
+      await expect(invalidPatchResponse.json()).resolves.toEqual({
+        error: 'use claim() to transition into active',
+      })
+
+      const claimResponse = await fetch(
+        `${server.baseUrl}/api/commanders/${commander.id}/quests/${createdQuest.id}/claim`,
+        {
+          method: 'POST',
+          headers: {
+            ...AUTH_HEADERS,
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify({
+            conversationId: 'quest-routes-conversation',
+          }),
+        },
+      )
+      expect(claimResponse.status).toBe(200)
+      await expect(claimResponse.json()).resolves.toMatchObject({
+        id: createdQuest.id,
+        status: 'active',
+        claimedByConversationId: 'quest-routes-conversation',
+      })
+
+      const patchResponse = await fetch(
+        `${server.baseUrl}/api/commanders/${commander.id}/quests/${createdQuest.id}`,
+        {
+          method: 'PATCH',
+          headers: {
+            ...AUTH_HEADERS,
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify({
             note: 'Started working on the route implementation',
           }),
         },
@@ -3973,20 +3837,20 @@ describe('commanders routes', () => {
       })
       const createdQuest = (await createQuestResponse.json()) as { id: string }
 
-      const patchToActiveResponse = await fetch(
-        `${server.baseUrl}/api/commanders/${commander.id}/quests/${createdQuest.id}`,
+      const claimResponse = await fetch(
+        `${server.baseUrl}/api/commanders/${commander.id}/quests/${createdQuest.id}/claim`,
         {
-          method: 'PATCH',
+          method: 'POST',
           headers: {
             ...AUTH_HEADERS,
             'content-type': 'application/json',
           },
           body: JSON.stringify({
-            status: 'active',
+            conversationId: 'stale-guard-conversation',
           }),
         },
       )
-      expect(patchToActiveResponse.status).toBe(200)
+      expect(claimResponse.status).toBe(200)
 
       const startResponse = await fetch(`${server.baseUrl}/api/commanders/${commander.id}/start`, {
         method: 'POST',
@@ -4198,20 +4062,20 @@ describe('commanders routes', () => {
       })
       expect(createPendingQuestResponse.status).toBe(201)
 
-      const updateQuestResponse = await fetch(
-        `${server.baseUrl}/api/commanders/${commander.id}/quests/${activeQuest.id}`,
+      const claimResponse = await fetch(
+        `${server.baseUrl}/api/commanders/${commander.id}/quests/${activeQuest.id}/claim`,
         {
-          method: 'PATCH',
+          method: 'POST',
           headers: {
             ...AUTH_HEADERS,
             'content-type': 'application/json',
           },
           body: JSON.stringify({
-            status: 'active',
+            conversationId: 'heartbeat-active-quest-conversation',
           }),
         },
       )
-      expect(updateQuestResponse.status).toBe(200)
+      expect(claimResponse.status).toBe(200)
 
       const patchHeartbeatResponse = await fetch(
         `${server.baseUrl}/api/commanders/${commander.id}/heartbeat`,

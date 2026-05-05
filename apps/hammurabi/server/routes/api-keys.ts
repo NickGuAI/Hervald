@@ -93,9 +93,8 @@ export function createApiKeysRouter(options: ApiKeysRouterOptions = {}): Router 
   // elevated tier); operator-level transcription config requires the same
   // `services:read` / `services:write` scopes that sibling service routes use.
   // Both tiers accept Auth0 JWTs and Hammurabi API keys symmetrically via
-  // combinedAuth — replacing the old auth0Middleware-only global gate that
-  // forced every external caller through the API_KEY_SCOPES union and 403'd
-  // bootstrap admins missing `agents:admin`. See issue/1221.
+  // combinedAuth while preserving the narrower scope split between master-key
+  // management and transcription service configuration.
   const masterKeyAuth = combinedAuth({
     ...options,
     apiKeyStore: store,

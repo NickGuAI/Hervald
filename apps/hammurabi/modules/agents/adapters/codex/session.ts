@@ -11,6 +11,14 @@ import {
 import type { ActionPolicyGate } from '../../../policies/action-policy-gate.js'
 import { handleProviderApproval } from '../../../policies/provider-approval-adapter.js'
 import {
+  createCodexProviderContext,
+  ensureCodexProviderContext,
+  readCodexNotificationCleanup,
+  readCodexRuntime,
+  readCodexRuntimeTeardownPromise,
+  readCodexThreadId,
+} from '../../providers/provider-session-context.js'
+import {
   cloneActiveSkillInvocation,
   snapshotExitedStreamSession,
   toCompletedSession,
@@ -205,33 +213,33 @@ function classifyCodexDispatchError(
 }
 
 export async function startCodexTurn(session: StreamSession, text: string): Promise<void> {
-  const codexThreadId = session.codexThreadId
-  if (!codexThreadId) {
+  const resumeThreadId = readCodexThreadId(session)
+  if (!resumeThreadId) {
     throw new Error('Codex session is missing a thread id')
   }
-  const runtime = session.codexRuntime
+  const runtime = readCodexRuntime(session)
   if (!runtime) {
     throw new Error('Codex runtime is not initialized')
   }
   await runtime.ensureConnected()
   await runtime.sendRequest('turn/start', {
-    threadId: codexThreadId,
+    threadId: resumeThreadId,
     input: buildCodexTurnInput(text),
   })
 }
 
 async function steerCodexTurn(session: StreamSession, turnId: string, text: string): Promise<void> {
-  const codexThreadId = session.codexThreadId
-  if (!codexThreadId) {
+  const resumeThreadId = readCodexThreadId(session)
+  if (!resumeThreadId) {
     throw new Error('Codex session is missing a thread id')
   }
-  const runtime = session.codexRuntime
+  const runtime = readCodexRuntime(session)
   if (!runtime) {
     throw new Error('Codex runtime is not initialized')
   }
   await runtime.ensureConnected()
   await runtime.sendRequest('turn/steer', {
-    threadId: codexThreadId,
+    threadId: resumeThreadId,
     expectedTurnId: turnId,
     input: buildCodexTurnInput(text),
   })
@@ -249,7 +257,7 @@ async function hydrateCodexApprovalRawEvent(
     | 'scheduleTurnWatchdog'
   >,
 ): Promise<CodexApprovalRawEvent> {
-  const runtime = session.codexRuntime
+  const runtime = readCodexRuntime(session)
   if (!runtime) {
     throw new Error('Codex runtime is unavailable')
   }
@@ -257,14 +265,14 @@ async function hydrateCodexApprovalRawEvent(
   let toolCall = getCodexApprovalToolCall(undefined, pendingRequest)
   try {
     const threadReadResult = await runtime.sendRequest('thread/read', {
-      threadId: pendingRequest.threadId ?? session.codexThreadId,
+      threadId: pendingRequest.threadId ?? readCodexThreadId(session),
       includeTurns: true,
     })
     toolCall = getCodexApprovalToolCall(threadReadResult, pendingRequest)
   } catch (error) {
     runtime.log('warn', 'Failed to hydrate Codex approval request from thread/read', {
       sessionName: session.name,
-      threadId: pendingRequest.threadId ?? session.codexThreadId,
+      threadId: pendingRequest.threadId ?? readCodexThreadId(session),
       requestId: pendingRequest.requestId,
       itemId: pendingRequest.itemId,
       error: truncateLogText(error instanceof Error ? error.message : String(error)),
@@ -307,7 +315,7 @@ export function applyCodexApprovalDecision(
       reason: 'Codex approvals are only available for Codex sessions',
     }
   }
-  const runtime = session.codexRuntime
+  const runtime = readCodexRuntime(session)
   if (!runtime) {
     return { ok: false, code: 'unavailable', reason: 'Codex runtime is unavailable' }
   }
@@ -328,12 +336,12 @@ export async function teardownCodexSessionRuntime(
   session: StreamSession,
   reason: string,
 ): Promise<void> {
-  if (session.codexRuntimeTeardownPromise) {
-    await session.codexRuntimeTeardownPromise
+  if (readCodexRuntimeTeardownPromise(session)) {
+    await readCodexRuntimeTeardownPromise(session)
     return
   }
 
-  const runtime = session.codexRuntime
+  const runtime = readCodexRuntime(session)
   if (!runtime) {
     clearCodexActiveTurnId(session)
     try {
@@ -344,21 +352,22 @@ export async function teardownCodexSessionRuntime(
     return
   }
 
-  session.codexNotificationCleanup?.()
-  session.codexNotificationCleanup = undefined
+  readCodexNotificationCleanup(session)?.()
+  ensureCodexProviderContext(session).notificationCleanup = undefined
 
   const teardownPromise = runtime.teardown({
-    threadId: session.codexThreadId,
+    threadId: readCodexThreadId(session),
     reason,
   })
-  session.codexRuntimeTeardownPromise = teardownPromise
+  ensureCodexProviderContext(session).runtimeTeardownPromise = teardownPromise
   try {
     await teardownPromise
   } finally {
     clearCodexActiveTurnId(session)
-    session.codexRuntimeTeardownPromise = undefined
-    session.codexNotificationCleanup = undefined
-    session.codexRuntime = undefined
+    const context = ensureCodexProviderContext(session)
+    context.runtimeTeardownPromise = undefined
+    context.notificationCleanup = undefined
+    context.runtime = undefined
   }
 }
 
@@ -464,19 +473,20 @@ async function recoverCodexTransport(
   }
 
   const recovery = (async () => {
-    if (deps.getActiveSession(sessionName) !== session || session.codexRuntimeTeardownPromise) {
+    if (deps.getActiveSession(sessionName) !== session || readCodexRuntimeTeardownPromise(session)) {
       return
     }
 
-    const runtime = session.codexRuntime
-    if (!runtime || !session.codexThreadId) {
+    const runtime = readCodexRuntime(session)
+    const threadId = readCodexThreadId(session)
+    if (!runtime || !threadId) {
       await failCodexSession(sessionName, session, reason, deps)
       deps.schedulePersistedSessionsWrite()
       return
     }
 
     const terminalFailure = await runtime.waitForTerminalFailure(CODEX_TRANSPORT_RECOVERY_GRACE_MS)
-    if (deps.getActiveSession(sessionName) !== session || session.codexRuntimeTeardownPromise) {
+    if (deps.getActiveSession(sessionName) !== session || readCodexRuntimeTeardownPromise(session)) {
       return
     }
     if (terminalFailure) {
@@ -497,12 +507,12 @@ async function recoverCodexTransport(
     try {
       await runtime.ensureConnected()
       await runtime.sendRequest('thread/resume', {
-        threadId: session.codexThreadId,
+        threadId,
         sandbox,
         approvalPolicy,
       })
     } catch (error) {
-      if (deps.getActiveSession(sessionName) !== session || session.codexRuntimeTeardownPromise) {
+      if (deps.getActiveSession(sessionName) !== session || readCodexRuntimeTeardownPromise(session)) {
         return
       }
 
@@ -520,7 +530,7 @@ async function recoverCodexTransport(
       return
     }
 
-    if (deps.getActiveSession(sessionName) !== session || session.codexRuntimeTeardownPromise) {
+    if (deps.getActiveSession(sessionName) !== session || readCodexRuntimeTeardownPromise(session)) {
       return
     }
 
@@ -603,7 +613,7 @@ export async function sendTextToCodexSession(
       return { ok: false, retryable: false, reason: 'Session unavailable' }
     }
 
-    const runtime = session.codexRuntime
+    const runtime = readCodexRuntime(session)
     const classifiedError = classifyCodexDispatchError(dispatchMethod, error)
     if (classifiedError.retryable) {
       if (classifiedError.clearActiveTurnId) {
@@ -611,7 +621,7 @@ export async function sendTextToCodexSession(
       }
       runtime?.log('info', 'Codex live dispatch deferred after retryable transport response', {
         sessionName: session.name,
-        threadId: session.codexThreadId,
+        threadId: readCodexThreadId(session),
         method: dispatchMethod,
         activeTurnId: activeTurnId ?? null,
         reason: classifiedError.reason,
@@ -763,12 +773,13 @@ async function createCodexSessionFromThread(
     queuedMessageDrainScheduled: false,
     queuedMessageDrainPending: false,
     queuedMessageDrainPendingForce: false,
-    codexThreadId: threadId,
+    providerContext: createCodexProviderContext({
+      threadId,
+      runtime,
+    }),
     activeTurnId: undefined,
     adapter: createCodexSessionAdapter(deps),
     resumedFrom: options.resumedFrom,
-    codexNotificationCleanup: undefined,
-    codexRuntime: runtime,
     restoredIdle: false,
   }
 
@@ -941,7 +952,7 @@ async function createCodexSessionFromThread(
       deps.broadcastEvent(session, event)
     }
   })
-  session.codexNotificationCleanup = notificationCleanup
+  ensureCodexProviderContext(session).notificationCleanup = notificationCleanup
 
   if (task.length > 0) {
     deps.resetActiveTurnState(session)
@@ -992,10 +1003,10 @@ export async function createCodexAppServerSession(
       if (!candidate || candidate.kind !== 'stream' || candidate.agentType !== 'codex') {
         return
       }
-      if (candidate.codexRuntime !== runtime) {
+      if (readCodexRuntime(candidate) !== runtime) {
         return
       }
-      if (candidate.codexRuntimeTeardownPromise) {
+      if (readCodexRuntimeTeardownPromise(candidate)) {
         return
       }
       if (failure.kind === 'transport_disconnect') {

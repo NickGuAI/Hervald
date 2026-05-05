@@ -2,7 +2,7 @@
  * Hervald — CenterColumn
  *
  * Fluid main content area for the Command Room:
- *   - Tab bar: Chat · Quests · Sentinels · Automation · Identity
+ *   - Tab bar: Chat · Quests · Automations · Identity
  *   - Tab-bar status controls with commander label + Stop + theme toggle
  *   - Delegated sub-agent strip
  *   - ChatPane (tab=chat) or placeholder for other tabs
@@ -11,25 +11,24 @@
  * Approval integration uses usePendingApprovals + useApprovalDecision
  * from the existing hooks — no new endpoints created.
  */
+import { useProviderRegistry } from '@/hooks/use-providers'
 import { usePendingApprovals, useApprovalDecision, type PendingApproval } from '@/hooks/use-approvals'
 import { StatusDot } from '@/surfaces/hervald'
-import type { SessionQueueSnapshot } from '@/types'
+import type { AgentType, SessionQueueSnapshot } from '@/types'
 import { Moon, Square, Sun } from 'lucide-react'
 import type { CSSProperties } from 'react'
 import { SessionComposer, type SessionComposerSubmitPayload } from '@modules/agents/components/SessionComposer'
 import { TerminalView } from '@modules/agents/page-shell/TerminalView'
 import type { MsgItem } from '@modules/agents/messages/model'
 import type {
-  CommanderAgentType,
   CommanderCronCreateInput,
   CommanderCronTask,
   CommanderSession,
 } from '@modules/commanders/hooks/useCommander'
+import { AutomationPanel } from '@modules/commanders/components/AutomationPanel'
 import { QuestBoard } from '@modules/commanders/components/QuestBoard'
-import { CommanderSentinelsTab } from '@modules/commanders/components/CommanderSentinelsTab'
-import { CommanderCronTab } from '@modules/commanders/components/CommanderCronTab'
 import { CommanderIdentityTab } from '@modules/commanders/components/CommanderIdentityTab'
-import { CommanderStartControl } from '@modules/commanders/components/CommanderStartControl'
+import { CreateConversationPanel } from '@modules/conversation/components/CreateConversationPanel'
 import { ChatPane } from './ChatPane'
 import { QueueDock } from './QueueDock'
 import type { ChatSession } from './SessionsColumn'
@@ -78,7 +77,7 @@ export interface CenterColumnProps {
     timezone?: string
     machine?: string
     workDir?: string
-    agentType?: 'claude' | 'codex' | 'gemini'
+    agentType?: AgentType
     instruction?: string
     model?: string
     enabled?: boolean
@@ -94,7 +93,10 @@ export interface CenterColumnProps {
   deleteCronPending?: boolean
   deleteCronId?: string | null
   onOpenWorkspace?: () => void
-  onStartCommander?: (agentType: CommanderAgentType) => void
+  onCreateChat?: (agentType: AgentType) => void | Promise<void>
+  createChatPending?: boolean
+  defaultCreateAgentType?: AgentType
+  availableAgentTypes?: AgentType[]
   onStopCommander?: () => void
   onCloseActiveChat?: () => void
   onKillSession?: (sessionName: string, agentType?: ChatSession['agentType']) => Promise<void>
@@ -125,14 +127,16 @@ export interface CenterColumnProps {
 const TABS = [
   { id: 'chat',      label: 'Chat' },
   { id: 'quests',    label: 'Quests' },
-  { id: 'sentinels', label: 'Sentinels' },
-  { id: 'cron',      label: 'Automation' },
+  { id: 'automation', label: 'Automations' },
   { id: 'identity',  label: 'Identity' },
 ]
 
 /* ---- helpers ---- */
 
 function normalizeCommanderStatus(status: string): string {
+  // TODO(#1359-followup): once Part A is verified across all surfaces,
+  // the 'running' -> 'connected' mapping below is dead code (status fed in
+  // is ConversationStatus only). Remove in a follow-up sweep.
   if (status === 'running') {
     return 'connected'
   }
@@ -183,56 +187,6 @@ function EmptyPanel({ message }: { message: string }) {
   )
 }
 
-function IdleStartState({
-  commanderName,
-  agentType,
-  onStart,
-}: {
-  commanderName: string
-  agentType?: CommanderAgentType
-  onStart?: (agentType: CommanderAgentType) => void
-}) {
-  return (
-    <div
-      style={{
-        minHeight: 360,
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        padding: '40px 32px 56px',
-      }}
-    >
-      <div
-        style={{
-          display: 'flex',
-          flexDirection: 'column',
-          alignItems: 'center',
-          gap: 14,
-        }}
-      >
-        {onStart && (
-          <CommanderStartControl
-            commanderName={commanderName}
-            initialAgentType={agentType}
-            onStart={onStart}
-            variant="desktop"
-          />
-        )}
-        <p
-          style={{
-            fontSize: 12,
-            letterSpacing: '0.08em',
-            textTransform: 'uppercase',
-            color: 'var(--hv-fg-faint)',
-          }}
-        >
-          Idle
-        </p>
-      </div>
-    </div>
-  )
-}
-
 /* ---- main export ---- */
 
 export function CenterColumn({
@@ -262,7 +216,10 @@ export function CenterColumn({
   deleteCronPending = false,
   deleteCronId = null,
   onOpenWorkspace,
-  onStartCommander,
+  onCreateChat,
+  createChatPending = false,
+  defaultCreateAgentType,
+  availableAgentTypes,
   onStopCommander,
   onCloseActiveChat,
   onKillSession,
@@ -285,8 +242,15 @@ export function CenterColumn({
   theme,
   onSetTheme,
 }: CenterColumnProps) {
+  const { data: providers = [] } = useProviderRegistry()
   const currentTab = activeTab
-  const visibleTabs = isGlobalScope ? TABS.filter((tab) => tab.id === 'cron') : TABS
+  const providerOptions = availableAgentTypes?.length
+    ? availableAgentTypes
+    : providers.map((provider) => provider.id)
+  const createConversationProviderOptions = providerOptions.length > 0
+    ? providerOptions
+    : undefined
+  const visibleTabs = isGlobalScope ? TABS.filter((tab) => tab.id === 'automation') : TABS
   const commanderState = normalizeCommanderStatus(commander.status)
   const commanderStateLabel = commanderStatusLabel(commander.status)
   const commanderStatePulse = shouldPulseCommanderStatus(commander.status)
@@ -304,13 +268,12 @@ export function CenterColumn({
   const hasCommander = !isGlobalScope && commander.id.trim().length > 0
   const hasConversation = isGlobalScope
     ? false
-    : Boolean(activeChatSession) || hasSelectedConversation || hasCommander || commander.name !== 'No commander'
-  const idleCommanderChat = !isGlobalScope
+    : Boolean(activeChatSession) || hasSelectedConversation
+  const needsConversation = !isGlobalScope
     && currentTab === 'chat'
     && hasCommander
     && !activeChatSession
     && !hasSelectedConversation
-    && commander.status !== 'running'
   const activeChatIsPty = activeChatSession?.sessionType === 'pty'
   const showTerminalSession = currentTab === 'chat' && activeChatIsPty
 
@@ -335,17 +298,19 @@ export function CenterColumn({
   }
 
   function renderTabContent() {
-    if (isGlobalScope && currentTab !== 'cron') {
+    if (isGlobalScope && currentTab !== 'automation') {
       return <EmptyPanel message="Not applicable for Global scope." />
     }
 
     if (currentTab === 'chat') {
-      if (idleCommanderChat) {
+      if (needsConversation) {
         return (
-          <IdleStartState
+          <CreateConversationPanel
             commanderName={commander.name}
-            agentType={commander.agentType}
-            onStart={onStartCommander}
+            onCreateChat={onCreateChat}
+            createChatPending={createChatPending}
+            defaultAgentType={defaultCreateAgentType ?? commander.agentType}
+            providerOptions={createConversationProviderOptions}
           />
         )
       }
@@ -392,39 +357,14 @@ export function CenterColumn({
       )
     }
 
-    if (currentTab === 'sentinels') {
-      return <CommanderSentinelsTab commander={detailedCommander} />
-    }
-
-    if (currentTab === 'cron') {
-      if (!addCron || !toggleCron || !updateCron || !triggerCron || !deleteCron) {
-        return <EmptyPanel message="Automation controls are not available right now." />
-      }
-
+    if (currentTab === 'automation') {
       return (
-        <CommanderCronTab
+        <AutomationPanel
           scope={
             isGlobalScope
               ? { kind: 'global' }
               : { kind: 'commander', commander: detailedCommander }
           }
-          crons={crons}
-          cronsLoading={cronsLoading}
-          cronsError={cronsError}
-          addCron={addCron}
-          addCronPending={addCronPending}
-          toggleCron={toggleCron}
-          toggleCronPending={toggleCronPending}
-          toggleCronId={toggleCronId}
-          updateCron={updateCron}
-          updateCronPending={updateCronPending}
-          updateCronId={updateCronId}
-          triggerCron={triggerCron}
-          triggerCronPending={triggerCronPending}
-          triggerCronId={triggerCronId}
-          deleteCron={deleteCron}
-          deleteCronPending={deleteCronPending}
-          deleteCronId={deleteCronId}
         />
       )
     }
@@ -520,7 +460,11 @@ export function CenterColumn({
               color: 'var(--hv-fg-faint)',
             }}
           >
-            {isGlobalScope ? `${commander.name} · automation scope` : `${commander.name} · live conversation`}
+            {isGlobalScope
+              ? `${commander.name} · automation scope`
+              : hasConversation
+                ? `${commander.name} · live conversation`
+                : `${commander.name} · start conversation`}
           </span>
           {hasCommander && commander.status === 'running' && onStopCommander && (
             <button
@@ -639,8 +583,8 @@ export function CenterColumn({
             disabled={!composerEnabled}
             disabledMessage={isGlobalScope
               ? 'Chat is not available for Global scope.'
-              : idleCommanderChat
-                ? `Start ${commander.name} to begin chatting.`
+              : needsConversation
+                ? `Create a chat to message ${commander.name}.`
                 : !hasConversation
                   ? 'Select a commander or worker to start chatting.'
                   : undefined}

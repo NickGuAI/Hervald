@@ -4,11 +4,13 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import type { ApiKeyStoreLike } from '../../../server/api-keys/store'
-import { createTelemetryRouter } from '../routes'
+import type { TelemetryHub } from '../hub'
+import { createTelemetryRouterWithHub } from '../routes'
 import type { LocalScannerLike } from '../local-scanner'
 
 interface RunningServer {
   baseUrl: string
+  hub: TelemetryHub
   close: () => Promise<void>
 }
 
@@ -52,14 +54,15 @@ async function startServer(options: {
 }): Promise<RunningServer> {
   const app = express()
   app.use(express.json())
+  const telemetry = createTelemetryRouterWithHub({
+    apiKeyStore: options.apiKeyStore,
+    dataFilePath: options.storeFilePath,
+    now: options.now,
+    localScanner: options.localScanner,
+  })
   app.use(
     '/api/telemetry',
-    createTelemetryRouter({
-      apiKeyStore: options.apiKeyStore,
-      dataFilePath: options.storeFilePath,
-      now: options.now,
-      localScanner: options.localScanner,
-    }),
+    telemetry.router,
   )
 
   const server = await new Promise<ReturnType<typeof app.listen>>((resolve) => {
@@ -73,6 +76,7 @@ async function startServer(options: {
 
   return {
     baseUrl: `http://127.0.0.1:${address.port}`,
+    hub: telemetry.hub,
     close: async () => {
       await new Promise<void>((resolve, reject) => {
         server.close((error) => {
@@ -110,32 +114,14 @@ describe('telemetry routes', () => {
       now: () => now,
     })
 
-    const ingestResponse = await fetch(`${server.baseUrl}/api/telemetry/ingest`, {
+    const compactResponse = await fetch(`${server.baseUrl}/api/telemetry/compact`, {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
       },
-      body: JSON.stringify({
-        sessionId: 'session-1',
-        agentName: 'codex',
-        model: 'o3',
-        inputTokens: 1,
-        outputTokens: 1,
-        cost: 0.001,
-      }),
+      body: JSON.stringify({ retentionDays: 30 }),
     })
-    expect(ingestResponse.status).toBe(503)
-
-    const heartbeatResponse = await fetch(`${server.baseUrl}/api/telemetry/heartbeat`, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-      },
-      body: JSON.stringify({
-        sessionId: 'session-1',
-      }),
-    })
-    expect(heartbeatResponse.status).toBe(503)
+    expect(compactResponse.status).toBe(503)
 
     const sessionsResponse = await fetch(`${server.baseUrl}/api/telemetry/sessions`)
     expect(sessionsResponse.status).toBe(503)
@@ -155,27 +141,15 @@ describe('telemetry routes', () => {
       now: () => now,
     })
 
-    const response = await fetch(`${server.baseUrl}/api/telemetry/ingest`, {
+    const response = await fetch(`${server.baseUrl}/api/telemetry/compact`, {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
       },
-      body: JSON.stringify({}),
+      body: JSON.stringify({ retentionDays: 30 }),
     })
 
     expect(response.status).toBe(401)
-
-    const heartbeatResponse = await fetch(`${server.baseUrl}/api/telemetry/heartbeat`, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-      },
-      body: JSON.stringify({
-        sessionId: 'session-1',
-      }),
-    })
-
-    expect(heartbeatResponse.status).toBe(401)
 
     const readResponse = await fetch(`${server.baseUrl}/api/telemetry/sessions`)
     expect(readResponse.status).toBe(401)
@@ -183,7 +157,7 @@ describe('telemetry routes', () => {
     await server.close()
   })
 
-  it('ingests telemetry, updates lifecycle, and returns summary data', async () => {
+  it('returns lifecycle status and summary data for recorded telemetry calls', async () => {
     let now = new Date('2026-02-10T10:00:00.000Z')
     const filePath = await createTempStoreFilePath()
     const server = await startServer({
@@ -192,25 +166,18 @@ describe('telemetry routes', () => {
       now: () => now,
     })
 
-    const ingestResponse = await fetch(`${server.baseUrl}/api/telemetry/ingest`, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'x-hammurabi-api-key': 'test-key',
-      },
-      body: JSON.stringify({
-        sessionId: 'session-1',
-        agentName: 'codex',
-        model: 'o3',
-        provider: 'openai',
-        currentTask: 'Implementing routes',
-        inputTokens: 200,
-        outputTokens: 100,
-        cost: 0.042,
-      }),
+    await server.hub.ingest({
+      sessionId: 'session-1',
+      agentName: 'codex',
+      model: 'o3',
+      provider: 'openai',
+      currentTask: 'Implementing routes',
+      inputTokens: 200,
+      outputTokens: 100,
+      cost: 0.042,
+      durationMs: 0,
+      timestamp: now,
     })
-
-    expect(ingestResponse.status).toBe(202)
 
     const sessionsResponse = await fetch(`${server.baseUrl}/api/telemetry/sessions`, {
       headers: {
@@ -262,60 +229,6 @@ describe('telemetry routes', () => {
     })
     const staleSessions = (await staleResponse.json()) as Array<{ status: string }>
     expect(staleSessions[0]?.status).toBe('stale')
-
-    now = new Date('2026-02-10T10:08:10.000Z')
-    const heartbeatResponse = await fetch(`${server.baseUrl}/api/telemetry/heartbeat`, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'x-hammurabi-api-key': 'test-key',
-      },
-      body: JSON.stringify({
-        sessionId: 'session-1',
-        currentTask: 'Running final tests',
-      }),
-    })
-
-    expect(heartbeatResponse.status).toBe(200)
-
-    const activeResponse = await fetch(`${server.baseUrl}/api/telemetry/sessions`, {
-      headers: {
-        'x-hammurabi-api-key': 'test-key',
-      },
-    })
-    const activeSessions = (await activeResponse.json()) as Array<{
-      status: string
-      currentTask: string
-    }>
-    expect(activeSessions[0]?.status).toBe('active')
-    expect(activeSessions[0]?.currentTask).toBe('Running final tests')
-
-    const completedHeartbeat = await fetch(
-      `${server.baseUrl}/api/telemetry/heartbeat`,
-      {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          'x-hammurabi-api-key': 'test-key',
-        },
-        body: JSON.stringify({
-          sessionId: 'session-1',
-          completed: true,
-        }),
-      },
-    )
-
-    expect(completedHeartbeat.status).toBe(200)
-
-    const completedSessionsResponse = await fetch(`${server.baseUrl}/api/telemetry/sessions`, {
-      headers: {
-        'x-hammurabi-api-key': 'test-key',
-      },
-    })
-    const completedSessions = (await completedSessionsResponse.json()) as Array<{
-      status: string
-    }>
-    expect(completedSessions[0]?.status).toBe('completed')
 
     const detailResponse = await fetch(`${server.baseUrl}/api/telemetry/sessions/session-1`, {
       headers: {
@@ -370,23 +283,18 @@ describe('telemetry routes', () => {
       now: () => now,
     })
 
-    const ingestResponse = await fetch(`${firstServer.baseUrl}/api/telemetry/ingest`, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'x-hammurabi-api-key': 'test-key',
-      },
-      body: JSON.stringify({
-        sessionId: 'restart-session',
-        agentName: 'claude-code',
-        model: 'claude-sonnet',
-        inputTokens: 100,
-        outputTokens: 50,
-        cost: 0.02,
-      }),
+    await firstServer.hub.ingest({
+      sessionId: 'restart-session',
+      agentName: 'claude-code',
+      model: 'claude-sonnet',
+      provider: 'claude-local',
+      inputTokens: 100,
+      outputTokens: 50,
+      cost: 0.02,
+      durationMs: 0,
+      currentTask: 'Working',
+      timestamp: now,
     })
-
-    expect(ingestResponse.status).toBe(202)
     await firstServer.close()
 
     now = new Date('2026-02-11T08:00:10.000Z')
@@ -426,41 +334,30 @@ describe('telemetry routes', () => {
       now: () => now,
     })
 
-    const ingestOldWeek = await fetch(`${server.baseUrl}/api/telemetry/ingest`, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'x-hammurabi-api-key': 'test-key',
-      },
-      body: JSON.stringify({
-        sessionId: 's-old',
-        agentName: 'codex',
-        model: 'o3',
-        inputTokens: 100,
-        outputTokens: 50,
-        cost: 1,
-        timestamp: '2026-02-08T23:30:00.000Z',
-      }),
+    await server.hub.ingest({
+      sessionId: 's-old',
+      agentName: 'codex',
+      model: 'o3',
+      provider: 'openai',
+      inputTokens: 100,
+      outputTokens: 50,
+      cost: 1,
+      durationMs: 0,
+      currentTask: 'Working',
+      timestamp: new Date('2026-02-08T23:30:00.000Z'),
     })
-    expect(ingestOldWeek.status).toBe(202)
-
-    const ingestThisWeek = await fetch(`${server.baseUrl}/api/telemetry/ingest`, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'x-hammurabi-api-key': 'test-key',
-      },
-      body: JSON.stringify({
-        sessionId: 's-new',
-        agentName: 'codex',
-        model: 'o3',
-        inputTokens: 100,
-        outputTokens: 50,
-        cost: 2,
-        timestamp: '2026-02-10T09:00:00.000Z',
-      }),
+    await server.hub.ingest({
+      sessionId: 's-new',
+      agentName: 'codex',
+      model: 'o3',
+      provider: 'openai',
+      inputTokens: 100,
+      outputTokens: 50,
+      cost: 2,
+      durationMs: 0,
+      currentTask: 'Working',
+      timestamp: new Date('2026-02-10T09:00:00.000Z'),
     })
-    expect(ingestThisWeek.status).toBe(202)
 
     const summaryResponse = await fetch(`${server.baseUrl}/api/telemetry/summary`, {
       headers: {
@@ -561,21 +458,17 @@ describe('telemetry routes', () => {
 
     const days = ['2026-02-18', '2026-02-19', '2026-02-20']
     for (const [i, day] of days.entries()) {
-      await fetch(`${server.baseUrl}/api/telemetry/ingest`, {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          'x-hammurabi-api-key': 'test-key',
-        },
-        body: JSON.stringify({
-          sessionId: `s-${i}`,
-          agentName: 'codex',
-          model: 'o3',
-          inputTokens: 10,
-          outputTokens: 5,
-          cost: 0.01 * (i + 1),
-          timestamp: `${day}T10:00:00.000Z`,
-        }),
+      await server.hub.ingest({
+        sessionId: `s-${i}`,
+        agentName: 'codex',
+        model: 'o3',
+        provider: 'openai',
+        inputTokens: 10,
+        outputTokens: 5,
+        cost: 0.01 * (i + 1),
+        durationMs: 0,
+        currentTask: 'Working',
+        timestamp: new Date(`${day}T10:00:00.000Z`),
       })
     }
 
@@ -607,21 +500,17 @@ describe('telemetry routes', () => {
       now: () => new Date('2026-02-20T12:00:00.000Z'),
     })
 
-    // Ingest one entry so the file exists
-    await fetch(`${server.baseUrl}/api/telemetry/ingest`, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'x-hammurabi-api-key': 'test-key',
-      },
-      body: JSON.stringify({
-        sessionId: 's-compact',
-        agentName: 'codex',
-        model: 'o3',
-        inputTokens: 5,
-        outputTokens: 5,
-        cost: 0.005,
-      }),
+    await server.hub.ingest({
+      sessionId: 's-compact',
+      agentName: 'codex',
+      model: 'o3',
+      provider: 'openai',
+      inputTokens: 5,
+      outputTokens: 5,
+      cost: 0.005,
+      durationMs: 0,
+      currentTask: 'Working',
+      timestamp: new Date('2026-02-20T12:00:00.000Z'),
     })
 
     const compactResponse = await fetch(`${server.baseUrl}/api/telemetry/compact`, {

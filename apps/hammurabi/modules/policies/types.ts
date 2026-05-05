@@ -132,6 +132,9 @@ export interface ApprovalResolutionOutcome {
   timedOut?: boolean
 }
 
+// Approval history has separate defaults for what operators see versus what
+// stays on disk: `/api/approvals/history` surfaces the last 24h by default,
+// while `audit.jsonl` retention defaults to 7 days before pruning.
 export interface ApprovalHistoryEntry {
   timestamp: string
   type: 'approval.enqueued' | 'approval.resolved'

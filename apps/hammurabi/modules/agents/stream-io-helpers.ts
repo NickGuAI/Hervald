@@ -102,7 +102,7 @@ export function createStreamIoHelpers(ctx: StreamIoContext): StreamIoHelpers {
   }
 
   function resetActiveTurnState(session: StreamSession): void {
-    if (session.lastTurnCompleted && session.sessionType !== 'cron') {
+    if (session.lastTurnCompleted && session.sessionType !== 'cron' && session.sessionType !== 'automation') {
       session.lastTurnCompleted = false
       session.completedTurnAt = undefined
       session.finalResultEvent = undefined

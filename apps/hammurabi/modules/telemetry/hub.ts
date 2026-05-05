@@ -1,8 +1,7 @@
 /**
  * TelemetryHub — in-memory session/call aggregator.
  *
- * Extracted from routes.ts so that both the legacy REST endpoints and the new
- * OTEL receiver can share the same hub instance.
+ * Shared by the OTEL receiver, local scanners, and read routes.
  */
 
 import { randomUUID } from 'node:crypto'
@@ -92,15 +91,6 @@ export interface IngestInput {
   cost: number
   durationMs: number
   currentTask: string
-  timestamp: Date
-}
-
-export interface HeartbeatInput {
-  sessionId: string
-  agentName?: string
-  model?: string
-  currentTask?: string
-  completed: boolean
   timestamp: Date
 }
 
@@ -253,10 +243,6 @@ export class TelemetryHub {
     await this.ready
   }
 
-  // -----------------------------------------------------------------------
-  // Legacy ingest / heartbeat
-  // -----------------------------------------------------------------------
-
   async ingest(input: IngestInput): Promise<TelemetryIngestRecord> {
     await this.ensureReady()
 
@@ -282,29 +268,6 @@ export class TelemetryHub {
 
     await this.options.store.append(entry)
     this.applyIngestRecord(record)
-    return record
-  }
-
-  async heartbeat(input: HeartbeatInput): Promise<TelemetryHeartbeatRecord> {
-    await this.ensureReady()
-
-    const record: TelemetryHeartbeatRecord = {
-      sessionId: input.sessionId,
-      agentName: input.agentName,
-      model: input.model,
-      currentTask: input.currentTask,
-      completed: input.completed,
-      timestamp: input.timestamp.toISOString(),
-    }
-
-    const entry: TelemetryStoreEntry = {
-      type: 'heartbeat',
-      recordedAt: this.now().toISOString(),
-      payload: record,
-    }
-
-    await this.options.store.append(entry)
-    this.applyHeartbeatRecord(record)
     return record
   }
 

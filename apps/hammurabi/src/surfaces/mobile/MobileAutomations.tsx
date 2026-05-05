@@ -1,81 +1,74 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo } from 'react'
 import { useSearchParams } from 'react-router-dom'
+import { AutomationPanel } from '@modules/commanders/components/AutomationPanel'
 import type { CommanderSession } from '@modules/commanders/hooks/useCommander'
-import { QuestBoard } from '@modules/commanders/components/QuestBoard'
-import { CommanderCronTab } from '@modules/commanders/components/CommanderCronTab'
-import { SentinelPanel } from '@modules/sentinels/components/SentinelPanel'
+import type { AutomationTriggerFilter } from '@modules/automations/hooks/useAutomations'
 
-type AutomationSegment = 'cron' | 'sentinels' | 'quests'
+function readTriggerFilter(triggerValue: string | null): AutomationTriggerFilter {
+  if (triggerValue === 'schedule' || triggerValue === 'quest' || triggerValue === 'manual') {
+    return triggerValue
+  }
 
-function readSegment(value: string | null): AutomationSegment {
-  if (value === 'sentinels' || value === 'quests') {
+  return 'all'
+}
+
+function readCommanderFilter(value: string | null, fallbackCommanderId: string | null, commanders: CommanderSession[]): string {
+  if (value && (value === 'global' || commanders.some((commander) => commander.id === value))) {
     return value
   }
-  return 'cron'
+  if (fallbackCommanderId) {
+    return fallbackCommanderId
+  }
+  return commanders[0]?.id ?? 'global'
 }
 
 interface MobileAutomationsProps {
   commanders: CommanderSession[]
   selectedCommanderId: string | null
   onSelectCommanderId: (id: string) => void
-  crons: React.ComponentProps<typeof CommanderCronTab>['crons']
-  cronsLoading: React.ComponentProps<typeof CommanderCronTab>['cronsLoading']
-  cronsError: React.ComponentProps<typeof CommanderCronTab>['cronsError']
-  addCron: React.ComponentProps<typeof CommanderCronTab>['addCron']
-  addCronPending: React.ComponentProps<typeof CommanderCronTab>['addCronPending']
-  toggleCron: React.ComponentProps<typeof CommanderCronTab>['toggleCron']
-  toggleCronPending: React.ComponentProps<typeof CommanderCronTab>['toggleCronPending']
-  toggleCronId?: React.ComponentProps<typeof CommanderCronTab>['toggleCronId']
-  updateCron: React.ComponentProps<typeof CommanderCronTab>['updateCron']
-  updateCronPending: React.ComponentProps<typeof CommanderCronTab>['updateCronPending']
-  updateCronId?: React.ComponentProps<typeof CommanderCronTab>['updateCronId']
-  triggerCron: React.ComponentProps<typeof CommanderCronTab>['triggerCron']
-  triggerCronPending: React.ComponentProps<typeof CommanderCronTab>['triggerCronPending']
-  triggerCronId?: React.ComponentProps<typeof CommanderCronTab>['triggerCronId']
-  deleteCron: React.ComponentProps<typeof CommanderCronTab>['deleteCron']
-  deleteCronPending: React.ComponentProps<typeof CommanderCronTab>['deleteCronPending']
-  deleteCronId?: React.ComponentProps<typeof CommanderCronTab>['deleteCronId']
+  crons?: unknown
+  cronsLoading?: unknown
+  cronsError?: unknown
+  addCron?: unknown
+  addCronPending?: unknown
+  toggleCron?: unknown
+  toggleCronPending?: unknown
+  toggleCronId?: unknown
+  updateCron?: unknown
+  updateCronPending?: unknown
+  updateCronId?: unknown
+  triggerCron?: unknown
+  triggerCronPending?: unknown
+  triggerCronId?: unknown
+  deleteCron?: unknown
+  deleteCronPending?: unknown
+  deleteCronId?: unknown
 }
 
 export function MobileAutomations({
   commanders,
   selectedCommanderId,
   onSelectCommanderId,
-  crons,
-  cronsLoading,
-  cronsError,
-  addCron,
-  addCronPending,
-  toggleCron,
-  toggleCronPending,
-  toggleCronId,
-  updateCron,
-  updateCronPending,
-  updateCronId,
-  triggerCron,
-  triggerCronPending,
-  triggerCronId,
-  deleteCron,
-  deleteCronPending,
-  deleteCronId,
 }: MobileAutomationsProps) {
   const [searchParams, setSearchParams] = useSearchParams()
-  const [showCreateSentinelForm, setShowCreateSentinelForm] = useState(false)
-  const segment = readSegment(searchParams.get('segment'))
-  const commanderFilter = searchParams.get('commander') ?? selectedCommanderId ?? commanders[0]?.id ?? 'all'
+  const triggerFilter = readTriggerFilter(searchParams.get('trigger'))
+  const commanderFilter = readCommanderFilter(
+    searchParams.get('commander'),
+    selectedCommanderId,
+    commanders,
+  )
 
   useEffect(() => {
-    if (commanderFilter !== 'all' && commanderFilter !== selectedCommanderId) {
-      onSelectCommanderId(commanderFilter)
+    if (commanderFilter === 'global' || commanderFilter === selectedCommanderId) {
+      return
     }
+    onSelectCommanderId(commanderFilter)
   }, [commanderFilter, onSelectCommanderId, selectedCommanderId])
 
-  const scopeCommander = useMemo(() => {
-    if (commanderFilter === 'all') {
-      return commanders.find((commander) => commander.id === selectedCommanderId) ?? commanders[0] ?? null
-    }
-    return commanders.find((commander) => commander.id === commanderFilter) ?? null
-  }, [commanders, commanderFilter, selectedCommanderId])
+  const scopeCommander = useMemo(
+    () => commanders.find((commander) => commander.id === commanderFilter) ?? null,
+    [commanders, commanderFilter],
+  )
 
   function updateParams(patch: Record<string, string | null>) {
     const nextParams = new URLSearchParams(searchParams)
@@ -97,42 +90,18 @@ export function MobileAutomations({
         <p className="mt-2 text-sm italic text-sumi-diluted">how commanders wake up on their own</p>
       </div>
 
-      <div className="border-b border-ink-border/70 px-4 pb-3">
-        <div className="flex gap-2">
-          {([
-            ['cron', 'Cron'],
-            ['sentinels', 'Sentinels'],
-            ['quests', 'Quests'],
-          ] as const).map(([value, label]) => (
-            <button
-              key={value}
-              type="button"
-              onClick={() => updateParams({ segment: value })}
-              className="flex-1 rounded-[2px_10px_2px_10px] px-3 py-2 text-[11px] uppercase tracking-[0.08em]"
-              style={{
-                background: segment === value ? 'var(--hv-fg)' : 'transparent',
-                color: segment === value ? 'var(--hv-bg)' : 'var(--hv-fg-subtle)',
-                border: segment === value ? '1px solid var(--hv-fg)' : '1px solid var(--hv-border-hair)',
-              }}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      <div className="hv-scroll flex gap-2 overflow-x-auto px-4 py-3">
+      <div className="hv-scroll flex gap-2 overflow-x-auto px-4 pb-3">
         <button
           type="button"
-          onClick={() => updateParams({ commander: 'all' })}
+          onClick={() => updateParams({ commander: 'global' })}
           className="shrink-0 rounded-full px-3 py-1.5 text-[11px] font-mono"
           style={{
-            background: commanderFilter === 'all' ? 'var(--hv-fg)' : 'transparent',
-            color: commanderFilter === 'all' ? 'var(--hv-bg)' : 'var(--hv-fg-subtle)',
-            border: commanderFilter === 'all' ? '1px solid var(--hv-fg)' : '1px solid var(--hv-border-hair)',
+            background: commanderFilter === 'global' ? 'var(--hv-fg)' : 'transparent',
+            color: commanderFilter === 'global' ? 'var(--hv-bg)' : 'var(--hv-fg-subtle)',
+            border: commanderFilter === 'global' ? '1px solid var(--hv-fg)' : '1px solid var(--hv-border-hair)',
           }}
         >
-          all
+          global
         </button>
         {commanders.map((commander) => (
           <button
@@ -151,81 +120,20 @@ export function MobileAutomations({
         ))}
       </div>
 
-      <div className="min-h-0 flex-1 overflow-hidden px-0 pb-0">
-        {segment === 'cron' ? (
-          <CommanderCronTab
-            scope={
-              commanderFilter === 'all' || !scopeCommander
-                ? { kind: 'global' }
-                : { kind: 'commander', commander: scopeCommander }
-            }
-            crons={crons}
-            cronsLoading={cronsLoading}
-            cronsError={cronsError}
-            addCron={addCron}
-            addCronPending={addCronPending}
-            toggleCron={toggleCron}
-            toggleCronPending={toggleCronPending}
-            toggleCronId={toggleCronId}
-            updateCron={updateCron}
-            updateCronPending={updateCronPending}
-            updateCronId={updateCronId}
-            triggerCron={triggerCron}
-            triggerCronPending={triggerCronPending}
-            triggerCronId={triggerCronId}
-            deleteCron={deleteCron}
-            deleteCronPending={deleteCronPending}
-            deleteCronId={deleteCronId}
-          />
-        ) : null}
-
-        {segment === 'sentinels' ? (
-          <div className="h-full px-4 pb-4">
-            <div className="mb-3 flex justify-end">
-              <button
-                type="button"
-                onClick={() => setShowCreateSentinelForm(true)}
-                disabled={!scopeCommander}
-                className="btn-ghost !px-3 !py-1.5 text-xs disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                Add Sentinel
-              </button>
-            </div>
-            {commanderFilter === 'all' ? (
-              <div className="rounded-[3px_14px_3px_14px] border border-ink-border/70 bg-washi-white px-4 py-3 text-xs text-sumi-diluted">
-                Select a commander above to view their sentinels. Cross-commander sentinel
-                aggregation is tracked in #1095.
-              </div>
-            ) : (
-              <SentinelPanel
-                commanderId={scopeCommander?.id}
-                showCreateForm={showCreateSentinelForm}
-                onCloseCreateForm={() => setShowCreateSentinelForm(false)}
-              />
-            )}
-          </div>
-        ) : null}
-
-        {segment === 'quests' ? (
-          <div className="h-full overflow-hidden px-4 pb-4">
-            {commanderFilter === 'all' ? (
-              <div className="px-4">
-                <div className="rounded-[3px_14px_3px_14px] border border-ink-border/70 bg-washi-white px-4 py-3 text-xs text-sumi-diluted">
-                  Select a commander above to view their quest board. Cross-commander quest
-                  aggregation is tracked in #1095.
-                </div>
-              </div>
-            ) : (
-              <QuestBoard
-                commanders={commanders.map((commander) => ({
-                  id: commander.id,
-                  host: commander.host,
-                }))}
-                selectedCommanderId={scopeCommander?.id ?? null}
-              />
-            )}
-          </div>
-        ) : null}
+      <div className="min-h-0 flex-1 overflow-hidden">
+        <AutomationPanel
+          scope={
+            commanderFilter === 'global' || !scopeCommander
+              ? { kind: 'global' }
+              : { kind: 'commander', commander: scopeCommander }
+          }
+          filter={triggerFilter}
+          onFilterChange={(nextFilter) => {
+            updateParams({
+              trigger: nextFilter === 'all' ? null : nextFilter,
+            })
+          }}
+        />
       </div>
     </section>
   )

@@ -1,6 +1,7 @@
 import type { ActionPolicyGateResult } from '../../../policies/action-policy-gate.js'
 import type { ProviderApprovalAdapter } from '../../../policies/provider-approval-adapter.js'
 import { registerApprovalAdapter } from '../../../policies/types.js'
+import { readGeminiRuntime } from '../../providers/provider-session-context.js'
 import type { StreamJsonEvent, StreamSession } from '../../types.js'
 
 interface GeminiApprovalReplyDeps {
@@ -172,7 +173,7 @@ export const geminiApprovalAdapter = registerApprovalAdapter<ProviderApprovalAda
       rawEvent.replyDeps.schedulePersistedSessionsWrite()
     }
 
-    const runtime = session.geminiRuntime
+    const runtime = readGeminiRuntime(session)
     if (!runtime) {
       throw new Error('Gemini runtime is unavailable')
     }

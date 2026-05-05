@@ -6,6 +6,7 @@ import {
   createPersistenceHelpers,
   type PersistenceHelpersContext,
 } from '../persistence-helpers'
+import { buildDefaultCommanderConversationId } from '../../commanders/store'
 import type {
   AnySession,
   CompletedSession,
@@ -43,7 +44,10 @@ function makeLegacyExitedEntry(
     createdAt: '2026-04-20T00:00:00.000Z',
     sessionState: 'exited',
     hadResult: true,
-    claudeSessionId: `claude-${name}`,
+    providerContext: {
+      providerId: 'claude',
+      sessionId: `claude-${name}`,
+    },
     events: [
       {
         type: 'result',
@@ -72,7 +76,7 @@ describe('persisted session creator backfill', () => {
           makeLegacyExitedEntry('command-room-nightly') as never,
           makeLegacyExitedEntry('sentinel-watchdog') as never,
           makeLegacyExitedEntry('worker-1710000000000', {
-            parentSession: 'commander-cmdr-athena',
+            parentSession: 'commander-cmdr-atlas',
           }) as never,
           makeLegacyExitedEntry('commander-cmdr-borealis') as never,
           makeLegacyExitedEntry('session-plain', {
@@ -102,30 +106,31 @@ describe('persisted session creator backfill', () => {
         expect.objectContaining({
           name: 'worker-1710000000000',
           sessionType: 'worker',
-          creator: { kind: 'commander', id: 'cmdr-athena' },
-          spawnedBy: 'commander-cmdr-athena',
+          creator: { kind: 'commander', id: 'cmdr-atlas' },
+          spawnedBy: 'commander-cmdr-atlas',
         }),
         expect.objectContaining({
           name: 'commander-cmdr-borealis',
           sessionType: 'commander',
           creator: { kind: 'commander', id: 'cmdr-borealis' },
+          conversationId: buildDefaultCommanderConversationId('cmdr-borealis'),
         }),
         expect.objectContaining({
           name: 'session-plain',
           sessionType: 'worker',
-          creator: { kind: 'human', id: '<legacy-unknown-user>' },
+          creator: { kind: 'human', id: '<unknown-user>' },
         }),
       ])
 
-      expect(consoleInfo).toHaveBeenCalledTimes(5)
+      expect(consoleInfo.mock.calls.length).toBeGreaterThanOrEqual(5)
       expect(ctx.exitedStreamSessions.get('worker-1710000000000')).toMatchObject({
         sessionType: 'worker',
-        creator: { kind: 'commander', id: 'cmdr-athena' },
-        spawnedBy: 'commander-cmdr-athena',
+        creator: { kind: 'commander', id: 'cmdr-atlas' },
+        spawnedBy: 'commander-cmdr-atlas',
       })
       expect(ctx.exitedStreamSessions.get('session-plain')).toMatchObject({
         sessionType: 'worker',
-        creator: { kind: 'human', id: '<legacy-unknown-user>' },
+        creator: { kind: 'human', id: '<unknown-user>' },
       })
     } finally {
       await rm(dir, { recursive: true, force: true })

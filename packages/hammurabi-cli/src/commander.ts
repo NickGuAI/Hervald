@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import type { HammurabiConfig } from './config.js'
+import { type HammurabiConfig, readHammurabiConfig } from './config.js'
 import { runTranscriptsCli } from './transcripts.js'
 
 const COMMANDER_FILENAME = 'COMMANDER.md'
@@ -70,19 +70,13 @@ When NOT to use workers:
 Use \`hammurabi workers send <name> "<task>"\` to message existing named sessions.
 These sessions are long-lived and keep context over time.
 
-## Cron Sessions (scheduled tasks)
+## Automations
 
-Command-room cron jobs create ephemeral \`command-room-*\` sessions per run.
-Use the cron command set to inspect definitions and run history.
-
-## Sentinels (automated watchers)
-
-Sentinel jobs create ephemeral \`sentinel-*\` sessions on trigger.
-Use sentinel commands to inspect definitions, status, and history.
+Automation jobs create ephemeral automation-owned sessions when they run.
+Use the automation command set to inspect definitions, status, and history.
 
 \`\`\`
-hammurabi cron list
-hammurabi sentinel list --parent [COMMANDER_ID]
+hammurabi automation list --commander [COMMANDER_ID]
 \`\`\`
 
 ## Memory
@@ -124,7 +118,7 @@ Rules:
 - Read \`.memory/MEMORY.md\` and \`.memory/LONG_TERM_MEM.md\` directly when you need prior context.
 - Use working memory for transient scratch notes, not durable conclusions.
 - Save durable facts, not transient chatter.
-- Leave memory cleanup and consolidation to external cron + skill orchestration.
+- Leave memory cleanup and consolidation to external automation + skill orchestration.
 
 ## Session Transcripts
 
@@ -175,6 +169,7 @@ function printUsage(stdout: Writable): void {
   stdout.write('Usage:\n')
   stdout.write('  hammurabi commander init\n')
   stdout.write('  hammurabi commander init --remote <server-url> --token <sync-token> [--commander <id>] [--poll-interval <seconds>] [--once]\n')
+  stdout.write('  hammurabi commander load <path>\n')
   stdout.write('  hammurabi commander transcripts search --commander <id> "<query>" [--top-k <count>]\n')
 }
 
@@ -581,6 +576,94 @@ async function runRemoteInit(
   return 0
 }
 
+async function runTemplateLoad(
+  args: readonly string[],
+  deps: CommanderCliDependencies,
+): Promise<number> {
+  const stdout = deps.stdout ?? process.stdout
+  const stderr = deps.stderr ?? process.stderr
+  const fetchImpl = deps.fetchImpl ?? fetch
+  const readConfig = deps.readConfig ?? readHammurabiConfig
+
+  if (args.length !== 1) {
+    printUsage(stdout)
+    return 1
+  }
+
+  const templatePath = parseNonEmpty(args[0])
+  if (!templatePath) {
+    printUsage(stdout)
+    return 1
+  }
+
+  const config = await readConfig()
+  if (!config) {
+    stderr.write('Hammurabi config not found. Run `hammurabi onboard` first.\n')
+    return 1
+  }
+
+  let payload: unknown
+  try {
+    payload = JSON.parse(readFileSync(templatePath, 'utf8')) as unknown
+  } catch (error) {
+    stderr.write(
+      error instanceof Error
+        ? `Failed to read template package: ${error.message}\n`
+        : 'Failed to read template package.\n',
+    )
+    return 1
+  }
+
+  let response: Response
+  try {
+    response = await fetchImpl(buildApiUrl(config.endpoint, '/api/commanders/import'), {
+      method: 'POST',
+      headers: buildRemoteAuthHeaders(config.apiKey, true),
+      body: JSON.stringify(payload),
+    })
+  } catch (error) {
+    stderr.write(
+      error instanceof Error
+        ? `Commander import failed: ${error.message}\n`
+        : 'Commander import failed: network error\n',
+    )
+    return 1
+  }
+
+  if (!response.ok) {
+    const detail = await readErrorDetail(response)
+    stderr.write(
+      detail
+        ? `Commander import failed (${response.status}): ${detail}\n`
+        : `Commander import failed (${response.status}).\n`,
+    )
+    return 1
+  }
+
+  let result: unknown
+  try {
+    result = (await response.json()) as unknown
+  } catch {
+    result = null
+  }
+
+  const data = isObject(result) ? result : {}
+  const id = typeof data.id === 'string' ? data.id : ''
+  const displayName = typeof data.displayName === 'string' && data.displayName.trim().length > 0
+    ? data.displayName.trim()
+    : id || 'commander'
+  const url = typeof data.url === 'string' && data.url.trim().length > 0
+    ? new URL(data.url, `${normalizeEndpoint(config.endpoint)}/`).toString()
+    : new URL(
+      id ? `/command-room?commander=${encodeURIComponent(id)}` : '/org',
+      `${normalizeEndpoint(config.endpoint)}/`,
+    ).toString()
+
+  stdout.write(`Loaded commander ${displayName}.\n`)
+  stdout.write(`Open: ${url}\n`)
+  return 0
+}
+
 export async function runCommanderCli(
   args: readonly string[],
   deps: CommanderCliDependencies = {},
@@ -600,6 +683,10 @@ export async function runCommanderCli(
       stdout,
       stderr,
     })
+  }
+
+  if (subcommand === 'load') {
+    return runTemplateLoad(args.slice(1), deps)
   }
 
   if (subcommand !== 'init') {

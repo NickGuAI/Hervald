@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef, useState } from 'react'
 import { ChevronRight, Cpu, Monitor } from 'lucide-react'
+import { findProviderEntry, getProviderLabel, useProviderRegistry } from '@/hooks/use-providers'
 import { timeAgo, cn } from '@/lib/utils'
 import type { AgentType, Machine } from '@/types'
 import { DEFAULT_CLAUDE_EFFORT_LEVEL } from '../../claude-effort.js'
@@ -39,6 +40,7 @@ export function SessionCard({
   onResume,
   onNavigateToSession,
 }: SessionCardProps) {
+  const { data: providers = [] } = useProviderRegistry()
   const detailsId = useId()
   const rowButtonRef = useRef<HTMLButtonElement | null>(null)
   const isCommander = session.sessionType === 'commander'
@@ -48,8 +50,10 @@ export function SessionCard({
     ?? (session.sessionType === 'pty' || session.sessionType === 'stream' ? session.sessionType : undefined)
   const isStream = transportType === 'stream'
   const rawAgentType = typeof session.agentType === 'string' ? session.agentType : null
+  const currentProvider = findProviderEntry(providers, rawAgentType)
+  const agentLabel = rawAgentType ? getProviderLabel(providers, rawAgentType as AgentType) : null
   const agentBadge = rawAgentType && rawAgentType !== 'claude'
-    ? rawAgentType
+    ? agentLabel
     : null
   const workerSummary = isStream
     ? (session.workerSummary ?? fallbackWorkerSummary(session.spawnedWorkers?.length ?? 0))
@@ -72,10 +76,11 @@ export function SessionCard({
     ?? (workerOrchestrationComplete && !isCommander ? 'completed' : null)
   const rowStatusClass = ROW_STATUS_DOT_CLASS[sessionStatus ?? 'idle'] ?? ROW_STATUS_DOT_CLASS.idle
   const rowMeta = [
-    rawAgentType,
+    agentLabel,
     rowHostLabel,
     sessionStatus,
   ].filter((value): value is string => Boolean(value))
+  const supportsEffort = currentProvider?.uiCapabilities.supportsEffort ?? (rawAgentType === 'claude')
   const [isExpanded, setIsExpanded] = useState(variant === 'row' && selected)
 
   useEffect(() => {
@@ -178,7 +183,7 @@ export function SessionCard({
           PID {session.pid}
         </span>
         <span>{variant === 'row' ? `Started ${timeAgo(session.created)}` : timeAgo(session.created)}</span>
-        {session.agentType === 'claude' && (
+        {supportsEffort && (
           <span>effort {session.effort ?? DEFAULT_CLAUDE_EFFORT_LEVEL}</span>
         )}
       </div>

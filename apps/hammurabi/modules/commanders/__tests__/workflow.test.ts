@@ -5,7 +5,6 @@ import { join } from 'node:path'
 import {
   loadCommanderWorkflow,
   mergeWorkflows,
-  stripDeprecatedCommanderWorkflowFrontmatter,
 } from '../workflow'
 
 const tempDirs: string[] = []
@@ -31,8 +30,7 @@ describe('commander workflow helpers', () => {
 
   it('returns a copy of the base workflow when override is absent', () => {
     const base = {
-      heartbeatInterval: '1000',
-      heartbeatMessage: '[base]',
+      systemPromptTemplate: 'Base prompt',
     }
 
     expect(mergeWorkflows(base, null)).toEqual(base)
@@ -42,7 +40,6 @@ describe('commander workflow helpers', () => {
   it('returns a copy of the override workflow when base is absent', () => {
     const override = {
       systemPromptTemplate: 'Override prompt',
-      maxTurns: 4,
     }
 
     expect(mergeWorkflows(null, override)).toEqual(override)
@@ -52,36 +49,25 @@ describe('commander workflow helpers', () => {
   it('prefers non-undefined override fields while preserving base fields', () => {
     const merged = mergeWorkflows(
       {
-        heartbeatInterval: '1500',
-        heartbeatMessage: '[base hb]',
         systemPromptTemplate: 'Base prompt',
       },
       {
-        heartbeatMessage: '[cwd hb]',
-        maxTurns: 2,
         systemPromptTemplate: 'Override prompt',
       },
     )
 
     expect(merged).toEqual({
-      heartbeatInterval: '1500',
-      heartbeatMessage: '[cwd hb]',
-      maxTurns: 2,
       systemPromptTemplate: 'Override prompt',
     })
   })
 
-  it('loads COMMANDER.md front matter and body from disk', async () => {
+  it('loads COMMANDER.md body from disk and ignores unrelated frontmatter', async () => {
     const dir = await createTempDir('hammurabi-workflow-test-')
     await writeFile(
       join(dir, 'COMMANDER.md'),
       [
         '---',
-        'heartbeat.interval: 2500',
-        'heartbeat.message: "[workflow {{timestamp}}]"',
-        'maxTurns: 4',
-        'contextMode: thin',
-        'fatPinInterval: 2',
+        'customTag: keep-me',
         '---',
         '',
         'You are the test commander.',
@@ -90,32 +76,27 @@ describe('commander workflow helpers', () => {
     )
 
     await expect(loadCommanderWorkflow(dir)).resolves.toEqual({
-      heartbeatInterval: '2500',
-      heartbeatMessage: '[workflow {{timestamp}}]',
-      maxTurns: 4,
-      contextMode: 'thin',
-      fatPinInterval: 2,
       systemPromptTemplate: 'You are the test commander.',
     })
   })
 
-  it('strips deprecated runtime config keys from COMMANDER.md frontmatter while preserving prompt body', () => {
-    const stripped = stripDeprecatedCommanderWorkflowFrontmatter([
-      '---',
-      'heartbeat.interval: 2500',
-      'maxTurns: 4',
-      'customTag: keep-me',
-      '---',
-      '',
-      'You are the test commander.',
-    ].join('\n'))
+  it('rejects removed runtime frontmatter keys on read', async () => {
+    const dir = await createTempDir('hammurabi-workflow-strict-test-')
+    await writeFile(
+      join(dir, 'COMMANDER.md'),
+      [
+        '---',
+        'heartbeat.interval: 2500',
+        'maxTurns: 4',
+        '---',
+        '',
+        'You are the test commander.',
+      ].join('\n'),
+      'utf8',
+    )
 
-    expect(stripped.removedKeys).toEqual(['heartbeat.interval', 'maxTurns'])
-    expect(stripped.content).toBe([
-      '---',
-      'customTag: keep-me',
-      '---',
-      'You are the test commander.',
-    ].join('\n'))
+    await expect(loadCommanderWorkflow(dir)).rejects.toThrow(
+      'COMMANDER.md uses removed runtime frontmatter keys: heartbeat.interval, maxTurns',
+    )
   })
 })

@@ -420,10 +420,17 @@ describe("stream sessions", () => {
         await vi.waitFor(async () => {
           const raw = await readFile(sessionStorePath, 'utf8')
           const parsed = JSON.parse(raw) as {
-            sessions: Array<{ name: string; codexThreadId?: string; conversationEntryCount?: number }>
+            sessions: Array<{
+              name: string
+              providerContext?: { providerId?: string; threadId?: string }
+              conversationEntryCount?: number
+            }>
           }
           const saved = parsed.sessions.find((session) => session.name === 'codex-auto-rotate')
-          expect(saved?.codexThreadId).toBe('thread-2')
+          expect(saved?.providerContext).toEqual({
+            providerId: 'codex',
+            threadId: 'thread-2',
+          })
           expect(saved?.conversationEntryCount).toBe(0)
         })
 
@@ -2669,7 +2676,10 @@ describe("stream sessions", () => {
               mode: 'default',
               cwd: '/home/builder/App',
               createdAt: '2026-04-07T23:24:35.181Z',
-              codexThreadId: '019d6a43-1781-70b2-b8e0-eb1fda3dead3',
+              providerContext: {
+                providerId: 'codex',
+                threadId: '019d6a43-1781-70b2-b8e0-eb1fda3dead3',
+              },
               sessionState: 'exited',
               hadResult: false,
               events: [],
@@ -2727,7 +2737,10 @@ describe("stream sessions", () => {
               mode: 'default',
               cwd: '/home/builder/App',
               createdAt: '2026-04-07T23:24:35.181Z',
-              codexThreadId: '019d6a43-1781-70b2-b8e0-eb1fda3dead3',
+              providerContext: {
+                providerId: 'codex',
+                threadId: '019d6a43-1781-70b2-b8e0-eb1fda3dead3',
+              },
               sessionState: 'exited',
               hadResult: false,
               events: [],
@@ -2755,7 +2768,7 @@ describe("stream sessions", () => {
 
         await vi.waitFor(async () => {
           const raw = await readFile(sessionStorePath, 'utf8')
-          const parsed = JSON.parse(raw) as { sessions: Array<{ name: string; codexThreadId?: string }> }
+          const parsed = JSON.parse(raw) as { sessions: Array<{ name: string; providerContext?: { threadId?: string } }> }
           expect(parsed.sessions.find((session) => session.name === 'hamkid')).toBeUndefined()
         })
 
@@ -2817,7 +2830,7 @@ describe("stream sessions", () => {
         await new Promise((resolve) => setTimeout(resolve, 50))
 
         const wsUrl = server.baseUrl.replace('http://', 'ws://') +
-          '/api/agents/sessions/codex-usage-notifications/terminal?api_key=test-key'
+          '/api/agents/sessions/codex-usage-notifications/ws?api_key=test-key'
         const ws = new WebSocket(wsUrl)
         const replayPromise = new Promise<{
           type: string

@@ -1,3 +1,8 @@
+import {
+  ensureCodexProviderContext,
+  readCodexRuntime,
+  readCodexThreadId,
+} from './providers/provider-session-context.js'
 import type { AnySession } from './types.js'
 
 const codexSessionMapsForProcessExit = new Set<Map<string, AnySession>>()
@@ -22,11 +27,11 @@ export function registerCodexProcessExitSessionMap(sessions: Map<string, AnySess
           session.codexTurnWatchdogTimer = undefined
         }
         session.codexTurnStaleAt = undefined
-        session.codexNotificationCleanup?.()
-        session.codexNotificationCleanup = undefined
+        ensureCodexProviderContext(session).notificationCleanup?.()
+        ensureCodexProviderContext(session).notificationCleanup = undefined
 
-        if (session.codexRuntime) {
-          session.codexRuntime.teardownOnProcessExit?.(session.codexThreadId)
+        if (readCodexRuntime(session)) {
+          readCodexRuntime(session)?.teardownOnProcessExit?.(readCodexThreadId(session))
           continue
         }
 

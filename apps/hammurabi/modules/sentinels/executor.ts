@@ -5,7 +5,7 @@ import {
   type AgentSessionCompletion,
   type AgentSessionCreateInput,
   type AgentSessionMonitorOptions,
-} from '../commanders/tools/agent-session.js'
+} from '@gehirn/ai-services'
 import { resolveCommanderPaths } from '../commanders/paths.js'
 import { assemblePrompt } from './prompt.js'
 import { resolveSkills } from './skills.js'

@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { WebSocket } from 'ws'
 import { CommanderSessionStore, type CommanderSession } from '../../commanders/store'
-import { createDefaultHeartbeatState } from '../../commanders/heartbeat'
+import { createDefaultHeartbeatConfig } from '../../commanders/heartbeat'
 import type { PtySpawner } from '../routes'
 import {
   AUTH_HEADERS,
@@ -201,7 +201,7 @@ describe("stream sessions", () => {
         body: JSON.stringify({
           name: 'stream-01',
           mode: 'default',
-          sessionType: 'stream',
+          transportType: 'stream',
           task: 'Fix the auth bug',
         }),
       })
@@ -273,7 +273,7 @@ describe("stream sessions", () => {
           body: JSON.stringify({
             name: 'stream-effort-01',
             mode: 'default',
-            sessionType: 'stream',
+            transportType: 'stream',
             effort: 'medium',
           }),
         })
@@ -384,10 +384,10 @@ describe("stream sessions", () => {
 
           const meta = JSON.parse(await readFile(metaPath, 'utf8')) as {
             agentType?: string
-            claudeSessionId?: string
+            providerContext?: { sessionId?: string }
           }
           expect(meta.agentType).toBe('claude')
-          expect(meta.claudeSessionId).toBe('claude-commander-123')
+          expect(meta.providerContext?.sessionId).toBe('claude-commander-123')
         })
       } finally {
         if (server) {
@@ -479,10 +479,14 @@ describe("stream sessions", () => {
         await vi.waitFor(async () => {
           const raw = await readFile(sessionStorePath, 'utf8')
           const parsed = JSON.parse(raw) as {
-            sessions: Array<{ name: string; claudeSessionId?: string; conversationEntryCount?: number }>
+            sessions: Array<{
+              name: string
+              providerContext?: { sessionId?: string }
+              conversationEntryCount?: number
+            }>
           }
           const saved = parsed.sessions.find((session) => session.name === 'commander-alpha')
-          expect(saved?.claudeSessionId).toBe('claude-rotate-new')
+          expect(saved?.providerContext?.sessionId).toBe('claude-rotate-new')
           expect(saved?.conversationEntryCount).toBe(0)
         })
 
@@ -581,7 +585,7 @@ describe("stream sessions", () => {
         cwd: workDir,
         maxTurns: 9,
         contextMode: 'fat',
-        heartbeat: createDefaultHeartbeatState(),
+        heartbeat: createDefaultHeartbeatConfig(),
         lastHeartbeat: null,
         heartbeatTickCount: 0,
         taskSource: {
@@ -669,7 +673,7 @@ describe("stream sessions", () => {
 
         expect(rotatedScript).toContain('You are the rotated commander prompt.')
         expect(rotatedScript).toContain('Fresh durable fact from reseed path.')
-        expect(rotatedScript).toContain('Issue #77')
+        expect(rotatedScript).toContain('#77 Fix auth bug')
         expect(rotatedScript).toContain('--max-turns 9')
         expect(rotatedScript).not.toContain('stale commander prompt')
         expect(rotatedScript).not.toContain('--max-turns 1')
@@ -715,7 +719,7 @@ describe("stream sessions", () => {
           body: JSON.stringify({
             name: 'stream-transcript-01',
             mode: 'default',
-            sessionType: 'stream',
+            transportType: 'stream',
             cwd: '/home/builder/projects/transcript-demo',
           }),
         })
@@ -758,13 +762,13 @@ describe("stream sessions", () => {
           const meta = JSON.parse(await readFile(metaPath, 'utf8')) as {
             agentType?: string
             cwd?: string
-            claudeSessionId?: string
+            providerContext?: { sessionId?: string }
           }
           expect(meta).toEqual(expect.objectContaining({
             agentType: 'claude',
             cwd: '/home/builder/projects/transcript-demo',
-            claudeSessionId: 'claude-stream-123',
           }))
+          expect(meta.providerContext?.sessionId).toBe('claude-stream-123')
 
           const persisted = JSON.parse(await readFile(sessionStorePath, 'utf8')) as {
             sessions: Array<{ name: string; events?: unknown[] }>
@@ -1189,7 +1193,7 @@ describe("stream sessions", () => {
           body: JSON.stringify({
             name: 'claude-source',
             mode: 'default',
-            sessionType: 'stream',
+            transportType: 'stream',
             agentType: 'claude',
           }),
         })
@@ -1223,7 +1227,7 @@ describe("stream sessions", () => {
         body: JSON.stringify({
           name: 'claude-resumed-custom',
           mode: 'default',
-          sessionType: 'stream',
+          transportType: 'stream',
           resumeFromSession: 'claude-source',
           task: 'Continue from the previous context',
           }),
@@ -1275,7 +1279,7 @@ describe("stream sessions", () => {
           body: JSON.stringify({
             name: 'claude-killed-source',
             mode: 'default',
-            sessionType: 'stream',
+            transportType: 'stream',
             agentType: 'claude',
           }),
         })
@@ -1320,7 +1324,7 @@ describe("stream sessions", () => {
         body: JSON.stringify({
           name: 'claude-killed-resumed',
           mode: 'default',
-          sessionType: 'stream',
+          transportType: 'stream',
           resumeFromSession: 'claude-killed-source',
           task: 'Continue after manual stop',
           }),
@@ -1335,6 +1339,48 @@ describe("stream sessions", () => {
         expect(secondMock.getStdinWrites()).toContain(
           `${JSON.stringify({ type: 'user', message: { role: 'user', content: 'Continue after manual stop' } })}\n`,
         )
+      } finally {
+        await server.close()
+      }
+    })
+
+  it('does not advertise live Claude sessions as resumable before a real session id exists', async () => {
+      const liveMock = createMockChildProcess()
+      mockedSpawn.mockImplementationOnce(() => liveMock.cp as never)
+
+      const server = await startServer()
+
+      try {
+        const createResponse = await fetch(`${server.baseUrl}/api/agents/sessions`, {
+          method: 'POST',
+          headers: {
+            ...AUTH_HEADERS,
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify({
+            name: 'claude-no-resume-id',
+            mode: 'default',
+            transportType: 'stream',
+            agentType: 'claude',
+          }),
+        })
+        expect(createResponse.status).toBe(201)
+
+        const sessionsResponse = await fetch(`${server.baseUrl}/api/agents/sessions`, {
+          headers: AUTH_HEADERS,
+        })
+        expect(sessionsResponse.status).toBe(200)
+        const listedSessions = await sessionsResponse.json() as Array<{
+          name: string
+          processAlive?: boolean
+          resumeAvailable?: boolean
+        }>
+        const source = listedSessions.find((session) => session.name === 'claude-no-resume-id')
+        expect(source).toEqual(expect.objectContaining({
+          name: 'claude-no-resume-id',
+          processAlive: true,
+          resumeAvailable: false,
+        }))
       } finally {
         await server.close()
       }
@@ -1362,7 +1408,7 @@ describe("stream sessions", () => {
           body: JSON.stringify({
             name: 'stream-resume-01',
             mode: 'default',
-            sessionType: 'stream',
+            transportType: 'stream',
           }),
         })
         expect(createResponse.status).toBe(201)
@@ -1374,10 +1420,10 @@ describe("stream sessions", () => {
         await vi.waitFor(async () => {
           const raw = await readFile(sessionStorePath, 'utf8')
           const parsed = JSON.parse(raw) as {
-            sessions: Array<{ name: string; claudeSessionId?: string }>
+            sessions: Array<{ name: string; providerContext?: { sessionId?: string } }>
           }
           const saved = parsed.sessions.find((session) => session.name === 'stream-resume-01')
-          expect(saved?.claudeSessionId).toBe('claude-resume-123')
+          expect(saved?.providerContext?.sessionId).toBe('claude-resume-123')
         })
 
         await firstServer.close()
@@ -1439,7 +1485,10 @@ describe("stream sessions", () => {
                 mode: 'default',
                 cwd: '/home/builder/projects/transcript-restore',
                 createdAt,
-                claudeSessionId: 'claude-stale-from-store',
+                providerContext: {
+                  providerId: 'claude',
+                  sessionId: 'claude-stale-from-store',
+                },
                 events: [{ type: 'system', marker: 'persisted-fallback-only' }],
               },
             ],
@@ -1451,7 +1500,10 @@ describe("stream sessions", () => {
           agentType: 'claude',
           cwd: '/home/builder/projects/transcript-restore',
           createdAt,
-          claudeSessionId: 'claude-transcript-123',
+          providerContext: {
+            providerId: 'claude',
+            sessionId: 'claude-transcript-123',
+          },
         })
 
         for (let turn = 1; turn <= 22; turn += 1) {
@@ -1560,7 +1612,10 @@ describe("stream sessions", () => {
                 mode: 'default',
                 cwd: '/home/builder/projects/persisted-fallback',
                 createdAt: '2026-04-08T00:00:00.000Z',
-                claudeSessionId: 'claude-fallback-123',
+                providerContext: {
+                  providerId: 'claude',
+                  sessionId: 'claude-fallback-123',
+                },
                 events: persistedEvents,
               },
             ],
@@ -1628,7 +1683,7 @@ describe("stream sessions", () => {
           body: JSON.stringify({
             name: 'stream-interrupted-01',
             mode: 'default',
-            sessionType: 'stream',
+            transportType: 'stream',
           }),
         })
         expect(createResponse.status).toBe(201)
@@ -1640,10 +1695,10 @@ describe("stream sessions", () => {
         await vi.waitFor(async () => {
           const raw = await readFile(sessionStorePath, 'utf8')
           const parsed = JSON.parse(raw) as {
-            sessions: Array<{ name: string; claudeSessionId?: string }>
+            sessions: Array<{ name: string; providerContext?: { sessionId?: string } }>
           }
           const saved = parsed.sessions.find((session) => session.name === 'stream-interrupted-01')
-          expect(saved?.claudeSessionId).toBe('claude-interrupted-123')
+          expect(saved?.providerContext?.sessionId).toBe('claude-interrupted-123')
         })
 
         // Simulate a server restart while Claude is still mid-assistant turn.
@@ -1652,7 +1707,7 @@ describe("stream sessions", () => {
         await vi.waitFor(async () => {
           const raw = await readFile(sessionStorePath, 'utf8')
           const parsed = JSON.parse(raw) as {
-            sessions: Array<{ name: string; claudeSessionId?: string }>
+            sessions: Array<{ name: string; providerContext?: { sessionId?: string } }>
           }
           const saved = parsed.sessions.find((session) => session.name === 'stream-interrupted-01')
           expect(saved).toBeUndefined()
@@ -1720,7 +1775,7 @@ describe("stream sessions", () => {
           body: JSON.stringify({
             name: 'stream-remote-01',
             mode: 'default',
-            sessionType: 'stream',
+            transportType: 'stream',
             host: 'gpu-1',
           }),
         })
@@ -1789,7 +1844,7 @@ describe("stream sessions", () => {
           body: JSON.stringify({
             name: 'stream-kill-debrief',
             mode: 'default',
-            sessionType: 'stream',
+            transportType: 'stream',
           }),
         })
         expect(createResponse.status).toBe(201)
@@ -1827,7 +1882,7 @@ describe("stream sessions", () => {
         body: JSON.stringify({
           name: 'stream-list-01',
           mode: 'default',
-          sessionType: 'stream',
+          transportType: 'stream',
         }),
       })
       expect(createResponse.status).toBe(201)
@@ -1860,7 +1915,7 @@ describe("stream sessions", () => {
         body: JSON.stringify({
           name: 'stream-dangerous-approval',
           mode: 'default',
-          sessionType: 'stream',
+          transportType: 'stream',
         }),
       })
 
@@ -1934,7 +1989,7 @@ describe("stream sessions", () => {
         body: JSON.stringify({
           name: 'stream-adaptive-disabled',
           mode: 'default',
-          sessionType: 'stream',
+          transportType: 'stream',
           adaptiveThinking: 'disabled',
         }),
       })
@@ -1957,7 +2012,7 @@ describe("stream sessions", () => {
         body: JSON.stringify({
           name: 'stream-ndjson',
           mode: 'default',
-          sessionType: 'stream',
+          transportType: 'stream',
         }),
       })
 
@@ -2005,7 +2060,7 @@ describe("stream sessions", () => {
         body: JSON.stringify({
           name: 'stream-partial',
           mode: 'default',
-          sessionType: 'stream',
+          transportType: 'stream',
         }),
       })
 
@@ -2049,7 +2104,7 @@ describe("stream sessions", () => {
         body: JSON.stringify({
           name: 'stream-replay',
           mode: 'default',
-          sessionType: 'stream',
+          transportType: 'stream',
         }),
       })
 
@@ -2062,7 +2117,7 @@ describe("stream sessions", () => {
 
       // Register message handler BEFORE open to catch the replay sent on upgrade
       const wsUrl = server.baseUrl.replace('http://', 'ws://') +
-        '/api/agents/sessions/stream-replay/terminal?api_key=test-key'
+        '/api/agents/sessions/stream-replay/ws?api_key=test-key'
       const ws = new WebSocket(wsUrl)
       const messages: Array<{ type: string; events?: unknown[] }> = []
 
@@ -2103,7 +2158,7 @@ describe("stream sessions", () => {
         body: JSON.stringify({
           name: 'stream-plan-mode',
           mode: 'default',
-          sessionType: 'stream',
+          transportType: 'stream',
         }),
       })
 
@@ -2115,7 +2170,7 @@ describe("stream sessions", () => {
       await new Promise((resolve) => setTimeout(resolve, 50))
 
       const wsUrl = server.baseUrl.replace('http://', 'ws://') +
-        '/api/agents/sessions/stream-plan-mode/terminal?api_key=test-key'
+        '/api/agents/sessions/stream-plan-mode/ws?api_key=test-key'
       const ws = new WebSocket(wsUrl)
       const messages: Array<{ type: string; events?: unknown[] }> = []
 
@@ -2195,7 +2250,7 @@ describe("stream sessions", () => {
         body: JSON.stringify({
           name: 'stream-replay-reconnect',
           mode: 'default',
-          sessionType: 'stream',
+          transportType: 'stream',
         }),
       })
 
@@ -2210,7 +2265,7 @@ describe("stream sessions", () => {
       await new Promise((r) => setTimeout(r, 50))
 
       const wsUrl = server.baseUrl.replace('http://', 'ws://') +
-        '/api/agents/sessions/stream-replay-reconnect/terminal?api_key=test-key'
+        '/api/agents/sessions/stream-replay-reconnect/ws?api_key=test-key'
       const secondWs = new WebSocket(wsUrl)
       const messages: Array<{
         type: string
@@ -2257,7 +2312,7 @@ describe("stream sessions", () => {
         body: JSON.stringify({
           name: 'stream-input',
           mode: 'default',
-          sessionType: 'stream',
+          transportType: 'stream',
         }),
       })
 
@@ -2298,7 +2353,7 @@ describe("stream sessions", () => {
         body: JSON.stringify({
           name: 'completed-input-test',
           mode: 'default',
-          sessionType: 'stream',
+          transportType: 'stream',
         }),
       })
 
@@ -2397,7 +2452,7 @@ describe("stream sessions", () => {
         body: JSON.stringify({
           name: 'stream-exit',
           mode: 'default',
-          sessionType: 'stream',
+          transportType: 'stream',
         }),
       })
 
@@ -2460,7 +2515,7 @@ describe("stream sessions", () => {
         body: JSON.stringify({
           name: 'stream-exit-stderr',
           mode: 'default',
-          sessionType: 'stream',
+          transportType: 'stream',
         }),
       })
 
@@ -2506,13 +2561,13 @@ describe("stream sessions", () => {
         body: JSON.stringify({
           name: 'stream-error',
           mode: 'default',
-          sessionType: 'stream',
+          transportType: 'stream',
         }),
       })
 
       // Register message handler before open to avoid missing events
       const wsUrl = server.baseUrl.replace('http://', 'ws://') +
-        '/api/agents/sessions/stream-error/terminal?api_key=test-key'
+        '/api/agents/sessions/stream-error/ws?api_key=test-key'
       const ws = new WebSocket(wsUrl)
       const received: Array<{ type: string; text?: string }> = []
 
@@ -2563,7 +2618,7 @@ describe("stream sessions", () => {
         body: JSON.stringify({
           name: 'stream-stderr',
           mode: 'default',
-          sessionType: 'stream',
+          transportType: 'stream',
         }),
       })
 
@@ -2605,7 +2660,7 @@ describe("stream sessions", () => {
         body: JSON.stringify({
           name: 'stream-kill',
           mode: 'default',
-          sessionType: 'stream',
+          transportType: 'stream',
         }),
       })
 
@@ -2634,7 +2689,7 @@ describe("stream sessions", () => {
         body: JSON.stringify({
           name: 'stream-usage',
           mode: 'default',
-          sessionType: 'stream',
+          transportType: 'stream',
         }),
       })
 
@@ -2646,7 +2701,7 @@ describe("stream sessions", () => {
 
       // Register message handler before open to catch the replay
       const wsUrl = server.baseUrl.replace('http://', 'ws://') +
-        '/api/agents/sessions/stream-usage/terminal?api_key=test-key'
+        '/api/agents/sessions/stream-usage/ws?api_key=test-key'
       const ws = new WebSocket(wsUrl)
       const messages: Array<{ type: string; events?: Array<{ type: string; usage?: unknown }> }> = []
 
@@ -2687,7 +2742,7 @@ describe("stream sessions", () => {
         body: JSON.stringify({
           name: 'stream-badjson',
           mode: 'default',
-          sessionType: 'stream',
+          transportType: 'stream',
         }),
       })
 
@@ -2732,7 +2787,7 @@ describe("stream sessions", () => {
         body: JSON.stringify({
           name: 'stream-cap',
           mode: 'default',
-          sessionType: 'stream',
+          transportType: 'stream',
         }),
       })
 
@@ -2783,7 +2838,7 @@ describe("stream sessions", () => {
         body: JSON.stringify({
           name: 'stream-no-task',
           mode: 'default',
-          sessionType: 'stream',
+          transportType: 'stream',
         }),
       })
 
@@ -2806,7 +2861,7 @@ describe("stream sessions", () => {
         body: JSON.stringify({
           name: 'stream-bad-ws',
           mode: 'default',
-          sessionType: 'stream',
+          transportType: 'stream',
         }),
       })
 
@@ -2842,7 +2897,7 @@ describe("stream sessions", () => {
         body: JSON.stringify({
           name: 'stream-replay-usage',
           mode: 'default',
-          sessionType: 'stream',
+          transportType: 'stream',
         }),
       })
 
@@ -2855,7 +2910,7 @@ describe("stream sessions", () => {
 
       // Connect and check the replay message includes usage totals
       const wsUrl = server.baseUrl.replace('http://', 'ws://') +
-        '/api/agents/sessions/stream-replay-usage/terminal?api_key=test-key'
+        '/api/agents/sessions/stream-replay-usage/ws?api_key=test-key'
       const ws = new WebSocket(wsUrl)
       const messages: Array<{ type: string; events?: unknown[]; usage?: { inputTokens: number; outputTokens: number; costUsd: number } }> = []
 
@@ -2900,7 +2955,7 @@ describe("stream sessions", () => {
         body: JSON.stringify({
           name: 'stream-multi-usage',
           mode: 'default',
-          sessionType: 'stream',
+          transportType: 'stream',
         }),
       })
 
@@ -2915,7 +2970,7 @@ describe("stream sessions", () => {
 
       // Connect and check accumulated usage in replay
       const wsUrl = server.baseUrl.replace('http://', 'ws://') +
-        '/api/agents/sessions/stream-multi-usage/terminal?api_key=test-key'
+        '/api/agents/sessions/stream-multi-usage/ws?api_key=test-key'
       const ws = new WebSocket(wsUrl)
       const messages: Array<{ type: string; usage?: { inputTokens: number; outputTokens: number; costUsd: number } }> = []
 
@@ -2955,7 +3010,7 @@ describe("stream sessions", () => {
         body: JSON.stringify({
           name: 'stream-result-override',
           mode: 'default',
-          sessionType: 'stream',
+          transportType: 'stream',
         }),
       })
 
@@ -2968,7 +3023,7 @@ describe("stream sessions", () => {
       await new Promise((r) => setTimeout(r, 50))
 
       const wsUrl = server.baseUrl.replace('http://', 'ws://') +
-        '/api/agents/sessions/stream-result-override/terminal?api_key=test-key'
+        '/api/agents/sessions/stream-result-override/ws?api_key=test-key'
       const ws = new WebSocket(wsUrl)
       const messages: Array<{ type: string; usage?: { inputTokens: number; outputTokens: number; costUsd: number } }> = []
 
@@ -3009,7 +3064,7 @@ describe("stream sessions", () => {
         body: JSON.stringify({
           name: 'stream-total-cost',
           mode: 'default',
-          sessionType: 'stream',
+          transportType: 'stream',
         }),
       })
 
@@ -3021,7 +3076,7 @@ describe("stream sessions", () => {
 
       const wsUrl =
         server.baseUrl.replace('http://', 'ws://') +
-        '/api/agents/sessions/stream-total-cost/terminal?api_key=test-key'
+        '/api/agents/sessions/stream-total-cost/ws?api_key=test-key'
       const ws = new WebSocket(wsUrl)
       const messages: Array<{
         type: string
@@ -3065,7 +3120,7 @@ describe("stream sessions", () => {
         body: JSON.stringify({
           name: 'stream-cwd',
           mode: 'default',
-          sessionType: 'stream',
+          transportType: 'stream',
           cwd: '/home/builder/projects/my-repo',
         }),
       })
@@ -3099,7 +3154,7 @@ describe("stream sessions", () => {
           body: JSON.stringify({
             name: 'stream-active-send-direct',
             mode: 'default',
-            sessionType: 'stream',
+            transportType: 'stream',
             task: 'Initial busy turn',
           }),
         })
@@ -3151,7 +3206,7 @@ describe("stream sessions", () => {
           body: JSON.stringify({
             name: 'stream-queued-images',
             mode: 'default',
-            sessionType: 'stream',
+            transportType: 'stream',
             task: 'Initial busy turn',
           }),
         })
@@ -3242,7 +3297,7 @@ describe("stream sessions", () => {
         body: JSON.stringify({
           name: 'stream-race',
           mode: 'default',
-          sessionType: 'stream',
+          transportType: 'stream',
         }),
       })
 
@@ -3298,7 +3353,7 @@ describe("stream sessions", () => {
         body: JSON.stringify({
           name: 'stream-stdin-error',
           mode: 'default',
-          sessionType: 'stream',
+          transportType: 'stream',
         }),
       })
 

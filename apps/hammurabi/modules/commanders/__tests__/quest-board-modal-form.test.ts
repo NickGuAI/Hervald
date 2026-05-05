@@ -19,21 +19,25 @@ vi.mock('react', async () => {
   }
 })
 
-vi.mock('@tanstack/react-query', () => ({
-  useQueryClient: () => ({
-    invalidateQueries: vi.fn(),
-  }),
-  useQuery: () => ({
-    data: [],
-    isLoading: false,
-    error: null,
-  }),
-  useMutation: () => ({
-    mutateAsync: vi.fn(),
-    isPending: false,
-    error: null,
-  }),
-}))
+vi.mock('@tanstack/react-query', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@tanstack/react-query')>()
+  return {
+    ...actual,
+    useQueryClient: () => ({
+      invalidateQueries: vi.fn(),
+    }),
+    useQuery: () => ({
+      data: [],
+      isLoading: false,
+      error: null,
+    }),
+    useMutation: () => ({
+      mutateAsync: vi.fn(),
+      isPending: false,
+      error: null,
+    }),
+  }
+})
 
 import { QuestBoard } from '../components/QuestBoard'
 

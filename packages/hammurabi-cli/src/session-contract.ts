@@ -1,7 +1,7 @@
 const COMMANDER_SESSION_NAME_PREFIX = 'commander-'
 
-export type SessionType = 'commander' | 'worker' | 'cron' | 'sentinel'
-export type SessionCreatorKind = 'human' | 'commander' | 'cron' | 'sentinel'
+export type SessionType = 'commander' | 'worker' | 'automation'
+export type SessionCreatorKind = 'human' | 'commander' | 'automation'
 
 export interface SessionCreator {
   kind: SessionCreatorKind
@@ -15,19 +15,26 @@ export interface CommanderOwnedSessionLike {
 export type ConversationSurface = 'discord' | 'telegram' | 'whatsapp' | 'ui' | 'cli' | 'api'
 export type ConversationStatus = 'active' | 'idle' | 'archived'
 
+export interface ProviderContext {
+  providerId: string
+  sessionId?: string
+  threadId?: string
+  effort?: string
+  adaptiveThinking?: string
+}
+
 export interface Conversation {
   id: string
   commanderId: string
+  isDefaultConversation?: boolean
   surface: ConversationSurface
   channelMeta?: Record<string, unknown>
   lastRoute?: Record<string, unknown>
+  name: string
   status: ConversationStatus
   currentTask: Record<string, unknown> | null
-  claudeSessionId?: string
-  codexThreadId?: string
-  geminiSessionId?: string
+  providerContext?: ProviderContext
   lastHeartbeat: string | null
-  heartbeat: Record<string, unknown>
   heartbeatTickCount: number
   completedTasks: number
   totalCostUsd: number
@@ -44,13 +51,11 @@ export interface WorkerLifecycleSessionLike {
 export type WorkerLifecycle = 'running' | 'stale' | 'exited' | 'completed'
 
 export function normalizeSessionType(value: unknown): SessionType | null {
-  if (
-    value === 'commander' ||
-    value === 'worker' ||
-    value === 'cron' ||
-    value === 'sentinel'
-  ) {
+  if (value === 'commander' || value === 'worker' || value === 'automation') {
     return value
+  }
+  if (value === 'cron' || value === 'sentinel') {
+    return 'automation'
   }
   return null
 }
@@ -61,18 +66,16 @@ export function normalizeSessionCreator(value: unknown): SessionCreator | null {
   }
 
   const rawKind = 'kind' in value ? value.kind : undefined
-  if (
-    rawKind !== 'human' &&
-    rawKind !== 'commander' &&
-    rawKind !== 'cron' &&
-    rawKind !== 'sentinel'
-  ) {
+  if (rawKind !== 'human' && rawKind !== 'commander' && rawKind !== 'automation' && rawKind !== 'cron' && rawKind !== 'sentinel') {
     return null
   }
 
   const rawId = 'id' in value ? value.id : undefined
   const id = typeof rawId === 'string' && rawId.trim().length > 0 ? rawId.trim() : undefined
-  return { kind: rawKind, ...(id ? { id } : {}) }
+  const kind: SessionCreatorKind = rawKind === 'cron' || rawKind === 'sentinel'
+    ? 'automation'
+    : rawKind
+  return { kind, ...(id ? { id } : {}) }
 }
 
 export function buildCommanderSessionName(commanderId: string): string {

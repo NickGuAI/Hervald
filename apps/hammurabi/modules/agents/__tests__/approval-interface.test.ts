@@ -5,13 +5,17 @@
  *   1. getSessionContext projects the right fields for stream sessions
  *      and returns null for missing / non-stream sessions.
  *   2. findSessionContextByClaudeSessionId matches only claude sessions
- *      with the exact claudeSessionId.
+ *      with the exact resume session id.
  *   3. listPendingCodexApprovals collects + sorts by requestedAt.
  *   4. resolvePendingCodexApproval dispatches valid IDs to the injected
  *      decision applier and returns 'not_found' for malformed / unknown IDs.
  *   5. subscribeToCodexApprovalQueue registers + returns an unsubscribe.
  */
 import { describe, expect, it, vi } from 'vitest'
+import {
+  createClaudeProviderContext,
+  createCodexProviderContext,
+} from '../providers/provider-session-context'
 
 import {
   createApprovalSessionsInterface,
@@ -35,13 +39,13 @@ function makeCodexSession(name: string, overrides: Partial<StreamSession> = {}):
     mode: 'default',
     cwd: '/tmp',
     host: undefined,
-    claudeSessionId: null,
+    providerContext: createCodexProviderContext(),
     codexPendingApprovals: new Map(),
     ...overrides,
   } as unknown as StreamSession
 }
 
-function makeClaudeSession(name: string, claudeSessionId: string | null = null): StreamSession {
+function makeClaudeSession(name: string, resumeSessionId: string | null = null): StreamSession {
   return {
     name,
     kind: 'stream',
@@ -51,7 +55,9 @@ function makeClaudeSession(name: string, claudeSessionId: string | null = null):
     mode: 'default',
     cwd: '/tmp',
     host: undefined,
-    claudeSessionId,
+    providerContext: createClaudeProviderContext({
+      sessionId: resumeSessionId ?? undefined,
+    }),
   } as unknown as StreamSession
 }
 
@@ -126,7 +132,7 @@ describe('createApprovalSessionsInterface — getSessionContext', () => {
 })
 
 describe('createApprovalSessionsInterface — findSessionContextByClaudeSessionId', () => {
-  it('matches a claude session by claudeSessionId', () => {
+  it('matches a claude session by resume session id', () => {
     const target = makeClaudeSession('claude-target', 'session-abc')
     const other = makeClaudeSession('claude-other', 'session-xyz')
     const ctx = makeBaseContext({
@@ -149,9 +155,9 @@ describe('createApprovalSessionsInterface — findSessionContextByClaudeSessionI
 
   it('ignores non-claude sessions even if id matches', () => {
     const codex = makeCodexSession('codex-1')
-    // simulate a codex session with the same claudeSessionId field — it
-    // should still not match since agentType guards.
-    ;(codex as unknown as { claudeSessionId: string }).claudeSessionId = 'session-abc'
+    codex.providerContext = createCodexProviderContext({
+      threadId: 'session-abc',
+    })
     const ctx = makeBaseContext({ sessions: new Map([['codex-1', codex]]) })
     const iface = createApprovalSessionsInterface(ctx)
 

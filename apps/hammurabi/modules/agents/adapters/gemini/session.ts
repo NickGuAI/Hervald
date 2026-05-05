@@ -14,6 +14,12 @@ import {
 import type { ActionPolicyGate } from '../../../policies/action-policy-gate.js'
 import { handleProviderApproval } from '../../../policies/provider-approval-adapter.js'
 import {
+  createGeminiProviderContext,
+  ensureGeminiProviderContext,
+  readGeminiRuntime,
+  readGeminiSessionId,
+} from '../../providers/provider-session-context.js'
+import {
   buildGeminiPromptText,
   buildGeminiSystemPrompt,
   mapGeminiMode,
@@ -92,11 +98,11 @@ export async function startGeminiTurn(
   text: string,
   deps: Pick<GeminiSessionDeps, 'appendEvent' | 'broadcastEvent' | 'getActiveSession'>,
 ): Promise<void> {
-  const geminiSessionId = session.geminiSessionId
-  if (!geminiSessionId) {
+  const resumeSessionId = readGeminiSessionId(session)
+  if (!resumeSessionId) {
     throw new Error('Gemini session is missing a session id')
   }
-  const runtime = session.geminiRuntime
+  const runtime = readGeminiRuntime(session)
   if (!runtime) {
     throw new Error('Gemini runtime is not initialized')
   }
@@ -120,7 +126,7 @@ export async function startGeminiTurn(
 
   try {
     const result = await runtime.sendRequest('session/prompt', {
-      sessionId: geminiSessionId,
+      sessionId: resumeSessionId,
       prompt: [{ type: 'text', text: promptText }],
     })
     const finalEvents = normalizeGeminiPromptResponse(result, session.geminiTurnState)
@@ -285,7 +291,14 @@ export async function createGeminiAcpSession(
   const initializedAt = new Date().toISOString()
   const sessionCwd = cwd || process.env.HOME || '/tmp'
 
-  await runtime.ensureConnected()
+  try {
+    await runtime.ensureConnected()
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error)
+    const reason = `Gemini runtime failed to start: ${detail}`
+    await runtime.teardown({ reason })
+    throw new Error(reason)
+  }
 
   const loadOrCreateResult = options.resumeSessionId
     ? await runtime.sendRequest('session/load', {
@@ -298,11 +311,11 @@ export async function createGeminiAcpSession(
       mcpServers: [],
     }) as { sessionId?: string }
 
-  const geminiSessionId = typeof loadOrCreateResult?.sessionId === 'string' && loadOrCreateResult.sessionId.trim().length > 0
+  const resumeSessionId = typeof loadOrCreateResult?.sessionId === 'string' && loadOrCreateResult.sessionId.trim().length > 0
     ? loadOrCreateResult.sessionId.trim()
     : options.resumeSessionId
 
-  if (!geminiSessionId) {
+  if (!resumeSessionId) {
     await runtime.teardown({ reason: 'Gemini ACP session bootstrap failed' })
     throw new Error('Gemini ACP did not return a session id')
   }
@@ -310,7 +323,7 @@ export async function createGeminiAcpSession(
   const geminiMode = mapGeminiMode(mode)
   if (geminiMode !== 'default') {
     await runtime.sendRequest('session/set_mode', {
-      sessionId: geminiSessionId,
+      sessionId: resumeSessionId,
       modeId: geminiMode,
     })
   }
@@ -354,10 +367,12 @@ export async function createGeminiAcpSession(
     queuedMessageDrainScheduled: false,
     queuedMessageDrainPending: false,
     queuedMessageDrainPendingForce: false,
-    geminiSessionId,
+    providerContext: createGeminiProviderContext({
+      sessionId: resumeSessionId,
+      runtime,
+    }),
     adapter: createGeminiSessionAdapter(deps),
     resumedFrom: options.resumedFrom,
-    geminiRuntime: runtime,
     geminiPendingSystemPrompt: buildGeminiSystemPrompt(options.systemPrompt, options.maxTurns),
     geminiTurnState: createGeminiTurnState(),
     geminiToolCallSnapshots: new Map(),
@@ -366,7 +381,9 @@ export async function createGeminiAcpSession(
 
   deps.writeTranscriptMeta(session)
 
-  session.geminiNotificationCleanup = runtime.addNotificationListener(geminiSessionId, ({ method, params, requestId }) => {
+  ensureGeminiProviderContext(session).notificationCleanup = runtime.addNotificationListener(
+    resumeSessionId,
+    ({ method, params, requestId }) => {
     if (requestId !== undefined) {
       const permissionRequest = buildGeminiApprovalRawEvent(session, requestId, asObject(params), deps)
       if (!permissionRequest) {
@@ -382,7 +399,7 @@ export async function createGeminiAcpSession(
         deps.appendEvent(session, unavailableEvent)
         deps.broadcastEvent(session, unavailableEvent)
         deps.schedulePersistedSessionsWrite()
-        session.geminiRuntime?.sendResponse(requestId, {
+        readGeminiRuntime(session)?.sendResponse(requestId, {
           outcome: {
             outcome: 'cancelled',
           },
@@ -399,7 +416,7 @@ export async function createGeminiAcpSession(
         deps.appendEvent(session, failureEvent)
         deps.broadcastEvent(session, failureEvent)
         deps.schedulePersistedSessionsWrite()
-        session.geminiRuntime?.sendResponse(requestId, {
+        readGeminiRuntime(session)?.sendResponse(requestId, {
           outcome: {
             outcome: 'cancelled',
           },
@@ -425,7 +442,8 @@ export async function createGeminiAcpSession(
       deps.appendEvent(session, event)
       deps.broadcastEvent(session, event)
     }
-  })
+    },
+  )
 
   if (typeof session.process.stdin?.on === 'function') {
     session.process.stdin.on('error', () => {
@@ -484,7 +502,11 @@ export async function createGeminiAcpSession(
           },
         ),
       )
-    } else if (session.sessionType === 'cron' || session.sessionType === 'sentinel') {
+    } else if (
+      session.sessionType === 'cron' ||
+      session.sessionType === 'sentinel' ||
+      session.sessionType === 'automation'
+    ) {
       // One-shot Gemini sessions share the same completion contract as Claude:
       // exit without `result` must still produce a completed-with-error entry
       // so the executor's GET poll resolves to `completed: true`. See issue #1217.

@@ -1,5 +1,9 @@
 import { useEffect } from 'react'
-import type { AgentType, SessionTransportType } from '@/types'
+import type {
+  AgentType,
+  ProviderRegistryEntry,
+  SessionTransportType,
+} from '@/types'
 import {
   DEFAULT_CLAUDE_ADAPTIVE_THINKING_MODE,
   type ClaudeAdaptiveThinkingMode,
@@ -10,7 +14,7 @@ import {
 } from '../../../claude-effort.js'
 
 interface UseNewSessionConstraintsOptions {
-  agentOptions: readonly AgentType[]
+  providers: readonly ProviderRegistryEntry[]
   agentType: AgentType
   setAgentType: (value: AgentType) => void
   transportType: Exclude<SessionTransportType, 'external'>
@@ -21,41 +25,57 @@ interface UseNewSessionConstraintsOptions {
   setAdaptiveThinking: (value: ClaudeAdaptiveThinkingMode) => void
 }
 
-export function getFallbackAgent(agentOptions: readonly AgentType[], agentType: AgentType): AgentType | null {
-  if (agentOptions.includes(agentType)) {
+function findProvider(
+  providers: readonly ProviderRegistryEntry[],
+  agentType: AgentType,
+): ProviderRegistryEntry | null {
+  return providers.find((provider) => provider.id === agentType) ?? null
+}
+
+export function getFallbackAgent(
+  providers: readonly ProviderRegistryEntry[],
+  agentType: AgentType,
+): AgentType | null {
+  if (providers.some((provider) => provider.id === agentType)) {
     return null
   }
 
-  return agentOptions[0] ?? null
+  return providers[0]?.id ?? null
 }
 
 export function getForcedTransportType(
+  providers: readonly ProviderRegistryEntry[],
   agentType: AgentType,
   transportType: Exclude<SessionTransportType, 'external'>,
 ): Exclude<SessionTransportType, 'external'> | null {
-  return agentType === 'gemini' && transportType !== 'stream' ? 'stream' : null
+  const forcedTransport = findProvider(providers, agentType)?.uiCapabilities.forcedTransport
+  return forcedTransport && transportType !== forcedTransport ? forcedTransport : null
 }
 
 export function getNormalizedEffort(
+  providers: readonly ProviderRegistryEntry[],
   agentType: AgentType,
   effort: ClaudeEffortLevel,
 ): ClaudeEffortLevel | null {
-  return agentType !== 'claude' && effort !== DEFAULT_CLAUDE_EFFORT_LEVEL
+  return !findProvider(providers, agentType)?.uiCapabilities.supportsEffort
+    && effort !== DEFAULT_CLAUDE_EFFORT_LEVEL
     ? DEFAULT_CLAUDE_EFFORT_LEVEL
     : null
 }
 
 export function getNormalizedAdaptiveThinking(
+  providers: readonly ProviderRegistryEntry[],
   agentType: AgentType,
   adaptiveThinking: ClaudeAdaptiveThinkingMode,
 ): ClaudeAdaptiveThinkingMode | null {
-  return agentType !== 'claude' && adaptiveThinking !== DEFAULT_CLAUDE_ADAPTIVE_THINKING_MODE
+  return !findProvider(providers, agentType)?.uiCapabilities.supportsAdaptiveThinking
+    && adaptiveThinking !== DEFAULT_CLAUDE_ADAPTIVE_THINKING_MODE
     ? DEFAULT_CLAUDE_ADAPTIVE_THINKING_MODE
     : null
 }
 
 export function useNewSessionConstraints({
-  agentOptions,
+  providers,
   agentType,
   setAgentType,
   transportType,
@@ -66,30 +86,30 @@ export function useNewSessionConstraints({
   setAdaptiveThinking,
 }: UseNewSessionConstraintsOptions) {
   useEffect(() => {
-    const fallbackAgent = getFallbackAgent(agentOptions, agentType)
+    const fallbackAgent = getFallbackAgent(providers, agentType)
     if (fallbackAgent) {
       setAgentType(fallbackAgent)
     }
-  }, [agentOptions, agentType, setAgentType])
+  }, [providers, agentType, setAgentType])
 
   useEffect(() => {
-    const nextTransportType = getForcedTransportType(agentType, transportType)
+    const nextTransportType = getForcedTransportType(providers, agentType, transportType)
     if (nextTransportType) {
       setTransportType(nextTransportType)
     }
-  }, [agentType, setTransportType, transportType])
+  }, [providers, agentType, setTransportType, transportType])
 
   useEffect(() => {
-    const nextEffort = getNormalizedEffort(agentType, effort)
+    const nextEffort = getNormalizedEffort(providers, agentType, effort)
     if (nextEffort) {
       setEffort(nextEffort)
     }
-  }, [agentType, effort, setEffort])
+  }, [providers, agentType, effort, setEffort])
 
   useEffect(() => {
-    const nextAdaptiveThinking = getNormalizedAdaptiveThinking(agentType, adaptiveThinking)
+    const nextAdaptiveThinking = getNormalizedAdaptiveThinking(providers, agentType, adaptiveThinking)
     if (nextAdaptiveThinking) {
       setAdaptiveThinking(nextAdaptiveThinking)
     }
-  }, [adaptiveThinking, agentType, setAdaptiveThinking])
+  }, [providers, adaptiveThinking, agentType, setAdaptiveThinking])
 }

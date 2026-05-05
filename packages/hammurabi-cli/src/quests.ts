@@ -6,6 +6,7 @@ interface QuestSummary {
   status: string
   title: string
   artifactCount: number
+  claimedByConversationId: string | null
 }
 
 type QuestArtifactType = 'github_issue' | 'github_pr' | 'url' | 'file'
@@ -57,12 +58,12 @@ interface CreateOptions {
 
 function printUsage(stdout: Writable): void {
   stdout.write('Usage:\n')
-  stdout.write('  hammurabi quests list\n')
+  stdout.write('  hammurabi quests list [--conversation <id>]\n')
   stdout.write(
     '  hammurabi quests create (--instruction "<text>" | --issue <url>) [--cwd <path>] [--mode <mode>] [--agent <type>] [--skills <s1,s2>] [--source <source>] [--note "<text>"]\n',
   )
   stdout.write('  hammurabi quests delete <id>\n')
-  stdout.write('  hammurabi quests claim <id>\n')
+  stdout.write('  hammurabi quests claim <id> [--conversation <id>]\n')
   stdout.write('  hammurabi quests note <id> "<text>"\n')
   stdout.write('  hammurabi quests done <id> --note "<text>"\n')
   stdout.write('  hammurabi quests fail <id> --note "<text>"\n')
@@ -87,6 +88,53 @@ function parseNoteOption(args: readonly string[]): string | null {
 
   const note = args[1]?.trim() ?? ''
   return note.length > 0 ? note : null
+}
+
+function parseConversationId(value: string | undefined): string | null {
+  const conversationId = value?.trim() ?? ''
+  return conversationId.length > 0 ? conversationId : null
+}
+
+function parseClaimOptions(
+  args: readonly string[],
+): {
+  questId: string
+  conversationId: string | null
+} | null {
+  const questId = parseQuestId(args[1])
+  if (!questId) {
+    return null
+  }
+
+  if (args.length === 2) {
+    return { questId, conversationId: null }
+  }
+
+  if (args.length === 4 && args[2] === '--conversation') {
+    const conversationId = parseConversationId(args[3])
+    if (!conversationId) {
+      return null
+    }
+    return { questId, conversationId }
+  }
+
+  return null
+}
+
+function parseListOptions(args: readonly string[]): { conversationId: string | null } | null {
+  if (args.length === 1) {
+    return { conversationId: null }
+  }
+
+  if (args.length === 3 && args[1] === '--conversation') {
+    const conversationId = parseConversationId(args[2])
+    if (!conversationId) {
+      return null
+    }
+    return { conversationId }
+  }
+
+  return null
 }
 
 function parseQuestArtifactType(value: unknown): QuestArtifactType | null {
@@ -199,6 +247,103 @@ async function readErrorDetail(response: Response): Promise<string | null> {
   }
 }
 
+function extractClaimHolder(payload: unknown): string | null {
+  if (!isObject(payload)) {
+    return null
+  }
+
+  const claimedBy = payload.claimedBy
+  if (typeof claimedBy === 'string' && claimedBy.trim().length > 0) {
+    return claimedBy.trim()
+  }
+
+  const directHolder = payload.claimedByConversationId
+  if (typeof directHolder === 'string' && directHolder.trim().length > 0) {
+    return directHolder.trim()
+  }
+
+  const holder = payload.holder
+  if (typeof holder === 'string' && holder.trim().length > 0) {
+    return holder.trim()
+  }
+
+  const existingClaimHolder = payload.existingClaimHolder
+  if (typeof existingClaimHolder === 'string' && existingClaimHolder.trim().length > 0) {
+    return existingClaimHolder.trim()
+  }
+
+  const claimHolder = payload.claimHolder
+  if (typeof claimHolder === 'string' && claimHolder.trim().length > 0) {
+    return claimHolder.trim()
+  }
+
+  if (isObject(payload.quest)) {
+    const nestedHolder = payload.quest.claimedByConversationId
+    if (typeof nestedHolder === 'string' && nestedHolder.trim().length > 0) {
+      return nestedHolder.trim()
+    }
+  }
+
+  return null
+}
+
+function extractErrorDetail(payload: unknown): string | null {
+  if (!isObject(payload)) {
+    return null
+  }
+
+  const message = payload.message
+  if (typeof message === 'string' && message.trim().length > 0) {
+    return message.trim()
+  }
+
+  const error = payload.error
+  if (typeof error === 'string' && error.trim().length > 0) {
+    return error.trim()
+  }
+
+  return null
+}
+
+async function writeClaimConflict(
+  stderr: Writable,
+  response: Response,
+  questId: string,
+): Promise<void> {
+  const contentType = response.headers.get('content-type') ?? ''
+  const isJson = contentType.toLowerCase().includes('application/json')
+
+  if (isJson) {
+    try {
+      const payload = (await response.json()) as unknown
+      const holder = extractClaimHolder(payload)
+      const detail = extractErrorDetail(payload)
+
+      if (holder) {
+        stderr.write(`Quest ${questId} is already claimed by ${holder}.\n`)
+        return
+      }
+
+      stderr.write(
+        detail
+          ? `Quest ${questId} could not be claimed: ${detail}\n`
+          : `Quest ${questId} is already claimed.\n`,
+      )
+      return
+    } catch {
+      stderr.write(`Quest ${questId} is already claimed.\n`)
+      return
+    }
+  }
+
+  const detail = await readErrorDetail(response)
+  stderr.write(
+    detail
+      ? `Quest ${questId} could not be claimed: ${detail}\n`
+      : `Quest ${questId} is already claimed.\n`,
+  )
+}
+
 async function writeRequestFailure(
   stderr: Writable,
   response: Response,
@@ -268,6 +413,10 @@ function parseQuestListPayload(payload: unknown): QuestSummary[] {
           : ''
     const title = titleRaw.trim()
     const artifactCount = parseQuestArtifacts(entry.artifacts).length
+    const claimedByConversationId =
+      typeof entry.claimedByConversationId === 'string'
+        ? parseConversationId(entry.claimedByConversationId)
+        : null
 
     if (!id || !status) {
       continue
@@ -278,18 +427,38 @@ function parseQuestListPayload(payload: unknown): QuestSummary[] {
       status,
       title: title.length > 0 ? title : '(untitled)',
       artifactCount,
+      claimedByConversationId,
     })
   }
 
   return quests
 }
 
-function printQuestSection(stdout: Writable, title: string, quests: readonly QuestSummary[]): void {
+function ownershipLabel(quest: QuestSummary, callingConversationId: string | null): string {
+  if (quest.claimedByConversationId === null) {
+    return '[unclaimed]'
+  }
+
+  if (callingConversationId && quest.claimedByConversationId === callingConversationId) {
+    return '[MINE]'
+  }
+
+  return `[claimed by ${quest.claimedByConversationId.slice(0, 8)}]`
+}
+
+function printQuestSection(
+  stdout: Writable,
+  title: string,
+  quests: readonly QuestSummary[],
+  callingConversationId: string | null,
+): void {
   stdout.write(`${title}:\n`)
   for (const quest of quests) {
     const artifactSuffix =
       quest.artifactCount > 0 ? ` [${quest.artifactCount} artifacts]` : ''
-    stdout.write(`- ${quest.id}: ${quest.title}${artifactSuffix}\n`)
+    stdout.write(
+      `- ${quest.id} ${ownershipLabel(quest, callingConversationId)} ${quest.title}${artifactSuffix}\n`,
+    )
   }
 }
 
@@ -537,6 +706,7 @@ async function runDelete(
 async function runList(
   context: CommandContext,
   fetchImpl: typeof fetch,
+  explicitConversationId: string | null,
   stdout: Writable,
   stderr: Writable,
 ): Promise<number> {
@@ -555,6 +725,7 @@ async function runList(
   }
 
   const quests = parseQuestListPayload(result.data)
+  const callingConversationId = resolveCallingConversation(explicitConversationId)
   const pending = quests.filter((quest) => quest.status === 'pending')
   const active = quests.filter((quest) => quest.status === 'active')
 
@@ -564,14 +735,14 @@ async function runList(
   }
 
   if (pending.length > 0) {
-    printQuestSection(stdout, 'Pending quests', pending)
+    printQuestSection(stdout, 'Pending quests', pending, callingConversationId)
   }
 
   if (active.length > 0) {
     if (pending.length > 0) {
       stdout.write('\n')
     }
-    printQuestSection(stdout, 'Active quests', active)
+    printQuestSection(stdout, 'Active quests', active, callingConversationId)
   }
 
   return 0
@@ -610,6 +781,60 @@ async function runPatchStatus(
   }
 
   stdout.write(`Quest ${questId} marked ${status}.\n`)
+  return 0
+}
+
+function resolveCallingConversation(explicitConversationId: string | null): string | null {
+  return (
+    explicitConversationId
+    ?? parseConversationId(process.env.HAMMURABI_CONVERSATION_ID)
+    ?? parseConversationId(process.env.HAMMURABI_COMMANDER_RUNTIME_CONVERSATION_ID)
+  )
+}
+
+function resolveClaimConversationId(explicitConversationId: string | null): string | null {
+  return resolveCallingConversation(explicitConversationId)
+}
+
+async function runClaim(
+  context: CommandContext,
+  fetchImpl: typeof fetch,
+  questId: string,
+  explicitConversationId: string | null,
+  stdout: Writable,
+  stderr: Writable,
+): Promise<number> {
+  const conversationId = resolveClaimConversationId(explicitConversationId)
+  if (!conversationId) {
+    stderr.write(
+      'Claiming a quest requires --conversation <id>, HAMMURABI_CONVERSATION_ID, or HAMMURABI_COMMANDER_RUNTIME_CONVERSATION_ID.\n',
+    )
+    return 1
+  }
+
+  const url = buildApiUrl(
+    context.config.endpoint,
+    `/api/commanders/${encodeURIComponent(context.commanderId)}/quests/${encodeURIComponent(
+      questId,
+    )}/claim`,
+  )
+  const result = await fetchJson(fetchImpl, url, {
+    method: 'POST',
+    headers: buildAuthHeaders(context.config, true),
+    body: JSON.stringify({ conversationId }),
+  })
+
+  if (!result.ok) {
+    if (result.response.status === 409) {
+      await writeClaimConflict(stderr, result.response, questId)
+      return 1
+    }
+
+    await writeRequestFailure(stderr, result.response, context)
+    return 1
+  }
+
+  stdout.write(`Quest ${questId} claimed.\n`)
   return 0
 }
 
@@ -785,11 +1010,12 @@ export async function runQuestsCli(
   }
 
   if (command === 'list') {
-    if (args.length !== 1) {
+    const listOptions = parseListOptions(args)
+    if (!listOptions) {
       printUsage(stdout)
       return 1
     }
-    return runList(context, fetchImpl, stdout, stderr)
+    return runList(context, fetchImpl, listOptions.conversationId, stdout, stderr)
   }
 
   if (command === 'create') {
@@ -811,12 +1037,19 @@ export async function runQuestsCli(
   }
 
   if (command === 'claim') {
-    const questId = parseQuestId(args[1])
-    if (!questId || args.length !== 2) {
+    const claimOptions = parseClaimOptions(args)
+    if (!claimOptions) {
       printUsage(stdout)
       return 1
     }
-    return runPatchStatus(context, fetchImpl, questId, 'active', null, stdout, stderr)
+    return runClaim(
+      context,
+      fetchImpl,
+      claimOptions.questId,
+      claimOptions.conversationId,
+      stdout,
+      stderr,
+    )
   }
 
   if (command === 'note') {

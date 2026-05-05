@@ -63,15 +63,15 @@ async function createServer(): Promise<RunningServer & { tmpDir: string }> {
   app.use('/v1', otelRouter)
   app.use(express.json())
 
-  // Also mount legacy routes so we can verify data flows through
-  const { createTelemetryRouter } = await import('../routes')
+  // Mount telemetry read routes too so OTEL writes can be verified end-to-end
+  const { createTelemetryRouterWithHub } = await import('../routes')
   app.use(
     '/api/telemetry',
-    createTelemetryRouter({
+    createTelemetryRouterWithHub({
       apiKeyStore: createTestApiKeyStore(),
       store,
       now,
-    }),
+    }).router,
   )
 
   const server = await new Promise<ReturnType<typeof app.listen>>((resolve) => {

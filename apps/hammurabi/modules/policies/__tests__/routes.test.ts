@@ -209,7 +209,7 @@ function createApprovalSessionsStub(): ApprovalSessionsStub {
   }
 }
 
-async function startServer(options: { rootDir?: string } = {}): Promise<RunningServer> {
+async function startServer(options: { rootDir?: string; now?: () => Date } = {}): Promise<RunningServer> {
   const rootDir = options.rootDir ?? await mkdtemp(path.join(tmpdir(), 'hammurabi-policies-routes-'))
   if (!options.rootDir) {
     tempDirectories.push(rootDir)
@@ -221,6 +221,7 @@ async function startServer(options: { rootDir?: string } = {}): Promise<RunningS
   const approvalCoordinator = new ApprovalCoordinator({
     snapshotFilePath: path.join(rootDir, 'pending.json'),
     auditFilePath: path.join(rootDir, 'audit.jsonl'),
+    now: options.now,
   })
   const approvalSessions = createApprovalSessionsStub()
   const actionPolicyGate = new ActionPolicyGate({
@@ -689,7 +690,7 @@ describe('policies routes', () => {
       server.approvalSessions.setSessionContext('worker-skill-review-01', {
         sessionName: 'worker-skill-review-01',
         sessionType: 'worker',
-        creator: { kind: 'commander', id: 'cmdr-athena' },
+        creator: { kind: 'commander', id: 'cmdr-atlas' },
         agentType: 'claude',
         mode: 'default',
         cwd: '/tmp/worktree',
@@ -883,6 +884,184 @@ describe('policies routes', () => {
           ],
         })
       })
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('drops resolved approvals older than 24h from /api/approvals/history by default', async () => {
+    const fixedNow = new Date('2026-05-01T12:00:00.000Z')
+    const server = await startServer({ now: () => new Date(fixedNow) })
+
+    try {
+      await server.approvalCoordinator.recordHistoryEntry({
+        timestamp: new Date(fixedNow.getTime() - (25 * 60 * 60 * 1000)).toISOString(),
+        type: 'approval.resolved',
+        approvalId: 'resolved-older-than-24h',
+        actionId: 'send-message',
+        actionLabel: 'Send Message',
+        source: 'claude',
+        summary: 'Resolved too long ago',
+        decision: 'approve',
+        delivered: true,
+        outcome: {
+          decision: 'approve',
+          allowed: true,
+        },
+      })
+
+      const historyResponse = await fetch(`${server.baseUrl}/api/approvals/history?limit=5`, {
+        headers: AUTH_HEADERS,
+      })
+
+      expect(historyResponse.status).toBe(200)
+      expect(await historyResponse.json()).toEqual({ history: [] })
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('keeps resolved approvals from the last 24h in /api/approvals/history by default', async () => {
+    const fixedNow = new Date('2026-05-01T12:00:00.000Z')
+    const recentResolvedAt = new Date(fixedNow.getTime() - (23 * 60 * 60 * 1000)).toISOString()
+    const server = await startServer({ now: () => new Date(fixedNow) })
+
+    try {
+      await server.approvalCoordinator.recordHistoryEntry({
+        timestamp: recentResolvedAt,
+        type: 'approval.resolved',
+        approvalId: 'resolved-within-24h',
+        actionId: 'send-message',
+        actionLabel: 'Send Message',
+        source: 'claude',
+        summary: 'Resolved recently',
+        decision: 'reject',
+        delivered: true,
+        outcome: {
+          decision: 'reject',
+          allowed: false,
+        },
+      })
+
+      const historyResponse = await fetch(`${server.baseUrl}/api/approvals/history?limit=5`, {
+        headers: AUTH_HEADERS,
+      })
+
+      expect(historyResponse.status).toBe(200)
+      expect(await historyResponse.json()).toEqual({
+        history: [
+          expect.objectContaining({
+            approvalId: 'resolved-within-24h',
+            timestamp: recentResolvedAt,
+            type: 'approval.resolved',
+            decision: 'reject',
+          }),
+        ],
+      })
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('honors an explicit from override on /api/approvals/history', async () => {
+    const fixedNow = new Date('2026-05-01T12:00:00.000Z')
+    const olderResolvedAt = new Date(fixedNow.getTime() - (25 * 60 * 60 * 1000)).toISOString()
+    const recentResolvedAt = new Date(fixedNow.getTime() - (23 * 60 * 60 * 1000)).toISOString()
+    const explicitFrom = new Date(fixedNow.getTime() - (7 * 24 * 60 * 60 * 1000)).toISOString()
+    const server = await startServer({ now: () => new Date(fixedNow) })
+
+    try {
+      await server.approvalCoordinator.recordHistoryEntry({
+        timestamp: olderResolvedAt,
+        type: 'approval.resolved',
+        approvalId: 'resolved-older-than-24h',
+        actionId: 'send-message',
+        actionLabel: 'Send Message',
+        source: 'claude',
+        summary: 'Resolved too long ago',
+        decision: 'approve',
+        delivered: true,
+        outcome: {
+          decision: 'approve',
+          allowed: true,
+        },
+      })
+      await server.approvalCoordinator.recordHistoryEntry({
+        timestamp: recentResolvedAt,
+        type: 'approval.resolved',
+        approvalId: 'resolved-within-24h',
+        actionId: 'send-message',
+        actionLabel: 'Send Message',
+        source: 'claude',
+        summary: 'Resolved recently',
+        decision: 'reject',
+        delivered: true,
+        outcome: {
+          decision: 'reject',
+          allowed: false,
+        },
+      })
+
+      const historyResponse = await fetch(
+        `${server.baseUrl}/api/approvals/history?limit=5&from=${encodeURIComponent(explicitFrom)}`,
+        { headers: AUTH_HEADERS },
+      )
+
+      expect(historyResponse.status).toBe(200)
+      expect(await historyResponse.json()).toEqual({
+        history: [
+          expect.objectContaining({
+            approvalId: 'resolved-within-24h',
+            timestamp: recentResolvedAt,
+          }),
+          expect.objectContaining({
+            approvalId: 'resolved-older-than-24h',
+            timestamp: olderResolvedAt,
+          }),
+        ],
+      })
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('keeps older pending approvals visible in /api/approvals/pending', async () => {
+    const fixedNow = new Date('2026-05-01T12:00:00.000Z')
+    const requestedAt = new Date(fixedNow.getTime() - (25 * 60 * 60 * 1000)).toISOString()
+    const server = await startServer({ now: () => new Date(fixedNow) })
+
+    try {
+      const approval = await server.approvalCoordinator.enqueue({
+        source: 'claude',
+        sessionId: 'older-pending-session',
+        actionId: 'send-message',
+        actionLabel: 'Send Message',
+        toolName: 'bash',
+        requestedAt,
+        context: {
+          summary: 'Pending approval remains visible',
+          details: {
+            target: '#ops',
+          },
+        },
+      })
+
+      const pendingResponse = await fetch(`${server.baseUrl}/api/approvals/pending`, {
+        headers: AUTH_HEADERS,
+      })
+      const pendingPayload = await pendingResponse.json() as {
+        approvals: Array<Record<string, unknown>>
+      }
+
+      expect(pendingResponse.status).toBe(200)
+      expect(pendingPayload.approvals).toEqual([
+        expect.objectContaining({
+          approvalId: approval.id,
+          requestedAt,
+          source: 'claude',
+          sessionName: 'older-pending-session',
+        }),
+      ])
     } finally {
       await server.close()
     }
@@ -1169,6 +1348,7 @@ describe('policies routes', () => {
         approvals: [],
       })
 
+      const codexApprovalRequestedAt = new Date(Date.now() - (60 * 60 * 1000)).toISOString()
       const codexApproval: PendingCodexApprovalView = {
         id: 'codex-approval-1',
         sessionName: 'codex-session-1',
@@ -1176,7 +1356,7 @@ describe('policies routes', () => {
         requestId: 77,
         actionId: 'push-code-prs',
         actionLabel: 'Push Code / PRs',
-        requestedAt: '2026-04-15T12:05:00.000Z',
+        requestedAt: codexApprovalRequestedAt,
         reason: 'Would push origin main',
         risk: 'Touches protected branch',
         threadId: 'thread-1',

@@ -6,16 +6,21 @@ import { BrowserRouter } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { MobileAutomations } from '../MobileAutomations'
 
-vi.mock('@modules/commanders/components/CommanderCronTab', () => ({
-  CommanderCronTab: () => <div data-testid="mobile-automation-cron">CommanderCronTab</div>,
-}))
-
-vi.mock('@modules/sentinels/components/SentinelPanel', () => ({
-  SentinelPanel: () => <div data-testid="mobile-automation-sentinels">SentinelPanel</div>,
-}))
-
-vi.mock('@modules/commanders/components/QuestBoard', () => ({
-  QuestBoard: () => <div data-testid="mobile-automation-quests">QuestBoard</div>,
+vi.mock('@modules/commanders/components/AutomationPanel', () => ({
+  AutomationPanel: ({
+    scope,
+    filter,
+  }: {
+    scope: { kind: 'global' } | { kind: 'commander'; commander: { id: string } }
+    filter: string
+  }) => (
+    <div
+      data-testid="mobile-automation-panel"
+      data-filter={filter}
+      data-scope={scope.kind}
+      data-commander={scope.kind === 'commander' ? scope.commander.id : 'global'}
+    />
+  ),
 }))
 
 let root: Root | null = null
@@ -24,9 +29,15 @@ let originalMatchMedia: typeof window.matchMedia | undefined
 
 const commander = {
   id: 'cmd-1',
-  host: 'athena',
+  host: 'atlas',
   displayName: 'Test Commander',
 } as const
+
+async function flushEffects() {
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 0))
+  })
+}
 
 async function renderAt(path: string) {
   window.history.pushState({}, '', path)
@@ -41,19 +52,6 @@ async function renderAt(path: string) {
           commanders={[commander as never]}
           selectedCommanderId="cmd-1"
           onSelectCommanderId={vi.fn()}
-          crons={[]}
-          cronsLoading={false}
-          cronsError={null}
-          addCron={vi.fn(async () => undefined)}
-          addCronPending={false}
-          toggleCron={vi.fn(async () => undefined)}
-          toggleCronPending={false}
-          updateCron={vi.fn(async () => undefined)}
-          updateCronPending={false}
-          triggerCron={vi.fn(async () => undefined)}
-          triggerCronPending={false}
-          deleteCron={vi.fn(async () => undefined)}
-          deleteCronPending={false}
         />
       </BrowserRouter>,
     )
@@ -88,23 +86,28 @@ describe('MobileAutomations', () => {
     window.matchMedia = originalMatchMedia as typeof window.matchMedia
   })
 
-  it('renders canonical panels as the segment changes', async () => {
-    await renderAt('/command-room/automations?surface=mobile&segment=cron')
+  it('reads canonical trigger and commander filters from the query string', async () => {
+    await renderAt('/command-room/automations?surface=mobile&trigger=schedule&commander=global')
+    await flushEffects()
 
-    expect(document.body.querySelector('[data-testid="mobile-automation-cron"]')).not.toBeNull()
+    const panel = document.body.querySelector('[data-testid="mobile-automation-panel"]')
+    expect(panel?.getAttribute('data-filter')).toBe('schedule')
+    expect(panel?.getAttribute('data-scope')).toBe('global')
+
+    const commanderButton = Array.from(document.body.querySelectorAll('button')).find((button) =>
+      button.textContent?.includes('test commander'),
+    )
+    if (!(commanderButton instanceof HTMLButtonElement)) {
+      throw new Error('expected commander filter button')
+    }
 
     await act(async () => {
-      document.body.querySelectorAll('button').item(1)?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      commanderButton.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
-    await vi.waitFor(() => {
-      expect(document.body.querySelector('[data-testid="mobile-automation-sentinels"]')).not.toBeNull()
-    })
+    await flushEffects()
 
-    await act(async () => {
-      document.body.querySelectorAll('button').item(2)?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    })
-    await vi.waitFor(() => {
-      expect(document.body.querySelector('[data-testid="mobile-automation-quests"]')).not.toBeNull()
-    })
+    const scopedPanel = document.body.querySelector('[data-testid="mobile-automation-panel"]')
+    expect(scopedPanel?.getAttribute('data-scope')).toBe('commander')
+    expect(scopedPanel?.getAttribute('data-commander')).toBe('cmd-1')
   })
 })

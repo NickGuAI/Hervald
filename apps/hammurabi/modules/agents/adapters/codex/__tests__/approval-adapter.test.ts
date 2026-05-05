@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { type ActionPolicyGateResult } from '../../../../policies/action-policy-gate'
 import { buildFallbackClaudeApprovalSession } from '../../claude/approval-adapter'
+import { createCodexProviderContext } from '../../../providers/provider-session-context'
 import {
   codexApprovalAdapter,
   type CodexApprovalRawEvent,
@@ -13,10 +14,12 @@ function buildCodexSession(): StreamSession {
     agentType: 'codex',
     activeTurnId: 'turn-approve-1',
     lastTurnCompleted: true,
-    codexRuntime: {
-      sendResponse: vi.fn(),
-      log: vi.fn(),
-    },
+    providerContext: createCodexProviderContext({
+      runtime: {
+        sendResponse: vi.fn(),
+        log: vi.fn(),
+      } as never,
+    }),
   } as StreamSession
 }
 
@@ -76,8 +79,8 @@ describe('codexApprovalAdapter', () => {
 
     await codexApprovalAdapter.sendReply(result, rawEvent, session)
 
-    const runtime = session.codexRuntime as { sendResponse: ReturnType<typeof vi.fn>; log: ReturnType<typeof vi.fn> }
-    expect(runtime.sendResponse).toHaveBeenCalledWith(42, { decision: 'accept' })
+    const runtime = session.providerContext as { runtime?: { sendResponse: ReturnType<typeof vi.fn>; log: ReturnType<typeof vi.fn> } }
+    expect(runtime.runtime?.sendResponse).toHaveBeenCalledWith(42, { decision: 'accept' })
     expect(appendEvent).toHaveBeenCalledWith(
       session,
       expect.objectContaining({

@@ -181,7 +181,12 @@ describe('remote commander sync routes', () => {
         },
       )
       expect(claimTwo.status).toBe(200)
-      expect(await claimTwo.json()).toEqual({ quest: null })
+      expect(await claimTwo.json()).toEqual({
+        quest: expect.objectContaining({
+          id: createdQuest.id,
+          status: 'active',
+        }),
+      })
 
       const listResponse = await fetch(`${server.baseUrl}/api/commanders`, {
         headers: AUTH_HEADERS,

@@ -362,7 +362,7 @@ export function processStreamEvent(
             continue
           }
 
-          // Legacy / unknown-provider fallback (preserves pre-3-way behavior).
+          // Unknown-provider fallback (preserves pre-3-way behavior).
           if (!text) {
             continue
           }

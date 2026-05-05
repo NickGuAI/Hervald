@@ -17,6 +17,8 @@ REQUIRED_PNPM_VERSION="10.23.0"
 REPO_BRANCH="${HERVALD_BRANCH:-main}"
 DEFAULT_PORT="20001"
 HEALTHCHECK_TIMEOUT_SECONDS="${HAMMURABI_INSTALL_TIMEOUT_SECONDS:-120}"
+LOCAL_BIN_DIR="$HOME/.local/bin"
+OPENCODE_BIN_DIR="$HOME/.opencode/bin"
 
 TARGET=""
 TARGET_DOMAIN=""
@@ -252,7 +254,7 @@ ensure_pnpm() {
 
 ensure_path_block() {
   local file="$1"
-  local export_line="export PATH=\"$HOME/.local/bin:\$PATH\""
+  local export_line="export PATH=\"$LOCAL_BIN_DIR:$OPENCODE_BIN_DIR:\$PATH\""
 
   touch "$file"
   if ! grep -Fq "$export_line" "$file"; then
@@ -268,6 +270,18 @@ ensure_local_path_setup() {
   ensure_path_block "$HOME/.zshrc"
   ensure_path_block "$HOME/.bash_profile"
   ensure_path_block "$HOME/.profile"
+}
+
+install_provider_clis() {
+  log "Installing provider CLIs..."
+  mkdir -p "$LOCAL_BIN_DIR"
+  export npm_config_prefix="$HOME/.local"
+  export PATH="$LOCAL_BIN_DIR:$OPENCODE_BIN_DIR:$PATH"
+
+  npm install -g @anthropic-ai/claude-code
+  npm install -g @openai/codex
+  npm install -g @google/gemini-cli
+  curl -fsSL https://opencode.ai/install | bash
 }
 
 normalize_target() {
@@ -432,7 +446,7 @@ escape_sed_replacement() {
 }
 
 mac_launch_path() {
-  printf '%s' "$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+  printf '%s' "$LOCAL_BIN_DIR:$OPENCODE_BIN_DIR:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 }
 
 install_mac_launch_agent() {
@@ -502,7 +516,7 @@ start_first_boot() {
   mkdir -p "$BOOTSTRAP_LOG_DIR"
   rm -f "$BOOTSTRAP_KEY_FILE" "$BOOTSTRAP_LOG_FILE"
 
-  env HAMMURABI_ALLOW_DEFAULT_MASTER_KEY=1 "$HOME/.local/bin/$CLI_NAME" up >"$BOOTSTRAP_LOG_FILE" 2>&1 &
+  env PATH="$LOCAL_BIN_DIR:$OPENCODE_BIN_DIR:$PATH" HAMMURABI_ALLOW_DEFAULT_MASTER_KEY=1 "$HOME/.local/bin/$CLI_NAME" up >"$BOOTSTRAP_LOG_FILE" 2>&1 &
   local boot_pid=$!
 
   if ! wait_for_first_boot "$port" "$boot_pid"; then
@@ -534,9 +548,9 @@ start_first_boot() {
 }
 
 print_next_steps() {
-  if [[ ":$PATH:" != *":$HOME/.local/bin:"* ]]; then
-    log "Reload your shell if \$HOME/.local/bin is not yet on PATH:"
-    log "  export PATH=\"\$HOME/.local/bin:\$PATH\""
+  if [[ ":$PATH:" != *":$LOCAL_BIN_DIR:"* || ":$PATH:" != *":$OPENCODE_BIN_DIR:"* ]]; then
+    log "Reload your shell if the provider bins are not yet on PATH:"
+    log "  export PATH=\"$LOCAL_BIN_DIR:$OPENCODE_BIN_DIR:\$PATH\""
   fi
 
   case "$TARGET" in
@@ -584,6 +598,7 @@ main() {
   copy_env_example_if_missing
   write_app_path_file
   link_cli
+  install_provider_clis
 
   local port
   port="$(read_configured_port)"

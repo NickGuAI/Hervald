@@ -2,6 +2,7 @@ import { Router } from 'express'
 import type { AuthUser } from '@gehirn/auth-providers'
 import type { ApiKeyStoreLike } from '../../server/api-keys/store.js'
 import { combinedAuth } from '../../server/middleware/combined-auth.js'
+import { parseProviderId } from '../agents/providers/registry.js'
 import { parseOptionalClaudePermissionMode } from '../agents/session/input.js'
 import { SentinelExecutor, type SentinelExecutorOptions } from './executor.js'
 import {
@@ -121,10 +122,7 @@ function parseOptionalAgentType(raw: unknown): SentinelAgentType | null | undefi
   if (raw === undefined) {
     return undefined
   }
-  if (raw === 'claude' || raw === 'codex' || raw === 'gemini') {
-    return raw
-  }
-  return null
+  return parseProviderId(raw)
 }
 
 function parseOptionalTimezone(raw: unknown): string | null | undefined {
@@ -357,7 +355,7 @@ export function createSentinelsRouter(options: SentinelsRouterOptions = {}): Sen
 
     const agentType = parseOptionalAgentType(req.body?.agentType)
     if (agentType === null) {
-      res.status(400).json({ error: 'agentType must be claude, codex, or gemini when provided' })
+      res.status(400).json({ error: 'agentType must be a registered provider id when provided' })
       return
     }
 
@@ -526,7 +524,7 @@ export function createSentinelsRouter(options: SentinelsRouterOptions = {}): Sen
     if ('agentType' in body) {
       const agentType = parseOptionalAgentType(body.agentType)
       if (!agentType) {
-        res.status(400).json({ error: 'agentType must be claude, codex, or gemini' })
+        res.status(400).json({ error: 'agentType must be a registered provider id' })
         return
       }
       patch.agentType = agentType

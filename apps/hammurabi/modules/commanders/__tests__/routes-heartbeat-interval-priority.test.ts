@@ -7,6 +7,7 @@ import { dirname, join } from 'node:path'
 import type { ApiKeyStoreLike } from '../../../server/api-keys/store'
 import { createCommandersRouter, type CommandersRouterOptions } from '../routes'
 import {
+  CommanderHeartbeatManager,
   DEFAULT_HEARTBEAT_INTERVAL_MS,
   DEFAULT_HEARTBEAT_MESSAGE,
 } from '../heartbeat'
@@ -82,6 +83,7 @@ async function startServer(
     memoryBasePath,
   })
   app.use('/api/commanders', commanders.router)
+  app.use('/api/conversations', commanders.conversationRouter)
 
   const httpServer = createServer(app)
   await new Promise<void>((resolve) => {
@@ -124,6 +126,144 @@ afterEach(async () => {
 })
 
 describe('commander config source of truth', () => {
+  async function createCommander(server: RunningServer, host: string): Promise<{ id: string }> {
+    const response = await fetch(`${server.baseUrl}/api/commanders`, {
+      method: 'POST',
+      headers: {
+        ...AUTH_HEADERS,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ host }),
+    })
+    expect(response.status).toBe(201)
+    return await response.json() as { id: string }
+  }
+
+  async function createConversation(
+    server: RunningServer,
+    commanderId: string,
+  ): Promise<{ id: string; commanderId: string; status: string }> {
+    const response = await fetch(`${server.baseUrl}/api/commanders/${commanderId}/conversations`, {
+      method: 'POST',
+      headers: {
+        ...AUTH_HEADERS,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ surface: 'ui' }),
+    })
+    expect(response.status).toBe(201)
+    return await response.json() as { id: string; commanderId: string; status: string }
+  }
+
+  async function archiveConversation(server: RunningServer, conversationId: string): Promise<void> {
+    const response = await fetch(`${server.baseUrl}/api/conversations/${conversationId}`, {
+      method: 'PATCH',
+      headers: {
+        ...AUTH_HEADERS,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ status: 'archived' }),
+    })
+    expect(response.status).toBe(200)
+  }
+
+  it('fans PATCH heartbeat out to every non-archived conversation and skips archived conversations', async () => {
+    const startSpy = vi
+      .spyOn(CommanderHeartbeatManager.prototype, 'start')
+      .mockImplementation(() => undefined)
+    const dir = await createTempDir('hammurabi-heartbeat-fan-out-')
+    const server = await startServer({
+      sessionStorePath: join(dir, 'sessions.json'),
+      memoryBasePath: join(dir, 'memory'),
+    })
+
+    try {
+      const commander = await createCommander(server, 'worker-heartbeat-fanout')
+      const activeOne = await createConversation(server, commander.id)
+      const activeTwo = await createConversation(server, commander.id)
+      const archived = await createConversation(server, commander.id)
+      await archiveConversation(server, archived.id)
+      startSpy.mockClear()
+
+      const response = await fetch(`${server.baseUrl}/api/commanders/${commander.id}/heartbeat`, {
+        method: 'PATCH',
+        headers: {
+          ...AUTH_HEADERS,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          intervalMs: 3_600_000,
+          messageTemplate: '[HB {{timestamp}}] Fan out.',
+        }),
+      })
+
+      expect(response.status).toBe(200)
+      const body = await response.json() as {
+        id: string
+        heartbeat: { intervalMs: number; messageTemplate: string }
+        conversations: Array<{ id: string; lastHeartbeat: string | null }>
+      }
+      const touchedIds = body.conversations.map((conversation) => conversation.id).sort()
+      expect(touchedIds).toHaveLength(3)
+      expect(touchedIds).toEqual(expect.arrayContaining([activeOne.id, activeTwo.id]))
+      expect(touchedIds).not.toContain(archived.id)
+      expect(body.heartbeat).toMatchObject({
+        intervalMs: 3_600_000,
+        messageTemplate: '[HB {{timestamp}}] Fan out.',
+      })
+
+      expect(startSpy).toHaveBeenCalledTimes(3)
+      expect(startSpy.mock.calls.map((call) => call[0]).sort()).toEqual(touchedIds)
+      for (const call of startSpy.mock.calls) {
+        expect(call[1]).toBe(commander.id)
+        expect(call[2]).toMatchObject({
+          intervalMs: 3_600_000,
+          messageTemplate: '[HB {{timestamp}}] Fan out.',
+        })
+      }
+    } finally {
+      await server.close()
+      startSpy.mockRestore()
+    }
+  })
+
+  it('keeps legacy-only commanders working by updating the single non-archived conversation', async () => {
+    const startSpy = vi
+      .spyOn(CommanderHeartbeatManager.prototype, 'start')
+      .mockImplementation(() => undefined)
+    const dir = await createTempDir('hammurabi-heartbeat-legacy-only-')
+    const server = await startServer({
+      sessionStorePath: join(dir, 'sessions.json'),
+      memoryBasePath: join(dir, 'memory'),
+    })
+
+    try {
+      const commander = await createCommander(server, 'worker-heartbeat-legacy-only')
+      startSpy.mockClear()
+
+      const response = await fetch(`${server.baseUrl}/api/commanders/${commander.id}/heartbeat`, {
+        method: 'PATCH',
+        headers: {
+          ...AUTH_HEADERS,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({ intervalMs: 1_200_000 }),
+      })
+
+      expect(response.status).toBe(200)
+      const body = await response.json() as {
+        conversations: Array<{ id: string; lastHeartbeat: string | null }>
+      }
+      expect(body.conversations).toHaveLength(1)
+      expect(startSpy).toHaveBeenCalledTimes(1)
+      expect(startSpy.mock.calls[0]?.[0]).toBe(body.conversations[0]?.id)
+      expect(startSpy.mock.calls[0]?.[2]).toMatchObject({ intervalMs: 1_200_000 })
+    } finally {
+      await server.close()
+      startSpy.mockRestore()
+    }
+  })
+
   it('persists custom runtime config into sessions.json and keeps COMMANDER.md free of config frontmatter', async () => {
     const dir = await createTempDir('hammurabi-config-source-of-truth-create-')
     const storePath = join(dir, 'sessions.json')
@@ -163,11 +303,6 @@ describe('commander config source of truth', () => {
       }
       const session = persisted.sessions.find((entry) => entry.id === created.id)
       expect(session).toMatchObject({
-        heartbeat: {
-          intervalMs: 10_800_000,
-          messageTemplate: '[HB {{timestamp}}] Follow up.',
-          intervalOverridden: true,
-        },
         maxTurns: 7,
         contextMode: 'thin',
         contextConfig: {
@@ -208,7 +343,6 @@ describe('commander config source of truth', () => {
             heartbeat: {
               intervalMs: DEFAULT_HEARTBEAT_INTERVAL_MS,
               messageTemplate: DEFAULT_HEARTBEAT_MESSAGE,
-              lastSentAt: null,
             },
             lastHeartbeat: null,
             heartbeatTickCount: 0,
@@ -249,11 +383,6 @@ describe('commander config source of truth', () => {
         }
         const session = persisted.sessions.find((entry) => entry.id === commanderId)
         expect(session).toMatchObject({
-          heartbeat: {
-            intervalMs: 10_800_000,
-            messageTemplate: '[LEGACY HB {{timestamp}}]',
-            intervalOverridden: true,
-          },
           maxTurns: 8,
           contextMode: 'thin',
           contextConfig: {

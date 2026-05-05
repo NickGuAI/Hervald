@@ -1,3 +1,5 @@
+import type { AgentType } from '@/types'
+
 const DEFAULT_HEARTBEAT_MESSAGE = 'Check for pending tasks and report status.'
 const MS_PER_MINUTE = 60_000
 
@@ -6,7 +8,7 @@ export interface CommanderMdPreviewProps {
   displayName?: string
   cwd?: string
   persona?: string
-  agentType?: 'claude' | 'codex' | 'gemini'
+  agentType?: AgentType
   effort?: 'low' | 'medium' | 'high' | 'max'
   heartbeatIntervalMs?: number
   heartbeatMessage?: string

@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
-import { act, createElement } from 'react'
+import { createElement } from 'react'
+import { act } from 'react-dom/test-utils'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { WorkspaceSource } from '../../../workspace/use-workspace'
@@ -210,6 +211,10 @@ describe('useWorkspaceOverlayTree', () => {
     vi.useFakeTimers()
     const harness = await createHarness()
 
+    await waitForCondition(
+      () => mocks.fetchWorkspaceTree.mock.calls.length > 0,
+      'expected root tree request',
+    )
     expect(mocks.fetchWorkspaceTree).toHaveBeenCalledWith(AGENT_SOURCE, '')
     await waitForCondition(
       () => Boolean(harness.getState().filteredNodesByParent['']?.length),
@@ -222,8 +227,11 @@ describe('useWorkspaceOverlayTree', () => {
 
     await runInAct(() => harness.getState().handleToggleDirectory('src'))
 
+    await waitForCondition(
+      () => harness.getState().expandedPaths.has('src'),
+      'expected src directory to expand',
+    )
     expect(mocks.fetchWorkspaceExpandedTree).toHaveBeenCalledWith(AGENT_SOURCE, 'src')
-    expect(harness.getState().expandedPaths.has('src')).toBe(true)
     await waitForCondition(
       () => Boolean(harness.getState().filteredNodesByParent.src?.length),
       'expected expanded directory nodes',
@@ -255,8 +263,16 @@ describe('useWorkspaceOverlayTree', () => {
 
   it('resets selection and tree state when the overlay closes or the source changes', async () => {
     const harness = await createHarness()
+    await waitForCondition(
+      () => Boolean(harness.getState().filteredNodesByParent['']?.length),
+      'expected root tree nodes before toggling',
+    )
 
     await runInAct(() => harness.getState().handleToggleDirectory('src'))
+    await waitForCondition(
+      () => harness.getState().expandedPaths.has('src'),
+      'expected src directory to expand',
+    )
     await runInAct(() => {
       harness.getState().handlePreviewPath('src/app.ts')
       harness.getState().handleAddPath('src/app.ts', 'file')
@@ -276,7 +292,7 @@ describe('useWorkspaceOverlayTree', () => {
 
     await harness.rerender({ open: true, source: COMMANDER_SOURCE })
     await waitForCondition(
-      () => Boolean(harness.getState().filteredNodesByParent['']?.length),
+      () => harness.getState().filteredNodesByParent['']?.some((node) => node.name === 'notes') === true,
       'expected commander tree nodes',
     )
     expect(harness.getState().selectedPath).toBeNull()

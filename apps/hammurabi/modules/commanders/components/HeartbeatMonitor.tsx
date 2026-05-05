@@ -23,7 +23,6 @@ interface HeartbeatPatchResponse {
   heartbeat: {
     intervalMs: number
     messageTemplate: string
-    lastSentAt: string | null
   }
   lastHeartbeat: string | null
 }

@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -92,6 +92,22 @@ afterEach(async () => {
   )
 })
 
+async function seedOperatorFile(filePath: string, content: Record<string, unknown> = {
+  id: 'existing-founder',
+  kind: 'founder',
+  displayName: 'Existing Founder',
+  email: 'existing@example.com',
+  avatarUrl: null,
+  createdAt: '2026-01-01T00:00:00.000Z',
+}): Promise<void> {
+  await mkdir(path.dirname(filePath), { recursive: true })
+  await writeFile(filePath, `${JSON.stringify(content, null, 2)}\n`, 'utf8')
+}
+
+function createOfflineProviderRegistryFetch(): typeof fetch {
+  return vi.fn().mockRejectedValue(new Error('offline')) as unknown as typeof fetch
+}
+
 describe('runOnboardCli', () => {
   it('detects supported Tailscale install targets', () => {
     expect(detectTailscalePlatform('darwin')).toBe('macos')
@@ -121,11 +137,13 @@ describe('runOnboardCli', () => {
 
   it('writes .hammurabi.json and seeds runtime config when missing', async () => {
     const homeDir = await mkdtemp(path.join(tmpdir(), 'hammurabi-onboard-home-'))
+    const dataDir = path.join(homeDir, '.hammurabi')
     createdDirectories.push(homeDir)
     previousHome = process.env.HOME
     process.env.HOME = homeDir
     previousHammurabiDataDir = process.env.HAMMURABI_DATA_DIR
-    process.env.HAMMURABI_DATA_DIR = path.join(homeDir, '.hammurabi')
+    process.env.HAMMURABI_DATA_DIR = dataDir
+    await seedOperatorFile(path.join(dataDir, 'operators.json'))
 
     promptTextMock.mockResolvedValue('https://hervald.gehirn.ai')
     promptSecretMock.mockResolvedValue('hmrb_test_key')
@@ -139,7 +157,9 @@ describe('runOnboardCli', () => {
       failed: [],
     })
 
-    const exitCode = await runOnboardCli(['onboard'])
+    const exitCode = await runOnboardCli(['onboard'], {
+      fetchImpl: createOfflineProviderRegistryFetch(),
+    })
 
     expect(exitCode).toBe(0)
     const cliConfigPath = path.join(homeDir, '.hammurabi.json')
@@ -170,11 +190,13 @@ describe('runOnboardCli', () => {
 
   it('guides an already-installed tailscale worker and prints the next machine-add command', async () => {
     const homeDir = await mkdtemp(path.join(tmpdir(), 'hammurabi-onboard-home-'))
+    const dataDir = path.join(homeDir, '.hammurabi')
     createdDirectories.push(homeDir)
     previousHome = process.env.HOME
     process.env.HOME = homeDir
     previousHammurabiDataDir = process.env.HAMMURABI_DATA_DIR
-    process.env.HAMMURABI_DATA_DIR = path.join(homeDir, '.hammurabi')
+    process.env.HAMMURABI_DATA_DIR = dataDir
+    await seedOperatorFile(path.join(dataDir, 'operators.json'))
 
     promptTextMock.mockResolvedValue('https://hervald.gehirn.ai')
     promptSecretMock.mockResolvedValue('hmrb_test_key')
@@ -205,6 +227,7 @@ describe('runOnboardCli', () => {
     const runInteractiveCommand = vi.fn().mockResolvedValue(0)
 
     const exitCode = await runOnboardCli(['onboard'], {
+      fetchImpl: createOfflineProviderRegistryFetch(),
       platform: 'darwin',
       runCommand,
       runInteractiveCommand,
@@ -216,5 +239,102 @@ describe('runOnboardCli', () => {
     expect(stdoutSpy?.mock.calls.map(([chunk]) => String(chunk)).join('')).toContain(
       'hammurabi machine add --id <id> --label <label> --tailscale-hostname home-mac.tail2bb6ea.ts.net',
     )
+  })
+
+  it('creates the founder operator when operators.json is missing', async () => {
+    const homeDir = await mkdtemp(path.join(tmpdir(), 'hammurabi-onboard-home-'))
+    const dataDir = path.join(homeDir, '.hammurabi')
+    createdDirectories.push(homeDir)
+    previousHome = process.env.HOME
+    process.env.HOME = homeDir
+    previousHammurabiDataDir = process.env.HAMMURABI_DATA_DIR
+    process.env.HAMMURABI_DATA_DIR = dataDir
+
+    promptTextMock
+      .mockResolvedValueOnce('https://hervald.gehirn.ai')
+      .mockResolvedValueOnce('Founder Override')
+      .mockResolvedValueOnce('founder@example.com')
+    promptSecretMock.mockResolvedValue('hmrb_test_key')
+    promptMultiSelectMock.mockResolvedValue(['claude-code'])
+    validateTelemetryWriteKeyMock.mockResolvedValue({
+      ok: true,
+      validationUrl: 'https://hervald.gehirn.ai/v1/logs',
+    })
+    applyManagedAgentTelemetryConfigMock.mockResolvedValue({
+      configured: ['claude-code'],
+      failed: [],
+    })
+
+    const runCommand = vi.fn()
+      .mockResolvedValueOnce({ stdout: 'Nick Git\n', stderr: '', code: 0 })
+
+    const exitCode = await runOnboardCli(['onboard'], {
+      fetchImpl: createOfflineProviderRegistryFetch(),
+      runCommand,
+    })
+
+    expect(exitCode).toBe(0)
+    const operatorPath = path.join(dataDir, 'operators.json')
+    const operator = JSON.parse(await readFile(operatorPath, 'utf8')) as Record<string, unknown>
+
+    expect(operator).toMatchObject({
+      kind: 'founder',
+      displayName: 'Founder Override',
+      email: 'founder@example.com',
+      avatarUrl: null,
+    })
+    expect(typeof operator.id).toBe('string')
+    expect(typeof operator.createdAt).toBe('string')
+    expect(promptTextMock).toHaveBeenNthCalledWith(2, 'Founder display name', {
+      defaultValue: 'Nick Git',
+      required: true,
+    })
+    expect(promptTextMock).toHaveBeenNthCalledWith(3, 'Founder email', {
+      required: true,
+    })
+  })
+
+  it('skips founder creation when operators.json already exists', async () => {
+    const homeDir = await mkdtemp(path.join(tmpdir(), 'hammurabi-onboard-home-'))
+    const dataDir = path.join(homeDir, '.hammurabi')
+    createdDirectories.push(homeDir)
+    previousHome = process.env.HOME
+    process.env.HOME = homeDir
+    previousHammurabiDataDir = process.env.HAMMURABI_DATA_DIR
+    process.env.HAMMURABI_DATA_DIR = dataDir
+    const operatorPath = path.join(dataDir, 'operators.json')
+    const existingOperator = {
+      id: 'existing-founder',
+      kind: 'founder',
+      displayName: 'Existing Founder',
+      email: 'existing@example.com',
+      avatarUrl: null,
+      createdAt: '2026-01-01T00:00:00.000Z',
+    }
+    await seedOperatorFile(operatorPath, existingOperator)
+
+    promptTextMock.mockResolvedValue('https://hervald.gehirn.ai')
+    promptSecretMock.mockResolvedValue('hmrb_test_key')
+    promptMultiSelectMock.mockResolvedValue(['claude-code'])
+    validateTelemetryWriteKeyMock.mockResolvedValue({
+      ok: true,
+      validationUrl: 'https://hervald.gehirn.ai/v1/logs',
+    })
+    applyManagedAgentTelemetryConfigMock.mockResolvedValue({
+      configured: ['claude-code'],
+      failed: [],
+    })
+
+    const runCommand = vi.fn()
+
+    const exitCode = await runOnboardCli(['onboard'], {
+      fetchImpl: createOfflineProviderRegistryFetch(),
+      runCommand,
+    })
+
+    expect(exitCode).toBe(0)
+    expect(JSON.parse(await readFile(operatorPath, 'utf8'))).toEqual(existingOperator)
+    expect(promptTextMock).toHaveBeenCalledTimes(1)
+    expect(runCommand).not.toHaveBeenCalled()
   })
 })

@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { WebSocket } from 'ws'
 import { CommanderSessionStore, type CommanderSession } from '../../commanders/store'
+import { ensureCodexProviderContext } from '../providers/provider-session-context'
 import type { PtySpawner } from '../routes'
 import {
   AUTH_HEADERS,
@@ -186,7 +187,7 @@ describe("agents routes", () => {
           body: JSON.stringify({
             name: 'world-blocked-01',
             mode: 'default',
-            sessionType: 'stream',
+            transportType: 'stream',
             task: 'Need clarification',
           }),
         })
@@ -811,8 +812,8 @@ describe("agents routes", () => {
   it('uses commander host as the session label', async () => {
       vi.mocked(CommanderSessionStore.prototype.list).mockResolvedValue([
         {
-          id: 'cmdr-athena',
-          host: 'athena',
+          id: 'cmdr-atlas',
+          host: 'atlas',
         } as unknown as CommanderSession,
       ])
 
@@ -826,10 +827,10 @@ describe("agents routes", () => {
           'content-type': 'application/json',
         },
         body: JSON.stringify({
-          name: 'commander-cmdr-athena',
+          name: 'commander-cmdr-atlas',
           mode: 'default',
           sessionType: 'commander',
-          creator: { kind: 'commander', id: 'cmdr-athena' },
+          creator: { kind: 'commander', id: 'cmdr-atlas' },
         }),
       })
 
@@ -846,10 +847,10 @@ describe("agents routes", () => {
       expect(response.status).toBe(200)
       expect(payload).toEqual(expect.arrayContaining([
         expect.objectContaining({
-          name: 'commander-cmdr-athena',
-          label: 'athena',
+          name: 'commander-cmdr-atlas',
+          label: 'atlas',
           sessionType: 'commander',
-          creator: { kind: 'commander', id: 'cmdr-athena' },
+          creator: { kind: 'commander', id: 'cmdr-atlas' },
         }),
       ]))
 
@@ -899,7 +900,7 @@ describe("agents routes", () => {
           body: JSON.stringify({
             name: 'codex-delete-watchdog',
             mode: 'default',
-            sessionType: 'stream',
+            transportType: 'stream',
             agentType: 'codex',
             task: 'Delete this session',
           }),
@@ -948,7 +949,7 @@ describe("agents routes", () => {
           body: JSON.stringify({
             name: 'codex-dismiss-worker',
             mode: 'default',
-            sessionType: 'stream',
+            transportType: 'stream',
             agentType: 'codex',
             task: 'Preserve my rollout',
           }),
@@ -959,7 +960,7 @@ describe("agents routes", () => {
         const session = server.agents.sessionsInterface.getSession('codex-dismiss-worker')
         expect(session?.agentType).toBe('codex')
         if (session?.kind === 'stream') {
-          session.codexThreadId = 'thread-dismiss-worker'
+          ensureCodexProviderContext(session).threadId = 'thread-dismiss-worker'
         }
 
         const firstDeleteResponse = await fetch(`${server.baseUrl}/api/agents/sessions/codex-dismiss-worker`, {
@@ -1113,7 +1114,7 @@ describe("agents routes", () => {
 
       // Attach message listener before open to avoid race condition with scrollback
       const wsUrl = server.baseUrl.replace('http://', 'ws://') +
-        '/api/agents/sessions/ws-scrollback/terminal?api_key=test-key'
+        '/api/agents/sessions/ws-scrollback/ws?api_key=test-key'
       const ws = new WebSocket(wsUrl)
       const messages: string[] = []
 
@@ -1177,7 +1178,7 @@ describe("agents routes", () => {
 
       const replayChunks: string[] = []
       const wsUrl = server.baseUrl.replace('http://', 'ws://') +
-        '/api/agents/sessions/ws-reconnect-scrollback/terminal?api_key=test-key'
+        '/api/agents/sessions/ws-reconnect-scrollback/ws?api_key=test-key'
       const secondWs = new WebSocket(wsUrl)
       secondWs.on('message', (data, isBinary) => {
         if (isBinary) {
@@ -1531,7 +1532,7 @@ describe("agents routes", () => {
       const server = await startServer({ ptySpawner: spawner })
 
       const wsUrl = server.baseUrl.replace('http://', 'ws://') +
-        '/api/agents/sessions/%E0%A4%A/terminal?api_key=test-key'
+        '/api/agents/sessions/%E0%A4%A/ws?api_key=test-key'
       const ws = new WebSocket(wsUrl)
 
       await expect(
@@ -1548,8 +1549,7 @@ describe("agents routes", () => {
     })
 
   it('accepts WebSocket upgrade on /ws alias path (used by commander sessions)', async () => {
-      // The agents router accepts both /terminal (legacy) and /ws (new commander usage).
-      // Verify the /ws suffix correctly routes to the same session as /terminal.
+      // The agents router uses the canonical /ws suffix for stream sessions.
       const { spawner } = createMockPtySpawner()
       const server = await startServer({ ptySpawner: spawner })
 

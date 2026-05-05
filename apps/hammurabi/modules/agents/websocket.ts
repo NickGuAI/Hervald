@@ -2,6 +2,10 @@ import type { IncomingMessage } from 'node:http'
 import type { Duplex } from 'node:stream'
 import { WebSocketServer } from 'ws'
 import { SESSION_NAME_PATTERN } from './constants.js'
+import {
+  readClaudeSessionId,
+  readCodexThreadId,
+} from './providers/provider-session-context.js'
 import { attachWebSocketKeepAlive } from './session/helpers.js'
 import type {
   AnySession,
@@ -11,6 +15,8 @@ import type {
   StreamSession,
   StreamSessionCreateOptions,
 } from './types.js'
+
+export const WS_REPLAY_TAIL_LIMIT = 200
 
 export interface AgentsWebSocketContext {
   sessions: Map<string, AnySession>
@@ -38,9 +44,8 @@ export interface AgentsWebSocketContext {
 }
 
 function extractSessionNameFromUrl(url: URL): string | null {
-  // Expected path: /api/agents/sessions/:name/terminal (legacy)
-  // or /api/agents/sessions/:name/ws (new commander usage).
-  const match = url.pathname.match(/\/sessions\/([^/]+)\/(?:terminal|ws)$/)
+  // Expected path: /api/agents/sessions/:name/ws
+  const match = url.pathname.match(/\/sessions\/([^/]+)\/ws$/)
   if (!match) {
     return null
   }
@@ -103,9 +108,11 @@ export function createAgentsWebSocket(ctx: AgentsWebSocketContext): {
           // Include the accumulated usage so the client can set totals
           // directly rather than re-accumulating from individual deltas.
           if (session.events.length > 0) {
+            const replayEvents = session.events.slice(-WS_REPLAY_TAIL_LIMIT)
             ws.send(JSON.stringify({
               type: 'replay',
-              events: session.events,
+              events: replayEvents,
+              more: session.events.length > WS_REPLAY_TAIL_LIMIT,
               ...(session.kind === 'stream'
                 ? { usage: session.usage, queue: getQueueUpdatePayload(session).queue }
                 : {}),
@@ -205,8 +212,8 @@ export function createAgentsWebSocket(ctx: AgentsWebSocketContext): {
 
                   // For codex sessions, use the sidecar transport and only
                   // record the user event after Codex accepts the turn.
-                  const codexThreadId = liveSession.codexThreadId
-                  if (codexThreadId) {
+                  const resumeThreadId = readCodexThreadId(liveSession)
+                  if (resumeThreadId) {
                     if (!inputText) {
                       const errEvent: StreamJsonEvent = {
                         type: 'system',
@@ -228,7 +235,11 @@ export function createAgentsWebSocket(ctx: AgentsWebSocketContext): {
                     // Clear completed state on new input so the RPG world-state poller
                     // immediately sees the session as active again. Command-room sessions
                     // are intentionally one-shot and must remain in completed state.
-                    if (liveSession.lastTurnCompleted && liveSession.sessionType !== 'cron') {
+                    if (
+                      liveSession.lastTurnCompleted &&
+                      liveSession.sessionType !== 'cron' &&
+                      liveSession.sessionType !== 'automation'
+                    ) {
                       liveSession.lastTurnCompleted = false
                       liveSession.completedTurnAt = undefined
                     }
@@ -259,10 +270,10 @@ export function createAgentsWebSocket(ctx: AgentsWebSocketContext): {
                     if (wrote) {
                       appendStreamEvent(liveSession, userEvent)
                       broadcastStreamEvent(liveSession, userEvent)
-                    } else if (!liveSession.process.stdin?.writable && liveSession.claudeSessionId) {
+                    } else if (!liveSession.process.stdin?.writable && readClaudeSessionId(liveSession)) {
                       // Process exited after its last turn — respawn with --resume
                       // and relay the pending user message once the new process is ready.
-                      const resumeId = liveSession.claudeSessionId
+                      const resumeId = readClaudeSessionId(liveSession)!
                       const pendingInput = userMsg + '\n'
                       void readMachineRegistry()
                         .then((machines) => {
@@ -323,7 +334,7 @@ export function createAgentsWebSocket(ctx: AgentsWebSocketContext): {
                     }
                   }
                 } // end if (inputText || validImages.length > 0)
-              } else if (msg.type === 'tool_answer' && msg.toolId && msg.answers && !liveSession.codexThreadId) {
+              } else if (msg.type === 'tool_answer' && msg.toolId && msg.answers && !readCodexThreadId(liveSession)) {
                 // Serialize string[] values to comma-separated strings
                 // per the AskUserQuestion contract (answers: Record<string, string>)
                 const serialized: Record<string, string> = {}

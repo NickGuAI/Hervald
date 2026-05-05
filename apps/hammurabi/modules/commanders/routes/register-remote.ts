@@ -10,6 +10,7 @@ import {
   parseMessage,
   parseSessionId,
 } from '../route-parsers.js'
+import { createDefaultHeartbeatConfig } from '../heartbeat.js'
 import {
   DEFAULT_COMMANDER_CONTEXT_MODE,
   type CommanderSession,
@@ -70,6 +71,7 @@ export function registerRemoteRoutes(
       created: context.now().toISOString(),
       agentType: 'claude',
       effort: DEFAULT_CLAUDE_EFFORT_LEVEL,
+      heartbeat: createDefaultHeartbeatConfig(),
       maxTurns: context.runtimeConfig.defaults.maxTurns,
       contextMode: DEFAULT_COMMANDER_CONTEXT_MODE,
       taskSource: null,
@@ -82,7 +84,7 @@ export function registerRemoteRoutes(
 
     try {
       const created = await context.sessionStore.create(session)
-      await context.ensureLegacyConversation(created, { surface: 'api' })
+      await context.ensureDefaultConversation(created, { surface: 'api' })
       try {
         await scaffoldCommanderWorkflow(
           created.id,

@@ -107,8 +107,9 @@ describeIfChild('commander env isolation child', () => {
         }),
       })
 
-      expect(createResponse.status).toBe(201)
-      const created = await createResponse.json() as { id: string; host: string }
+      const createBodyText = await createResponse.text()
+      expect(createResponse.status, createBodyText).toBe(201)
+      const created = JSON.parse(createBodyText) as { id: string; host: string }
       expect(created.host).toBe('fixture-env-isolation')
       expect(created.id).toMatch(/^[0-9a-f-]{36}$/i)
     } finally {

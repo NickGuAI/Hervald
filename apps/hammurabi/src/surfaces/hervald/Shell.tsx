@@ -3,8 +3,8 @@
  *
  * Shared layout chrome for every Hervald route (desktop AND mobile). Owns:
  *   - Desktop `TopBar` with module nav + counts (visible from md up)
- *   - Mobile `MobileBottomTabs` with the canonical 4-tab IA
- *       Sessions · Automations · Inbox · Settings
+ *   - Mobile `MobileBottomTabs` with the canonical 5-tab IA
+ *       Org · Sessions · Automations · Inbox · Settings
  *     from `apps/hammurabi/assets/mock/Hervald App/Hervald Prototype.html`
  *
  * Mobile nav is a single source of truth: Shell renders `MobileBottomTabs`
@@ -118,8 +118,8 @@ export function Shell({ modules, children }: ShellProps) {
       </main>
 
       {/*
-        Canonical Hervald mobile tab bar — Sessions · Automations · Inbox ·
-        Settings. Self-hides on immersive chat routes. Rendered here (not
+        Canonical Hervald mobile tab bar — Org · Sessions · Automations ·
+        Inbox · Settings. Self-hides on immersive chat routes. Rendered here (not
         inside MobileCommandRoom) so every mobile route in the app —
         including non-Command-Room pages — gets the same canonical IA.
       */}

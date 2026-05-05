@@ -2,7 +2,7 @@ import path from 'node:path'
 import { resolveModuleDataDir } from '../data-dir.js'
 
 export const COMMANDER_DATA_DIR_ENV = 'COMMANDER_DATA_DIR'
-export const LEGACY_COMMANDER_DATA_DIR_ENV = 'HAMMURABI_COMMANDER_MEMORY_DIR'
+export const COMMANDER_MEMORY_DIR_ENV = 'HAMMURABI_COMMANDER_MEMORY_DIR'
 
 export interface CommanderPaths {
   dataDir: string
@@ -25,9 +25,9 @@ export function resolveCommanderDataDir(env: NodeJS.ProcessEnv = process.env): s
     return configured
   }
 
-  const legacy = parseEnvPath(env[LEGACY_COMMANDER_DATA_DIR_ENV])
-  if (legacy) {
-    return legacy
+  const alternateConfigured = parseEnvPath(env[COMMANDER_MEMORY_DIR_ENV])
+  if (alternateConfigured) {
+    return alternateConfigured
   }
 
   return resolveModuleDataDir('commander')

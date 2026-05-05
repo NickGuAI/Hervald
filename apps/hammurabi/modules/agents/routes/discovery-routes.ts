@@ -5,6 +5,7 @@ import * as path from 'node:path'
 import type { RequestHandler, Router } from 'express'
 import multer from 'multer'
 import { FILE_NAME_PATTERN } from '../constants.js'
+import { listProviders } from '../providers/registry.js'
 import { parseFrontmatter } from '../session/state.js'
 import type { MachineConfig } from '../types.js'
 
@@ -93,11 +94,13 @@ export function registerDiscoveryRoutes(deps: DiscoveryRouteDeps): void {
   })
 
   router.get('/skills', requireReadAccess, async (_req, res) => {
-    const skillsDirs = [
-      path.join(homedir(), '.claude', 'skills'),
-      path.join(homedir(), '.codex', 'skills'),
-      path.join(homedir(), '.openclaw', 'skills'),
-    ]
+    const skillsDirs = listProviders()
+      .flatMap((provider) => provider.skillScanPaths ?? [])
+      .map((skillPath) => (
+        skillPath.startsWith('~/')
+          ? path.join(homedir(), skillPath.slice(2))
+          : skillPath
+      ))
     const seen = new Set<string>()
     const skills: Array<{ name: string; description: string; userInvocable: boolean; argumentHint?: string }> = []
 

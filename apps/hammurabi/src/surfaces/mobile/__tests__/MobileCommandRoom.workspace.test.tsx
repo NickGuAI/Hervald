@@ -115,14 +115,14 @@ async function renderRoom() {
               commanderSessions={[
                 {
                   id: 'cmd-1',
-                  host: 'athena',
+                  host: 'atlas',
                   displayName: 'Test Commander',
                   pid: null,
                   state: 'running',
                   created: '2026-04-23T12:00:00.000Z',
                   agentType: 'claude',
                   effort: 'medium',
-                  cwd: '/tmp/athena',
+                  cwd: '/tmp/atlas',
                   persona: 'Primary commander',
                   heartbeat: {
                     intervalMs: 900_000,
@@ -150,6 +150,8 @@ async function renderRoom() {
               composerEnabled
               composerSendReady
               canQueueDraft
+              theme="dark"
+              onSetTheme={vi.fn()}
               queueSnapshot={{
                 currentMessage: null,
                 items: [],

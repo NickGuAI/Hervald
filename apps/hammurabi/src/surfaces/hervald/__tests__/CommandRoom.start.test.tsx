@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
-import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
+import { flushSync } from 'react-dom'
 import { BrowserRouter, Route, Routes } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   useCommander: vi.fn(),
   useAgentSessions: vi.fn(),
   useMachines: vi.fn(),
+  useProviderRegistry: vi.fn(),
   useAgentSessionStream: vi.fn(),
   usePendingApprovals: vi.fn(),
 }))
@@ -30,6 +31,14 @@ vi.mock('@/hooks/use-agent-session-stream', () => ({
   useAgentSessionStream: mocks.useAgentSessionStream,
 }))
 
+vi.mock('@/hooks/use-providers', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/hooks/use-providers')>()
+  return {
+    ...actual,
+    useProviderRegistry: mocks.useProviderRegistry,
+  }
+})
+
 vi.mock('@/hooks/use-approvals', () => ({
   usePendingApprovals: mocks.usePendingApprovals,
   useApprovalDecision: () => ({ mutateAsync: vi.fn() }),
@@ -49,17 +58,32 @@ let originalMatchMedia: typeof window.matchMedia | undefined
 let originalCanvasGetContext: typeof HTMLCanvasElement.prototype.getContext | undefined
 let startCommander: ReturnType<typeof vi.fn>
 
+function buildProvider(id: string, label: string) {
+  return {
+    id,
+    label,
+    uiCapabilities: {
+      supportsEffort: id === 'claude',
+      supportsAdaptiveThinking: id === 'claude',
+      supportsSkills: id === 'claude',
+      supportsLoginMode: id !== 'gemini',
+      forcedTransport: id === 'gemini' ? 'stream' : undefined,
+      permissionModes: [{ value: 'default', label: 'default', description: label }],
+    },
+  }
+}
+
 function buildCommander(overrides: Partial<Record<string, unknown>> = {}) {
   return {
     id: 'cmd-1',
-    host: 'athena',
+    host: 'atlas',
     displayName: 'Test Commander',
     pid: null,
     state: 'stopped',
     created: '2026-04-20T16:00:00.000Z',
     agentType: 'claude',
     effort: 'medium',
-    cwd: '/tmp/athena',
+    cwd: '/tmp/atlas',
     persona: 'Primary commander',
     heartbeat: {
       intervalMs: 900_000,
@@ -90,7 +114,7 @@ async function renderAt(path: string) {
     },
   })
 
-  await act(async () => {
+  flushSync(() => {
     root?.render(
       <QueryClientProvider client={queryClient}>
         <BrowserRouter>
@@ -103,7 +127,7 @@ async function renderAt(path: string) {
   })
 }
 
-describe('CommandRoom desktop start control', () => {
+describe('CommandRoom desktop conversation selection', () => {
   beforeEach(() => {
     ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
     originalMatchMedia = window.matchMedia
@@ -172,9 +196,19 @@ describe('CommandRoom desktop start control', () => {
       refetch: vi.fn().mockResolvedValue({ data: [] }),
     })
     mocks.useMachines.mockReturnValue({ data: [] })
+    mocks.useProviderRegistry.mockReturnValue({
+      data: [
+        buildProvider('claude', 'Claude'),
+        buildProvider('codex', 'Codex'),
+        buildProvider('gemini', 'Gemini'),
+      ],
+      isLoading: false,
+      error: null,
+    })
     mocks.useAgentSessionStream.mockReturnValue({
       messages: [],
       sendInput: vi.fn(async () => true),
+      sendDispatcher: { mode: 'ws-direct', send: vi.fn(async () => true) },
       answerQuestion: vi.fn(),
       status: 'connected',
     })
@@ -183,7 +217,7 @@ describe('CommandRoom desktop start control', () => {
 
   afterEach(async () => {
     if (root) {
-      await act(async () => {
+      flushSync(() => {
         root?.unmount()
       })
     }
@@ -199,28 +233,18 @@ describe('CommandRoom desktop start control', () => {
     vi.clearAllMocks()
   })
 
-  it('forwards the selected agent type when starting an idle commander from desktop command room', async () => {
+  it('shows create-chat state instead of commander start controls when no conversation is selected', async () => {
     await renderAt('/command-room')
 
     const select = document.body.querySelector('[data-testid="commander-start-agent-type"]') as HTMLSelectElement | null
     const button = document.body.querySelector('[data-testid="commander-start-button"]') as HTMLButtonElement | null
 
-    expect(select).not.toBeNull()
-    expect(button).not.toBeNull()
-
-    await act(async () => {
-      if (!select) {
-        throw new Error('commander start select missing')
-      }
-      select.value = 'codex'
-      select.dispatchEvent(new Event('change', { bubbles: true }))
-    })
-
-    await act(async () => {
-      button?.click()
-    })
-
-    expect(startCommander).toHaveBeenCalledWith('cmd-1', 'codex')
+    expect(select).toBeNull()
+    expect(button).toBeNull()
+    // The empty-state panel renders a Create Conversation button (#1362).
+    expect(document.body.querySelector('[data-testid="create-chat-panel-button"]')).not.toBeNull()
+    expect(document.body.querySelector('[data-testid="create-chat-provider-select"]')).not.toBeNull()
+    expect(startCommander).not.toHaveBeenCalled()
   })
 
   it('keeps delegated workers visible under the selected commander when ownership comes from spawnedBy', async () => {
@@ -254,7 +278,7 @@ describe('CommandRoom desktop start control', () => {
 
     expect(newCommanderButton).not.toBeNull()
 
-    await act(async () => {
+    flushSync(() => {
       newCommanderButton?.click()
     })
 

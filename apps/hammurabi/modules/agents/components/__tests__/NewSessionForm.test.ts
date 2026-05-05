@@ -7,6 +7,41 @@ vi.mock('@/hooks/use-agents', () => ({
   useDirectories: vi.fn(() => ({ data: undefined })),
 }))
 
+vi.mock('@/hooks/use-providers', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/hooks/use-providers')>()
+  return {
+    ...actual,
+    useProviderRegistry: vi.fn(() => ({
+      data: [
+        {
+          id: 'claude',
+          label: 'Claude',
+          eventProvider: 'claude',
+          uiCapabilities: {
+            supportsEffort: true,
+            supportsAdaptiveThinking: true,
+            supportsSkills: true,
+            supportsLoginMode: true,
+            permissionModes: [{ value: 'default', label: 'default', description: 'claude' }],
+          },
+        },
+        {
+          id: 'codex',
+          label: 'Codex',
+          eventProvider: 'codex',
+          uiCapabilities: {
+            supportsEffort: false,
+            supportsAdaptiveThinking: false,
+            supportsSkills: false,
+            supportsLoginMode: true,
+            permissionModes: [{ value: 'default', label: 'default', description: 'codex' }],
+          },
+        },
+      ],
+    })),
+  }
+})
+
 import { NewSessionForm } from '../NewSessionForm'
 
 function renderNewSessionFormHtml(props: Partial<ComponentProps<typeof NewSessionForm>> = {}): string {
@@ -14,8 +49,6 @@ function renderNewSessionFormHtml(props: Partial<ComponentProps<typeof NewSessio
     createElement(NewSessionForm, {
       cwd: '',
       setCwd: vi.fn(),
-      mode: 'default',
-      setMode: vi.fn(),
       task: '',
       setTask: vi.fn(),
       effort: 'max',
@@ -24,8 +57,8 @@ function renderNewSessionFormHtml(props: Partial<ComponentProps<typeof NewSessio
       setAdaptiveThinking: vi.fn(),
       agentType: 'claude',
       setAgentType: vi.fn(),
-      sessionType: 'stream',
-      setSessionType: vi.fn(),
+      transportType: 'stream',
+      setTransportType: vi.fn(),
       machines: [],
       selectedHost: '',
       setSelectedHost: vi.fn(),
@@ -43,7 +76,8 @@ describe('NewSessionForm resume source selector', () => {
       name: 'claude-source',
       created: '2026-04-07T00:00:00.000Z',
       pid: 0,
-      sessionType: 'stream',
+      sessionType: 'worker',
+      transportType: 'stream',
       agentType: 'claude',
       effort: 'high',
       adaptiveThinking: 'disabled',

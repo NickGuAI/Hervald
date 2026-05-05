@@ -4,6 +4,12 @@ import { GoalsStore } from './goals-store.js'
 import type { PromptTask } from './prompt-task.js'
 import { WorkingMemoryStore } from './working-memory.js'
 import { resolveCommanderPaths } from '../paths.js'
+import {
+  buildCurrentTaskCacheId,
+  buildMemoryContextMtimeKey,
+  buildRecentConversationCacheKey,
+  memoryContextCache,
+} from './context-cache.js'
 
 const DEFAULT_TOKEN_BUDGET = 4_000
 const MAX_MEMORY_LINES = 200
@@ -75,6 +81,7 @@ function toRepo(task: PromptTask | null): string | null {
 }
 
 export class MemoryContextBuilder {
+  private readonly commanderId: string
   private readonly memoryRoot: string
   private readonly workingMemory: WorkingMemoryStore
   private readonly goalsStore: GoalsStore
@@ -84,6 +91,7 @@ export class MemoryContextBuilder {
     basePath?: string,
     _options: MemoryContextBuilderOptions = {},
   ) {
+    this.commanderId = commanderId
     this.memoryRoot = resolveCommanderPaths(commanderId, basePath).memoryRoot
     this.workingMemory = new WorkingMemoryStore(commanderId, basePath)
     this.goalsStore = new GoalsStore(commanderId, basePath)
@@ -91,6 +99,17 @@ export class MemoryContextBuilder {
 
   async build(options: ContextBuildOptions): Promise<BuiltContext> {
     const tokenBudget = options.tokenBudget ?? DEFAULT_TOKEN_BUDGET
+    const cacheKey = {
+      commanderId: this.commanderId,
+      currentTaskId: buildCurrentTaskCacheId(options.currentTask),
+      tokenBudget,
+      recentConversationKey: buildRecentConversationCacheKey(options.recentConversation),
+      memoryMtimeKey: await buildMemoryContextMtimeKey(this.memoryRoot),
+    }
+    const cached = memoryContextCache.get(cacheKey)
+    if (cached) {
+      return cached
+    }
 
     const [layer1, layerGoals, layer2, layer3] = await Promise.all([
       this.buildLayer1(options.currentTask),
@@ -129,13 +148,15 @@ export class MemoryContextBuilder {
     }
 
     const layersIncluded = PRIORITY_ORDER.filter((layerId) => layers.has(layerId))
-    return {
+    const built: BuiltContext = {
       systemPromptSection,
       layersIncluded,
       skillsMatched: [],
       tokenEstimate,
       droppedLayers,
     }
+    memoryContextCache.set(cacheKey, built)
+    return built
   }
 
   private renderSection(layers: Map<number, string>): string {

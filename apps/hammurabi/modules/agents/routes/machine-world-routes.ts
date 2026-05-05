@@ -1,4 +1,5 @@
 import type { RequestHandler, Router } from 'express'
+import { spawn } from 'node:child_process'
 import path from 'node:path'
 import { CommanderSessionStore } from '../../commanders/store.js'
 import {
@@ -10,16 +11,18 @@ import {
   runCapturedCommand,
 } from '../machines.js'
 import {
-  ensureCodexFileCredentialStore,
   readMachineTextFile,
   resolveMachineHomeDirectory,
   runMachineAuthStatus,
   upsertExportedEnvVars,
   writeMachineTextFile,
-  type MachineAuthMode,
   type MachineAuthProvider,
 } from '../machine-auth.js'
 import { updateMachineEnvEntries } from '../machine-credentials.js'
+import {
+  getMachineProvider,
+  type MachineAuthMode,
+} from '../providers/machine-provider-adapter.js'
 import { parseSessionName } from '../session/input.js'
 import { aggregateCommanderWorldAgentSource, toCommanderWorldAgent, toWorldAgent } from '../session/state.js'
 import type { ConversationStore } from '../../commanders/conversation-store.js'
@@ -221,12 +224,12 @@ export function registerMachineWorldRoutes(deps: MachineWorldRouteDeps): void {
               preparedLaunch.sshSendEnvKeys,
             ),
           ],
-          { env: preparedLaunch.env, timeoutMs: 12_000 },
+          { env: preparedLaunch.env, timeoutMs: 12_000, spawnImpl: spawn },
         )
         : await runCapturedCommand(
           '/bin/bash',
           ['-lc', buildLoginShellCommand(probeScript, machine.cwd, preparedLaunch.sourcedEnvFile)],
-          { cwd: machine.cwd, env: preparedLaunch.env, timeoutMs: 12_000 },
+          { cwd: machine.cwd, env: preparedLaunch.env, timeoutMs: 12_000, spawnImpl: spawn },
         )
 
       if (result.code !== 0) {
@@ -411,24 +414,20 @@ function parseMachineAuthSetupRequest(
   const provider = typeof record.provider === 'string' ? record.provider.trim() : ''
   const mode = typeof record.mode === 'string' ? record.mode.trim() : ''
   const secret = typeof record.secret === 'string' ? record.secret.trim() : ''
+  const machineProvider = getMachineProvider(provider)
 
-  if (provider !== 'claude' && provider !== 'codex' && provider !== 'gemini') {
-    return { ok: false, error: 'provider must be claude, codex, or gemini' }
+  if (!machineProvider) {
+    return { ok: false, error: 'provider must be a registered machine provider' }
   }
 
-  if (provider === 'claude' && mode !== 'setup-token') {
-    return { ok: false, error: 'Claude setup requires mode "setup-token"' }
+  if (!machineProvider.supportedAuthModes.includes(mode as MachineAuthMode)) {
+    return {
+      ok: false,
+      error: `${machineProvider.label} setup requires one of: ${machineProvider.supportedAuthModes.join(', ')}`,
+    }
   }
 
-  if (provider === 'codex' && mode !== 'api-key' && mode !== 'device-auth') {
-    return { ok: false, error: 'Codex setup requires mode "api-key" or "device-auth"' }
-  }
-
-  if (provider === 'gemini' && mode !== 'api-key') {
-    return { ok: false, error: 'Gemini setup requires mode "api-key"' }
-  }
-
-  const requiresSecret = mode === 'setup-token' || mode === 'api-key'
+  const requiresSecret = machineProvider.modeRequiresSecret(mode as MachineAuthMode)
   if (requiresSecret && secret.length < 12) {
     return { ok: false, error: 'A non-empty token or API key is required' }
   }
@@ -473,23 +472,7 @@ async function persistMachineEnvFile(
 function computeMachineAuthSetupUpdates(
   setup: ParsedMachineAuthSetup,
 ): Record<string, string | null> {
-  if (setup.provider === 'claude') {
-    return { CLAUDE_CODE_OAUTH_TOKEN: setup.secret ?? '' }
-  }
-
-  if (setup.provider === 'codex' && setup.mode === 'api-key') {
-    return { OPENAI_API_KEY: setup.secret ?? '' }
-  }
-
-  if (setup.provider === 'codex' && setup.mode === 'device-auth') {
-    return { OPENAI_API_KEY: null }
-  }
-
-  // Gemini api-key.
-  return {
-    GEMINI_API_KEY: setup.secret ?? '',
-    GEMINI_FORCE_FILE_STORAGE: '1',
-  }
+  return getMachineProvider(setup.provider)?.computeAuthSetupUpdates(setup) ?? {}
 }
 
 /**
@@ -502,7 +485,5 @@ async function applyMachineAuthSetupSideEffects(
   homeDir: string,
   setup: ParsedMachineAuthSetup,
 ): Promise<void> {
-  if (setup.provider === 'codex' && setup.mode === 'device-auth') {
-    await ensureCodexFileCredentialStore(machine, homeDir)
-  }
+  await getMachineProvider(setup.provider)?.ensureCredentialStore?.(machine, homeDir, setup)
 }

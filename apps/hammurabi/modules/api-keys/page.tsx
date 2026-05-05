@@ -11,6 +11,8 @@ import {
 } from '@/hooks/use-api-keys'
 import { useAuth } from '@/contexts/AuthContext'
 import { timeAgo } from '@/lib/utils'
+import { AccountProfileCard } from './components/AccountProfileCard'
+import { OrgIdentityCard } from '@modules/org-identity/components/OrgIdentityCard'
 
 const AVAILABLE_SCOPES = [
   { value: 'telemetry:read', label: 'Telemetry read' },
@@ -24,6 +26,7 @@ const AVAILABLE_SCOPES = [
   },
   { value: 'commanders:read', label: 'Commanders read' },
   { value: 'commanders:write', label: 'Commanders write' },
+  { value: 'org:write', label: 'Org write' },
   { value: 'services:read', label: 'Services read' },
   { value: 'services:write', label: 'Services write' },
 ] as const
@@ -132,7 +135,7 @@ export default function ApiKeysPage() {
           <div>
             <h2 className="font-display text-display text-sumi-black">Settings</h2>
             <p className="mt-2 text-sm text-sumi-diluted leading-relaxed">
-              API keys and account.
+              Account profile, transcription, and API keys.
             </p>
           </div>
           {auth && (
@@ -147,8 +150,16 @@ export default function ApiKeysPage() {
           )}
         </div>
         <p className="mt-4 text-sm text-sumi-diluted leading-relaxed">
-          Create scoped keys for agents and scripts. Keys are shown only once at creation time.
+          Configure the founder profile and create scoped keys for agents and scripts. Keys are shown only once at creation time.
         </p>
+
+        <div className="mt-6 md:mt-8">
+          <OrgIdentityCard />
+        </div>
+
+        <div className="mt-6 md:mt-8">
+          <AccountProfileCard />
+        </div>
 
         <div className="mt-6 md:mt-8 grid gap-6 lg:grid-cols-[360px_1fr]">
           <form onSubmit={handleCreateKey} className="card-sumi p-5 space-y-4 h-fit">

@@ -41,7 +41,7 @@ describe('dispatch worker skill trust wiring', () => {
           mode: 'default',
           transportType: 'stream',
           sessionType: 'commander',
-          creator: { kind: 'commander', id: 'cmdr-athena' },
+          creator: { kind: 'commander', id: 'cmdr-atlas' },
           cwd: '/tmp',
         }),
       })
@@ -96,7 +96,7 @@ describe('dispatch worker skill trust wiring', () => {
           mode: 'default',
           transportType: 'stream',
           sessionType: 'commander',
-          creator: { kind: 'commander', id: 'cmdr-athena' },
+          creator: { kind: 'commander', id: 'cmdr-atlas' },
           cwd: '/tmp',
         }),
       })

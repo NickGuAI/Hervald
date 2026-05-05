@@ -12,7 +12,7 @@ import type {
   WorldAgent,
 } from '@/types'
 
-const AGENT_SESSIONS_REFETCH_INTERVAL_MS = 1000
+const AGENT_SESSIONS_REFETCH_INTERVAL_MS = 5000
 
 export interface DirectoryListing {
   parent: string
@@ -115,7 +115,7 @@ export function useWorldAgents() {
   return useQuery({
     queryKey: ['agents', 'world'],
     queryFn: fetchWorldAgents,
-    refetchInterval: 1000,
+    refetchInterval: 5000,
   })
 }
 

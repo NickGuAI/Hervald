@@ -2,7 +2,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { QuestStore } from '../quest-store.js'
+import {
+  QuestAlreadyClaimedError,
+  QuestStore,
+  QuestUpdateError,
+} from '../quest-store.js'
 
 describe('QuestStore', () => {
   let tmpDir = ''
@@ -59,6 +63,7 @@ describe('QuestStore', () => {
   it('resets active quests back to pending', async () => {
     const active = await store.create({
       commanderId: 'cmdr-2',
+      claimedByConversationId: 'conversation-reset',
       status: 'active',
       source: 'idea',
       instruction: 'Prototype quest picker',
@@ -183,6 +188,147 @@ describe('QuestStore', () => {
     expect(cleared?.artifacts).toEqual([])
   })
 
+  it('serializes concurrent claim attempts so only one claimant wins', async () => {
+    const created = await store.create({
+      commanderId: 'cmdr-claim',
+      status: 'pending',
+      source: 'manual',
+      instruction: 'Claim me once',
+      contract: {
+        cwd: '/tmp/example-repo',
+        permissionMode: 'default',
+        agentType: 'claude',
+        skillsToUse: [],
+      },
+    })
+
+    const results = await Promise.allSettled([
+      store.claim('cmdr-claim', created.id, 'conversation-a'),
+      store.claim('cmdr-claim', created.id, 'conversation-b'),
+    ])
+    expect(results).toHaveLength(2)
+
+    const fulfilled = results.find(
+      (result): result is PromiseFulfilledResult<Awaited<ReturnType<typeof store.claim>>> =>
+        result.status === 'fulfilled',
+    )
+    const rejected = results.find(
+      (result): result is PromiseRejectedResult => result.status === 'rejected',
+    )
+
+    expect(fulfilled?.value).toMatchObject({
+      id: created.id,
+      status: 'active',
+    })
+    expect(rejected?.reason).toMatchObject({
+      name: 'QuestAlreadyClaimedError',
+      message: 'Quest already claimed',
+      claimedBy: fulfilled?.value?.claimedByConversationId,
+      status: 'active',
+    } satisfies Partial<QuestAlreadyClaimedError>)
+  })
+
+  it('treats same-conversation claim as idempotent and rejects a different claimant', async () => {
+    const created = await store.create({
+      commanderId: 'cmdr-claim-idempotent',
+      status: 'pending',
+      source: 'manual',
+      instruction: 'Claim me once',
+      contract: {
+        cwd: '/tmp/example-repo',
+        permissionMode: 'default',
+        agentType: 'claude',
+        skillsToUse: [],
+      },
+    })
+
+    const firstClaim = await store.claim('cmdr-claim-idempotent', created.id, 'conversation-a')
+    expect(firstClaim?.status).toBe('active')
+    expect(firstClaim?.claimedByConversationId).toBe('conversation-a')
+
+    const repeatedClaim = await store.claim('cmdr-claim-idempotent', created.id, 'conversation-a')
+    expect(repeatedClaim).toEqual(firstClaim)
+
+    await expect(
+      store.claim('cmdr-claim-idempotent', created.id, 'conversation-b'),
+    ).rejects.toMatchObject({
+      name: 'QuestAlreadyClaimedError',
+      message: 'Quest already claimed',
+      claimedBy: 'conversation-a',
+      status: 'active',
+    } satisfies Partial<QuestAlreadyClaimedError>)
+  })
+
+  it('rejects direct updates into active status', async () => {
+    const created = await store.create({
+      commanderId: 'cmdr-update',
+      status: 'pending',
+      source: 'manual',
+      instruction: 'Do not patch into active',
+      contract: {
+        cwd: '/tmp/example-repo',
+        permissionMode: 'default',
+        agentType: 'claude',
+        skillsToUse: [],
+      },
+    })
+
+    await expect(
+      store.update('cmdr-update', created.id, { status: 'active' }),
+    ).rejects.toMatchObject({
+      name: 'QuestUpdateError',
+      message: 'use claim() to transition into active',
+    } satisfies Partial<QuestUpdateError>)
+  })
+
+  it('rejects direct claim-holder updates and clears the claim holder on completion', async () => {
+    const created = await store.create({
+      commanderId: 'cmdr-claim-holder',
+      status: 'pending',
+      source: 'manual',
+      instruction: 'Lock claim holder to claim()',
+      contract: {
+        cwd: '/tmp/example-repo',
+        permissionMode: 'default',
+        agentType: 'claude',
+        skillsToUse: [],
+      },
+    })
+
+    await expect(
+      store.update('cmdr-claim-holder', created.id, {
+        claimedByConversationId: 'conversation-a',
+      }),
+    ).rejects.toMatchObject({
+      name: 'QuestUpdateError',
+      message: 'claimedByConversationId is managed by claim()',
+    } satisfies Partial<QuestUpdateError>)
+
+    const claimed = await store.claim('cmdr-claim-holder', created.id, 'conversation-a')
+    expect(claimed?.claimedByConversationId).toBe('conversation-a')
+
+    const completed = await store.update('cmdr-claim-holder', created.id, { status: 'done' })
+    expect(completed?.status).toBe('done')
+    expect(completed?.claimedByConversationId).toBeUndefined()
+  })
+
+  it('requires claimedByConversationId when creating an active quest', async () => {
+    await expect(
+      store.create({
+        commanderId: 'cmdr-create-active',
+        status: 'active',
+        source: 'manual',
+        instruction: 'Active quests need an explicit claimant',
+        contract: {
+          cwd: '/tmp/example-repo',
+          permissionMode: 'default',
+          agentType: 'claude',
+          skillsToUse: [],
+        },
+      }),
+    ).rejects.toThrow('active quests require claimedByConversationId')
+  })
+
   // -----------------------------------------------------------------
   // Legacy permissionMode migration — issue/1222
   // Quest contracts on disk pre-#1186 carry deprecated literals; the strict
@@ -224,7 +370,7 @@ describe('QuestStore', () => {
       expect(quests[0]?.contract.permissionMode).toBe('default')
 
       const migrationWarns = warnSpy.mock.calls.filter((call) =>
-        typeof call[0] === 'string' && call[0].includes('migrated legacy permissionMode'),
+        typeof call[0] === 'string' && call[0].includes('migrated retired permissionMode'),
       )
       expect(migrationWarns).toHaveLength(1)
       expect(migrationWarns[0]?.[1]).toMatchObject({
@@ -273,7 +419,7 @@ describe('QuestStore', () => {
     try {
       await store.list(commanderId)
       const firstWarns = warnSpy.mock.calls.filter((call) =>
-        typeof call[0] === 'string' && call[0].includes('migrated legacy permissionMode'),
+        typeof call[0] === 'string' && call[0].includes('migrated retired permissionMode'),
       ).length
       expect(firstWarns).toBe(1)
 
@@ -282,7 +428,7 @@ describe('QuestStore', () => {
       warnSpy.mockClear()
       await store.list(commanderId)
       const secondWarns = warnSpy.mock.calls.filter((call) =>
-        typeof call[0] === 'string' && call[0].includes('migrated legacy permissionMode'),
+        typeof call[0] === 'string' && call[0].includes('migrated retired permissionMode'),
       ).length
       expect(secondWarns).toBe(0)
 

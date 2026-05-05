@@ -323,6 +323,7 @@ async function startServer(options: Partial<AgentsRouterOptions> = {}): Promise<
     httpServer,
     policyStore,
     close: async () => {
+      await agents.sessionsInterface.shutdown?.()
       await new Promise<void>((resolve, reject) => {
         httpServer.close((error) => {
           if (error) {
@@ -332,7 +333,7 @@ async function startServer(options: Partial<AgentsRouterOptions> = {}): Promise<
           resolve()
         })
       })
-      await rm(approvalDir, { recursive: true, force: true })
+      await rm(approvalDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 })
     },
   }
 }
@@ -343,7 +344,7 @@ function connectWs(
   apiKey = 'test-key',
 ): Promise<WebSocket> {
   const wsUrl = baseUrl.replace('http://', 'ws://') +
-    `/api/agents/sessions/${encodeURIComponent(sessionName)}/terminal?api_key=${apiKey}`
+    `/api/agents/sessions/${encodeURIComponent(sessionName)}/ws?api_key=${apiKey}`
   const ws = new WebSocket(wsUrl)
   return new Promise((resolve, reject) => {
     let settled = false
@@ -365,6 +366,9 @@ function connectWs(
     ws.on('unexpected-response', (_req, res) => {
       finish(() => reject(new Error(`WebSocket upgrade rejected with status ${res.statusCode}`)))
     })
+    if (ws.readyState === WebSocket.OPEN) {
+      finish(() => resolve(ws))
+    }
   })
 }
 
@@ -377,28 +381,32 @@ async function connectWsWithReplay(
   replay: {
     type: 'replay'
     events: Array<Record<string, unknown>>
+    more?: boolean
     usage?: { inputTokens: number; outputTokens: number; costUsd: number }
   }
 }> {
   const wsUrl = baseUrl.replace('http://', 'ws://') +
-    `/api/agents/sessions/${encodeURIComponent(sessionName)}/terminal?api_key=${apiKey}`
+    `/api/agents/sessions/${encodeURIComponent(sessionName)}/ws?api_key=${apiKey}`
   const ws = new WebSocket(wsUrl)
 
   const replayPromise = new Promise<{
     type: 'replay'
     events: Array<Record<string, unknown>>
+    more?: boolean
     usage?: { inputTokens: number; outputTokens: number; costUsd: number }
   }>((resolve, reject) => {
     ws.on('message', (data) => {
       const parsed = JSON.parse(data.toString()) as {
         type: string
         events?: Array<Record<string, unknown>>
+        more?: boolean
         usage?: { inputTokens: number; outputTokens: number; costUsd: number }
       }
       if (parsed.type === 'replay' && Array.isArray(parsed.events)) {
         resolve({
           type: 'replay',
           events: parsed.events,
+          more: parsed.more,
           usage: parsed.usage,
         })
       }
@@ -410,6 +418,10 @@ async function connectWsWithReplay(
   })
 
   await new Promise<void>((resolve, reject) => {
+    if (ws.readyState === WebSocket.OPEN) {
+      resolve()
+      return
+    }
     ws.on('open', () => resolve())
     ws.on('error', reject)
     ws.on('unexpected-response', (_req, res) => {

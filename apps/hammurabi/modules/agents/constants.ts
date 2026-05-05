@@ -33,7 +33,7 @@ export const CODEX_MODE_COMMANDS: Record<ClaudePermissionMode, string> = {
 
 export const GEMINI_ACP_COMMAND = 'gemini'
 export const GEMINI_ACP_ARGS = ['--acp']
+export const OPENCODE_ACP_COMMAND = 'opencode'
+export const OPENCODE_ACP_ARGS = ['acp']
 
 export const EXTERNAL_SESSION_STALE_MS = 60_000
-
-export const MACHINE_TOOL_KEYS = ['claude', 'codex', 'gemini', 'git', 'node'] as const

@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
-import { act, createElement } from 'react'
+import { createElement } from 'react'
+import { act } from 'react-dom/test-utils'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -74,7 +75,6 @@ async function renderIdentityTab() {
             heartbeat: {
               intervalMs: 900_000,
               messageTemplate: 'Check status',
-              lastSentAt: null,
             },
             lastHeartbeat: null,
             taskSource: null,

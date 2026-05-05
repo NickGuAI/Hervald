@@ -80,7 +80,7 @@ export function PreviewPopup({
               <X size={14} />
             </button>
           </div>
-          <div className="min-h-0 flex-1 p-3">
+          <div className="min-h-0 flex-1 flex flex-col p-3">
             <WorkspaceFilePreview
               selectedPath={selectedPath}
               preview={preview}
@@ -112,7 +112,7 @@ export function PreviewPopup({
               <X size={14} />
             </button>
           </div>
-          <div className="min-h-0 flex-1 p-2">
+          <div className="min-h-0 flex-1 flex flex-col p-2">
             <WorkspaceFilePreview
               selectedPath={selectedPath}
               preview={preview}

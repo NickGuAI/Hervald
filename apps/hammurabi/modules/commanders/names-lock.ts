@@ -9,6 +9,10 @@ import {
 import { CommanderSessionStore } from './store.js'
 
 const namesMutexByPath = new Map<string, Promise<void>>()
+const QUIET_LOGGER: Pick<Console, 'info' | 'warn'> = {
+  info: () => {},
+  warn: () => {},
+}
 
 interface CommanderNamesState {
   exists: boolean
@@ -76,7 +80,9 @@ async function writeNamesFile(
 }
 
 async function loadPersistedCommanderIds(dataDir: string): Promise<Set<string>> {
-  const sessionStore = new CommanderSessionStore(resolveCommanderSessionStorePath(dataDir))
+  const sessionStore = new CommanderSessionStore(resolveCommanderSessionStorePath(dataDir), {
+    logger: QUIET_LOGGER,
+  })
   const sessions = await sessionStore.list()
   return new Set(sessions.map((session) => session.id))
 }

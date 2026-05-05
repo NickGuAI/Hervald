@@ -4,9 +4,9 @@ const DEFAULT_MAX_POLL_ATTEMPTS = 30
 
 export type AgentSessionTransportMode = 'default' | 'acceptEdits' | 'dangerouslySkipPermissions'
 export type AgentSessionKind = 'pty' | 'stream'
-export type AgentType = 'claude' | 'codex' | 'gemini'
-export type SessionType = 'commander' | 'worker' | 'cron' | 'sentinel'
-export type SessionCreatorKind = 'human' | 'commander' | 'cron' | 'sentinel'
+export type AgentType = string
+export type SessionType = 'commander' | 'worker' | 'cron' | 'sentinel' | 'automation'
+export type SessionCreatorKind = 'human' | 'commander' | 'cron' | 'sentinel' | 'automation'
 
 export interface SessionCreator {
   kind: SessionCreatorKind

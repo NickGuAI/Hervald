@@ -29,8 +29,11 @@ describe('agent session creator/sessionType migration replay', () => {
               createdAt,
               sessionState: 'exited',
               hadResult: true,
-              claudeSessionId: 'claude-worker-legacy',
-              parentSession: 'commander-cmdr-athena',
+              providerContext: {
+                providerId: 'claude',
+                sessionId: 'claude-worker-legacy',
+              },
+              parentSession: 'commander-cmdr-atlas',
               sessionCategory: 'regular',
               events: [
                 {
@@ -56,8 +59,8 @@ describe('agent session creator/sessionType migration replay', () => {
           expect.objectContaining({
             name: 'worker-1710000000000',
             sessionType: 'worker',
-            creator: { kind: 'commander', id: 'cmdr-athena' },
-            spawnedBy: 'commander-cmdr-athena',
+            creator: { kind: 'commander', id: 'cmdr-atlas' },
+            spawnedBy: 'commander-cmdr-atlas',
           }),
         ]))
       } finally {
@@ -70,8 +73,8 @@ describe('agent session creator/sessionType migration replay', () => {
           expect.objectContaining({
             name: 'worker-1710000000000',
             sessionType: 'worker',
-            creator: { kind: 'commander', id: 'cmdr-athena' },
-            spawnedBy: 'commander-cmdr-athena',
+            creator: { kind: 'commander', id: 'cmdr-atlas' },
+            spawnedBy: 'commander-cmdr-atlas',
           }),
         ],
       })
@@ -89,7 +92,7 @@ describe('agent session creator/sessionType migration replay', () => {
           expect.objectContaining({
             name: 'worker-1710000000000',
             sessionType: 'worker',
-            creator: { kind: 'commander', id: 'cmdr-athena' },
+            creator: { kind: 'commander', id: 'cmdr-atlas' },
           }),
         ]))
       } finally {

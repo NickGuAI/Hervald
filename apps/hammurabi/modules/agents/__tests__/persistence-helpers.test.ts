@@ -21,6 +21,11 @@ import type {
   StreamSession,
 } from '../types'
 
+interface TestPersistenceHelpersContext extends PersistenceHelpersContext {
+  restoreProviderSessionMock: ReturnType<typeof vi.fn>
+  teardownProviderSessionMock: ReturnType<typeof vi.fn>
+}
+
 function makeCommandRoomCodexSession(
   name: string,
   completedAtOffsetMs: number,
@@ -93,9 +98,11 @@ function makeWorkerSession(name: string): StreamSession {
 }
 
 function makeBaseContext(
-  overrides: Partial<PersistenceHelpersContext> = {},
-): PersistenceHelpersContext {
-  const defaults: PersistenceHelpersContext = {
+  overrides: Partial<TestPersistenceHelpersContext> = {},
+): TestPersistenceHelpersContext {
+  const restoreProviderSessionMock = vi.fn()
+  const teardownProviderSessionMock = vi.fn(async () => undefined)
+  const defaults: TestPersistenceHelpersContext = {
     sessionStorePath: '/tmp/test-session-store.json',
     maxSessions: 32,
     machineRegistry: {} as PersistenceHelpersContext['machineRegistry'],
@@ -103,10 +110,10 @@ function makeBaseContext(
     completedSessions: new Map<string, CompletedSession>(),
     exitedStreamSessions: new Map<string, ExitedStreamSessionState>(),
     applyStreamUsageEvent: vi.fn(),
-    createClaudeSession: vi.fn(),
-    createCodexSession: vi.fn(),
-    createGeminiSession: vi.fn(),
-    teardownCodexSessionRuntime: vi.fn(async () => undefined),
+    restoreProviderSession: restoreProviderSessionMock,
+    restoreProviderSessionMock,
+    teardownProviderSession: teardownProviderSessionMock,
+    teardownProviderSessionMock,
     isExitedSessionResumeAvailable: vi.fn(async () => false),
     isLiveSessionResumeAvailable: vi.fn(async () => false),
   }
@@ -127,7 +134,10 @@ describe('createPersistenceHelpers — pruneStaleCommandRoomSessions', () => {
     pruneStaleCommandRoomSessions()
 
     expect(ctx.sessions.has('command-room-alpha')).toBe(false)
-    expect(ctx.teardownCodexSessionRuntime).toHaveBeenCalledTimes(1)
+    expect(ctx.teardownProviderSessionMock).toHaveBeenCalledWith(
+      stale,
+      'Pruning stale automation session',
+    )
   })
 
   it('keeps command-room sessions that completed within TTL', () => {
@@ -140,7 +150,7 @@ describe('createPersistenceHelpers — pruneStaleCommandRoomSessions', () => {
     pruneStaleCommandRoomSessions()
 
     expect(ctx.sessions.has('command-room-fresh')).toBe(true)
-    expect(ctx.teardownCodexSessionRuntime).not.toHaveBeenCalled()
+    expect(ctx.teardownProviderSessionMock).not.toHaveBeenCalled()
   })
 
   it('keeps command-room sessions that are still running (no lastTurnCompleted)', () => {
@@ -172,9 +182,6 @@ describe('createPersistenceHelpers — pruneStaleCommandRoomSessions', () => {
       'command-room-claude',
       COMMAND_ROOM_COMPLETED_SESSION_TTL_MS + 1_000,
     )
-    const killSpy = (stale as unknown as { process: { kill: ReturnType<typeof vi.fn> } })
-      .process.kill
-
     const ctx = makeBaseContext({
       sessions: new Map<string, AnySession>([['command-room-claude', stale]]),
     })
@@ -182,8 +189,10 @@ describe('createPersistenceHelpers — pruneStaleCommandRoomSessions', () => {
 
     pruneStaleCommandRoomSessions()
 
-    expect(killSpy).toHaveBeenCalledWith('SIGTERM')
-    expect(ctx.teardownCodexSessionRuntime).not.toHaveBeenCalled()
+    expect(ctx.teardownProviderSessionMock).toHaveBeenCalledWith(
+      stale,
+      'Pruning stale automation session',
+    )
     expect(ctx.sessions.has('command-room-claude')).toBe(false)
   })
 

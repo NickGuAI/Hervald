@@ -149,7 +149,7 @@ export function ConversationRow({
           style={{
             marginTop: 8,
             display: 'flex',
-            alignItems: 'center',
+            alignItems: 'flex-start',
             justifyContent: 'space-between',
             gap: 8,
           }}
@@ -157,12 +157,23 @@ export function ConversationRow({
           <div
             style={{
               minWidth: 0,
-              display: 'flex',
-              alignItems: 'center',
-              gap: 8,
-              flexWrap: 'wrap',
+              display: 'grid',
+              gap: 6,
             }}
           >
+            <span
+              style={{
+                fontFamily: 'var(--hv-font-mono)',
+                fontSize: 'calc(11.5px * var(--hv-sessions-scale, 1))',
+                color: selected ? 'var(--hv-fg)' : 'var(--hv-fg-subtle)',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+              }}
+              title={conversation.name}
+            >
+              {conversation.name}
+            </span>
             {currentTaskLabel ? (
               <span
                 style={{

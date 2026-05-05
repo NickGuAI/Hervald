@@ -1,4 +1,5 @@
 import { createElement } from 'react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { describe, expect, it, vi } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { MemoryRouter } from 'react-router-dom'
@@ -6,11 +7,23 @@ import { CommanderCard } from '../components/CommanderCard'
 import type { CommanderCardProps } from '../components/CommanderCard'
 
 function renderCommanderCard(props: CommanderCardProps): string {
+  const queryClient = new QueryClient({
+    defaultOptions: {
+      queries: {
+        retry: false,
+      },
+    },
+  })
+  queryClient.setQueryData(['providers'], [])
   return renderToStaticMarkup(
     createElement(
-      MemoryRouter,
-      null,
-      createElement(CommanderCard, props),
+      QueryClientProvider,
+      { client: queryClient },
+      createElement(
+        MemoryRouter,
+        null,
+        createElement(CommanderCard, props),
+      ),
     ),
   )
 }
@@ -29,7 +42,6 @@ function createProps(
       heartbeat: {
         intervalMs: 900_000,
         messageTemplate: 'heartbeat',
-        lastSentAt: null,
       },
       lastHeartbeat: null,
       taskSource: null,

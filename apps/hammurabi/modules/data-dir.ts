@@ -23,10 +23,6 @@ export function resolveModuleDataDir(module: string, env: NodeJS.ProcessEnv = pr
   return path.join(resolveHammurabiDataDir(env), module)
 }
 
-export function resolveAutomationDataDir(env: NodeJS.ProcessEnv = process.env): string {
-  return resolveModuleDataDir('automation', env)
-}
-
-export function resolveLegacyCommandRoomDataDir(env: NodeJS.ProcessEnv = process.env): string {
-  return resolveModuleDataDir('command-room', env)
+export function resolveAutomationsDataDir(env: NodeJS.ProcessEnv = process.env): string {
+  return resolveModuleDataDir('automations', env)
 }

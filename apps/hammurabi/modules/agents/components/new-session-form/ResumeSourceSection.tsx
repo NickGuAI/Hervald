@@ -32,7 +32,7 @@ export function ResumeSourceSection({
         ))}
       </select>
       <p className="mt-1 text-whisper text-sumi-mist">
-        Only resumable Claude, Codex, and Gemini sessions appear here.
+        Only resumable provider sessions appear here.
       </p>
       {resumeSource ? (
         <div className="mt-2 rounded-lg border border-ink-border bg-washi-aged/70 px-3 py-2 text-sm text-sumi-gray">

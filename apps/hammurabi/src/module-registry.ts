@@ -2,6 +2,14 @@ import type { FrontendModule } from '@/types'
 
 export const modules: FrontendModule[] = [
   {
+    name: 'org',
+    label: 'Org',
+    icon: 'Users',
+    path: '/org',
+    navGroup: 'primary',
+    component: () => import('@modules/org/page'),
+  },
+  {
     name: 'command-room',
     label: 'Command Room',
     icon: 'CalendarClock',
@@ -16,6 +24,14 @@ export const modules: FrontendModule[] = [
     path: '/api-keys',
     navGroup: 'primary',
     component: () => import('@modules/api-keys/page'),
+  },
+  {
+    name: 'channels',
+    label: 'Channels',
+    icon: 'RadioTower',
+    path: '/channels',
+    hideFromNav: true,
+    component: () => import('@modules/channels/page'),
   },
   {
     name: 'telemetry',
@@ -40,46 +56,6 @@ export const modules: FrontendModule[] = [
     path: '/policies',
     navGroup: 'secondary',
     component: () => import('@modules/policies/page'),
-  },
-  {
-    name: 'agents',
-    label: 'Agents Monitor',
-    icon: 'Monitor',
-    path: '/agents',
-    hideFromNav: true,
-    component: () => import('@modules/hervald-redirect/page'),
-  },
-  {
-    name: 'commanders',
-    label: 'Commanders',
-    icon: 'Crown',
-    path: '/commanders',
-    hideFromNav: true,
-    component: () => import('@modules/hervald-redirect/page'),
-  },
-  {
-    name: 'quests',
-    label: 'Quests',
-    icon: 'ClipboardCheck',
-    path: '/quests',
-    hideFromNav: true,
-    component: () => import('@modules/hervald-redirect/page'),
-  },
-  {
-    name: 'sentinels',
-    label: 'Sentinels',
-    icon: 'Clock3',
-    path: '/sentinels',
-    hideFromNav: true,
-    component: () => import('@modules/hervald-redirect/page'),
-  },
-  {
-    name: 'workspace',
-    label: 'Workspace',
-    icon: 'FolderOpen',
-    path: '/workspace',
-    hideFromNav: true,
-    component: () => import('@modules/hervald-redirect/page'),
   },
   {
     name: 'rpg',

@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
@@ -236,6 +236,90 @@ describe('runCommanderCli', () => {
       expect(memory).toContain('exported fact')
       const syncState = await readFile(join(cwd, '.memory', '.remote-sync-state.json'), 'utf8')
       expect(JSON.parse(syncState)).toEqual({ revision: 7 })
+    } finally {
+      await rm(cwd, { recursive: true, force: true })
+    }
+  })
+
+  it('returns 1 with stderr message when fetch rejects (network error)', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'hammurabi-cli-load-network-'))
+    const packagePath = join(cwd, 'commander-atlas.json')
+    const stdout = createBufferWriter()
+    const stderr = createBufferWriter()
+    await writeFile(packagePath, JSON.stringify({ schemaVersion: 1 }), 'utf8')
+
+    try {
+      const exitCode = await runCommanderCli(['load', packagePath], {
+        fetchImpl: vi.fn(async () => {
+          throw new Error('getaddrinfo ENOTFOUND hervald.gehirn.ai')
+        }) as unknown as typeof fetch,
+        readConfig: async () => ({
+          endpoint: 'https://hervald.gehirn.ai',
+          apiKey: 'hmrb_test_key',
+          agents: ['codex'],
+          configuredAt: '2026-05-01T00:00:00.000Z',
+        }),
+        stdout: stdout.writer,
+        stderr: stderr.writer,
+      })
+
+      expect(exitCode).toBe(1)
+      expect(stdout.read()).toBe('')
+      expect(stderr.read()).toContain('Commander import failed: getaddrinfo ENOTFOUND hervald.gehirn.ai')
+    } finally {
+      await rm(cwd, { recursive: true, force: true })
+    }
+  })
+
+  it('loads a commander template package through the import route', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'hammurabi-cli-load-'))
+    const packagePath = join(cwd, 'commander-atlas.json')
+    const stdout = createBufferWriter()
+    const stderr = createBufferWriter()
+    const templatePackage = {
+      schemaVersion: 1,
+      commander: { displayName: 'Atlas' },
+      commanderMd: '# Commander',
+      memorySnapshot: { syncRevision: 0, memoryMd: '# Commander Memory\n' },
+      skillBindings: [],
+    }
+    await writeFile(packagePath, JSON.stringify(templatePackage), 'utf8')
+
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      expect(String(input)).toBe('https://hervald.gehirn.ai/api/commanders/import')
+      expect(init?.method).toBe('POST')
+      expect(init?.headers).toMatchObject({
+        authorization: 'Bearer hmrb_test_key',
+        'content-type': 'application/json',
+      })
+      expect(JSON.parse(String(init?.body))).toEqual(templatePackage)
+      return new Response(
+        JSON.stringify({
+          id: 'cmdr-imported',
+          displayName: 'Atlas',
+          url: '/command-room?commander=cmdr-imported',
+        }),
+        { status: 201, headers: { 'content-type': 'application/json' } },
+      )
+    })
+
+    try {
+      const exitCode = await runCommanderCli(['load', packagePath], {
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+        readConfig: async () => ({
+          endpoint: 'https://hervald.gehirn.ai',
+          apiKey: 'hmrb_test_key',
+          agents: ['codex'],
+          configuredAt: '2026-05-01T00:00:00.000Z',
+        }),
+        stdout: stdout.writer,
+        stderr: stderr.writer,
+      })
+
+      expect(exitCode).toBe(0)
+      expect(stderr.read()).toBe('')
+      expect(stdout.read()).toContain('Loaded commander Atlas.')
+      expect(stdout.read()).toContain('https://hervald.gehirn.ai/command-room?commander=cmdr-imported')
     } finally {
       await rm(cwd, { recursive: true, force: true })
     }

@@ -6,7 +6,7 @@ import {
   TelemetryJsonlStore,
   defaultTelemetryStorePath,
 } from './store.js'
-import { TelemetryHub, type IngestInput, type HeartbeatInput } from './hub.js'
+import { TelemetryHub } from './hub.js'
 import {
   LocalTelemetryScanner,
   type LocalScannerLike,
@@ -41,144 +41,12 @@ export interface TelemetryRouterOptions {
 // Raised from 14d to support 30/90-day historical queries.
 const DEFAULT_RETENTION_DAYS = 90
 
-// ---------------------------------------------------------------------------
-// Parsing helpers — serve the legacy REST endpoints
-// ---------------------------------------------------------------------------
-
 function asObject(value: unknown): Record<string, unknown> | null {
   if (typeof value !== 'object' || value === null) {
     return null
   }
   return value as Record<string, unknown>
 }
-
-function asNonEmptyString(value: unknown): string | null {
-  if (typeof value !== 'string') {
-    return null
-  }
-  const trimmed = value.trim()
-  return trimmed.length > 0 ? trimmed : null
-}
-
-function asNumber(value: unknown): number | null {
-  if (typeof value === 'number') {
-    return Number.isFinite(value) ? value : null
-  }
-  if (typeof value === 'string' && value.trim().length > 0) {
-    const parsed = Number.parseFloat(value)
-    return Number.isFinite(parsed) ? parsed : null
-  }
-  return null
-}
-
-function asBoolean(value: unknown): boolean {
-  if (typeof value === 'boolean') {
-    return value
-  }
-  if (typeof value === 'string') {
-    const normalized = value.toLowerCase()
-    return normalized === 'true' || normalized === '1' || normalized === 'completed'
-  }
-  if (typeof value === 'number') {
-    return value === 1
-  }
-  return false
-}
-
-function asDate(value: unknown, fallback: Date): Date {
-  if (value instanceof Date && !Number.isNaN(value.getTime())) {
-    return value
-  }
-  if (typeof value === 'string' || typeof value === 'number') {
-    const parsed = new Date(value)
-    if (!Number.isNaN(parsed.getTime())) {
-      return parsed
-    }
-  }
-  return fallback
-}
-
-function parseIngestInput(raw: unknown, now: Date): { ok: true; value: IngestInput } | { ok: false; error: string } {
-  const body = asObject(raw)
-  if (!body) {
-    return { ok: false, error: 'Request body must be a JSON object' }
-  }
-
-  const sessionId = asNonEmptyString(body.sessionId ?? body.session_id)
-  const agentName = asNonEmptyString(body.agentName ?? body.agent ?? body.userId)
-  const model = asNonEmptyString(body.model)
-  const provider = asNonEmptyString(body.provider) ?? 'unknown'
-  const currentTask = asNonEmptyString(body.currentTask ?? body.task) ?? 'Working'
-  const inputTokens = asNumber(body.inputTokens ?? body.input_tokens)
-  const outputTokens = asNumber(body.outputTokens ?? body.output_tokens)
-  const cost = asNumber(body.cost ?? body.costUsd ?? body.cost_usd)
-  const durationMs = asNumber(body.durationMs ?? body.duration_ms) ?? 0
-
-  if (!sessionId) {
-    return { ok: false, error: 'sessionId is required' }
-  }
-  if (!agentName) {
-    return { ok: false, error: 'agentName is required' }
-  }
-  if (!model) {
-    return { ok: false, error: 'model is required' }
-  }
-  if (inputTokens === null || inputTokens < 0) {
-    return { ok: false, error: 'inputTokens must be a non-negative number' }
-  }
-  if (outputTokens === null || outputTokens < 0) {
-    return { ok: false, error: 'outputTokens must be a non-negative number' }
-  }
-  if (cost === null || cost < 0) {
-    return { ok: false, error: 'cost must be a non-negative number' }
-  }
-
-  return {
-    ok: true,
-    value: {
-      sessionId,
-      agentName,
-      model,
-      provider,
-      inputTokens: Math.round(inputTokens),
-      outputTokens: Math.round(outputTokens),
-      cost,
-      durationMs: Math.max(0, Math.round(durationMs)),
-      currentTask,
-      timestamp: asDate(body.timestamp ?? body.createdAt, now),
-    },
-  }
-}
-
-function parseHeartbeatInput(raw: unknown, now: Date): { ok: true; value: HeartbeatInput } | { ok: false; error: string } {
-  const body = asObject(raw)
-  if (!body) {
-    return { ok: false, error: 'Request body must be a JSON object' }
-  }
-
-  const sessionId = asNonEmptyString(body.sessionId ?? body.session_id)
-  const agentName = asNonEmptyString(body.agentName ?? body.agent)
-  const model = asNonEmptyString(body.model)
-  const currentTask = asNonEmptyString(body.currentTask ?? body.task) ?? undefined
-  const completed = asBoolean(body.completed ?? body.status)
-
-  if (!sessionId) {
-    return { ok: false, error: 'sessionId is required' }
-  }
-
-  return {
-    ok: true,
-    value: {
-      sessionId,
-      agentName: agentName ?? undefined,
-      model: model ?? undefined,
-      currentTask,
-      completed,
-      timestamp: asDate(body.timestamp ?? body.createdAt, now),
-    },
-  }
-}
-
 // ---------------------------------------------------------------------------
 // Router factories
 // ---------------------------------------------------------------------------
@@ -341,37 +209,6 @@ export function createTelemetryRouterWithHub(
     now,
   })
 
-  router.post('/ingest', requireWriteAccess, async (req, res) => {
-    const parsed = parseIngestInput(req.body, now())
-    if (!parsed.ok) {
-      res.status(400).json({ error: parsed.error })
-      return
-    }
-
-    try {
-      const record = await hub.ingest(parsed.value)
-      res.status(202).json({ ok: true, callId: record.id })
-    } catch {
-      res.status(500).json({ error: 'Failed to ingest telemetry event' })
-    }
-  })
-
-  router.post('/heartbeat', requireWriteAccess, async (req, res) => {
-    const parsed = parseHeartbeatInput(req.body, now())
-    if (!parsed.ok) {
-      res.status(400).json({ error: parsed.error })
-      return
-    }
-
-    try {
-      await hub.heartbeat(parsed.value)
-      const detail = hub.getSessionDetail(parsed.value.sessionId)
-      res.json({ ok: true, session: detail?.session ?? null })
-    } catch {
-      res.status(500).json({ error: 'Failed to process heartbeat' })
-    }
-  })
-
   router.post('/scan', requireWriteAccess, async (_req, res) => {
     if (!localScanner) {
       res.status(503).json({ error: 'Local telemetry scanner is disabled' })
@@ -460,12 +297,4 @@ export function createTelemetryRouterWithHub(
   })
 
   return { router, hub, store }
-}
-
-/**
- * Backward-compatible factory — returns just the Router (used by existing code
- * and tests that call `createTelemetryRouter`).
- */
-export function createTelemetryRouter(options: TelemetryRouterOptions = {}): Router {
-  return createTelemetryRouterWithHub(options).router
 }

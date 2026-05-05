@@ -65,7 +65,7 @@ describe('runSessionCli', () => {
         JSON.stringify([
           { name: 'commander-main', sessionType: 'commander', status: 'active' },
           { name: 'worker-1710000000000', sessionType: 'worker', cwd: '/tmp/worktree' },
-          { name: 'sentinel-email-1', sessionType: 'sentinel', host: 'mac-mini' },
+          { name: 'automation-email-1', sessionType: 'automation', host: 'mac-mini' },
         ]),
         {
           status: 200,
@@ -88,7 +88,7 @@ describe('runSessionCli', () => {
     expect(stdout.read()).toContain('Active sessions:')
     expect(stdout.read()).toContain('commander-main type=commander status=active')
     expect(stdout.read()).toContain('worker-1710000000000 type=worker cwd=/tmp/worktree')
-    expect(stdout.read()).toContain('sentinel-email-1 type=sentinel host=mac-mini')
+    expect(stdout.read()).toContain('automation-email-1 type=automation host=mac-mini')
   })
 
   it('filters listed sessions by --type', async () => {

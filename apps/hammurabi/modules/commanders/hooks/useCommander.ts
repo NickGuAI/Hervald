@@ -1,23 +1,19 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { fetchJson, fetchVoid, getAccessToken } from '../../../src/lib/api'
-import { getWsBase } from '../../../src/lib/api-base'
-import { createReconnectBackoff, shouldReconnectWebSocketClose } from '../../agents/ws-reconnect'
+import { fetchJson, fetchVoid } from '../../../src/lib/api'
+import type { AgentType } from '@/types'
 import type { ClaudeEffortLevel } from '../../claude-effort.js'
 
 const COMMANDERS_QUERY_KEY = ['commanders', 'sessions'] as const
-const MAX_TERMINAL_LINES = 2000
 export const GLOBAL_COMMANDER_ID = '__global__'
 
 export type CommanderState = 'idle' | 'running' | 'paused' | 'stopped'
-export type CommanderWsStatus = 'connecting' | 'connected' | 'disconnected'
-export type CommanderAgentType = 'claude' | 'codex' | 'gemini'
+export type CommanderAgentType = AgentType
 export type CommanderContextMode = 'thin' | 'fat'
 
-export interface CommanderHeartbeatState {
+export interface CommanderHeartbeatConfig {
   intervalMs: number
   messageTemplate: string
-  lastSentAt: string | null
 }
 
 export interface CommanderTaskSource {
@@ -54,7 +50,7 @@ export interface CommanderSession {
   persona?: string
   maxTurns?: number
   contextMode?: CommanderContextMode
-  heartbeat: CommanderHeartbeatState
+  heartbeat: CommanderHeartbeatConfig
   lastHeartbeat: string | null
   taskSource: CommanderTaskSource | null
   currentTask: CommanderCurrentTask | null
@@ -90,7 +86,7 @@ export interface CommanderCronTask {
   lastRunStatus?: 'running' | 'complete' | 'failed' | 'timeout'
   nextRun: string | null
   eventBridgeRuleArn?: string
-  agentType?: 'claude' | 'codex' | 'gemini'
+  agentType?: CommanderAgentType
   sessionType?: 'stream' | 'pty'
   permissionMode?: string
   workDir?: string
@@ -161,7 +157,7 @@ export interface CommanderCronCreateInput {
   schedule: string
   instruction: string
   enabled?: boolean
-  agentType?: 'claude' | 'codex' | 'gemini'
+  agentType?: CommanderAgentType
   sessionType?: 'stream' | 'pty'
   permissionMode?: string
   workDir?: string
@@ -183,7 +179,7 @@ interface CommanderCronUpdateInput {
   schedule?: string
   timezone?: string
   enabled?: boolean
-  agentType?: 'claude' | 'codex' | 'gemini'
+  agentType?: CommanderAgentType
   sessionType?: 'stream' | 'pty'
   permissionMode?: string
   workDir?: string
@@ -196,194 +192,27 @@ interface CommanderCronDeleteInput {
   cronId: string
 }
 
-interface CommandRoomCronTaskResponse {
+interface AutomationRouteResponse {
   id: string
   name: string
-  commanderId?: string
+  parentCommanderId?: string | null
   description?: string
+  trigger: 'schedule' | 'quest' | 'manual'
   schedule: string
   timezone?: string
   instruction: string
-  enabled: boolean
+  status: 'active' | 'paused' | 'completed' | 'cancelled'
   createdAt: string
   nextRun?: string | null
+  lastRun?: string | null
   lastRunAt?: string | null
   lastRunStatus?: 'running' | 'complete' | 'failed' | 'timeout' | null
-  agentType?: 'claude' | 'codex' | 'gemini'
+  agentType?: CommanderAgentType
   sessionType?: 'stream' | 'pty'
   permissionMode?: string
   workDir?: string
   machine?: string
   model?: string
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null
-}
-
-function splitTerminalLines(raw: string): string[] {
-  return raw
-    .split('\r')
-    .join('')
-    .split('\n')
-    .map((line) => line.trimEnd())
-    .filter((line) => line.trim().length > 0)
-}
-
-function extractAssistantLines(payload: Record<string, unknown>): string[] {
-  const message = payload.message
-  if (!isRecord(message) || !Array.isArray(message.content)) {
-    return []
-  }
-
-  const lines: string[] = []
-  for (const block of message.content) {
-    if (!isRecord(block)) {
-      continue
-    }
-
-    const type = block.type
-    if (type === 'text' && typeof block.text === 'string') {
-      lines.push(...splitTerminalLines(block.text))
-      continue
-    }
-
-    if (type === 'thinking') {
-      if (typeof block.thinking === 'string') {
-        lines.push(...splitTerminalLines(block.thinking))
-        continue
-      }
-      if (typeof block.text === 'string') {
-        lines.push(...splitTerminalLines(block.text))
-        continue
-      }
-    }
-
-    if (type === 'tool_use' && typeof block.name === 'string') {
-      lines.push(`[tool] ${block.name}`)
-    }
-  }
-
-  return lines
-}
-
-function extractUserLines(payload: Record<string, unknown>): string[] {
-  const lines: string[] = []
-
-  const toolUseResult = payload.tool_use_result
-  if (isRecord(toolUseResult)) {
-    if (typeof toolUseResult.stdout === 'string') {
-      lines.push(...splitTerminalLines(toolUseResult.stdout))
-    }
-    if (typeof toolUseResult.stderr === 'string') {
-      lines.push(...splitTerminalLines(toolUseResult.stderr))
-    }
-  }
-
-  const message = payload.message
-  if (isRecord(message) && Array.isArray(message.content)) {
-    for (const block of message.content) {
-      if (!isRecord(block)) {
-        continue
-      }
-      if (typeof block.content === 'string') {
-        lines.push(...splitTerminalLines(block.content))
-      }
-    }
-  }
-
-  return lines
-}
-
-function extractDeltaLines(payload: Record<string, unknown>): string[] {
-  const delta = payload.delta
-  if (!isRecord(delta) || typeof delta.type !== 'string') {
-    return []
-  }
-
-  if (delta.type === 'text_delta' && typeof delta.text === 'string') {
-    return splitTerminalLines(delta.text)
-  }
-
-  if (delta.type === 'thinking_delta' && typeof delta.thinking === 'string') {
-    return splitTerminalLines(delta.thinking)
-  }
-
-  return []
-}
-
-function extractEventLines(payload: Record<string, unknown>): string[] {
-  const eventType = typeof payload.type === 'string' ? payload.type : ''
-
-  if (eventType === 'system' && typeof payload.text === 'string') {
-    return splitTerminalLines(payload.text)
-  }
-
-  if (eventType === 'assistant') {
-    return extractAssistantLines(payload)
-  }
-
-  if (eventType === 'user') {
-    return extractUserLines(payload)
-  }
-
-  if (eventType === 'result') {
-    if (typeof payload.result === 'string') {
-      return splitTerminalLines(payload.result)
-    }
-    if (payload.is_error === true) {
-      return ['[error] Commander result returned an error']
-    }
-    return []
-  }
-
-  if (eventType === 'exit') {
-    const exitCode = typeof payload.exitCode === 'number' ? payload.exitCode : 'unknown'
-    return [`[exit] ${exitCode}`]
-  }
-
-  if (eventType === 'content_block_delta') {
-    return extractDeltaLines(payload)
-  }
-
-  if (typeof payload.text === 'string') {
-    return splitTerminalLines(payload.text)
-  }
-
-  return []
-}
-
-function parseIncomingMessage(data: unknown): string[] {
-  let parsed: unknown = data
-
-  if (data instanceof ArrayBuffer) {
-    parsed = new TextDecoder().decode(data)
-  }
-
-  if (typeof parsed === 'string') {
-    const rawText = parsed
-    try {
-      parsed = JSON.parse(rawText) as unknown
-    } catch {
-      return splitTerminalLines(rawText)
-    }
-  }
-
-  if (!isRecord(parsed)) {
-    return []
-  }
-
-  if (parsed.type === 'replay' && Array.isArray(parsed.events)) {
-    const replayLines: string[] = []
-    for (const event of parsed.events) {
-      if (isRecord(event)) {
-        replayLines.push(...extractEventLines(event))
-      }
-    }
-    return replayLines
-  }
-
-  return extractEventLines(parsed)
 }
 
 async function fetchCommanders(): Promise<CommanderSession[]> {
@@ -403,15 +232,24 @@ async function fetchCommanderTasks(commanderId: string): Promise<CommanderTask[]
 }
 
 async function fetchCommanderCrons(commanderId: string): Promise<CommanderCronTask[]> {
-  const searchParams = new URLSearchParams({ commanderId })
-  const tasks = await fetchJson<CommandRoomCronTaskResponse[]>(`/api/command-room/tasks?${searchParams.toString()}`)
-  return tasks.map(toCommanderCronTask)
+  const searchParams = new URLSearchParams({
+    parentCommanderId: commanderId,
+    trigger: 'schedule',
+  })
+  const automations = await fetchJson<AutomationRouteResponse[]>(`/api/automations?${searchParams.toString()}`)
+  return automations
+    .filter((automation) => automation.trigger === 'schedule')
+    .map(toCommanderCronTask)
 }
 
 async function fetchGlobalCrons(): Promise<CommanderCronTask[]> {
-  const tasks = await fetchJson<CommandRoomCronTaskResponse[]>('/api/command-room/tasks')
-  return tasks
-    .filter((task) => !task.commanderId)
+  const searchParams = new URLSearchParams({
+    parentCommanderId: 'null',
+    trigger: 'schedule',
+  })
+  const automations = await fetchJson<AutomationRouteResponse[]>(`/api/automations?${searchParams.toString()}`)
+  return automations
+    .filter((automation) => automation.trigger === 'schedule')
     .map(toCommanderCronTask)
 }
 
@@ -469,17 +307,18 @@ async function assignCommanderTask(input: CommanderTaskAssignInput): Promise<{ a
 }
 
 async function createCommanderCron(input: CommanderCronCreateInput): Promise<CommanderCronTask> {
-  const created = await fetchJson<CommandRoomCronTaskResponse>('/api/command-room/tasks', {
+  const created = await fetchJson<AutomationRouteResponse>('/api/automations', {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
     },
     body: JSON.stringify({
       name: input.name?.trim() || (input.commanderId ? `commander-${input.commanderId}-cron` : 'global-cron'),
+      parentCommanderId: input.commanderId ?? null,
+      trigger: 'schedule',
       schedule: input.schedule,
       instruction: input.instruction,
-      enabled: input.enabled ?? true,
-      commanderId: input.commanderId,
+      status: input.enabled === false ? 'paused' : 'active',
       machine: input.machine?.trim() ?? '',
       workDir: input.workDir?.trim() ?? '',
       agentType: input.agentType ?? 'claude',
@@ -492,24 +331,24 @@ async function createCommanderCron(input: CommanderCronCreateInput): Promise<Com
 }
 
 async function toggleCommanderCron(input: CommanderCronToggleInput): Promise<CommanderCronTask> {
-  const updated = await fetchJson<CommandRoomCronTaskResponse>(
-    `/api/command-room/tasks/${encodeURIComponent(input.cronId)}`,
+  const updated = await fetchJson<AutomationRouteResponse>(
+    `/api/automations/${encodeURIComponent(input.cronId)}`,
     {
       method: 'PATCH',
       headers: {
         'content-type': 'application/json',
       },
       body: JSON.stringify({
-          enabled: input.enabled,
-        }),
+        status: input.enabled ? 'active' : 'paused',
+      }),
     },
   )
   return toCommanderCronTask(updated)
 }
 
 async function updateCommanderCron(input: CommanderCronUpdateInput): Promise<CommanderCronTask> {
-  const updated = await fetchJson<CommandRoomCronTaskResponse>(
-    `/api/command-room/tasks/${encodeURIComponent(input.cronId)}`,
+  const updated = await fetchJson<AutomationRouteResponse>(
+    `/api/automations/${encodeURIComponent(input.cronId)}`,
     {
       method: 'PATCH',
       headers: {
@@ -521,7 +360,7 @@ async function updateCommanderCron(input: CommanderCronUpdateInput): Promise<Com
         instruction: input.instruction,
         schedule: input.schedule,
         timezone: input.timezone,
-        enabled: input.enabled,
+        status: input.enabled === undefined ? undefined : (input.enabled ? 'active' : 'paused'),
         agentType: input.agentType,
         sessionType: input.sessionType,
         permissionMode: input.permissionMode,
@@ -535,13 +374,13 @@ async function updateCommanderCron(input: CommanderCronUpdateInput): Promise<Com
 }
 
 async function deleteCommanderCron(input: CommanderCronDeleteInput): Promise<void> {
-  return fetchVoid(`/api/command-room/tasks/${encodeURIComponent(input.cronId)}`, {
+  return fetchVoid(`/api/automations/${encodeURIComponent(input.cronId)}`, {
     method: 'DELETE',
   })
 }
 
 async function triggerCommanderCron(cronId: string) {
-  return fetchJson(`/api/command-room/tasks/${encodeURIComponent(cronId)}/trigger`, {
+  return fetchJson(`/api/automations/${encodeURIComponent(cronId)}/run`, {
     method: 'POST',
   })
 }
@@ -575,36 +414,6 @@ async function uploadCommanderAvatar(input: CommanderAvatarUploadInput): Promise
   )
 }
 
-function commanderWsUrl(commanderId: string, token: string | null): string {
-  const query = new URLSearchParams()
-  if (token) {
-    query.set('access_token', token)
-  }
-
-  const wsBase = getWsBase()
-  const qs = query.toString()
-  const sessionPath = `/api/agents/sessions/commander-${encodeURIComponent(commanderId)}/ws`
-
-  if (wsBase) {
-    return `${wsBase}${sessionPath}?${qs}`
-  }
-
-  const scheme = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-  return `${scheme}//${window.location.host}${sessionPath}?${qs}`
-}
-
-function appendLines(current: string[], incoming: string[]): string[] {
-  if (incoming.length === 0) {
-    return current
-  }
-
-  const next = [...current, ...incoming]
-  if (next.length <= MAX_TERMINAL_LINES) {
-    return next
-  }
-  return next.slice(-MAX_TERMINAL_LINES)
-}
-
 function toErrorMessage(error: unknown): string | null {
   if (!error) {
     return null
@@ -619,18 +428,18 @@ export function isGlobalCommanderId(commanderId: string | null | undefined): boo
   return commanderId === GLOBAL_COMMANDER_ID
 }
 
-function toCommanderCronTask(task: CommandRoomCronTaskResponse): CommanderCronTask {
+function toCommanderCronTask(task: AutomationRouteResponse): CommanderCronTask {
   return {
     id: task.id,
     name: task.name,
-    commanderId: task.commanderId,
+    commanderId: task.parentCommanderId ?? undefined,
     description: task.description,
     schedule: task.schedule,
     timezone: task.timezone,
     instruction: task.instruction,
-    enabled: task.enabled,
-    lastRun: task.lastRunAt ?? null,
-    lastRunStatus: task.lastRunStatus ?? undefined,
+    enabled: task.status === 'active',
+    lastRun: task.lastRun ?? null,
+    lastRunStatus: undefined,
     nextRun: task.nextRun ?? null,
     agentType: task.agentType,
     sessionType: task.sessionType,
@@ -645,14 +454,6 @@ function toCommanderCronTask(task: CommandRoomCronTaskResponse): CommanderCronTa
 export function useCommander() {
   const queryClient = useQueryClient()
   const [selectedCommanderId, setSelectedCommanderId] = useState<string | null>(null)
-  const [terminalConnectionStatus, setTerminalConnectionStatus] =
-    useState<CommanderWsStatus>('disconnected')
-  const [terminalLines, setTerminalLines] = useState<string[]>([])
-  const [terminalResetKey, setTerminalResetKey] = useState(0)
-  const [heartbeatPulseAt, setHeartbeatPulseAt] = useState<number | null>(null)
-
-  const selectedCommanderRef = useRef<string | null>(null)
-  const previousHeartbeatRef = useRef<string | null>(null)
 
   const commandersQuery = useQuery({
     queryKey: COMMANDERS_QUERY_KEY,
@@ -707,136 +508,6 @@ export function useCommander() {
       setSelectedCommanderId(commanders[0]?.id ?? null)
     }
   }, [commanders, selectedCommanderId])
-
-  useEffect(() => {
-    if (selectedCommanderRef.current === selectedCommanderId) {
-      return
-    }
-
-    selectedCommanderRef.current = selectedCommanderId
-    previousHeartbeatRef.current = null
-    setTerminalLines([])
-    setTerminalResetKey((value) => value + 1)
-  }, [selectedCommanderId])
-
-  useEffect(() => {
-    const latestHeartbeat = selectedCommander?.lastHeartbeat ?? selectedCommander?.heartbeat?.lastSentAt ?? null
-    if (!latestHeartbeat) {
-      return
-    }
-    if (latestHeartbeat === previousHeartbeatRef.current) {
-      return
-    }
-
-    previousHeartbeatRef.current = latestHeartbeat
-    setHeartbeatPulseAt(Date.now())
-  }, [selectedCommander?.lastHeartbeat, selectedCommander?.heartbeat?.lastSentAt])
-
-  useEffect(() => {
-    if (!selectedCommanderId || selectedCommander?.state !== 'running') {
-      setTerminalConnectionStatus('disconnected')
-      return
-    }
-
-    let socket: WebSocket | null = null
-    let disposed = false
-    let reconnectTimer: number | null = null
-    const reconnectBackoff = createReconnectBackoff()
-
-    const clearReconnectTimer = () => {
-      if (reconnectTimer !== null) {
-        window.clearTimeout(reconnectTimer)
-        reconnectTimer = null
-      }
-    }
-
-    const scheduleReconnect = () => {
-      if (disposed || reconnectTimer !== null) {
-        return
-      }
-
-      setTerminalConnectionStatus('connecting')
-      reconnectTimer = window.setTimeout(() => {
-        reconnectTimer = null
-        void connect()
-      }, reconnectBackoff.nextDelayMs())
-    }
-
-    const connect = async () => {
-      clearReconnectTimer()
-      setTerminalConnectionStatus('connecting')
-      const token = await getAccessToken()
-      if (disposed) {
-        return
-      }
-
-      const nextSocket = new WebSocket(commanderWsUrl(selectedCommanderId, token))
-      nextSocket.binaryType = 'arraybuffer'
-      socket = nextSocket
-
-      nextSocket.onopen = () => {
-        if (disposed || socket !== nextSocket) {
-          return
-        }
-        reconnectBackoff.reset()
-        setTerminalConnectionStatus('connected')
-      }
-
-      nextSocket.onmessage = (event) => {
-        if (disposed || socket !== nextSocket) {
-          return
-        }
-        const lines = parseIncomingMessage(event.data)
-        if (lines.length > 0) {
-          setTerminalLines((current) => appendLines(current, lines))
-        }
-      }
-
-      nextSocket.onerror = () => {
-        if (disposed || socket !== nextSocket) {
-          return
-        }
-
-        if (
-          nextSocket.readyState === WebSocket.CONNECTING ||
-          nextSocket.readyState === WebSocket.OPEN
-        ) {
-          nextSocket.close()
-        }
-      }
-
-      nextSocket.onclose = (event) => {
-        if (disposed || socket !== nextSocket) {
-          return
-        }
-
-        socket = null
-        if (shouldReconnectWebSocketClose(event)) {
-          scheduleReconnect()
-          return
-        }
-
-        setTerminalConnectionStatus('disconnected')
-      }
-    }
-
-    void connect()
-
-    return () => {
-      disposed = true
-      clearReconnectTimer()
-      setTerminalConnectionStatus('disconnected')
-      const activeSocket = socket
-      socket = null
-      if (
-        activeSocket &&
-        (activeSocket.readyState === WebSocket.CONNECTING ||
-          activeSocket.readyState === WebSocket.OPEN)
-      ) {
-        activeSocket.close()
-      }
-    }
-  }, [selectedCommanderId, selectedCommander?.state])
 
   const startMutation = useMutation({
     mutationFn: startCommanderSession,
@@ -1079,10 +750,6 @@ export function useCommander() {
     setSelectedCommanderId,
     commandersLoading: commandersQuery.isLoading,
     commandersError: toErrorMessage(commandersQuery.error),
-    terminalConnectionStatus,
-    terminalLines,
-    terminalResetKey,
-    heartbeatPulseAt,
     tasks: tasksQuery.data ?? [],
     tasksLoading: tasksQuery.isLoading,
     tasksError: toErrorMessage(tasksQuery.error),

@@ -108,7 +108,8 @@ export function SkillsPicker({
                     onClose()
                   }}
                   className={cn(
-                    'w-full text-left p-3 rounded-lg border border-ink-border bg-washi-aged hover:bg-ink-wash transition-colors',
+                    'w-full text-left p-3 rounded-lg border border-ink-border bg-washi-aged transition-colors',
+                    '[-webkit-tap-highlight-color:transparent] [@media(hover:hover)]:hover:bg-ink-wash',
                     variant === 'hervald' && 'sheet-skill--hervald',
                   )}
                 >

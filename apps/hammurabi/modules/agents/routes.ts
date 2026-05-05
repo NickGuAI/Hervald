@@ -12,7 +12,6 @@ import { ConversationStore } from '../commanders/conversation-store.js'
 import { resolveCommanderDataDir } from '../commanders/paths.js'
 import { resolveHammurabiDataDir, resolveModuleDataDir } from '../data-dir.js'
 import {
-  buildLegacyCommanderConversationId,
   CommanderSessionStore,
   DEFAULT_COMMANDER_MAX_TURNS,
 } from '../commanders/store.js'
@@ -60,7 +59,6 @@ import {
   DEFAULT_ROWS,
   DEFAULT_SESSION_STORE_PATH,
   FILE_NAME_PATTERN,
-  MACHINE_TOOL_KEYS,
   MAX_BUFFER_BYTES,
   MAX_STREAM_EVENTS,
   SESSION_NAME_PATTERN,
@@ -101,7 +99,6 @@ import {
 } from './adapters/gemini/index.js'
 import {
   parseActiveSkillInvocation,
-  parseAgentType,
   parseAutoRotateEntryThreshold,
   parseClaudeAdaptiveThinking,
   parseClaudeEffort,
@@ -120,6 +117,27 @@ import {
   parseWsKeepAliveIntervalMs,
   parseCodexTurnWatchdogTimeoutMs,
 } from './session/input.js'
+import type {
+  ProviderAdapterDeps,
+  ProviderCreateOptions,
+} from './providers/provider-adapter.js'
+import {
+  getProvider,
+  listProviders,
+  parseProviderId,
+} from './providers/registry.js'
+import {
+  ensureClaudeProviderContext,
+  ensureGeminiProviderContext,
+  readClaudeSessionId,
+  readCodexRuntime,
+  readCodexRuntimeTeardownPromise,
+  readCodexThreadId,
+  readGeminiNotificationCleanup,
+  readGeminiRuntime,
+  readGeminiRuntimeTeardownPromise,
+  readGeminiSessionId,
+} from './providers/provider-session-context.js'
 import { registerCodexProcessExitSessionMap } from './process-exit.js'
 import {
   buildLoginShellCommand,
@@ -246,6 +264,11 @@ import type {
   WorldAgentRole,
   WorldAgentStatus,
 } from './types.js'
+
+type ProviderStreamSessionOptions = Omit<
+  ProviderCreateOptions,
+  'sessionName' | 'mode' | 'task' | 'cwd' | 'machine'
+>
 import {
   DEFAULT_SESSION_MESSAGE_QUEUE_LIMIT,
   MessageQueueFullError,
@@ -533,6 +556,7 @@ export function createAgentsRouter(options: AgentsRouterOptions = {}): AgentsRou
 
   const {
     schedulePersistedSessionsWrite,
+    flushPersistedSessionsWrite,
     readPersistedSessionsState,
     restorePersistedSessions,
     getStaleCronSessionCandidates,
@@ -547,73 +571,8 @@ export function createAgentsRouter(options: AgentsRouterOptions = {}): AgentsRou
     completedSessions,
     exitedStreamSessions,
     applyStreamUsageEvent,
-    createClaudeSession: async (entry, machine) => createStreamSession(
-      entry.name,
-      entry.mode,
-      '',
-      entry.cwd,
-      machine,
-      'claude',
-      {
-        effort: entry.effort,
-        adaptiveThinking: entry.adaptiveThinking,
-        resumeSessionId: entry.claudeSessionId,
-        createdAt: entry.createdAt,
-        resumedFrom: entry.resumedFrom,
-        sessionType: entry.sessionType,
-        creator: entry.creator,
-        conversationId: entry.conversationId,
-        currentSkillInvocation: entry.currentSkillInvocation,
-        spawnedBy: entry.spawnedBy,
-        spawnedWorkers: entry.spawnedWorkers,
-      },
-    ),
-    createCodexSession: async (entry, machine) => {
-      if (!entry.codexThreadId) {
-        throw new Error(`Codex session "${entry.name}" is missing a thread id`)
-      }
-      return resumeCodexAppServerSession(
-        entry.name,
-        entry.mode,
-        entry.cwd,
-        entry.codexThreadId,
-        entry.createdAt,
-        {
-          resumedFrom: entry.resumedFrom,
-          sessionType: entry.sessionType,
-          creator: entry.creator,
-          conversationId: entry.conversationId,
-          currentSkillInvocation: entry.currentSkillInvocation,
-          machine,
-          spawnedBy: entry.spawnedBy,
-          spawnedWorkers: entry.spawnedWorkers,
-        },
-      )
-    },
-    createGeminiSession: async (entry, machine) => {
-      if (!entry.geminiSessionId) {
-        throw new Error(`Gemini session "${entry.name}" is missing a session id`)
-      }
-      return createGeminiAcpSession(
-        entry.name,
-        entry.mode,
-        '',
-        entry.cwd,
-        {
-          resumeSessionId: entry.geminiSessionId,
-          createdAt: entry.createdAt,
-          resumedFrom: entry.resumedFrom,
-          sessionType: entry.sessionType,
-          creator: entry.creator,
-          conversationId: entry.conversationId,
-          currentSkillInvocation: entry.currentSkillInvocation,
-          spawnedBy: entry.spawnedBy,
-          spawnedWorkers: entry.spawnedWorkers,
-          machine,
-        },
-      )
-    },
-    teardownCodexSessionRuntime,
+    restoreProviderSession: restoreProviderStreamSession,
+    teardownProviderSession,
     isExitedSessionResumeAvailable,
     isLiveSessionResumeAvailable,
   })
@@ -699,9 +658,7 @@ export function createAgentsRouter(options: AgentsRouterOptions = {}): AgentsRou
     requireDispatchWorkerAccess,
     maxSessions,
     sessions,
-    createCodexAppServerSession,
-    createGeminiAcpSession,
-    createStreamSession,
+    createProviderStreamSession,
     readMachineRegistry,
     schedulePersistedSessionsWrite,
   })
@@ -771,13 +728,11 @@ export function createAgentsRouter(options: AgentsRouterOptions = {}): AgentsRou
     sessionEventHandlers,
     applyCodexApprovalDecision,
     clearCodexResumeMetadata,
-    createCodexAppServerSession,
-    createGeminiAcpSession,
-    createStreamSession,
+    createProviderStreamSession,
     readMachineRegistry,
     readPersistedSessionsState,
     resolveResumableSessionSource,
-    retireLiveCodexSessionForResume,
+    retireLiveSessionForResume,
     schedulePersistedSessionsWrite,
     sendImmediateTextToStreamSession,
     queueTextToStreamSession,
@@ -842,8 +797,7 @@ export function createAgentsRouter(options: AgentsRouterOptions = {}): AgentsRou
       scheduleQueuedMessageDrain(session, { force: true })
     },
     initializeAutoRotationState,
-    teardownCodexSessionRuntime,
-    teardownGeminiSessionRuntime,
+    teardownProviderSession,
   })
 
   // ── Stream session helpers ──────────────────────────────────────
@@ -868,16 +822,23 @@ export function createAgentsRouter(options: AgentsRouterOptions = {}): AgentsRou
     // must *accumulate* (`+=`) to build session totals. The `result` event at
     // the end carries session-level cumulative totals and overrides directly.
     const evtType = event.type as string
+    const provider = getProvider(session.agentType)
+    const usesRuntimeWatchdog = Boolean(provider?.runtimeWatchdog)
+    const persistsResumeFromEvents = Boolean(provider?.uiCapabilities.supportsEffort)
     if (evtType === 'message_start') {
       const wasCompleted = session.lastTurnCompleted
-      // One-shot session types (`cron`, `sentinel`) are intentionally
+      // One-shot session types (`cron`, `sentinel`, `automation`) are intentionally
       // single-turn. Once a `result` event has been stored on the session,
       // a subsequent `message_start` from stdout (e.g. emitted by newer
       // Claude CLI envelope formats after the result) must not clear the
       // completion state — the executor depends on it to detect completion
       // without waiting for process exit. See issue #1217 / PR #462 fix #1.
       const isCompletedOneShot =
-        (session.sessionType === 'cron' || session.sessionType === 'sentinel') &&
+        (
+          session.sessionType === 'cron' ||
+          session.sessionType === 'sentinel' ||
+          session.sessionType === 'automation'
+        ) &&
         Boolean(session.finalResultEvent)
       if (!isCompletedOneShot) {
         session.lastTurnCompleted = false
@@ -885,11 +846,11 @@ export function createAgentsRouter(options: AgentsRouterOptions = {}): AgentsRou
         session.finalResultEvent = undefined
         session.restoredIdle = false
       }
-      if (session.agentType === 'codex') {
+      if (usesRuntimeWatchdog) {
         clearCodexPendingApprovals(session)
         scheduleCodexTurnWatchdog(session)
       }
-      if (wasCompleted && session.agentType === 'claude') {
+      if (wasCompleted && persistsResumeFromEvents) {
         schedulePersistedSessionsWrite()
       }
     }
@@ -901,10 +862,10 @@ export function createAgentsRouter(options: AgentsRouterOptions = {}): AgentsRou
       if (!wasCompleted) {
         session.conversationEntryCount += 1
       }
-      if (!wasCompleted && session.agentType === 'claude') {
+      if (!wasCompleted && persistsResumeFromEvents) {
         schedulePersistedSessionsWrite()
       }
-      if (session.agentType === 'codex') {
+      if (usesRuntimeWatchdog) {
         clearCodexPendingApprovals(session)
         clearCodexTurnWatchdog(session)
         markCodexTurnHealthy(session)
@@ -935,17 +896,17 @@ export function createAgentsRouter(options: AgentsRouterOptions = {}): AgentsRou
         scheduleAutoRotationIfNeeded(session.name)
       }
     }
-    if (evtType === 'exit' && session.agentType === 'codex') {
+    if (evtType === 'exit' && usesRuntimeWatchdog) {
       clearCodexPendingApprovals(session)
       clearCodexTurnWatchdog(session)
       markCodexTurnHealthy(session)
     }
     applyStreamUsageEvent(session, event)
 
-    if (session.agentType === 'claude') {
+    if (persistsResumeFromEvents) {
       const sessionId = extractClaudeSessionId(event)
-      if (sessionId && session.claudeSessionId !== sessionId) {
-        session.claudeSessionId = sessionId
+      if (sessionId && readClaudeSessionId(session) !== sessionId) {
+        ensureClaudeProviderContext(session).sessionId = sessionId
         schedulePersistedSessionsWrite()
       }
     }
@@ -955,10 +916,14 @@ export function createAgentsRouter(options: AgentsRouterOptions = {}): AgentsRou
   }
 
   function supportsAutoRotation(session: StreamSession): boolean {
-    if (session.sessionType === 'cron') {
+    if (session.sessionType === 'cron' || session.sessionType === 'automation') {
       return false
     }
-    return session.agentType === 'claude' || session.agentType === 'codex'
+    const provider = getProvider(session.agentType)
+    return Boolean(
+      provider?.uiCapabilities.supportsEffort
+      || provider?.runtimeWatchdog,
+    )
   }
 
   function initializeAutoRotationState(session: StreamSession): void {
@@ -974,7 +939,9 @@ export function createAgentsRouter(options: AgentsRouterOptions = {}): AgentsRou
     fromBackingId: string | undefined,
     toBackingId: string | undefined,
   ): StreamJsonEvent {
-    const backingLabel = session.agentType === 'codex' ? 'thread' : 'session'
+    const backingLabel = getProvider(session.agentType)?.runtimeWatchdog
+      ? 'thread'
+      : 'session'
     return {
       type: 'system',
       subtype: 'session_rotated',
@@ -1020,8 +987,8 @@ export function createAgentsRouter(options: AgentsRouterOptions = {}): AgentsRou
 
     try {
       const commanderSession = await commanderSessionStore.get(commanderId)
-      const conversationId = session.conversationId?.trim() || buildLegacyCommanderConversationId(commanderId)
-      const conversation = await conversationStore.get(conversationId)
+      const conversationId = session.conversationId?.trim()
+      const conversation = conversationId ? await conversationStore.get(conversationId) : null
       const seeded = await buildCommanderSessionSeed({
         commanderId,
         cwd: commanderSession?.cwd ?? session.cwd,
@@ -1045,36 +1012,13 @@ export function createAgentsRouter(options: AgentsRouterOptions = {}): AgentsRou
   ): Promise<StreamSession> {
     const machine = await resolveSessionMachine(session)
     const promptOptions = await buildReplacementPromptOptions(sessionName, session)
-
-    if (session.agentType === 'codex') {
-      return createCodexAppServerSession(
-        sessionName,
-        session.mode,
-        '',
-        session.cwd,
-        {
-          createdAt: session.createdAt,
-          spawnedBy: session.spawnedBy,
-          spawnedWorkers: session.spawnedWorkers,
-          sessionType: session.sessionType,
-          creator: session.creator,
-          conversationId: session.conversationId,
-          currentSkillInvocation: session.currentSkillInvocation,
-          resumedFrom: session.resumedFrom,
-          systemPrompt: promptOptions.systemPrompt,
-          model: session.model,
-          machine,
-        },
-      )
-    }
-
-    return createStreamSession(
+    return createProviderStreamSession(
       sessionName,
       session.mode,
       '',
       session.cwd,
       machine,
-      'claude',
+      session.agentType,
       {
         effort: session.effort,
         adaptiveThinking: session.adaptiveThinking,
@@ -1112,8 +1056,8 @@ export function createAgentsRouter(options: AgentsRouterOptions = {}): AgentsRou
     try {
       const rotated = await createReplacementStreamSession(sessionName, current)
       const rotatedPreludeEvents = rotated.events.slice()
-      const fromBackingId = current.agentType === 'codex' ? current.codexThreadId : current.claudeSessionId
-      const toBackingId = rotated.agentType === 'codex' ? rotated.codexThreadId : rotated.claudeSessionId
+      const fromBackingId = getProvider(current.agentType)?.getResumeId(current)
+      const toBackingId = getProvider(rotated.agentType)?.getResumeId(rotated)
       const rotationEvent = createAutoRotationEvent(current, fromBackingId, toBackingId)
 
       appendStreamEvent(current, rotationEvent)
@@ -1137,11 +1081,7 @@ export function createAgentsRouter(options: AgentsRouterOptions = {}): AgentsRou
 
       sessions.set(sessionName, rotated)
 
-      if (current.agentType === 'codex') {
-        void teardownCodexSessionRuntime(current, `Auto-rotated session "${sessionName}"`).catch(() => undefined)
-      } else {
-        current.process.kill('SIGTERM')
-      }
+      void teardownProviderSession(current, `Auto-rotated session "${sessionName}"`).catch(() => undefined)
 
       for (const preludeEvent of rotatedPreludeEvents) {
         broadcastStreamEvent(rotated, preludeEvent)
@@ -1246,6 +1186,7 @@ export function createAgentsRouter(options: AgentsRouterOptions = {}): AgentsRou
         setExitedSession: (name, session) => {
           exitedStreamSessions.set(name, session)
         },
+        spawnImpl: spawn,
         internalToken,
         writeToStdin,
         writeTranscriptMeta,
@@ -1256,17 +1197,19 @@ export function createAgentsRouter(options: AgentsRouterOptions = {}): AgentsRou
   // ── Codex Session Runtime ────────────────────────────────────────
   function listActiveCodexSessionNames(): string[] {
     return [...sessions.entries()]
-      .filter(([, candidate]) => candidate.kind === 'stream' && candidate.agentType === 'codex')
+      .filter(([, candidate]) => (
+        candidate.kind === 'stream'
+        && getProvider(candidate.agentType)?.id === 'codex'
+      ))
       .map(([sessionName]) => sessionName)
   }
 
-  const codexSessionDeps = {
+  const providerSessionBaseDeps = {
     appendEvent: appendStreamEvent,
     broadcastEvent: broadcastStreamEvent,
     clearExitedSession: (name: string) => {
       exitedStreamSessions.delete(name)
     },
-    clearTurnWatchdog: clearCodexTurnWatchdog,
     deleteLiveSession: (name: string) => {
       sessions.delete(name)
     },
@@ -1274,48 +1217,135 @@ export function createAgentsRouter(options: AgentsRouterOptions = {}): AgentsRou
       sessionEventHandlers.delete(name)
     },
     getActiveSession: (name: string) => sessions.get(name),
-    getAllSessions: () => sessions.values(),
-    notifyApprovalEnqueued: (session: StreamSession, pendingRequest: CodexPendingApprovalRequest) => {
-      emitCodexApprovalQueueEvent({
-        type: 'enqueued',
-        approval: toPendingCodexApprovalView(session, pendingRequest),
-      })
-    },
-    notifyApprovalResolved: (
-      session: StreamSession,
-      pendingRequest: CodexPendingApprovalRequest,
-      decision: CodexApprovalDecision,
-      delivered: boolean,
-    ) => {
-      emitCodexApprovalQueueEvent({
-        type: 'resolved',
-        approval: toPendingCodexApprovalView(session, pendingRequest),
-        decision: decision === 'accept' ? 'approve' : 'reject',
-        delivered,
-      })
-    },
     resetActiveTurnState,
-    runtimeFactory: (
-      sessionName: string,
-      machine: MachineConfig | undefined,
-      handleOwningSessionFailure: (failure: CodexRuntimeFailure) => void,
-    ) => new CodexSessionRuntime(
-      sessionName,
-      machine,
-      listActiveCodexSessionNames,
-      wsKeepAliveIntervalMs,
-      handleOwningSessionFailure,
-    ),
     schedulePersistedSessionsWrite,
-    scheduleTurnWatchdog: scheduleCodexTurnWatchdog,
     setCompletedSession: (name: string, session: CompletedSession) => {
       completedSessions.set(name, session)
     },
     setExitedSession: (name: string, session: ExitedStreamSessionState) => {
       exitedStreamSessions.set(name, session)
     },
+    spawnImpl: spawn,
+    internalToken,
+    writeToStdin,
     writeTranscriptMeta,
     getActionPolicyGate,
+  }
+
+  function getProviderSessionDeps(agentType: AgentType): ProviderAdapterDeps {
+    if (getProvider(agentType)?.id === 'codex') {
+      return {
+        ...providerSessionBaseDeps,
+        clearTurnWatchdog: clearCodexTurnWatchdog,
+        getAllSessions: () => sessions.values(),
+        notifyApprovalEnqueued: (
+          session: StreamSession,
+          pendingRequest: CodexPendingApprovalRequest,
+        ) => {
+          emitCodexApprovalQueueEvent({
+            type: 'enqueued',
+            approval: toPendingCodexApprovalView(session, pendingRequest),
+          })
+        },
+        notifyApprovalResolved: (
+          session: StreamSession,
+          pendingRequest: CodexPendingApprovalRequest,
+          decision: CodexApprovalDecision,
+          delivered: boolean,
+        ) => {
+          emitCodexApprovalQueueEvent({
+            type: 'resolved',
+            approval: toPendingCodexApprovalView(session, pendingRequest),
+            decision: decision === 'accept' ? 'approve' : 'reject',
+            delivered,
+          })
+        },
+        runtimeFactory: (
+          sessionName: string,
+          machine: MachineConfig | undefined,
+          handleOwningSessionFailure: (failure: CodexRuntimeFailure) => void,
+        ) => new CodexSessionRuntime(
+          sessionName,
+          machine,
+          listActiveCodexSessionNames,
+          wsKeepAliveIntervalMs,
+          handleOwningSessionFailure,
+          spawn,
+        ),
+        scheduleTurnWatchdog: scheduleCodexTurnWatchdog,
+      } as unknown as ProviderAdapterDeps
+    }
+
+    return providerSessionBaseDeps as unknown as ProviderAdapterDeps
+  }
+
+  async function createProviderStreamSession(
+    sessionName: string,
+    mode: ClaudePermissionMode,
+    task: string,
+    cwd: string | undefined,
+    machine: MachineConfig | undefined,
+    agentType: AgentType = 'claude',
+    options: ProviderStreamSessionOptions = {},
+  ): Promise<StreamSession> {
+    const provider = getProvider(agentType)
+    if (!provider) {
+      throw new Error(`Unknown provider: ${agentType}`)
+    }
+
+    return await provider.create({
+      sessionName,
+      mode,
+      task,
+      cwd,
+      machine,
+      ...options,
+    }, getProviderSessionDeps(agentType))
+  }
+
+  async function restoreProviderStreamSession(
+    entry: PersistedStreamSession,
+    machine: MachineConfig | undefined,
+  ): Promise<StreamSession> {
+    const provider = getProvider(entry.agentType)
+    if (!provider) {
+      throw new Error(`Unknown provider: ${entry.agentType}`)
+    }
+    return await provider.restore(entry, machine, getProviderSessionDeps(entry.agentType))
+  }
+
+  async function teardownProviderSession(
+    session: StreamSession,
+    reason: string,
+  ): Promise<void> {
+    const provider = getProvider(session.agentType)
+    if (!provider) {
+      return
+    }
+    await provider.teardown(session, reason)
+  }
+
+  async function shutdownProviderRuntimes(reason = 'Hammurabi shutdown'): Promise<void> {
+    await Promise.allSettled(
+      listProviders().map(async (provider) => {
+        const providerSessions = [...sessions.values()].filter((session): session is StreamSession => (
+          session.kind === 'stream' && session.agentType === provider.id
+        ))
+        if (provider.shutdownFleet) {
+          await provider.shutdownFleet(providerSessions, reason)
+          return
+        }
+        // Preserve resumable live-session snapshots on server shutdown for
+        // providers that do not own a fleet-level runtime hook. Calling the
+        // normal per-session teardown path here rewrites persisted state as
+        // an exited session, which breaks startup auto-resume on restart.
+        for (const session of providerSessions) {
+          for (const client of session.clients) {
+            client.close(1001, 'Server shutting down')
+          }
+        }
+      }),
+    )
   }
 
   function applyCodexApprovalDecision(
@@ -1327,7 +1357,12 @@ export function createAgentsRouter(options: AgentsRouterOptions = {}): AgentsRou
     code: 'invalid_session' | 'unavailable' | 'not_found' | 'protocol_error'
     reason: string
   } {
-    return applyCodexApprovalDecisionAdapter(session, requestId, decision, codexSessionDeps)
+    return applyCodexApprovalDecisionAdapter(
+      session,
+      requestId,
+      decision,
+      getProviderSessionDeps('codex') as Parameters<typeof applyCodexApprovalDecisionAdapter>[3],
+    )
   }
 
   function buildCodexResultFromThreadSnapshot(
@@ -1380,7 +1415,8 @@ export function createAgentsRouter(options: AgentsRouterOptions = {}): AgentsRou
     if (sessions.get(session.name) !== session) {
       return
     }
-    if (session.lastTurnCompleted || !session.codexThreadId) {
+    const threadId = readCodexThreadId(session)
+    if (session.lastTurnCompleted || !threadId) {
       clearCodexTurnWatchdog(session)
       markCodexTurnHealthy(session)
       return
@@ -1389,9 +1425,9 @@ export function createAgentsRouter(options: AgentsRouterOptions = {}): AgentsRou
     clearCodexTurnWatchdog(session)
 
     if (hasPendingCodexApprovals(session)) {
-      session.codexRuntime?.log('info', 'Codex watchdog paused while waiting for approval decision', {
+      readCodexRuntime(session)?.log('info', 'Codex watchdog paused while waiting for approval decision', {
         sessionName: session.name,
-        threadId: session.codexThreadId,
+        threadId,
         pendingApprovals: session.codexPendingApprovals.size,
       })
       return
@@ -1399,12 +1435,16 @@ export function createAgentsRouter(options: AgentsRouterOptions = {}): AgentsRou
 
     let resolved = false
     try {
-      const runtime = session.codexRuntime
+      const runtime = readCodexRuntime(session)
       if (!runtime) {
         return
       }
+      const threadId = readCodexThreadId(session)
+      if (!threadId) {
+        return
+      }
       const readResult = await runtime.sendRequest('thread/read', {
-        threadId: session.codexThreadId,
+        threadId,
         includeTurns: true,
       })
 
@@ -1436,9 +1476,9 @@ export function createAgentsRouter(options: AgentsRouterOptions = {}): AgentsRou
         resolved = true
       }
     } catch (error) {
-      session.codexRuntime?.log('warn', 'Codex watchdog thread/read reconciliation failed', {
+      readCodexRuntime(session)?.log('warn', 'Codex watchdog thread/read reconciliation failed', {
         sessionName: session.name,
-        threadId: session.codexThreadId,
+        threadId: readCodexThreadId(session),
         error: truncateLogText(error instanceof Error ? error.message : String(error)),
       })
     }
@@ -1466,9 +1506,9 @@ export function createAgentsRouter(options: AgentsRouterOptions = {}): AgentsRou
     appendStreamEvent(session, staleEvent)
     broadcastStreamEvent(session, staleEvent)
     schedulePersistedSessionsWrite()
-    session.codexRuntime?.log('warn', 'Codex turn marked stale after watchdog timeout', {
+    readCodexRuntime(session)?.log('warn', 'Codex turn marked stale after watchdog timeout', {
       sessionName: session.name,
-      threadId: session.codexThreadId,
+      threadId: readCodexThreadId(session),
       timeoutSeconds,
       lastIncomingMethod: lastIncomingMethod ?? null,
       lastIncomingAt: lastIncomingAt ?? null,
@@ -1486,116 +1526,6 @@ export function createAgentsRouter(options: AgentsRouterOptions = {}): AgentsRou
     session.codexTurnWatchdogTimer = setTimeout(() => {
       void handleCodexTurnWatchdogTimeout(session)
     }, codexTurnWatchdogTimeoutMs)
-  }
-
-  async function teardownCodexSessionRuntime(
-    session: StreamSession,
-    reason: string,
-  ): Promise<void> {
-    await teardownCodexSessionRuntimeAdapter(session, reason)
-  }
-
-  async function shutdownCodexRuntimes(reason = 'Hammurabi shutdown'): Promise<void> {
-    await shutdownCodexRuntimesAdapter(codexSessionDeps, reason)
-  }
-
-  async function failCodexSession(
-    sessionName: string,
-    session: StreamSession,
-    reason: string,
-    exitCode = 1,
-    signal?: string,
-  ): Promise<void> {
-    await failCodexSessionAdapter(sessionName, session, reason, codexSessionDeps, exitCode, signal)
-  }
-
-  async function teardownGeminiSessionRuntime(
-    session: StreamSession,
-    reason: string,
-  ): Promise<void> {
-    if (session.geminiRuntimeTeardownPromise) {
-      await session.geminiRuntimeTeardownPromise
-      return
-    }
-
-    const runtime = session.geminiRuntime
-    if (!runtime) {
-      try {
-        session.process.kill('SIGTERM')
-      } catch {
-        // Best-effort cleanup only.
-      }
-      return
-    }
-
-    session.geminiNotificationCleanup?.()
-    session.geminiNotificationCleanup = undefined
-
-    const teardownPromise = runtime.teardown({
-      reason,
-      timeoutMs: CODEX_RUNTIME_TEARDOWN_TIMEOUT_MS,
-    })
-    session.geminiRuntimeTeardownPromise = teardownPromise
-    try {
-      await teardownPromise
-    } finally {
-      session.geminiRuntimeTeardownPromise = undefined
-      session.geminiNotificationCleanup = undefined
-      session.geminiRuntime = undefined
-    }
-  }
-
-  async function shutdownGeminiRuntimes(reason = 'Hammurabi shutdown'): Promise<void> {
-    const geminiSessions = [...sessions.values()].filter((session): session is StreamSession =>
-      session.kind === 'stream' && session.agentType === 'gemini'
-    )
-
-    await Promise.allSettled(geminiSessions.map(async (session) => {
-      for (const client of session.clients) {
-        client.close(1001, 'Server shutting down')
-      }
-      await teardownGeminiSessionRuntime(session, reason)
-    }))
-  }
-
-  async function createGeminiAcpSession(
-    sessionName: string,
-    mode: ClaudePermissionMode,
-    task: string,
-    cwd: string | undefined,
-    options: GeminiSessionCreateOptions = {},
-  ): Promise<StreamSession> {
-    return await createGeminiAcpSessionAdapter(
-      sessionName,
-      mode,
-      task,
-      cwd,
-      options,
-      {
-        appendEvent: appendStreamEvent,
-        broadcastEvent: broadcastStreamEvent,
-        clearExitedSession: (name) => {
-          exitedStreamSessions.delete(name)
-        },
-        deleteLiveSession: (name) => {
-          sessions.delete(name)
-        },
-        deleteSessionEventHandlers: (name) => {
-          sessionEventHandlers.delete(name)
-        },
-        getActiveSession: (name) => sessions.get(name),
-        resetActiveTurnState,
-        schedulePersistedSessionsWrite,
-        setCompletedSession: (name, session) => {
-          completedSessions.set(name, session)
-        },
-        setExitedSession: (name, session) => {
-          exitedStreamSessions.set(name, session)
-        },
-        writeTranscriptMeta,
-        getActionPolicyGate,
-      },
-    )
   }
 
   function getQueuedBacklogItems(session: StreamSession): QueuedMessage[] {
@@ -1954,7 +1884,7 @@ export function createAgentsRouter(options: AgentsRouterOptions = {}): AgentsRou
       return
     }
 
-    if (session.agentType === 'codex' && !session.lastTurnCompleted && nextMessage.priority === 'high') {
+    if (getProvider(session.agentType)?.runtimeWatchdog && !session.lastTurnCompleted && nextMessage.priority === 'high') {
       return
     }
 
@@ -2040,7 +1970,7 @@ export function createAgentsRouter(options: AgentsRouterOptions = {}): AgentsRou
       !liveSession.lastTurnCompleted &&
       (
         liveSession.pendingDirectSendMessages.length === 0
-        || liveSession.agentType === 'codex'
+        || Boolean(getProvider(liveSession.agentType)?.runtimeWatchdog)
       )
     ) {
       const result = await attemptSendPromptToStreamSession(liveSession, message)
@@ -2066,54 +1996,6 @@ export function createAgentsRouter(options: AgentsRouterOptions = {}): AgentsRou
       liveSession.lastTurnCompleted ? { force: true } : undefined,
     )
     return { ok: true, queued: true, message }
-  }
-
-  async function createCodexAppServerSession(
-    sessionName: string,
-    mode: ClaudePermissionMode,
-    task: string,
-    cwd: string | undefined,
-    options: CodexSessionCreateOptions = {},
-  ): Promise<StreamSession> {
-    return await createCodexAppServerSessionAdapter(
-      sessionName,
-      mode,
-      task,
-      cwd,
-      options,
-      codexSessionDeps,
-    )
-  }
-
-  async function resumeCodexAppServerSession(
-    sessionName: string,
-    mode: ClaudePermissionMode,
-    cwd: string,
-    threadId: string,
-    createdAt: string,
-    options: {
-      resumedFrom?: string
-      sessionType?: SessionType
-      creator?: SessionCreator
-      conversationId?: string
-      currentSkillInvocation?: ActiveSkillInvocation
-      machine?: MachineConfig
-      spawnedBy?: string
-      spawnedWorkers?: string[]
-    } = {},
-  ): Promise<StreamSession> {
-    return createCodexAppServerSession(sessionName, mode, '', cwd, {
-      resumeSessionId: threadId,
-      createdAt,
-      resumedFrom: options.resumedFrom,
-      sessionType: options.sessionType,
-      creator: options.creator,
-      conversationId: options.conversationId,
-      currentSkillInvocation: options.currentSkillInvocation,
-      machine: options.machine,
-      spawnedBy: options.spawnedBy,
-      spawnedWorkers: options.spawnedWorkers,
-    })
   }
 
   router.post('/sessions', requireWriteAccess, async (req, res) => {
@@ -2220,10 +2102,9 @@ export function createAgentsRouter(options: AgentsRouterOptions = {}): AgentsRou
 
     const rawRequestedSessionType = req.body?.sessionType
     const requestedSessionType = parseSessionType(rawRequestedSessionType)
-    const legacyTransportAliasRequested = rawRequestedSessionType === 'stream' || rawRequestedSessionType === 'pty'
-    if (requestedSessionType === null && !legacyTransportAliasRequested) {
+    if (requestedSessionType === null) {
       res.status(400).json({
-        error: 'Invalid sessionType. Expected one of: commander, worker, cron, sentinel',
+        error: 'Invalid sessionType. Expected one of: commander, worker, cron, sentinel, automation',
       })
       return
     }
@@ -2241,20 +2122,25 @@ export function createAgentsRouter(options: AgentsRouterOptions = {}): AgentsRou
       return
     }
 
-    const agentType = resumeSource?.source.agentType ?? parseAgentType(req.body?.agentType)
-    const effort = agentType === 'claude'
+    const agentType = resumeSource?.source.agentType ?? parseProviderId(req.body?.agentType) ?? 'claude'
+    const provider = getProvider(agentType)
+    if (!provider) {
+      res.status(400).json({ error: `Unknown provider: ${agentType}` })
+      return
+    }
+    const effort = provider.uiCapabilities.supportsEffort
       ? (resumeSource?.source.effort ?? parsedEffort ?? DEFAULT_CLAUDE_EFFORT_LEVEL)
       : undefined
-    const adaptiveThinking = agentType === 'claude'
+    const adaptiveThinking = provider.uiCapabilities.supportsAdaptiveThinking
       ? (
         resumeSource?.source.adaptiveThinking
         ?? parsedAdaptiveThinking
         ?? DEFAULT_CLAUDE_ADAPTIVE_THINKING_MODE
       )
       : undefined
-    const transportType: Exclude<SessionTransportType, 'external'> = resumeSource || agentType === 'gemini'
+    const transportType: Exclude<SessionTransportType, 'external'> = resumeSource || provider.uiCapabilities.forcedTransport === 'stream'
       ? 'stream'
-      : parseSessionTransportType(req.body?.transportType ?? req.body?.sessionType)
+      : parseSessionTransportType(req.body?.transportType)
     const requestedHost = resumeSource?.source.host ?? parseOptionalHost(req.body?.host)
     if (requestedHost === null) {
       res.status(400).json({ error: 'Invalid host: expected machine ID string' })
@@ -2282,13 +2168,17 @@ export function createAgentsRouter(options: AgentsRouterOptions = {}): AgentsRou
     const sessionCwd = requestedMachineCwd ?? process.env.HOME ?? '/tmp'
     const remoteMachine = isRemoteMachine(machine) ? machine : undefined
 
+    const resumeProvider = resumeSource ? getProvider(resumeSource.source.agentType) : undefined
+    const resumeProviderId = resumeSource
+      ? resumeProvider?.getResumeId(resumeSource.source as unknown as StreamSession)
+      : undefined
     if (
       resumeSource &&
       !resumeSource.liveSession &&
-      resumeSource.source.agentType === 'codex' &&
-      resumeSource.source.codexThreadId &&
+      resumeProvider?.id === 'codex' &&
+      resumeProviderId &&
       !resumeSource.source.host &&
-      !(await hasCodexRolloutFile(resumeSource.source.codexThreadId, resumeSource.source.createdAt))
+      !(await hasCodexRolloutFile(resumeProviderId, resumeSource.source.createdAt))
     ) {
       clearCodexResumeMetadata(resumeFromSession!)
       res.status(409).json({
@@ -2299,66 +2189,31 @@ export function createAgentsRouter(options: AgentsRouterOptions = {}): AgentsRou
 
     if (transportType === 'stream') {
       try {
-        const session = resumeSource
-          ? (
-              agentType === 'codex'
-              ? await createCodexAppServerSession(sessionName, mode, task ?? '', requestedMachineCwd, {
-                  resumeSessionId: resumeSource.source.codexThreadId,
-                  resumedFrom: resumeFromSession,
-                  sessionType,
-                  creator,
-                  currentSkillInvocation: resumeSource.source.currentSkillInvocation,
-                  spawnedBy: resumeSource.source.spawnedBy,
-                  machine,
-                })
-                : agentType === 'gemini'
-                  ? await createGeminiAcpSession(sessionName, mode, task ?? '', requestedMachineCwd, {
-                    resumeSessionId: resumeSource.source.geminiSessionId,
-                    resumedFrom: resumeFromSession,
-                    sessionType,
-                    creator,
-                    currentSkillInvocation: resumeSource.source.currentSkillInvocation,
-                    spawnedBy: resumeSource.source.spawnedBy,
-                    machine,
-                  })
-                  : createStreamSession(sessionName, mode, task ?? '', requestedMachineCwd, machine, agentType, {
-                    effort,
-                    adaptiveThinking,
-                    resumeSessionId: resumeSource.source.claudeSessionId,
-                    resumedFrom: resumeFromSession,
-                    sessionType,
-                    creator,
-                    currentSkillInvocation: resumeSource.source.currentSkillInvocation,
-                    spawnedBy: resumeSource.source.spawnedBy,
-                  })
-            )
-          : (
-              agentType === 'codex'
-                ? await createCodexAppServerSession(sessionName, mode, task ?? '', requestedMachineCwd, {
-                  sessionType,
-                  creator,
-                  currentSkillInvocation: requestedCurrentSkillInvocation,
-                  machine,
-                  model,
-                })
-                : agentType === 'gemini'
-                  ? await createGeminiAcpSession(sessionName, mode, task ?? '', requestedMachineCwd, {
-                  sessionType,
-                  creator,
-                  currentSkillInvocation: requestedCurrentSkillInvocation,
-                  machine,
-                  })
-                : createStreamSession(sessionName, mode, task ?? '', requestedMachineCwd, machine, agentType, {
-                  effort,
-                  adaptiveThinking,
-                  model,
-                  sessionType,
-                  creator,
-                  currentSkillInvocation: requestedCurrentSkillInvocation,
-                })
-            )
+        const session = await createProviderStreamSession(
+          sessionName,
+          mode,
+          task ?? '',
+          requestedMachineCwd,
+          machine,
+          agentType,
+          {
+            effort,
+            adaptiveThinking,
+            model: resumeSource ? undefined : model,
+            resumeSessionId: resumeSource ? provider.getResumeId(resumeSource.source) : undefined,
+            resumedFrom: resumeFromSession,
+            sessionType,
+            creator,
+            conversationId: resumeSource?.source.conversationId,
+            currentSkillInvocation: resumeSource
+              ? resumeSource.source.currentSkillInvocation
+              : requestedCurrentSkillInvocation,
+            spawnedBy: resumeSource?.source.spawnedBy,
+            spawnedWorkers: resumeSource?.source.spawnedWorkers,
+          },
+        )
         if (resumeSource?.liveSession) {
-          retireLiveCodexSessionForResume(resumeFromSession!, resumeSource.liveSession)
+          retireLiveSessionForResume(resumeFromSession!, resumeSource.liveSession)
         }
         sessions.set(sessionName, session)
         schedulePersistedSessionsWrite()
@@ -2392,6 +2247,8 @@ export function createAgentsRouter(options: AgentsRouterOptions = {}): AgentsRou
       const ptySpawner = await getSpawner()
       const localSpawnCwd = process.env.HOME || '/tmp'
       const preparedLaunch = prepareMachineLaunchEnvironment(machine, process.env)
+      const providerPtyEnv = provider.preparePtyEnv?.({ mode, effort: claudeEffort }) ?? {}
+      const requiresApprovalBridge = provider.uiCapabilities.supportsAdaptiveThinking
       // Use the remote user's default login shell (e.g. zsh on macOS) instead
       // of hardcoding bash, so that shell profile (PATH, etc.) is loaded correctly.
       const remoteShellCommand = buildLoginShellCommand(
@@ -2399,7 +2256,7 @@ export function createAgentsRouter(options: AgentsRouterOptions = {}): AgentsRou
         requestedMachineCwd,
         remoteMachine ? preparedLaunch.sourcedEnvFile : undefined,
       )
-      const remoteApprovalBridge = remoteMachine && agentType === 'claude'
+      const remoteApprovalBridge = remoteMachine && requiresApprovalBridge
         ? {
             port: resolveClaudeApprovalPort(process.env),
             internalToken,
@@ -2415,13 +2272,17 @@ export function createAgentsRouter(options: AgentsRouterOptions = {}): AgentsRou
           preparedLaunch.sshSendEnvKeys,
         )
         : ['-l']
-      const ptyEnv = agentType === 'claude'
+      const ptyEnv = requiresApprovalBridge
         ? {
             ...preparedLaunch.env,
+            ...providerPtyEnv,
             HAMMURABI_PORT: resolveClaudeApprovalPort(process.env),
             ...(internalToken ? { HAMMURABI_INTERNAL_TOKEN: internalToken } : {}),
           }
-        : preparedLaunch.env
+        : {
+            ...preparedLaunch.env,
+            ...providerPtyEnv,
+          }
       const pty = ptySpawner.spawn(ptyCommand, ptyArgs, {
         name: 'xterm-256color',
         cols: DEFAULT_COLS,
@@ -2437,8 +2298,8 @@ export function createAgentsRouter(options: AgentsRouterOptions = {}): AgentsRou
         sessionType,
         creator,
         agentType,
-        effort: agentType === 'claude' ? claudeEffort : undefined,
-        adaptiveThinking: agentType === 'claude' ? adaptiveThinking : undefined,
+        effort: provider.uiCapabilities.supportsEffort ? claudeEffort : undefined,
+        adaptiveThinking: provider.uiCapabilities.supportsAdaptiveThinking ? adaptiveThinking : undefined,
         cwd: sessionCwd,
         host: remoteMachine?.id,
         task: task && task.length > 0 ? task : undefined,
@@ -2468,13 +2329,13 @@ export function createAgentsRouter(options: AgentsRouterOptions = {}): AgentsRou
 
       sessions.set(sessionName, session)
 
-      const command = agentType === 'codex'
-        ? CODEX_MODE_COMMANDS[mode]
-        : buildClaudePtyCommand(
+      const command = provider.uiCapabilities.supportsEffort
+        ? buildClaudePtyCommand(
           mode,
           claudeEffort,
           adaptiveThinking ?? DEFAULT_CLAUDE_ADAPTIVE_THINKING_MODE,
         )
+        : CODEX_MODE_COMMANDS[mode]
       pty.write(command + '\r')
 
       if (task && task.length > 0) {
@@ -2576,6 +2437,30 @@ export function createAgentsRouter(options: AgentsRouterOptions = {}): AgentsRou
       }
     }
 
+    const allowedBodyKeys = new Set([
+      'adaptiveThinking',
+      'agentType',
+      'currentSkillInvocation',
+      'cwd',
+      'effort',
+      'host',
+      'model',
+      'name',
+      'sessionType',
+      'task',
+    ])
+    const unknownBodyKeys = Object.keys(body).filter((key) => !allowedBodyKeys.has(key))
+    if (unknownBodyKeys.length > 0) {
+      const noun = unknownBodyKeys.length === 1 ? 'property' : 'properties'
+      const renderedKeys = unknownBodyKeys.map((key) => `"${key}"`).join(', ')
+      return {
+        status: 400,
+        body: {
+          error: `Unknown request body ${noun}: ${renderedKeys}`,
+        },
+      }
+    }
+
     const sessionName = parseSessionName(body.name)
     if (!sessionName) {
       return { status: 400, body: { error: 'Invalid session name' } }
@@ -2632,11 +2517,18 @@ export function createAgentsRouter(options: AgentsRouterOptions = {}): AgentsRou
       return { status: 400, body: { error: 'Invalid cwd: must be an absolute path' } }
     }
 
-    const agentType = parseAgentType(body.agentType)
-    const effort = agentType === 'claude'
+    const agentType = parseProviderId(body.agentType) ?? 'claude'
+    const provider = getProvider(agentType)
+    if (!provider?.capabilities.supportsWorkerDispatch) {
+      return {
+        status: 400,
+        body: { error: `Provider ${agentType} cannot dispatch worker sessions` },
+      }
+    }
+    const effort = provider.uiCapabilities.supportsEffort
       ? (parsedEffort ?? DEFAULT_CLAUDE_EFFORT_LEVEL)
       : undefined
-    const adaptiveThinking = agentType === 'claude'
+    const adaptiveThinking = provider.uiCapabilities.supportsAdaptiveThinking
       ? (parsedAdaptiveThinking ?? DEFAULT_CLAUDE_ADAPTIVE_THINKING_MODE)
       : undefined
 
@@ -2644,9 +2536,10 @@ export function createAgentsRouter(options: AgentsRouterOptions = {}): AgentsRou
     if (requestedHost === null) {
       return { status: 400, body: { error: 'Invalid host: expected machine ID string' } }
     }
+    const resolvedHost = requestedHost
 
     let machine: MachineConfig | undefined
-    if (requestedHost !== undefined) {
+    if (resolvedHost !== undefined) {
       let machines: MachineConfig[]
       try {
         machines = await readMachineRegistry()
@@ -2654,11 +2547,11 @@ export function createAgentsRouter(options: AgentsRouterOptions = {}): AgentsRou
         const message = err instanceof Error ? err.message : 'Failed to read machines registry'
         return { status: 500, body: { error: message } }
       }
-      machine = machines.find((entry) => entry.id === requestedHost)
+      machine = machines.find((entry) => entry.id === resolvedHost)
       if (!machine) {
         return {
           status: 400,
-          body: { error: `Unknown host machine "${requestedHost}"` },
+          body: { error: `Unknown host machine "${resolvedHost}"` },
         }
       }
     }
@@ -2669,29 +2562,22 @@ export function createAgentsRouter(options: AgentsRouterOptions = {}): AgentsRou
     const sessionType: SessionType = 'worker'
 
     try {
-      const session = agentType === 'codex'
-        ? await createCodexAppServerSession(sessionName, mode, task ?? '', requestedMachineCwd, {
-            sessionType,
-            creator,
-            currentSkillInvocation: requestedCurrentSkillInvocation,
-            machine,
-            model,
-          })
-        : agentType === 'gemini'
-          ? await createGeminiAcpSession(sessionName, mode, task ?? '', requestedMachineCwd, {
-              sessionType,
-              creator,
-              currentSkillInvocation: requestedCurrentSkillInvocation,
-              machine,
-            })
-          : createStreamSession(sessionName, mode, task ?? '', requestedMachineCwd, machine, agentType, {
-              effort,
-              adaptiveThinking,
-              model,
-              sessionType,
-              creator,
-              currentSkillInvocation: requestedCurrentSkillInvocation,
-            })
+      const session = await createProviderStreamSession(
+        sessionName,
+        mode,
+        task ?? '',
+        requestedMachineCwd,
+        machine,
+        agentType,
+        {
+          effort,
+          adaptiveThinking,
+          model,
+          sessionType,
+          creator,
+          currentSkillInvocation: requestedCurrentSkillInvocation,
+        },
+      )
 
       sessions.set(sessionName, session)
       schedulePersistedSessionsWrite()
@@ -2720,27 +2606,31 @@ async function isExitedSessionResumeAvailable(entry: PersistedStreamSession): Pr
     return false
   }
 
-  if (entry.agentType !== 'codex' || !entry.codexThreadId || entry.host) {
+  const provider = getProvider(entry.agentType)
+  const resumeId = provider?.getResumeId(entry as unknown as StreamSession)
+  if (provider?.id !== 'codex' || !resumeId || entry.host) {
     return true
   }
 
-  return hasCodexRolloutFile(entry.codexThreadId, entry.createdAt)
+  return hasCodexRolloutFile(resumeId, entry.createdAt)
 }
 
 async function isLiveSessionResumeAvailable(session: StreamSession): Promise<boolean> {
-  if (session.agentType === 'claude') {
-    return Boolean(session.claudeSessionId)
-  }
-  if (session.agentType === 'gemini') {
-    return Boolean(session.geminiSessionId)
-  }
-  if (!session.codexThreadId) {
+  const provider = getProvider(session.agentType)
+  if (!canResumeLiveStreamSession(session)) {
     return false
+  }
+  const resumeId = provider?.getResumeId(session)
+  if (!resumeId) {
+    return false
+  }
+  if (provider?.id !== 'codex') {
+    return true
   }
   if (session.host) {
     return true
   }
-  return hasCodexRolloutFile(session.codexThreadId, session.createdAt)
+  return hasCodexRolloutFile(resumeId, session.createdAt)
 }
 
   function clearCodexResumeMetadata(sessionName: string): void {
@@ -2752,16 +2642,27 @@ async function isLiveSessionResumeAvailable(session: StreamSession): Promise<boo
     )
   }
 
-  function retireLiveCodexSessionForResume(sessionName: string, session: StreamSession): void {
-    retireLiveCodexSessionForResumeForStore(
-      sessionName,
-      session,
-      exitedStreamSessions,
-      sessions,
-      sessionEventHandlers,
-      clearCodexTurnWatchdog,
-      markCodexTurnHealthy,
-    )
+  function retireLiveSessionForResume(sessionName: string, session: StreamSession): void {
+    if (getProvider(session.agentType)?.id === 'codex') {
+      retireLiveCodexSessionForResumeForStore(
+        sessionName,
+        session,
+        exitedStreamSessions,
+        sessions,
+        sessionEventHandlers,
+        clearCodexTurnWatchdog,
+        markCodexTurnHealthy,
+      )
+      return
+    }
+
+    for (const client of session.clients) {
+      client.close(1000, 'Session resumed')
+    }
+    void teardownProviderSession(session, `Session "${sessionName}" resumed`).catch(() => undefined)
+    exitedStreamSessions.set(sessionName, snapshotExitedStreamSession(session))
+    sessions.delete(sessionName)
+    sessionEventHandlers.delete(sessionName)
   }
 
   function resolveResumableSessionSource(
@@ -2828,17 +2729,13 @@ async function isLiveSessionResumeAvailable(session: StreamSession): Promise<boo
     sessions,
     sessionEventHandlers,
     schedulePersistedSessionsWrite,
-    createCodexAppServerSession,
-    createGeminiAcpSession,
-    createStreamSession,
+    createProviderStreamSession,
     createQueuedMessage,
     enqueueQueuedMessage,
     scheduleQueuedMessageDrain,
     sendImmediateTextToStreamSession,
-    teardownCodexSessionRuntime,
-    teardownGeminiSessionRuntime,
-    shutdownCodexRuntimes,
-    shutdownGeminiRuntimes,
+    teardownProviderSession,
+    shutdownProviderRuntimes,
   })
 
   // Compose the worker-dispatch closure onto the commander interface so the
@@ -2864,6 +2761,7 @@ async function isLiveSessionResumeAvailable(session: StreamSession): Promise<boo
       if (sessionPrunerTimer) {
         process.off('SIGTERM', handleSessionPrunerSigterm)
       }
+      await flushPersistedSessionsWrite()
       await sessionsInterface.shutdown?.()
     },
   }

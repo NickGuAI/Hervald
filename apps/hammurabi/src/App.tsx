@@ -9,6 +9,7 @@ import { AuthProvider } from '@/contexts/AuthContext'
 import { modules } from '@/module-registry'
 import { setAccessTokenResolver, setUnauthorizedHandler } from '@/lib/api'
 import { isCapacitorNative } from '@/lib/api-base'
+import { ThemeProvider } from '@/lib/theme-context'
 import { useIsMobile } from '@/hooks/use-is-mobile'
 import { ApprovalCenter } from '../modules/approvals/ApprovalCenter'
 
@@ -50,34 +51,36 @@ function AppFrame({
 }) {
   return (
     <QueryClientProvider client={queryClient}>
-      <BrowserRouter>
-        <AuthProvider signOut={signOut} user={user}>
-          <Shell modules={modules}>
-            <Suspense fallback={<Loading />}>
-              <Routes>
-                <Route path="/" element={<Navigate to="/command-room" replace />} />
-                {moduleRoutes.map((route) => (
-                  <Route
-                    key={route.path}
-                    path={route.path + '/*'}
-                    element={<route.Component />}
-                  />
-                ))}
-              </Routes>
-            </Suspense>
-          </Shell>
-          {/*
-            ApprovalCenter is the global desktop floating drawer. Mobile has
-            the canonical /command-room/inbox route as its native approvals
-            surface, so the global drawer must NOT render on mobile — it
-            would overlay every Hervald mobile route (including the Inbox
-            tab itself) with a duplicate approvals queue. Gate at the mount
-            layer, not inside ApprovalCenter's render, so mobile doesn't pay
-            the hook + subscription cost.
-          */}
-          <DesktopOnlyApprovalCenter />
-        </AuthProvider>
-      </BrowserRouter>
+      <ThemeProvider>
+        <BrowserRouter>
+          <AuthProvider signOut={signOut} user={user}>
+            <Shell modules={modules}>
+              <Suspense fallback={<Loading />}>
+                <Routes>
+                  <Route path="/" element={<Navigate to="/org" replace />} />
+                  {moduleRoutes.map((route) => (
+                    <Route
+                      key={route.path}
+                      path={route.path + '/*'}
+                      element={<route.Component />}
+                    />
+                  ))}
+                </Routes>
+              </Suspense>
+            </Shell>
+            {/*
+              ApprovalCenter is the global desktop floating drawer. Mobile has
+              the canonical /command-room/inbox route as its native approvals
+              surface, so the global drawer must NOT render on mobile — it
+              would overlay every Hervald mobile route (including the Inbox
+              tab itself) with a duplicate approvals queue. Gate at the mount
+              layer, not inside ApprovalCenter's render, so mobile doesn't pay
+              the hook + subscription cost.
+            */}
+            <DesktopOnlyApprovalCenter />
+          </AuthProvider>
+        </BrowserRouter>
+      </ThemeProvider>
     </QueryClientProvider>
   )
 }

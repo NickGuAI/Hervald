@@ -12,6 +12,7 @@
  * construction time so the contract is explicit and unit-testable.
  */
 import { parseCodexApprovalId } from './codex-approval.js'
+import { readClaudeSessionId } from './providers/provider-session-context.js'
 import type {
   AnySession,
   ApprovalSessionContext,
@@ -110,7 +111,7 @@ export function createApprovalSessionsInterface(
         if (
           session.kind === 'stream'
           && session.agentType === 'claude'
-          && session.claudeSessionId === normalizedSessionId
+          && readClaudeSessionId(session) === normalizedSessionId
         ) {
           return projectSessionContext(session)
         }
@@ -135,7 +136,7 @@ export function createApprovalSessionsInterface(
         if (
           session.kind === 'stream'
           && session.agentType === 'claude'
-          && session.claudeSessionId === normalizedSessionId
+          && readClaudeSessionId(session) === normalizedSessionId
         ) {
           return session
         }

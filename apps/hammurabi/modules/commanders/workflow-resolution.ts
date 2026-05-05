@@ -45,7 +45,9 @@ export async function resolveCommanderWorkflow(
   const commanderRoot = resolveCommanderPaths(commanderId, commanderBasePath).commanderRoot
   const [commanderWorkflow, workspaceWorkflow] = await Promise.all([
     loadCommanderWorkflow(commanderRoot),
-    cwd ? loadCommanderWorkflow(cwd) : Promise.resolve(null),
+    cwd
+      ? loadCommanderWorkflow(cwd, { allowRemovedRuntimeFrontmatterKeys: true })
+      : Promise.resolve(null),
   ])
   const mergedWorkflow = mergeWorkflows(commanderWorkflow, workspaceWorkflow)
 

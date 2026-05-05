@@ -3,16 +3,15 @@ import {
   CommanderHeartbeatManager,
   DEFAULT_HEARTBEAT_INTERVAL_MS,
   DEFAULT_HEARTBEAT_MESSAGE,
-  createDefaultHeartbeatState,
+  createDefaultHeartbeatConfig,
   renderHeartbeatMessage,
 } from '../heartbeat'
 
 describe('heartbeat defaults', () => {
   it('returns issue defaults for new commander sessions', () => {
-    expect(createDefaultHeartbeatState()).toEqual({
+    expect(createDefaultHeartbeatConfig()).toEqual({
       intervalMs: DEFAULT_HEARTBEAT_INTERVAL_MS,
       messageTemplate: DEFAULT_HEARTBEAT_MESSAGE,
-      lastSentAt: null,
     })
   })
 
@@ -134,5 +133,28 @@ describe('CommanderHeartbeatManager', () => {
     ).toHaveLength(2)
 
     manager.stopAll()
+  })
+
+  it('calls stop before starting a heartbeat loop', () => {
+    const manager = new CommanderHeartbeatManager({
+      sendHeartbeat: vi.fn().mockResolvedValue(true),
+    })
+    const stopSpy = vi.spyOn(manager, 'stop')
+
+    manager.start('conv-restart', 'cmdr-restart', {
+      intervalMs: 10,
+      messageTemplate: '[HB {{timestamp}}]',
+    })
+    manager.start('conv-restart', 'cmdr-restart', {
+      intervalMs: 20,
+      messageTemplate: '[HB2 {{timestamp}}]',
+    })
+
+    expect(stopSpy).toHaveBeenCalledTimes(2)
+    expect(stopSpy).toHaveBeenNthCalledWith(1, 'conv-restart')
+    expect(stopSpy).toHaveBeenNthCalledWith(2, 'conv-restart')
+
+    manager.stopAll()
+    stopSpy.mockRestore()
   })
 })

@@ -44,7 +44,6 @@ function createRunningCommander(id: string): CommanderSession {
     heartbeat: {
       intervalMs: 60_000,
       messageTemplate: 'heartbeat',
-      lastSentAt: null,
     },
     lastHeartbeat: null,
     taskSource: null,

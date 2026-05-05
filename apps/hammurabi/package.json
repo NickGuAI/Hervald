@@ -7,7 +7,8 @@
     "hammurabi": "./hammurabi-cli.mjs"
   },
   "scripts": {
-    "build:deps": "pnpm --filter @gehirn/hammurabi-cli build && pnpm --filter @gehirn/auth-providers build && pnpm --filter @gehirn/telemetry build && pnpm --filter @gehirn/sse-streaming build",
+    "generate:provider-registry": "node ./scripts/generate-provider-registry.mjs",
+    "build:deps": "pnpm run generate:provider-registry && pnpm --filter @gehirn/hammurabi-cli build && pnpm --filter @gehirn/auth-providers build && pnpm --filter @gehirn/telemetry build && pnpm --filter @gehirn/sse-streaming build",
     "dev": "pnpm run build:deps && concurrently \"vite\" \"tsx watch server/index.ts\"",
     "dev:client": "vite",
     "dev:server": "tsx watch server/index.ts",

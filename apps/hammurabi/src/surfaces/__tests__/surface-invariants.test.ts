@@ -106,7 +106,7 @@ describe('Hervald + mobile surface invariants', () => {
     const violations = grepLines('useMutation\\(')
     expect(
       violations,
-      `Surface files must not own mutations directly. Canonical hooks (useApprovalDecision, useCommander, useCommandRoom, etc.) wrap the mutations.\nViolations:\n${violations.join('\n')}`,
+      `Surface files must not own mutations directly. Canonical hooks (useApprovalDecision, useCommander, useAutomations, etc.) wrap the mutations.\nViolations:\n${violations.join('\n')}`,
     ).toEqual([])
   })
 })

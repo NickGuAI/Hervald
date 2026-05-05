@@ -5,21 +5,22 @@
  *   ┌─────────────────────────────┐
  *   │  COMMANDERS · {count}    [+]│  ← ColumnHeader
  *   ├─────────────────────────────┤
- *   │  [●] jarvis          2 PEND │  ← Commander SessionRows (always shown)
+ *   │  [●] hera          2 PEND │  ← Commander SessionRows (always shown)
  *   │  [●] jake                   │
  *   │ ▾ WORKERS · {n}         [⌁] │  ← expanded by default
  *   │   pn-920              2d    │
  *   │   srswworker          1d    │
- *   │ ▸ CRON · {n}                │  ← collapsed by default
- *   │ ▸ SENTINELS · {n}           │  ← collapsed by default
+ *   │ ▸ AUTOMATIONS · {n}         │  ← collapsed by default
  *   ├─────────────────────────────┤
  *   │ live · auto-refresh   A− A+ │  ← font-size control
  *   └─────────────────────────────┘
  */
 import { useCallback, useEffect, useState, type ReactNode } from 'react'
+import { useProviderRegistry } from '@/hooks/use-providers'
 import { Icon, STATE_COLOR } from '@/surfaces/hervald'
 import type { AgentSession, AgentType } from '@/types'
 import { SessionCard } from '@modules/agents/page-shell/SessionCard'
+import { ModalFormContainer } from '@modules/components/ModalFormContainer'
 import type { ConversationRecord } from '@modules/conversation/hooks/use-conversations'
 import { ColumnHeader } from './ColumnHeader'
 import { SessionRow } from './SessionRow'
@@ -39,18 +40,24 @@ interface SessionsColumnProps {
   onCreateCommander: () => void
   onCreateWorker: () => void
   onCreateSession: () => void
+  /** Request the provider picker for this commander. Does NOT create a chat. */
   onCreateChatForCommander?: (commanderId: string) => void | Promise<void>
   selectedChatId?: string | null
   onSelectChat: (id: string) => void
   onSelectConversation?: (id: string) => void
   onStartConversation?: (id: string) => void
   onStopConversation?: (id: string) => void | Promise<void>
+  onRenameConversation?: (id: string, name: string) => void | Promise<void>
+  onSwapConversationProvider?: (id: string, agentType: AgentType) => void | Promise<void>
+  onArchiveConversation?: (id: string) => void | Promise<void>
+  onRemoveConversation?: (id: string) => void | Promise<void>
   commanders: Commander[]
   conversations?: ConversationRecord[]
   workers: Worker[]
   /** Pending approval items. */
   approvals?: Approval[]
   workerSessions?: ChatSession[]
+  automationSessions?: ChatSession[]
   cronSessions?: ChatSession[]
   sentinelSessions?: ChatSession[]
   onKillSession?: (sessionId: string, agentType?: AgentType) => Promise<void>
@@ -68,19 +75,78 @@ const tinyIconBtn: React.CSSProperties = {
   alignItems: 'center',
 }
 
-type SectionKey = 'workers' | 'cron' | 'sentinel'
+const menuItemStyle: React.CSSProperties = {
+  width: '100%',
+  display: 'flex',
+  alignItems: 'center',
+  gap: 8,
+  padding: '8px 10px',
+  border: 'none',
+  borderRadius: 8,
+  background: 'transparent',
+  color: 'var(--hv-fg)',
+  cursor: 'pointer',
+  textAlign: 'left',
+  fontFamily: 'var(--hv-font-body)',
+  fontSize: '12px',
+}
+
+const modalLabelStyle: React.CSSProperties = {
+  display: 'grid',
+  gap: 6,
+  fontSize: 13,
+  color: 'var(--hv-fg)',
+}
+
+const modalInputStyle: React.CSSProperties = {
+  width: '100%',
+  borderRadius: 10,
+  border: '1px solid var(--hv-border-hair)',
+  padding: '10px 12px',
+  fontSize: 13,
+  color: 'var(--hv-fg)',
+  background: 'var(--hv-bg-raised)',
+}
+
+const modalActionsStyle: React.CSSProperties = {
+  display: 'flex',
+  justifyContent: 'flex-end',
+  gap: 8,
+}
+
+const modalSecondaryButtonStyle: React.CSSProperties = {
+  borderRadius: 999,
+  border: '1px solid var(--hv-border-hair)',
+  padding: '8px 14px',
+  background: 'transparent',
+  color: 'var(--hv-fg-subtle)',
+  cursor: 'pointer',
+  fontFamily: 'var(--hv-font-body)',
+  fontSize: 12,
+}
+
+const modalPrimaryButtonStyle: React.CSSProperties = {
+  borderRadius: 999,
+  border: '1px solid transparent',
+  padding: '8px 14px',
+  background: 'var(--sumi-black)',
+  color: 'var(--washi-white)',
+  cursor: 'pointer',
+  fontFamily: 'var(--hv-font-body)',
+  fontSize: 12,
+}
+
+type SectionKey = 'workers' | 'automation'
 const COLLAPSE_STORAGE_KEY = 'hervald-sessions-collapsed'
 const FONT_SCALE_STORAGE_KEY = 'hervald-sessions-font-scale'
 const SHOW_EXITED_STORAGE_KEY = 'hervald-sessions-show-exited'
 const DEFAULT_COLLAPSED: Record<SectionKey, boolean> = {
   workers: false,
-  cron: true,
-  sentinel: true,
+  automation: true,
 }
 const DEFAULT_SHOW_EXITED: Record<SectionKey, boolean> = {
   workers: false,
-  cron: false,
-  sentinel: false,
+  automation: false,
 }
 const MIN_SCALE = 0.8
 const MAX_SCALE = 1.6
@@ -95,9 +161,14 @@ function readCollapsedState(): Record<SectionKey, boolean> {
     const parsed = JSON.parse(raw) as Partial<Record<SectionKey, unknown>>
     return {
       workers: typeof parsed.workers === 'boolean' ? parsed.workers : DEFAULT_COLLAPSED.workers,
-      cron: typeof parsed.cron === 'boolean' ? parsed.cron : DEFAULT_COLLAPSED.cron,
-      sentinel:
-        typeof parsed.sentinel === 'boolean' ? parsed.sentinel : DEFAULT_COLLAPSED.sentinel,
+      automation:
+        typeof parsed.automation === 'boolean'
+          ? parsed.automation
+          : typeof (parsed as Record<string, unknown>).cron === 'boolean'
+            ? Boolean((parsed as Record<string, unknown>).cron)
+            : typeof (parsed as Record<string, unknown>).sentinel === 'boolean'
+              ? Boolean((parsed as Record<string, unknown>).sentinel)
+              : DEFAULT_COLLAPSED.automation,
     }
   } catch {
     return { ...DEFAULT_COLLAPSED }
@@ -121,9 +192,14 @@ function readShowExitedState(): Record<SectionKey, boolean> {
     const parsed = JSON.parse(raw) as Partial<Record<SectionKey, unknown>>
     return {
       workers: typeof parsed.workers === 'boolean' ? parsed.workers : DEFAULT_SHOW_EXITED.workers,
-      cron: typeof parsed.cron === 'boolean' ? parsed.cron : DEFAULT_SHOW_EXITED.cron,
-      sentinel:
-        typeof parsed.sentinel === 'boolean' ? parsed.sentinel : DEFAULT_SHOW_EXITED.sentinel,
+      automation:
+        typeof parsed.automation === 'boolean'
+          ? parsed.automation
+          : typeof (parsed as Record<string, unknown>).cron === 'boolean'
+            ? Boolean((parsed as Record<string, unknown>).cron)
+            : typeof (parsed as Record<string, unknown>).sentinel === 'boolean'
+              ? Boolean((parsed as Record<string, unknown>).sentinel)
+              : DEFAULT_SHOW_EXITED.automation,
     }
   } catch {
     return { ...DEFAULT_SHOW_EXITED }
@@ -327,12 +403,17 @@ function SessionListSection({
 }
 
 function formatConversationLabel(conversation: ConversationRecord): string {
+  const name = typeof conversation.name === 'string' ? conversation.name.trim() : ''
+  return name || `chat ${conversation.id.slice(0, 8)}`
+}
+
+function formatConversationMeta(conversation: ConversationRecord): string {
+  const provider = conversation.agentType ?? 'unassigned'
   const taskTitle = conversation.currentTask?.title?.trim()
   if (taskTitle) {
-    return taskTitle
+    return `${provider} · ${taskTitle}`
   }
-
-  return conversation.liveSession?.name ?? `chat ${conversation.id.slice(0, 8)}`
+  return `${provider} · ${conversation.surface} · ${conversation.id.slice(0, 8)}`
 }
 
 interface ConversationChatRowProps {
@@ -341,6 +422,11 @@ interface ConversationChatRowProps {
   onSelect?: (id: string) => void
   onStart?: (id: string) => void
   onStop?: (id: string) => void | Promise<void>
+  onRename?: (id: string, name: string) => void | Promise<void>
+  onSwapProvider?: (id: string, agentType: AgentType) => void | Promise<void>
+  onArchive?: (id: string) => void | Promise<void>
+  onRemove?: (id: string) => void | Promise<void>
+  providerOptions?: ReadonlyArray<{ id: AgentType; label: string }>
 }
 
 /**
@@ -353,155 +439,455 @@ function ConversationChatRow({
   onSelect,
   onStart,
   onStop,
+  onRename,
+  onSwapProvider,
+  onArchive,
+  onRemove,
+  providerOptions = [],
 }: ConversationChatRowProps) {
   const canStart = conversation.status === 'idle' || conversation.status === 'paused'
   const canStop = conversation.status === 'active'
+  const conversationName = typeof conversation.name === 'string' ? conversation.name : ''
+  const [menuOpen, setMenuOpen] = useState(false)
+  const [providerMenuOpen, setProviderMenuOpen] = useState(false)
+  const [renameOpen, setRenameOpen] = useState(false)
+  const [renameDraft, setRenameDraft] = useState(conversationName)
+  const [renameBusy, setRenameBusy] = useState(false)
+  const [removeOpen, setRemoveOpen] = useState(false)
+  const [removeDraft, setRemoveDraft] = useState('')
+  const [removeBusy, setRemoveBusy] = useState(false)
+
+  useEffect(() => {
+    setRenameDraft(conversationName)
+  }, [conversationName])
+
+  const canConfirmRemove = removeDraft === conversationName
+
+  async function handleRenameSubmit(): Promise<void> {
+    if (!onRename) {
+      return
+    }
+    setRenameBusy(true)
+    try {
+      await onRename(conversation.id, renameDraft)
+      setRenameOpen(false)
+      setMenuOpen(false)
+    } finally {
+      setRenameBusy(false)
+    }
+  }
+
+  async function handleSwapProvider(agentType: AgentType): Promise<void> {
+    if (!onSwapProvider || agentType === conversation.agentType) {
+      return
+    }
+    await onSwapProvider(conversation.id, agentType)
+    setProviderMenuOpen(false)
+    setMenuOpen(false)
+  }
+
+  async function handleArchive(): Promise<void> {
+    if (!onArchive) {
+      return
+    }
+    await onArchive(conversation.id)
+    setMenuOpen(false)
+  }
+
+  async function handleRemoveSubmit(): Promise<void> {
+    if (!onRemove || !canConfirmRemove) {
+      return
+    }
+    setRemoveBusy(true)
+    try {
+      await onRemove(conversation.id)
+      setRemoveOpen(false)
+      setMenuOpen(false)
+      setRemoveDraft('')
+    } finally {
+      setRemoveBusy(false)
+    }
+  }
 
   return (
-    <div
-      data-testid="commander-chat-row"
-      data-conversation-id={conversation.id}
-      data-conversation-status={conversation.status}
-      style={{
-        width: '100%',
-        padding: '6px 20px 6px 34px',
-        display: 'flex',
-        alignItems: 'center',
-        gap: 8,
-        background: selected ? 'var(--hv-ink-wash-02)' : 'transparent',
-        borderLeft: selected
-          ? '2px solid var(--sumi-black)'
-          : '2px solid transparent',
-      }}
-    >
-      <button
-        type="button"
-        data-testid="commander-chat-row-button"
-        onClick={() => onSelect?.(conversation.id)}
+    <>
+      <div
+        data-testid="commander-chat-row"
+        data-conversation-id={conversation.id}
+        data-conversation-status={conversation.status}
         style={{
-          flex: 1,
-          minWidth: 0,
+          position: 'relative',
+          width: '100%',
+          padding: '6px 20px 6px 34px',
           display: 'flex',
           alignItems: 'center',
           gap: 8,
-          background: 'transparent',
-          border: 'none',
-          cursor: onSelect ? 'pointer' : 'default',
-          padding: 0,
-          textAlign: 'left',
+          background: selected ? 'var(--hv-ink-wash-02)' : 'transparent',
+          borderLeft: selected
+            ? '2px solid var(--sumi-black)'
+            : '2px solid transparent',
         }}
       >
-        <span
-          aria-hidden
+        <button
+          type="button"
+          data-testid="commander-chat-row-button"
+          onClick={() => onSelect?.(conversation.id)}
           style={{
-            width: 6,
-            height: 6,
-            borderRadius: '50%',
-            background: STATE_COLOR[conversation.status] ?? STATE_COLOR.idle,
-            flexShrink: 0,
+            flex: 1,
+            minWidth: 0,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 8,
+            background: 'transparent',
+            border: 'none',
+            cursor: onSelect ? 'pointer' : 'default',
+            padding: 0,
+            textAlign: 'left',
           }}
-        />
-        <span style={{ minWidth: 0, flex: 1 }}>
+        >
           <span
-            data-testid="commander-chat-row-label"
+            aria-hidden
             style={{
-              display: 'block',
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
-              whiteSpace: 'nowrap',
-              fontFamily: 'var(--hv-font-mono)',
-              fontSize: 'calc(11.5px * var(--hv-sessions-scale, 1))',
-              color: selected ? 'var(--hv-fg)' : 'var(--hv-fg-faint)',
+              width: 6,
+              height: 6,
+              borderRadius: '50%',
+              background: STATE_COLOR[conversation.status] ?? STATE_COLOR.idle,
+              flexShrink: 0,
             }}
-          >
-            {formatConversationLabel(conversation)}
+          />
+          <span style={{ minWidth: 0, flex: 1 }}>
+            <span
+              data-testid="commander-chat-row-label"
+              style={{
+                display: 'block',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+                fontFamily: 'var(--hv-font-mono)',
+                fontSize: 'calc(11.5px * var(--hv-sessions-scale, 1))',
+                color: selected ? 'var(--hv-fg)' : 'var(--hv-fg-faint)',
+              }}
+            >
+              {formatConversationLabel(conversation)}
+            </span>
+            <span
+              style={{
+                display: 'block',
+                marginTop: 2,
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+                fontFamily: 'var(--hv-font-body)',
+                fontSize: 'calc(10px * var(--hv-sessions-scale, 1))',
+                color: 'var(--hv-fg-subtle)',
+                letterSpacing: '0.04em',
+                textTransform: 'uppercase',
+              }}
+            >
+              {formatConversationMeta(conversation)}
+            </span>
           </span>
-          <span
+        </button>
+
+        {canStart && onStart && (
+          <button
+            type="button"
+            data-testid="commander-chat-start-button"
+            onClick={(event) => {
+              event.stopPropagation()
+              onStart(conversation.id)
+            }}
             style={{
-              display: 'block',
-              marginTop: 2,
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
-              whiteSpace: 'nowrap',
-              fontFamily: 'var(--hv-font-body)',
-              fontSize: 'calc(10px * var(--hv-sessions-scale, 1))',
+              background: 'transparent',
+              border: '1px solid var(--hv-border-hair)',
+              borderRadius: 999,
               color: 'var(--hv-fg-subtle)',
+              cursor: 'pointer',
+              padding: '3px 8px',
+              fontFamily: 'var(--hv-font-mono)',
+              fontSize: 'calc(10.5px * var(--hv-sessions-scale, 1))',
               letterSpacing: '0.04em',
-              textTransform: 'uppercase',
+              flexShrink: 0,
             }}
           >
-            {conversation.surface} · {conversation.id.slice(0, 8)}
-          </span>
-        </span>
-      </button>
+            Start
+          </button>
+        )}
 
-      <span
-        data-testid="commander-chat-row-status"
-        style={{
-          flexShrink: 0,
-          padding: '2px 6px',
-          borderRadius: 999,
-          background: 'var(--hv-ink-wash-02)',
-          color: 'var(--hv-fg-subtle)',
-          fontFamily: 'var(--hv-font-body)',
-          fontSize: 'calc(9.5px * var(--hv-sessions-scale, 1))',
-          letterSpacing: '0.08em',
-          textTransform: 'uppercase',
+        {canStop && onStop && (
+          <button
+            type="button"
+            data-testid="commander-chat-stop-button"
+            onClick={(event) => {
+              event.stopPropagation()
+              void onStop(conversation.id)
+            }}
+            style={{
+              background: 'transparent',
+              border: '1px solid var(--hv-border-hair)',
+              borderRadius: 999,
+              color: 'var(--hv-fg-subtle)',
+              cursor: 'pointer',
+              padding: '3px 8px',
+              fontFamily: 'var(--hv-font-mono)',
+              fontSize: 'calc(10.5px * var(--hv-sessions-scale, 1))',
+              letterSpacing: '0.04em',
+              flexShrink: 0,
+            }}
+          >
+            Stop
+          </button>
+        )}
+
+        {(onRename || onSwapProvider || onArchive || onRemove) && (
+          <div style={{ position: 'relative', flexShrink: 0 }}>
+            <button
+              type="button"
+              data-testid="commander-chat-actions-button"
+              aria-label={`Actions for ${conversation.name}`}
+              onClick={(event) => {
+                event.stopPropagation()
+                setMenuOpen((current) => !current)
+              }}
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                width: 28,
+                height: 28,
+                borderRadius: 999,
+                border: '1px solid var(--hv-border-hair)',
+                background: 'transparent',
+                color: 'var(--hv-fg-subtle)',
+                cursor: 'pointer',
+              }}
+            >
+              <Icon name="more" size={12} />
+            </button>
+
+            {menuOpen && (
+              <>
+                <button
+                  type="button"
+                  aria-label={`Close actions for ${conversation.name}`}
+                  onClick={() => {
+                    setMenuOpen(false)
+                    setProviderMenuOpen(false)
+                  }}
+                  style={{
+                    position: 'fixed',
+                    inset: 0,
+                    background: 'transparent',
+                    border: 'none',
+                    padding: 0,
+                    zIndex: 20,
+                  }}
+                />
+                <div
+                  data-testid="commander-chat-actions-menu"
+                  style={{
+                    position: 'absolute',
+                    top: 'calc(100% + 6px)',
+                    right: 0,
+                    zIndex: 21,
+                    minWidth: 188,
+                    padding: 6,
+                    borderRadius: 12,
+                    border: '1px solid var(--hv-border-hair)',
+                    background: 'var(--hv-bg-raised)',
+                    boxShadow: '0 12px 28px rgba(0, 0, 0, 0.12)',
+                  }}
+                >
+                  {onRename && (
+                    <button
+                      type="button"
+                      data-testid="commander-chat-rename-button"
+                      onClick={() => {
+                        setRenameDraft(conversationName)
+                        setRenameOpen(true)
+                        setProviderMenuOpen(false)
+                      }}
+                      style={menuItemStyle}
+                    >
+                      Rename
+                    </button>
+                  )}
+
+                  {onSwapProvider && conversation.status === 'active' && (
+                    <>
+                      <button
+                        type="button"
+                        data-testid="commander-chat-provider-menu-button"
+                        onClick={() => setProviderMenuOpen((current) => !current)}
+                        style={menuItemStyle}
+                      >
+                        <span>Swap provider</span>
+                        <span style={{ marginLeft: 'auto' }}>{providerMenuOpen ? '▾' : '▸'}</span>
+                      </button>
+                      {providerMenuOpen && (
+                        <div
+                          data-testid="commander-chat-provider-menu"
+                          style={{
+                            marginTop: 4,
+                            padding: '4px 0 0 10px',
+                            borderTop: '1px solid var(--hv-border-hair)',
+                          }}
+                        >
+                          {providerOptions.map((provider) => (
+                            <button
+                              key={provider.id}
+                              type="button"
+                              data-testid={`commander-chat-provider-option-${provider.id}`}
+                              onClick={() => {
+                                void handleSwapProvider(provider.id)
+                              }}
+                              style={menuItemStyle}
+                              disabled={provider.id === conversation.agentType}
+                            >
+                              <span>{provider.label}</span>
+                              {provider.id === conversation.agentType && (
+                                <span style={{ marginLeft: 'auto' }}>current</span>
+                              )}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </>
+                  )}
+
+                  {onArchive && (
+                    <button
+                      type="button"
+                      data-testid="commander-chat-close-button"
+                      onClick={() => {
+                        void handleArchive()
+                      }}
+                      style={menuItemStyle}
+                    >
+                      Close
+                    </button>
+                  )}
+
+                  {onRemove && (
+                    <button
+                      type="button"
+                      data-testid="commander-chat-remove-button"
+                      onClick={() => {
+                        setRemoveDraft('')
+                        setRemoveOpen(true)
+                        setProviderMenuOpen(false)
+                      }}
+                      style={{
+                        ...menuItemStyle,
+                        color: 'var(--vermillion-seal)',
+                      }}
+                    >
+                      Remove
+                    </button>
+                  )}
+                </div>
+              </>
+            )}
+          </div>
+        )}
+      </div>
+
+      <ModalFormContainer
+        open={renameOpen}
+        title="Rename chat"
+        onClose={() => {
+          if (renameBusy) {
+            return
+          }
+          setRenameOpen(false)
         }}
+        contentClassName="max-w-md"
       >
-        {conversation.status}
-      </span>
+        <div data-testid="commander-chat-rename-modal" style={{ display: 'grid', gap: 12 }}>
+          <label style={modalLabelStyle}>
+            <span>Name</span>
+            <input
+              data-testid="commander-chat-rename-input"
+              value={renameDraft}
+              onChange={(event) => setRenameDraft(event.target.value)}
+              style={modalInputStyle}
+            />
+          </label>
+          <div style={modalActionsStyle}>
+            <button
+              type="button"
+              data-testid="commander-chat-rename-cancel-button"
+              onClick={() => setRenameOpen(false)}
+              style={modalSecondaryButtonStyle}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              data-testid="commander-chat-rename-submit-button"
+              onClick={() => {
+                void handleRenameSubmit()
+              }}
+              disabled={renameBusy || renameDraft.trim().length === 0}
+              style={modalPrimaryButtonStyle}
+            >
+              Save
+            </button>
+          </div>
+        </div>
+      </ModalFormContainer>
 
-      {canStart && onStart && (
-        <button
-          type="button"
-          data-testid="commander-chat-start-button"
-          onClick={(event) => {
-            event.stopPropagation()
-            onStart(conversation.id)
-          }}
-          style={{
-            background: 'transparent',
-            border: '1px solid var(--hv-border-hair)',
-            borderRadius: 999,
-            color: 'var(--hv-fg-subtle)',
-            cursor: 'pointer',
-            padding: '3px 8px',
-            fontFamily: 'var(--hv-font-mono)',
-            fontSize: 'calc(10.5px * var(--hv-sessions-scale, 1))',
-            letterSpacing: '0.04em',
-            flexShrink: 0,
-          }}
-        >
-          Start
-        </button>
-      )}
-
-      {canStop && onStop && (
-        <button
-          type="button"
-          data-testid="commander-chat-stop-button"
-          onClick={(event) => {
-            event.stopPropagation()
-            void onStop(conversation.id)
-          }}
-          style={{
-            background: 'transparent',
-            border: '1px solid var(--hv-border-hair)',
-            borderRadius: 999,
-            color: 'var(--hv-fg-subtle)',
-            cursor: 'pointer',
-            padding: '3px 8px',
-            fontFamily: 'var(--hv-font-mono)',
-            fontSize: 'calc(10.5px * var(--hv-sessions-scale, 1))',
-            letterSpacing: '0.04em',
-            flexShrink: 0,
-          }}
-        >
-          Stop
-        </button>
-      )}
-    </div>
+      <ModalFormContainer
+        open={removeOpen}
+        title="Remove chat"
+        onClose={() => {
+          if (removeBusy) {
+            return
+          }
+          setRemoveOpen(false)
+        }}
+        contentClassName="max-w-md"
+      >
+        <div data-testid="commander-chat-remove-modal" style={{ display: 'grid', gap: 12 }}>
+          <p style={{ margin: 0, color: 'var(--hv-fg-subtle)', lineHeight: 1.5 }}>
+            Type <strong>{conversationName}</strong> to remove this chat and its transcript files.
+          </p>
+          <label style={modalLabelStyle}>
+            <span>Confirmation</span>
+            <input
+              data-testid="commander-chat-remove-input"
+              value={removeDraft}
+              onChange={(event) => setRemoveDraft(event.target.value)}
+              style={modalInputStyle}
+            />
+          </label>
+          <div style={modalActionsStyle}>
+            <button
+              type="button"
+              data-testid="commander-chat-remove-cancel-button"
+              onClick={() => setRemoveOpen(false)}
+              style={modalSecondaryButtonStyle}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              data-testid="commander-chat-remove-submit-button"
+              onClick={() => {
+                void handleRemoveSubmit()
+              }}
+              disabled={removeBusy || !canConfirmRemove}
+              style={{
+                ...modalPrimaryButtonStyle,
+                background: 'var(--vermillion-seal)',
+              }}
+            >
+              Remove forever
+            </button>
+          </div>
+        </div>
+      </ModalFormContainer>
+    </>
   )
 }
 
@@ -510,29 +896,42 @@ export function SessionsColumn({
   onSelectCommander,
   onCreateCommander,
   onCreateWorker,
-  onCreateSession: _onCreateSession,
+  onCreateSession,
   onCreateChatForCommander,
   selectedChatId = null,
   onSelectChat,
   onSelectConversation,
   onStartConversation,
   onStopConversation,
+  onRenameConversation,
+  onSwapConversationProvider,
+  onArchiveConversation,
+  onRemoveConversation,
   commanders,
   conversations = [],
   workers,
   approvals = [],
   workerSessions = [],
+  automationSessions = [],
   cronSessions = [],
   sentinelSessions = [],
   onKillSession,
   onResumeSession,
   sessionActionError = null,
 }: SessionsColumnProps) {
+  const { data: providers = [] } = useProviderRegistry()
+  const providerOptions = providers.map((provider) => ({
+    id: provider.id,
+    label: provider.label,
+  }))
   const commanderCount = commanders.filter((commander) => !commander.isVirtual).length
 
   const [collapsed, setCollapsed] = useState<Record<SectionKey, boolean>>(readCollapsedState)
   const [fontScale, setFontScale] = useState<number>(readFontScale)
   const [showExited, setShowExited] = useState<Record<SectionKey, boolean>>(readShowExitedState)
+  const mergedAutomationSessions = automationSessions.length > 0
+    ? automationSessions
+    : [...cronSessions, ...sentinelSessions]
 
   useEffect(() => {
     try {
@@ -626,7 +1025,10 @@ export function SessionsColumn({
           {commanders.map((c) => {
             const isSelected = selectedCommanderId === c.id
             const commanderConversations = isSelected
-              ? conversations.filter((conv) => conv.commanderId === c.id)
+              ? conversations.filter((conv) => (
+                conv.commanderId === c.id
+                && conv.isDefaultConversation !== true
+              ))
               : []
 
             return (
@@ -661,6 +1063,11 @@ export function SessionsColumn({
                         onSelect={onSelectConversation}
                         onStart={onStartConversation}
                         onStop={onStopConversation}
+                        onRename={onRenameConversation}
+                        onSwapProvider={onSwapConversationProvider}
+                        onArchive={onArchiveConversation}
+                        onRemove={onRemoveConversation}
+                        providerOptions={providerOptions}
                       />
                     ))}
                   </div>
@@ -691,14 +1098,24 @@ export function SessionsColumn({
             collapsed={collapsed.workers}
             onToggle={() => toggle('workers')}
             headerAction={(
-              <button
-                style={tinyIconBtn}
-                type="button"
-                aria-label="Add worker"
-                onClick={onCreateWorker}
-              >
-                <Icon name="terminal" size={13} />
-              </button>
+              <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                <button
+                  style={tinyIconBtn}
+                  type="button"
+                  aria-label="New session"
+                  onClick={onCreateSession}
+                >
+                  <Icon name="sessions" size={13} />
+                </button>
+                <button
+                  style={tinyIconBtn}
+                  type="button"
+                  aria-label="Add worker"
+                  onClick={onCreateWorker}
+                >
+                  <Icon name="terminal" size={13} />
+                </button>
+              </div>
             )}
             showExited={showExited.workers}
             onToggleShowExited={() => toggleShowExited('workers')}
@@ -711,27 +1128,14 @@ export function SessionsColumn({
           />
         </div>
 
-        <div data-testid="cron-section">
+        <div data-testid="automations-section">
           <SessionListSection
-            label="Cron"
-            sessions={cronSessions}
-            collapsed={collapsed.cron}
-            onToggle={() => toggle('cron')}
-            showExited={showExited.cron}
-            onToggleShowExited={() => toggleShowExited('cron')}
-            selectedChatId={selectedChatId}
-            onSelectChat={onSelectChat}
-          />
-        </div>
-
-        <div data-testid="sentinel-section">
-          <SessionListSection
-            label="Sentinels"
-            sessions={sentinelSessions}
-            collapsed={collapsed.sentinel}
-            onToggle={() => toggle('sentinel')}
-            showExited={showExited.sentinel}
-            onToggleShowExited={() => toggleShowExited('sentinel')}
+            label="Automations"
+            sessions={mergedAutomationSessions}
+            collapsed={collapsed.automation}
+            onToggle={() => toggle('automation')}
+            showExited={showExited.automation}
+            onToggleShowExited={() => toggleShowExited('automation')}
             selectedChatId={selectedChatId}
             onSelectChat={onSelectChat}
           />

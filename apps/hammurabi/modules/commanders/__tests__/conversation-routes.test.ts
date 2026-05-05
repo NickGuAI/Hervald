@@ -1,17 +1,25 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import express from 'express'
 import { createServer, type Server } from 'node:http'
-import { mkdir, mkdtemp, rm } from 'node:fs/promises'
+import { access, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import type { ApiKeyStoreLike } from '../../../server/api-keys/store'
+import {
+  resetTranscriptStoreRoot,
+  setTranscriptStoreRoot,
+} from '../../agents/transcript-store'
 import { createCommandersRouter, type CommandersRouterOptions } from '../routes'
 import type { CommanderSessionsInterface } from '../../agents/routes'
+import type { AgentType } from '../../agents/types'
+import { buildConversationSessionName } from '../routes/conversation-runtime'
 import {
+  buildDefaultCommanderConversationId,
   CommanderSessionStore,
   DEFAULT_COMMANDER_CONTEXT_MODE,
   DEFAULT_COMMANDER_MAX_TURNS,
 } from '../store'
+import { createDefaultHeartbeatConfig } from '../heartbeat'
 
 const COMMANDER_A = '00000000-0000-4000-a000-0000000000aa'
 const COMMANDER_B = '00000000-0000-4000-a000-0000000000bb'
@@ -37,10 +45,17 @@ interface RunningServer {
 }
 
 interface ActiveSessionState {
-  agentType: 'claude' | 'codex' | 'gemini'
+  agentType: AgentType
   conversationId?: string
-  claudeSessionId?: string
-  codexThreadId?: string
+  providerContext?: {
+    providerId: AgentType
+    sessionId?: string
+    threadId?: string
+  }
+  events: Array<Record<string, unknown>>
+  conversationEntryCount: number
+  lastTurnCompleted: boolean
+  pendingDirectSendMessages: Array<Record<string, unknown>>
   usage: {
     inputTokens: number
     outputTokens: number
@@ -51,6 +66,7 @@ interface ActiveSessionState {
 interface MockSessionsFixture {
   iface: CommanderSessionsInterface
   createCalls: Array<Parameters<CommanderSessionsInterface['createCommanderSession']>[0]>
+  activeSessions: Map<string, ActiveSessionState>
   sendCalls: Array<{
     name: string
     text: string
@@ -70,6 +86,7 @@ async function createTempDir(prefix: string): Promise<string> {
 }
 
 afterEach(async () => {
+  resetTranscriptStoreRoot()
   await Promise.all(
     tempDirs.splice(0).map((directory) =>
       rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }),
@@ -140,35 +157,78 @@ function createMockSessionsInterface(): MockSessionsFixture {
   }> = []
   const activeSessions = new Map<string, ActiveSessionState>()
 
+  function buildSessionState(
+    params: Parameters<CommanderSessionsInterface['createCommanderSession']>[0],
+    previous?: ActiveSessionState,
+  ): ActiveSessionState {
+    return {
+      agentType: params.agentType,
+      conversationId: params.conversationId,
+      providerContext: params.agentType === 'claude'
+        ? {
+          providerId: 'claude',
+          sessionId: `claude-${params.conversationId ?? params.name}`,
+        }
+        : params.agentType === 'codex'
+          ? {
+            providerId: 'codex',
+            threadId: `codex-${params.conversationId ?? params.name}`,
+          }
+          : params.agentType === 'gemini'
+            ? {
+              providerId: 'gemini',
+              sessionId: `gemini-${params.conversationId ?? params.name}`,
+            }
+            : previous?.providerContext,
+      events: previous?.events ? [...previous.events] : [],
+      conversationEntryCount: previous?.conversationEntryCount ?? 0,
+      lastTurnCompleted: true,
+      pendingDirectSendMessages: [],
+      usage: {
+        inputTokens: previous?.usage.inputTokens ?? 10,
+        outputTokens: previous?.usage.outputTokens ?? 20,
+        costUsd: previous?.usage.costUsd ?? 0.25,
+      },
+    }
+  }
+
   const iface: CommanderSessionsInterface = {
     async createCommanderSession(params) {
       createCalls.push(params)
-      activeSessions.set(params.name, {
-        agentType: params.agentType,
-        conversationId: params.conversationId,
-        claudeSessionId: params.agentType === 'claude'
-          ? `claude-${params.conversationId ?? params.name}`
-          : undefined,
-        codexThreadId: params.agentType === 'codex'
-          ? `codex-${params.conversationId ?? params.name}`
-          : undefined,
-        usage: {
-          inputTokens: 10,
-          outputTokens: 20,
-          costUsd: 0.25,
-        },
-      })
+      const next = buildSessionState(params)
+      activeSessions.set(params.name, next)
       return {
         kind: 'stream',
         name: params.name,
         agentType: params.agentType,
         conversationId: params.conversationId,
-        usage: {
-          inputTokens: 10,
-          outputTokens: 20,
-          costUsd: 0.25,
-        },
+        providerContext: next.providerContext,
+        usage: { ...next.usage },
+        events: [...next.events],
+        conversationEntryCount: next.conversationEntryCount,
+        lastTurnCompleted: true,
+        pendingDirectSendMessages: [],
+        clients: new Set(),
       } as unknown as Awaited<ReturnType<CommanderSessionsInterface['createCommanderSession']>>
+    },
+    async replaceCommanderSession(params) {
+      createCalls.push(params)
+      const previous = activeSessions.get(params.name)
+      const next = buildSessionState(params, previous)
+      activeSessions.set(params.name, next)
+      return {
+        kind: 'stream',
+        name: params.name,
+        agentType: params.agentType,
+        conversationId: params.conversationId,
+        providerContext: next.providerContext,
+        usage: { ...next.usage },
+        events: [...next.events],
+        conversationEntryCount: next.conversationEntryCount,
+        lastTurnCompleted: true,
+        pendingDirectSendMessages: [],
+        clients: new Set(),
+      } as unknown as Awaited<ReturnType<CommanderSessionsInterface['replaceCommanderSession']>>
     },
     async dispatchWorkerForCommander() {
       return {
@@ -178,6 +238,14 @@ function createMockSessionsInterface(): MockSessionsFixture {
     },
     async sendToSession(name, text, options) {
       sendCalls.push(options ? { name, text, options } : { name, text })
+      const active = activeSessions.get(name)
+      if (active) {
+        active.events.push({
+          type: 'user',
+          text,
+        })
+        active.conversationEntryCount += 1
+      }
       return activeSessions.has(name)
     },
     deleteSession(name) {
@@ -193,9 +261,14 @@ function createMockSessionsInterface(): MockSessionsFixture {
         name,
         agentType: active.agentType,
         conversationId: active.conversationId,
-        claudeSessionId: active.claudeSessionId,
-        codexThreadId: active.codexThreadId,
+        providerContext: active.providerContext,
         usage: { ...active.usage },
+        events: [...active.events],
+        conversationEntryCount: active.conversationEntryCount,
+        lastTurnCompleted: active.lastTurnCompleted,
+        pendingDirectSendMessages: [...active.pendingDirectSendMessages],
+        currentQueuedMessage: undefined,
+        clients: new Set(),
       } as unknown as ReturnType<CommanderSessionsInterface['getSession']>
     },
     subscribeToEvents() {
@@ -205,6 +278,7 @@ function createMockSessionsInterface(): MockSessionsFixture {
 
   return {
     iface,
+    activeSessions,
     createCalls,
     sendCalls,
   }
@@ -286,6 +360,7 @@ async function createConversation(
   input: {
     id: string
     surface: 'api' | 'ui' | 'cli' | 'discord' | 'telegram' | 'whatsapp'
+    agentType?: AgentType
   },
 ): Promise<Response> {
   return fetch(`${baseUrl}/api/commanders/${commanderId}/conversations`, {
@@ -302,7 +377,7 @@ async function startConversation(
   baseUrl: string,
   conversationId: string,
   input: {
-    agentType: 'claude' | 'codex' | 'gemini'
+    agentType: AgentType
     effort?: 'low' | 'medium' | 'high' | 'max'
     adaptiveThinking?: 'enabled' | 'disabled'
     cwd?: string
@@ -320,6 +395,131 @@ async function startConversation(
 }
 
 describe('conversation routes', () => {
+  it('returns the backend-selected default chat for a commander', async () => {
+    const dir = await createTempDir('hammurabi-commanders-active-chat-')
+    const storePath = join(dir, 'sessions.json')
+    await seedCommander(storePath, COMMANDER_A)
+
+    const sessions = createMockSessionsInterface()
+    const server = await startServer({
+      sessionStorePath: storePath,
+      sessionsInterface: sessions.iface,
+    })
+
+    try {
+      const emptyActiveResponse = await fetch(
+        `${server.baseUrl}/api/commanders/${COMMANDER_A}/conversations/active`,
+        { headers: READ_ONLY_AUTH_HEADERS },
+      )
+      expect(emptyActiveResponse.status).toBe(200)
+      expect(await emptyActiveResponse.json()).toBeNull()
+
+      const defaultConversationId = buildDefaultCommanderConversationId(COMMANDER_A)
+      expect((await createConversation(server.baseUrl, COMMANDER_A, {
+        id: defaultConversationId,
+        surface: 'ui',
+      })).status).toBe(201)
+      expect((await startConversation(server.baseUrl, defaultConversationId, {
+        agentType: 'claude',
+      })).status).toBe(200)
+
+      const defaultOnlyActiveResponse = await fetch(
+        `${server.baseUrl}/api/commanders/${COMMANDER_A}/conversations/active`,
+        { headers: READ_ONLY_AUTH_HEADERS },
+      )
+      expect(defaultOnlyActiveResponse.status).toBe(200)
+      expect(await defaultOnlyActiveResponse.json()).toBeNull()
+
+      const defaultListResponse = await fetch(
+        `${server.baseUrl}/api/commanders/${COMMANDER_A}/conversations`,
+        { headers: READ_ONLY_AUTH_HEADERS },
+      )
+      expect(defaultListResponse.status).toBe(200)
+      expect(await defaultListResponse.json()).toEqual([
+        expect.objectContaining({
+          id: defaultConversationId,
+          isDefaultConversation: true,
+          liveSession: expect.objectContaining({
+            conversationId: defaultConversationId,
+          }),
+        }),
+      ])
+
+      expect((await createConversation(server.baseUrl, COMMANDER_A, {
+        id: CONVERSATION_A,
+        surface: 'api',
+      })).status).toBe(201)
+      expect((await startConversation(server.baseUrl, CONVERSATION_A, {
+        agentType: 'claude',
+      })).status).toBe(200)
+
+      const firstActiveResponse = await fetch(
+        `${server.baseUrl}/api/commanders/${COMMANDER_A}/conversations/active`,
+        { headers: READ_ONLY_AUTH_HEADERS },
+      )
+      expect(firstActiveResponse.status).toBe(200)
+      expect(await firstActiveResponse.json()).toEqual(expect.objectContaining({
+        id: CONVERSATION_A,
+        isDefaultConversation: false,
+        status: 'active',
+        liveSession: expect.objectContaining({
+          conversationId: CONVERSATION_A,
+        }),
+      }))
+
+      expect((await createConversation(server.baseUrl, COMMANDER_A, {
+        id: CONVERSATION_B,
+        surface: 'ui',
+      })).status).toBe(201)
+      const renameIdleResponse = await fetch(`${server.baseUrl}/api/conversations/${CONVERSATION_B}`, {
+        method: 'PATCH',
+        headers: {
+          ...FULL_AUTH_HEADERS,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({ name: 'recent idle chat' }),
+      })
+      expect(renameIdleResponse.status).toBe(200)
+
+      // Per #1362 corrected contract: active > idle in selection priority,
+      // regardless of which row was most recently touched. The renamed idle
+      // chat (CONVERSATION_B) bumps lastMessageAt but must NOT outrank an
+      // already-active chat (CONVERSATION_A).
+      const activeStillWinsResponse = await fetch(
+        `${server.baseUrl}/api/commanders/${COMMANDER_A}/conversations/active`,
+        { headers: READ_ONLY_AUTH_HEADERS },
+      )
+      expect(activeStillWinsResponse.status).toBe(200)
+      expect(await activeStillWinsResponse.json()).toEqual(expect.objectContaining({
+        id: CONVERSATION_A,
+        isDefaultConversation: false,
+        status: 'active',
+      }))
+
+      // Pause the active conversation so only idles remain. Newest createdAt
+      // wins among idle rows (CONVERSATION_B was created after CONVERSATION_A).
+      const pauseResponse = await fetch(
+        `${server.baseUrl}/api/conversations/${CONVERSATION_A}/pause`,
+        { method: 'POST', headers: FULL_AUTH_HEADERS },
+      )
+      expect(pauseResponse.status).toBe(200)
+
+      const idleOnlyResponse = await fetch(
+        `${server.baseUrl}/api/commanders/${COMMANDER_A}/conversations/active`,
+        { headers: READ_ONLY_AUTH_HEADERS },
+      )
+      expect(idleOnlyResponse.status).toBe(200)
+      expect(await idleOnlyResponse.json()).toEqual(expect.objectContaining({
+        id: CONVERSATION_B,
+        isDefaultConversation: false,
+        status: 'idle',
+        liveSession: null,
+      }))
+    } finally {
+      await server.close()
+    }
+  })
+
   it('supports the explicit conversation CRUD flow including start, message reuse, and archive aliases', async () => {
     const dir = await createTempDir('hammurabi-commanders-conversation-crud-')
     const storePath = join(dir, 'sessions.json')
@@ -350,6 +550,7 @@ describe('conversation routes', () => {
       }
       expect(created).toEqual(expect.objectContaining({
         id: CONVERSATION_A,
+        isDefaultConversation: false,
         status: 'idle',
         liveSession: null,
       }))
@@ -360,6 +561,7 @@ describe('conversation routes', () => {
       expect(detailResponse.status).toBe(200)
       expect(await detailResponse.json()).toEqual(expect.objectContaining({
         id: CONVERSATION_A,
+        isDefaultConversation: false,
         status: 'idle',
         liveSession: null,
       }))
@@ -502,6 +704,318 @@ describe('conversation routes', () => {
         id: CONVERSATION_B,
         status: 'archived',
       }))
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('patches a conversation name and swaps providers without dropping replay state', async () => {
+    const dir = await createTempDir('hammurabi-commanders-conversation-patch-')
+    const storePath = join(dir, 'sessions.json')
+    await seedCommander(storePath, COMMANDER_A)
+
+    const sessions = createMockSessionsInterface()
+    const server = await startServer({
+      sessionStorePath: storePath,
+      sessionsInterface: sessions.iface,
+    })
+
+    try {
+      const createResponse = await createConversation(server.baseUrl, COMMANDER_A, {
+        id: CONVERSATION_A,
+        surface: 'api',
+      })
+      expect(createResponse.status).toBe(201)
+
+      const startResponse = await startConversation(server.baseUrl, CONVERSATION_A, {
+        agentType: 'claude',
+      })
+      expect(startResponse.status).toBe(200)
+
+      const messageResponse = await fetch(`${server.baseUrl}/api/conversations/${CONVERSATION_A}/message`, {
+        method: 'POST',
+        headers: {
+          ...FULL_AUTH_HEADERS,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          message: 'Carry this transcript forward.',
+        }),
+      })
+      expect(messageResponse.status).toBe(200)
+
+      const patchResponse = await fetch(`${server.baseUrl}/api/conversations/${CONVERSATION_A}`, {
+        method: 'PATCH',
+        headers: {
+          ...FULL_AUTH_HEADERS,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          name: 'quiet-falcon',
+          agentType: 'codex',
+        }),
+      })
+      expect(patchResponse.status).toBe(200)
+      expect(await patchResponse.json()).toEqual(expect.objectContaining({
+        id: CONVERSATION_A,
+        name: 'quiet-falcon',
+        agentType: 'codex',
+        providerContext: expect.objectContaining({
+          providerId: 'codex',
+          threadId: `codex-${CONVERSATION_A}`,
+        }),
+        liveSession: expect.objectContaining({
+          conversationId: CONVERSATION_A,
+          providerContext: expect.objectContaining({
+            providerId: 'codex',
+            threadId: `codex-${CONVERSATION_A}`,
+          }),
+        }),
+      }))
+
+      const sessionName = buildConversationSessionName({
+        id: CONVERSATION_A,
+        commanderId: COMMANDER_A,
+        surface: 'api',
+        name: 'quiet-falcon',
+        status: 'active',
+        currentTask: null,
+        lastHeartbeat: null,
+        heartbeat: createDefaultHeartbeatConfig(),
+        heartbeatTickCount: 0,
+        completedTasks: 0,
+        totalCostUsd: 0,
+        createdAt: '2026-05-01T00:00:00.000Z',
+        lastMessageAt: '2026-05-01T00:00:00.000Z',
+      })
+      expect(sessions.activeSessions.get(sessionName)?.events).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          text: 'Carry this transcript forward.',
+        }),
+      ]))
+      expect(sessions.createCalls).toHaveLength(2)
+      expect(sessions.createCalls[1]).toEqual(expect.objectContaining({
+        agentType: 'codex',
+        resumeProviderContext: expect.objectContaining({
+          providerId: 'claude',
+          sessionId: `claude-${CONVERSATION_A}`,
+        }),
+      }))
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('does not double-count carried usage when swapping providers', async () => {
+    const dir = await createTempDir('hammurabi-commanders-conversation-swap-cost-')
+    const storePath = join(dir, 'sessions.json')
+    await seedCommander(storePath, COMMANDER_A)
+
+    const sessions = createMockSessionsInterface()
+    const server = await startServer({
+      sessionStorePath: storePath,
+      sessionsInterface: sessions.iface,
+    })
+
+    try {
+      expect((await createConversation(server.baseUrl, COMMANDER_A, {
+        id: CONVERSATION_A,
+        surface: 'api',
+      })).status).toBe(201)
+      expect((await startConversation(server.baseUrl, CONVERSATION_A, {
+        agentType: 'claude',
+      })).status).toBe(200)
+
+      const sessionName = Array.from(sessions.activeSessions.keys())[0]
+      expect(sessionName).toBeDefined()
+      if (!sessionName) {
+        throw new Error('Expected an active conversation session after start')
+      }
+
+      const liveSession = sessions.activeSessions.get(sessionName)
+      expect(liveSession).toBeDefined()
+      if (!liveSession) {
+        throw new Error('Expected active session state for provider swap test')
+      }
+      liveSession.usage = {
+        inputTokens: 100,
+        outputTokens: 200,
+        costUsd: 5,
+      }
+
+      const patchResponse = await fetch(`${server.baseUrl}/api/conversations/${CONVERSATION_A}`, {
+        method: 'PATCH',
+        headers: {
+          ...FULL_AUTH_HEADERS,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          agentType: 'codex',
+        }),
+      })
+      expect(patchResponse.status).toBe(200)
+      expect(await patchResponse.json()).toEqual(expect.objectContaining({
+        id: CONVERSATION_A,
+        agentType: 'codex',
+        totalCostUsd: 0,
+      }))
+      expect(sessions.activeSessions.get(sessionName)?.usage.costUsd).toBe(5)
+
+      const pauseResponse = await fetch(`${server.baseUrl}/api/conversations/${CONVERSATION_A}/pause`, {
+        method: 'POST',
+        headers: FULL_AUTH_HEADERS,
+      })
+      expect(pauseResponse.status).toBe(200)
+      expect(await pauseResponse.json()).toEqual(expect.objectContaining({
+        id: CONVERSATION_A,
+        status: 'idle',
+        totalCostUsd: 5,
+        liveSession: null,
+      }))
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('hard deletes the conversation row and transcript artifacts when hard=true', async () => {
+    const dir = await createTempDir('hammurabi-commanders-conversation-hard-delete-')
+    const transcriptRoot = await createTempDir('hammurabi-commanders-conversation-transcripts-')
+    setTranscriptStoreRoot(transcriptRoot)
+    const storePath = join(dir, 'sessions.json')
+    await seedCommander(storePath, COMMANDER_A)
+
+    const sessions = createMockSessionsInterface()
+    const server = await startServer({
+      sessionStorePath: storePath,
+      sessionsInterface: sessions.iface,
+    })
+
+    try {
+      const createResponse = await createConversation(server.baseUrl, COMMANDER_A, {
+        id: CONVERSATION_A,
+        surface: 'api',
+      })
+      expect(createResponse.status).toBe(201)
+
+      const startResponse = await startConversation(server.baseUrl, CONVERSATION_A, {
+        agentType: 'claude',
+      })
+      expect(startResponse.status).toBe(200)
+
+      const sessionName = buildConversationSessionName({
+        id: CONVERSATION_A,
+        commanderId: COMMANDER_A,
+        surface: 'api',
+        name: 'hard-delete-chat',
+        status: 'active',
+        currentTask: null,
+        lastHeartbeat: null,
+        heartbeat: createDefaultHeartbeatConfig(),
+        heartbeatTickCount: 0,
+        completedTasks: 0,
+        totalCostUsd: 0,
+        createdAt: '2026-05-01T00:00:00.000Z',
+        lastMessageAt: '2026-05-01T00:00:00.000Z',
+      })
+      const conversationPath = join(dir, COMMANDER_A, 'conversations', `${CONVERSATION_A}.json`)
+      const commanderTranscriptPath = join(dir, COMMANDER_A, 'sessions', `claude-${CONVERSATION_A}.jsonl`)
+      const sharedTranscriptPath = join(transcriptRoot, sessionName, 'transcript.v1.jsonl')
+      await mkdir(join(dir, COMMANDER_A, 'sessions'), { recursive: true })
+      await mkdir(join(transcriptRoot, sessionName), { recursive: true })
+      await writeFile(commanderTranscriptPath, '{"type":"message","text":"persist me"}\n', 'utf8')
+      await writeFile(sharedTranscriptPath, '{"type":"message","text":"persist me"}\n', 'utf8')
+
+      const deleteResponse = await fetch(
+        `${server.baseUrl}/api/conversations/${CONVERSATION_A}?hard=true`,
+        {
+          method: 'DELETE',
+          headers: FULL_AUTH_HEADERS,
+        },
+      )
+      expect(deleteResponse.status).toBe(200)
+      expect(await deleteResponse.json()).toEqual({
+        deleted: true,
+        hard: true,
+        id: CONVERSATION_A,
+        commanderId: COMMANDER_A,
+      })
+
+      await expect(access(conversationPath)).rejects.toThrow()
+      await expect(access(commanderTranscriptPath)).rejects.toThrow()
+      await expect(access(sharedTranscriptPath)).rejects.toThrow()
+
+      const detailResponse = await fetch(`${server.baseUrl}/api/conversations/${CONVERSATION_A}`, {
+        headers: READ_ONLY_AUTH_HEADERS,
+      })
+      expect(detailResponse.status).toBe(404)
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('persists agentType at create time and never auto-starts the conversation (#1362)', async () => {
+    const dir = await createTempDir('hammurabi-commanders-create-agentType-')
+    const storePath = join(dir, 'sessions.json')
+    await seedCommander(storePath, COMMANDER_A)
+
+    const sessions = createMockSessionsInterface()
+    const server = await startServer({
+      sessionStorePath: storePath,
+      sessionsInterface: sessions.iface,
+    })
+
+    try {
+      const createResponse = await createConversation(server.baseUrl, COMMANDER_A, {
+        id: CONVERSATION_A,
+        surface: 'ui',
+        agentType: 'codex',
+      })
+      expect(createResponse.status).toBe(201)
+      expect(await createResponse.json()).toEqual(expect.objectContaining({
+        id: CONVERSATION_A,
+        status: 'idle',
+        agentType: 'codex',
+        liveSession: null,
+      }))
+      // Per #1362 contract: creation must NEVER spawn a session.
+      expect(sessions.createCalls).toHaveLength(0)
+
+      const detailResponse = await fetch(`${server.baseUrl}/api/conversations/${CONVERSATION_A}`, {
+        headers: READ_ONLY_AUTH_HEADERS,
+      })
+      expect(detailResponse.status).toBe(200)
+      expect(await detailResponse.json()).toEqual(expect.objectContaining({
+        id: CONVERSATION_A,
+        status: 'idle',
+        agentType: 'codex',
+        liveSession: null,
+      }))
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('rejects an invalid agentType on create with 400', async () => {
+    const dir = await createTempDir('hammurabi-commanders-create-invalid-agentType-')
+    const storePath = join(dir, 'sessions.json')
+    await seedCommander(storePath, COMMANDER_A)
+
+    const sessions = createMockSessionsInterface()
+    const server = await startServer({
+      sessionStorePath: storePath,
+      sessionsInterface: sessions.iface,
+    })
+
+    try {
+      const createResponse = await fetch(
+        `${server.baseUrl}/api/commanders/${COMMANDER_A}/conversations`,
+        {
+          method: 'POST',
+          headers: { ...FULL_AUTH_HEADERS, 'content-type': 'application/json' },
+          body: JSON.stringify({ id: CONVERSATION_A, surface: 'ui', agentType: 'not-a-provider' }),
+        },
+      )
+      expect(createResponse.status).toBe(400)
     } finally {
       await server.close()
     }
@@ -848,7 +1362,7 @@ describe('conversation routes', () => {
           accountId: 'acct-autostart',
           chatType: 'direct',
           peerId: 'peer-autostart',
-          message: 'Hello, athena.',
+          message: 'Hello, atlas.',
           commanderId: COMMANDER_A,
         }),
       })
@@ -865,7 +1379,7 @@ describe('conversation routes', () => {
       // Auto-start must spawn a session (createCommanderSession was called)
       // and the inbound message must reach sendToSession.
       expect(sessions.createCalls.length).toBe(1)
-      expect(sessions.sendCalls.some((call) => call.text === 'Hello, athena.')).toBe(true)
+      expect(sessions.sendCalls.some((call) => call.text === 'Hello, atlas.')).toBe(true)
     } finally {
       await server.close()
     }

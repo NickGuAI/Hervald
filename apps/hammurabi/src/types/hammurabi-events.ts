@@ -1,4 +1,4 @@
-export type HammurabiEventProvider = 'claude' | 'codex' | 'gemini'
+export type HammurabiEventProvider = string
 
 export type HammurabiEventBackend = 'cli' | 'stream-json' | 'acp' | 'rpc'
 

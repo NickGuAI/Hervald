@@ -2,10 +2,10 @@ import { randomUUID } from 'node:crypto'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import {
-  migrateLegacyPermissionMode,
   parseClaudePermissionMode,
 } from '../agents/session/input.js'
 import { resolveCommanderDataDir } from './paths.js'
+import type { AutomationQuestEventBus } from '../automations/quest-event-bus.js'
 
 export type CommanderQuestStatus = 'pending' | 'active' | 'done' | 'failed'
 export type CommanderQuestSource = 'manual' | 'github-issue' | 'idea' | 'voice-log'
@@ -65,6 +65,31 @@ export interface UpdateCommanderQuestInput {
   note?: string | null
   artifacts?: QuestArtifact[] | null
   contract?: CommanderQuestContract
+}
+
+export class QuestAlreadyClaimedError extends Error {
+  readonly claimedBy: string | null
+  readonly status: CommanderQuestStatus
+
+  constructor({
+    claimedBy,
+    status,
+  }: {
+    claimedBy: string | null
+    status: CommanderQuestStatus
+  }) {
+    super('Quest already claimed')
+    this.name = 'QuestAlreadyClaimedError'
+    this.claimedBy = claimedBy
+    this.status = status
+  }
+}
+
+export class QuestUpdateError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'QuestUpdateError'
+  }
 }
 
 const QUEST_STATUSES = new Set<CommanderQuestStatus>(['pending', 'active', 'done', 'failed'])
@@ -151,24 +176,62 @@ function normalizeSkillsToUse(raw: unknown): string[] | null {
   return skills
 }
 
+function validateClaimStateForCreate(
+  status: CommanderQuestStatus,
+  claimedByConversationId: string | undefined,
+): void {
+  if (status === 'active') {
+    if (!claimedByConversationId) {
+      throw new Error('active quests require claimedByConversationId')
+    }
+    return
+  }
+
+  if (claimedByConversationId) {
+    throw new Error('claimedByConversationId is only valid for active quests')
+  }
+}
+
 interface QuestMigrationRecord {
   id: string
   commanderId: string
-  legacyLiteral: string
+  aliasLiteral: string
+}
+
+const PERMISSION_MODE_ALIAS_LITERALS = new Set([
+  'dangerouslySkipPermissions',
+  'bypassPermissions',
+  'acceptEdits',
+])
+
+function coerceStoredPermissionMode(
+  raw: unknown,
+): { value: unknown; aliasLiteral?: string } {
+  if (typeof raw !== 'string') {
+    return { value: raw }
+  }
+
+  const trimmed = raw.trim()
+  if (!PERMISSION_MODE_ALIAS_LITERALS.has(trimmed)) {
+    return { value: raw }
+  }
+
+  return {
+    value: 'default',
+    aliasLiteral: trimmed,
+  }
 }
 
 function normalizeContract(
   raw: unknown,
-): { contract: CommanderQuestContract | null; legacyLiteral?: string } {
+): { contract: CommanderQuestContract | null; aliasLiteral?: string } {
   if (!isObject(raw)) {
     return { contract: null }
   }
 
-  // Migrate deprecated `permissionMode` literals to 'default' BEFORE the strict
-  // parse. Legacy literal is reported up so the caller can persist + warn once.
-  const migration = migrateLegacyPermissionMode(raw.permissionMode)
-  if (migration.changed) {
-    raw.permissionMode = 'default'
+  const permissionModeInput = coerceStoredPermissionMode(raw.permissionMode)
+  if (permissionModeInput.aliasLiteral !== undefined) {
+    raw.permissionMode = permissionModeInput.value
   }
 
   const cwd = asTrimmedString(raw.cwd)
@@ -186,7 +249,7 @@ function normalizeContract(
       agentType,
       skillsToUse,
     },
-    legacyLiteral: migration.changed ? migration.legacyLiteral : undefined,
+    aliasLiteral: permissionModeInput.aliasLiteral,
   }
 }
 
@@ -204,7 +267,7 @@ function parseQuest(
   const createdAt = asTrimmedString(raw.createdAt)
   const completedAt = asTrimmedString(raw.completedAt) ?? undefined
   const instruction = asTrimmedString(raw.instruction)
-  const { contract, legacyLiteral } = normalizeContract(raw.contract)
+  const { contract, aliasLiteral } = normalizeContract(raw.contract)
   const artifacts = normalizeQuestArtifacts(raw.artifacts) ?? []
 
   if (
@@ -222,8 +285,8 @@ function parseQuest(
   const githubIssueUrl = asTrimmedString(raw.githubIssueUrl) ?? undefined
   const note = asTrimmedString(raw.note) ?? undefined
 
-  if (legacyLiteral !== undefined && migrations) {
-    migrations.push({ id, commanderId, legacyLiteral })
+  if (aliasLiteral !== undefined && migrations) {
+    migrations.push({ id, commanderId, aliasLiteral })
   }
 
   return {
@@ -293,10 +356,25 @@ export function defaultQuestStoreDataDir(): string {
 
 export class QuestStore {
   private readonly dataDir: string
+  private readonly eventBus?: AutomationQuestEventBus
   private mutationQueue: Promise<void> = Promise.resolve()
 
-  constructor(dataDir: string = defaultQuestStoreDataDir()) {
-    this.dataDir = path.resolve(dataDir)
+  constructor(
+    config:
+      | string
+      | {
+        dataDir?: string
+        eventBus?: AutomationQuestEventBus
+      } = defaultQuestStoreDataDir(),
+  ) {
+    if (typeof config === 'string') {
+      this.dataDir = path.resolve(config)
+      this.eventBus = undefined
+      return
+    }
+
+    this.dataDir = path.resolve(config.dataDir ?? defaultQuestStoreDataDir())
+    this.eventBus = config.eventBus
   }
 
   getCommanderFilePath(commanderId: string): string {
@@ -340,22 +418,36 @@ export class QuestStore {
         (quest) => quest.status === 'active' && quest.claimedByConversationId === safeConversationId,
       )
       if (existingClaim) {
-        return cloneQuest(existingClaim)
+        return this.claimLocked(safeCommanderId, existingClaim.id, safeConversationId, ordered)
       }
 
-      const nextIndex = ordered.findIndex((quest) => quest.status === 'pending')
-      if (nextIndex < 0) {
+      const nextQuest = ordered.find((quest) => quest.status === 'pending')
+      if (!nextQuest) {
         return null
       }
 
-      const claimedQuest: CommanderQuest = {
-        ...ordered[nextIndex],
-        status: 'active',
-        claimedByConversationId: safeConversationId,
-      }
-      ordered[nextIndex] = claimedQuest
-      await this.writeQuestsForCommander(safeCommanderId, ordered)
-      return cloneQuest(claimedQuest)
+      return this.claimLocked(safeCommanderId, nextQuest.id, safeConversationId, ordered)
+    })
+  }
+
+  async claim(
+    commanderId: string,
+    questId: string,
+    conversationId: string,
+  ): Promise<CommanderQuest | null> {
+    const safeCommanderId = asTrimmedString(commanderId)
+    const safeQuestId = asTrimmedString(questId)
+    const safeConversationId = asTrimmedString(conversationId)
+    if (!safeCommanderId || !safeQuestId) {
+      throw new Error('commanderId and questId are required')
+    }
+    if (!safeConversationId) {
+      throw new Error('conversationId is required')
+    }
+
+    return this.withMutationLock(async () => {
+      const quests = await this.readQuestsForCommander(safeCommanderId)
+      return this.claimLocked(safeCommanderId, safeQuestId, safeConversationId, quests)
     })
   }
 
@@ -390,6 +482,7 @@ export class QuestStore {
     if (!contract) {
       throw new Error('contract is invalid')
     }
+    validateClaimStateForCreate(input.status, claimedByConversationId)
 
     const nextQuest: CommanderQuest = {
       id: randomUUID(),
@@ -436,6 +529,13 @@ export class QuestStore {
         return null
       }
 
+      if (update.status === 'active') {
+        throw new QuestUpdateError('use claim() to transition into active')
+      }
+      if (update.claimedByConversationId !== undefined) {
+        throw new QuestUpdateError('claimedByConversationId is managed by claim()')
+      }
+
       const nextQuest: CommanderQuest = cloneQuest(current)
       if (update.status !== undefined) {
         if (!isQuestStatus(update.status)) {
@@ -450,17 +550,7 @@ export class QuestStore {
         } else {
           delete nextQuest.completedAt
         }
-      }
-      if (update.claimedByConversationId !== undefined) {
-        const claimedByConversationId = asTrimmedString(update.claimedByConversationId)
-        if (update.claimedByConversationId !== null && !claimedByConversationId) {
-          throw new Error('claimedByConversationId must be a non-empty string or null')
-        }
-        if (claimedByConversationId) {
-          nextQuest.claimedByConversationId = claimedByConversationId
-        } else {
-          delete nextQuest.claimedByConversationId
-        }
+        delete nextQuest.claimedByConversationId
       }
       if (update.source !== undefined) {
         if (!isQuestSource(update.source)) {
@@ -518,6 +608,14 @@ export class QuestStore {
 
       quests[index] = nextQuest
       await this.writeQuestsForCommander(safeCommanderId, quests)
+      if (update.status === 'done' && this.eventBus) {
+        this.eventBus.emit({
+          event: 'completed',
+          questId: nextQuest.id,
+          commanderId: safeCommanderId,
+          completedAt: nextQuest.completedAt ?? new Date().toISOString(),
+        })
+      }
       return cloneQuest(nextQuest)
     })
   }
@@ -652,18 +750,18 @@ export class QuestStore {
 
     const { quests, migrationsApplied } = parsePersistedQuests(parsed)
 
-    // One-time, idempotent on-disk backfill of deprecated permissionMode
+    // One-time, idempotent on-disk backfill of retired permissionMode
     // literals. Emit a structured warn per migrated row, then persist the
     // upgraded collection so subsequent reads are a no-op. See #1222.
     if (migrationsApplied.length > 0) {
       for (const migration of migrationsApplied) {
         console.warn(
-          '[commanders/quest-store] migrated legacy permissionMode',
+          '[commanders/quest-store] migrated retired permissionMode',
           {
             questId: migration.id,
             commanderId: migration.commanderId,
             filePath,
-            from: migration.legacyLiteral,
+            from: migration.aliasLiteral,
             to: 'default',
           },
         )
@@ -690,6 +788,47 @@ export class QuestStore {
       JSON.stringify({ quests: sortQuests(quests) } satisfies PersistedCommanderQuests, null, 2),
       'utf8',
     )
+  }
+
+  private async claimLocked(
+    commanderId: string,
+    questId: string,
+    conversationId: string,
+    quests: CommanderQuest[],
+  ): Promise<CommanderQuest | null> {
+    const index = quests.findIndex((quest) => quest.id === questId)
+    if (index < 0) {
+      return null
+    }
+
+    const current = quests[index]
+    if (!current) {
+      return null
+    }
+
+    if (current.status === 'active') {
+      if (current.claimedByConversationId === conversationId) {
+        return cloneQuest(current)
+      }
+    }
+
+    if (current.status !== 'pending') {
+      throw new QuestAlreadyClaimedError({
+        claimedBy: current.claimedByConversationId ?? null,
+        status: current.status,
+      })
+    }
+
+    const nextQuest: CommanderQuest = {
+      ...current,
+      status: 'active',
+      claimedByConversationId: conversationId,
+    }
+    delete nextQuest.completedAt
+
+    quests[index] = nextQuest
+    await this.writeQuestsForCommander(commanderId, quests)
+    return cloneQuest(nextQuest)
   }
 
   private withMutationLock<T>(operation: () => Promise<T>): Promise<T> {

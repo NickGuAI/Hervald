@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import express from 'express'
-import { auth0Middleware, auth0PermissionsFromClaims } from '../auth0'
+import { auth0MetadataFromClaims, auth0Middleware, auth0PermissionsFromClaims } from '../auth0'
 
 interface RunningServer {
   baseUrl: string
@@ -49,6 +49,26 @@ describe('auth0Middleware', () => {
       'telemetry:write',
       'commanders:write',
     ])
+  })
+
+  it('preserves human profile fields in the server-side auth0 metadata', () => {
+    expect(auth0MetadataFromClaims({
+      aud: 'https://hervald.gehirn.ai',
+      permissions: ['commanders:read'],
+      email_verified: true,
+      name: ' Nick Gu ',
+      nickname: ' nick ',
+      picture: ' https://example.com/nick.png ',
+    })).toEqual({
+      provider: 'auth0',
+      aud: 'https://hervald.gehirn.ai',
+      permissions: ['commanders:read'],
+      emailVerified: true,
+      name: 'Nick Gu',
+      displayName: 'Nick Gu',
+      nickname: 'nick',
+      picture: 'https://example.com/nick.png',
+    })
   })
 
   it('returns 503 when Auth0 is not configured', async () => {

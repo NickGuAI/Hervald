@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
-import { act, createElement } from 'react'
+import { createElement } from 'react'
+import { act } from 'react-dom/test-utils'
 import { createRoot } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AgentSession } from '@/types'
@@ -72,7 +73,7 @@ describe('SessionCard row variant', () => {
 
     expect(rowContent.className).toContain('whitespace-nowrap')
     expect(collapsedButton.textContent).toContain('worker-compact')
-    expect(collapsedButton.textContent).toContain('codex')
+    expect(collapsedButton.textContent).toContain('Codex')
     expect(collapsedButton.textContent).toContain('home-mac')
     expect(collapsedButton.textContent).toContain('stale')
     expect(container.textContent).not.toContain('Kill')

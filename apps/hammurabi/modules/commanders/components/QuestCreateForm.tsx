@@ -1,9 +1,11 @@
 import type { FormEvent } from 'react'
 import { AlertTriangle, Plus } from 'lucide-react'
+import { useProviderRegistry } from '@/hooks/use-providers'
+import type { AgentType } from '@/types'
 import { cn } from '@/lib/utils'
 
 export type QuestSource = 'idea' | 'github-issue' | 'manual' | 'voice-log'
-export type QuestAgentType = 'claude' | 'codex' | 'gemini'
+export type QuestAgentType = AgentType
 export type QuestPermissionMode = 'default'
 export type QuestArtifactType = 'github_issue' | 'github_pr' | 'url' | 'file'
 
@@ -99,6 +101,8 @@ export function QuestCreateForm({
   submitPending,
   onSubmit,
 }: QuestCreateFormProps) {
+  const { data: providers = [] } = useProviderRegistry()
+
   return (
     <form onSubmit={onSubmit} className="space-y-3">
       <p className="text-sm text-sumi-gray">Add quest</p>
@@ -170,11 +174,14 @@ export function QuestCreateForm({
           <label className="section-title block mb-2">agentType</label>
           <select
             value={agentType}
-            onChange={(event) => onAgentTypeChange(event.target.value as QuestAgentType)}
+            onChange={(event) => onAgentTypeChange(event.target.value)}
             className="w-full px-3 py-2 rounded-lg border border-ink-border bg-washi-aged text-[16px] md:text-sm focus:outline-none focus:border-ink-border-hover"
           >
-            <option value="claude">claude</option>
-            <option value="codex">codex</option>
+            {providers.map((provider) => (
+              <option key={provider.id} value={provider.id}>
+                {provider.label.toLowerCase()}
+              </option>
+            ))}
           </select>
         </div>
         <div>

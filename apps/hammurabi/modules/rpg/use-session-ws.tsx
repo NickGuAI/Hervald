@@ -17,7 +17,7 @@ interface UseSessionWsOptions {
 
 type WsStatus = 'idle' | 'connecting' | 'connected' | 'disconnected'
 
-interface LegacyAskBlock {
+interface PendingAskBlock {
   toolId: string
   parts: string[]
 }
@@ -83,7 +83,7 @@ export function useSessionWs({
   onReplayStart,
 }: UseSessionWsOptions) {
   const wsRef = useRef<WebSocket | null>(null)
-  const legacyAskRef = useRef<LegacyAskBlock | null>(null)
+  const pendingAskRef = useRef<PendingAskBlock | null>(null)
 
   const [status, setStatus] = useState<WsStatus>('idle')
   const [pendingAsks, setPendingAsks] = useState<PendingAsk[]>([])
@@ -135,7 +135,7 @@ export function useSessionWs({
 
     if (event.type === 'content_block_start') {
       if (event.content_block.type !== 'tool_use') {
-        legacyAskRef.current = null
+        pendingAskRef.current = null
         return
       }
 
@@ -144,11 +144,11 @@ export function useSessionWs({
       }
 
       if (event.content_block.name !== 'AskUserQuestion') {
-        legacyAskRef.current = null
+        pendingAskRef.current = null
         return
       }
 
-      legacyAskRef.current = {
+      pendingAskRef.current = {
         toolId: event.content_block.id,
         parts: [],
       }
@@ -158,15 +158,15 @@ export function useSessionWs({
     if (
       event.type === 'content_block_delta' &&
       event.delta.type === 'input_json_delta' &&
-      legacyAskRef.current
+      pendingAskRef.current
     ) {
-      legacyAskRef.current.parts.push(event.delta.partial_json)
+      pendingAskRef.current.parts.push(event.delta.partial_json)
       return
     }
 
-    if (event.type === 'content_block_stop' && legacyAskRef.current) {
-      const pending = legacyAskRef.current
-      legacyAskRef.current = null
+    if (event.type === 'content_block_stop' && pendingAskRef.current) {
+      const pending = pendingAskRef.current
+      pendingAskRef.current = null
 
       try {
         const parsed = JSON.parse(pending.parts.join('')) as { questions?: unknown }
@@ -196,7 +196,7 @@ export function useSessionWs({
         wsRef.current.close()
         wsRef.current = null
       }
-      legacyAskRef.current = null
+      pendingAskRef.current = null
       setStatus('idle')
       setPendingAsks([])
       return
@@ -262,7 +262,7 @@ export function useSessionWs({
           }
 
           if (raw.type === 'replay' && Array.isArray(raw.events)) {
-            legacyAskRef.current = null
+            pendingAskRef.current = null
             setPendingAsks([])
             onReplayStart?.()
             for (const event of raw.events) {
@@ -291,7 +291,7 @@ export function useSessionWs({
 
     return () => {
       disposed = true
-      legacyAskRef.current = null
+      pendingAskRef.current = null
       if (wsRef.current === socket) {
         wsRef.current = null
       }
