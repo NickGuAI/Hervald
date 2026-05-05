@@ -2,8 +2,6 @@
 
 Hervald owns orchestration; connectivity is delegated.
 
-![Hervald launch architecture](https://raw.githubusercontent.com/NickGuAI/Hervald/main/docs/diagrams/launch-architecture.svg)
-
 Hervald is the public entry point for the Hammurabi engine. The product-facing brand is Hervald. The internal code paths stay `apps/hammurabi`, `hammurabi-cli`, `~/.hammurabi`, and `HAMMURABI_*`.
 
 ## Quickstart
@@ -40,15 +38,18 @@ When the server and workers do not share a flat network:
 3. Register the worker with `hammurabi machine add ...`.
 4. Bootstrap it with `hammurabi machine bootstrap ...`.
 
-Full guide: [docs/tailscale-quickstart.md](./docs/tailscale-quickstart.md)
+Full guide: [Tailscale quickstart](https://hervald.gehirn.ai/docs/tailscale-quickstart).
 
 ## Docs
 
-- [Architecture Overview](./docs/architecture-overview.md)
-- [Installation](./docs/installation.md)
-- [Provider Auth Setup](./docs/provider-auth-setup.md)
-- [Operator Guide](./docs/operator-guide.md)
-- [Canonical Architecture Report](https://www.nickgu.me/reports/hammurabi-daemon-vs-ssh-2026)
+Full documentation lives at [hervald.gehirn.ai/docs](https://hervald.gehirn.ai/docs):
+
+- [Architecture overview](https://hervald.gehirn.ai/docs/architecture)
+- [Installation](https://hervald.gehirn.ai/docs/installation)
+- [Provider auth setup](https://hervald.gehirn.ai/docs/provider-auth-setup)
+- [Operator guide](https://hervald.gehirn.ai/docs/operator-guide)
+- [Approval routing](https://hervald.gehirn.ai/docs/approval-routing)
+- [Troubleshoot](https://hervald.gehirn.ai/docs/troubleshoot)
 
 ## License
 
