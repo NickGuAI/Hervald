@@ -61,12 +61,20 @@ export interface ProviderMachineAuthDescriptor {
   loginStatusCommand: string | null
 }
 
+export interface ProviderModelOption {
+  id: string
+  label: string
+  description?: string
+  default?: boolean
+}
+
 export interface ProviderRegistryEntry {
   id: ProviderId
   label: string
   eventProvider: string
   capabilities: ProviderCapabilities
   uiCapabilities: ProviderUiCapabilities
+  availableModels: ProviderModelOption[]
   machineAuth?: ProviderMachineAuthDescriptor
 }
 
@@ -119,6 +127,7 @@ export interface AgentSession {
   agentType?: AgentType
   effort?: ClaudeEffortLevel
   adaptiveThinking?: ClaudeAdaptiveThinkingMode
+  model?: string
   cwd?: string
   host?: string
   creator?: SessionCreator

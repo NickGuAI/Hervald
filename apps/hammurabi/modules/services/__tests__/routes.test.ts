@@ -4,6 +4,11 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { execFile, spawn as spawnChild } from 'node:child_process'
+import {
+  bootstrapDefaultMasterKey,
+  DEFAULT_MASTER_KEY_OPT_IN_ENV,
+} from '../../../server/api-keys/bootstrap'
+import { ApiKeyJsonStore } from '../../../server/api-keys/store'
 import type { ApiKeyStoreLike } from '../../../server/api-keys/store'
 import { createServicesRouter, parseLaunchScript, parseListeningPorts } from '../routes'
 
@@ -89,6 +94,7 @@ async function startServer(options: {
   stopService?: (service: { name: string; port: number; script: string; healthPaths: string[] }) => Promise<void>
   fetchImpl?: typeof fetch
   env?: NodeJS.ProcessEnv
+  apiKeyStore?: ApiKeyStoreLike
 }): Promise<RunningServer> {
   const app = express()
   const services = createServicesRouter({
@@ -99,7 +105,7 @@ async function startServer(options: {
     stopService: options.stopService,
     fetchImpl: options.fetchImpl,
     env: options.env,
-    apiKeyStore: createTestApiKeyStore(),
+    apiKeyStore: options.apiKeyStore ?? createTestApiKeyStore(),
   })
   app.use('/api/services', services.router)
 
@@ -247,6 +253,76 @@ describe('services routes', () => {
     ])
     expect(observedTimeouts.length).toBeGreaterThan(0)
     expect(observedTimeouts.every((timeoutMs) => timeoutMs === 1_500)).toBe(true)
+
+    await server.close()
+  })
+
+  it('accepts the printed bootstrap key after restart when bootstrap auth remains enabled', async () => {
+    const scriptsDir = await createScriptsDir({
+      'launch_alpha.sh': 'PORT=3001\ncurl http://localhost:$PORT/health\n',
+    })
+    const stateDir = await mkdtemp(path.join(tmpdir(), 'hammurabi-bootstrap-signin-'))
+    testDirectories.push(stateDir)
+    const keystorePath = path.join(stateDir, 'api-keys', 'keys.json')
+    const bootstrapKeyPath = path.join(stateDir, 'bootstrap-key.txt')
+
+    const firstBootStore = new ApiKeyJsonStore(keystorePath)
+    const bootstrapKey = await bootstrapDefaultMasterKey(firstBootStore, {
+      env: { [DEFAULT_MASTER_KEY_OPT_IN_ENV]: '1' },
+      keystorePath,
+      bootstrapKeyPath,
+      randomBytesImpl: vi.fn().mockReturnValue(
+        Buffer.from('0123456789abcdef'.repeat(4), 'hex'),
+      ),
+    })
+
+    expect(bootstrapKey).toBe('0123456789abcdef'.repeat(4))
+    await rm(keystorePath, { force: true })
+
+    const restartedStore = new ApiKeyJsonStore(keystorePath)
+    const restoredKey = await bootstrapDefaultMasterKey(restartedStore, {
+      env: { [DEFAULT_MASTER_KEY_OPT_IN_ENV]: '1' },
+      keystorePath,
+      bootstrapKeyPath,
+      randomBytesImpl: vi.fn(),
+    })
+
+    expect(restoredKey).toBe(bootstrapKey)
+
+    mockExecFile((_command, args, callback) => {
+      expect(args).toEqual(['-tlnp'])
+      callback(
+        null,
+        [
+          'Netid State  Recv-Q Send-Q Local Address:Port Peer Address:Port Process',
+          'tcp   LISTEN 0      4096         *:3001            *:*',
+        ].join('\n'),
+        '',
+      )
+    })
+
+    const server = await startServer({
+      scriptsDir,
+      apiKeyStore: restartedStore,
+      checkHealth: async () => true,
+    })
+
+    const response = await fetch(`${server.baseUrl}/api/services/list`, {
+      headers: {
+        'x-hammurabi-api-key': bootstrapKey ?? '',
+      },
+    })
+
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual([
+      expect.objectContaining({
+        name: 'alpha',
+        port: 3001,
+        status: 'running',
+        healthy: true,
+        listening: true,
+      }),
+    ])
 
     await server.close()
   })

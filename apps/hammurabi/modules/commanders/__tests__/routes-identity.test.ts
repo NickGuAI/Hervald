@@ -237,7 +237,6 @@ describe('commanders identity routes', () => {
         body: JSON.stringify({
           host: 'template-source',
           displayName: 'Template Source',
-          roleKey: 'engineering',
           persona: 'Template export test commander',
           maxTurns: 42,
           contextMode: 'fat',
@@ -279,7 +278,7 @@ describe('commanders identity routes', () => {
       const exported = (await exportResponse.json()) as {
         schemaVersion: number
         sourceCommanderId: string
-        commander: { displayName: string; roleKey?: string; maxTurns?: number }
+        commander: { displayName: string; maxTurns?: number }
         commanderMd: string
         memorySnapshot: { memoryMd: string; syncRevision: number }
         skillBindings: unknown[]
@@ -289,7 +288,6 @@ describe('commanders identity routes', () => {
         sourceCommanderId: created.id,
         commander: {
           displayName: 'Template Source',
-          roleKey: 'engineering',
           maxTurns: 42,
         },
       })

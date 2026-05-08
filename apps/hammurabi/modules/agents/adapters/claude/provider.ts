@@ -29,6 +29,7 @@ import type {
 } from '../../types.js'
 import { claudeMachineProvider } from './machine-adapter.js'
 import { claudeApprovalAdapter } from './approval-adapter.js'
+import { availableModels } from './models.js'
 import { createClaudeSessionAdapter, createClaudeStreamSession } from './session.js'
 
 function asObject(value: unknown): Record<string, unknown> | null {
@@ -110,6 +111,7 @@ function snapshotClaudeSession(session: StreamSession): PersistedStreamSession |
     creator: session.creator,
     conversationId: session.conversationId,
     agentType: session.agentType,
+    model: session.model,
     mode: session.mode,
     cwd: session.cwd,
     host: session.host,
@@ -144,6 +146,7 @@ function snapshotExitedClaudeSession(session: StreamSession): ExitedStreamSessio
     creator: session.creator,
     conversationId: session.conversationId,
     agentType: session.agentType,
+    model: session.model,
     mode: session.mode,
     cwd: session.cwd,
     host: session.host,
@@ -177,6 +180,7 @@ export const claudeProvider: ProviderAdapter = registerProvider({
     supportsCommanderConversation: true,
     supportsWorkerDispatch: true,
   },
+  availableModels,
   machineAuth: claudeMachineProvider,
   uiCapabilities: {
     supportsEffort: true,
@@ -234,6 +238,7 @@ export const claudeProvider: ProviderAdapter = registerProvider({
       machine,
       resumeSessionId: context?.sessionId,
       createdAt: entry.createdAt,
+      model: entry.model,
       spawnedBy: entry.spawnedBy,
       spawnedWorkers: entry.spawnedWorkers,
       resumedFrom: entry.resumedFrom,

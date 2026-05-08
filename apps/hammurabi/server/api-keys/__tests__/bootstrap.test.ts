@@ -78,6 +78,7 @@ describe('bootstrapDefaultMasterKey', () => {
 
   it('logs the random plaintext exactly once for operator retrieval', async () => {
     const filePath = await createTempStoreFilePath()
+    const bootstrapKeyPath = path.join(path.dirname(filePath), DEFAULT_BOOTSTRAP_KEY_FILENAME)
     const store = new ApiKeyJsonStore(filePath)
     const warnings: string[] = []
     const randomKeyBytes = Buffer.from('89abcdef01234567'.repeat(4), 'hex')
@@ -85,6 +86,7 @@ describe('bootstrapDefaultMasterKey', () => {
     const seeded = await bootstrapDefaultMasterKey(store, {
       env: { [DEFAULT_MASTER_KEY_OPT_IN_ENV]: '1' },
       keystorePath: filePath,
+      bootstrapKeyPath,
       logWarn: (message) => warnings.push(message),
       randomBytesImpl: vi.fn().mockReturnValue(randomKeyBytes),
     })

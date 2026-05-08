@@ -2,6 +2,7 @@ import { Router } from 'express'
 import type { AuthUser } from '@gehirn/auth-providers'
 import type { ApiKeyStoreLike } from '../../server/api-keys/store.js'
 import { getProvider, parseProviderId } from '../agents/providers/registry.js'
+import { validateModelForAgentType } from '../agents/providers/validate-model.js'
 import type { AgentType } from '../agents/types.js'
 import { combinedAuth } from '../../server/middleware/combined-auth.js'
 import {
@@ -449,6 +450,11 @@ export function createAutomationsRouter(options: AutomationsRouterOptions = {}):
       res.status(400).json({ error: 'model must be a string when provided' })
       return
     }
+    const modelValidation = validateModelForAgentType(agentType, model ?? null)
+    if (!modelValidation.ok) {
+      res.status(400).json({ error: modelValidation.error, validIds: modelValidation.validIds })
+      return
+    }
     const createInput: CreateAutomationInput = {
       name,
       trigger,
@@ -682,6 +688,18 @@ export function createAutomationsRouter(options: AutomationsRouterOptions = {}):
 
     try {
       await initialized
+      const existing = await scheduler.getAutomation(automationId)
+      if (!existing) {
+        res.status(404).json({ error: 'Automation not found' })
+        return
+      }
+      const nextAgentType = patch.agentType ?? existing.agentType
+      const nextModel = patch.model !== undefined ? patch.model : (existing.model ?? null)
+      const modelValidation = validateModelForAgentType(nextAgentType, nextModel ?? null)
+      if (!modelValidation.ok) {
+        res.status(400).json({ error: modelValidation.error, validIds: modelValidation.validIds })
+        return
+      }
       const updated = await scheduler.updateAutomation(automationId, patch)
       if (!updated) {
         res.status(404).json({ error: 'Automation not found' })

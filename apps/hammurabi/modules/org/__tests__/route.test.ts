@@ -109,6 +109,9 @@ async function startServer(dataDir: string): Promise<RunningServer> {
       async getAvatarUrl() {
         return null
       },
+      async getProfile() {
+        return null
+      },
     },
     automationStore: {
       async list() {
@@ -253,6 +256,127 @@ describe('org route', () => {
         avatarUrl: 'https://example.com/nick.png',
       })
       expect(typeof persisted.createdAt).toBe('string')
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('creates the founder and org identity via POST /api/org for bootstrap API-key sessions', async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), 'hammurabi-org-route-'))
+    tempDirs.push(dataDir)
+    process.env.HAMMURABI_DATA_DIR = dataDir
+
+    const server = await startServer(dataDir)
+
+    try {
+      const createResponse = await fetch(`${server.baseUrl}/api/org`, {
+        method: 'POST',
+        headers: {
+          ...API_KEY_HEADERS,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          displayName: 'Gehirn Inc.',
+          founder: {
+            displayName: 'Nick Gu',
+            email: 'nick@example.com',
+          },
+        }),
+      })
+
+      expect(createResponse.status).toBe(201)
+      const created = await createResponse.json()
+      expect(created).toMatchObject({
+        operator: {
+          kind: 'founder',
+          displayName: 'Nick Gu',
+          email: 'nick@example.com',
+        },
+        orgIdentity: {
+          name: 'Gehirn Inc.',
+        },
+      })
+      expect(created.operator.id).toMatch(/^founder-/)
+
+      const retryResponse = await fetch(`${server.baseUrl}/api/org`, {
+        method: 'POST',
+        headers: {
+          ...API_KEY_HEADERS,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          displayName: 'Gehirn Inc.',
+          founder: {
+            displayName: 'Nick Gu',
+            email: 'nick@example.com',
+          },
+        }),
+      })
+
+      expect(retryResponse.status).toBe(200)
+      const retried = await retryResponse.json()
+      expect(retried.operator.id).toBe(created.operator.id)
+
+      const orgReadResponse = await fetch(`${server.baseUrl}/api/org`, {
+        headers: API_KEY_HEADERS,
+      })
+
+      expect(orgReadResponse.status).toBe(200)
+      expect(await orgReadResponse.json()).toMatchObject({
+        operator: {
+          id: created.operator.id,
+          displayName: 'Nick Gu',
+          email: 'nick@example.com',
+        },
+        orgIdentity: {
+          name: 'Gehirn Inc.',
+        },
+      })
+
+      const persistedOperator = JSON.parse(await readFile(join(dataDir, 'operators.json'), 'utf8')) as Record<string, unknown>
+      expect(persistedOperator).toMatchObject({
+        id: created.operator.id,
+        kind: 'founder',
+        displayName: 'Nick Gu',
+        email: 'nick@example.com',
+      })
+
+      const persistedOrg = JSON.parse(await readFile(join(dataDir, 'org.json'), 'utf8')) as Record<string, unknown>
+      expect(persistedOrg).toMatchObject({
+        name: 'Gehirn Inc.',
+      })
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('rejects invalid founder setup payloads', async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), 'hammurabi-org-route-'))
+    tempDirs.push(dataDir)
+    process.env.HAMMURABI_DATA_DIR = dataDir
+
+    const server = await startServer(dataDir)
+
+    try {
+      const response = await fetch(`${server.baseUrl}/api/org`, {
+        method: 'POST',
+        headers: {
+          ...API_KEY_HEADERS,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          displayName: 'Gehirn Inc.',
+          founder: {
+            displayName: 'Nick Gu',
+            email: 'not-an-email',
+          },
+        }),
+      })
+
+      expect(response.status).toBe(400)
+      expect(await response.json()).toEqual({
+        error: 'founder.email must be a valid email address',
+      })
     } finally {
       await server.close()
     }

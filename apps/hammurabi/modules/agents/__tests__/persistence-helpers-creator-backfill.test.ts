@@ -18,7 +18,9 @@ function makeBaseContext(sessionStorePath: string): PersistenceHelpersContext {
   return {
     sessionStorePath,
     maxSessions: 32,
-    machineRegistry: {} as PersistenceHelpersContext['machineRegistry'],
+    machineRegistry: {
+      readMachineRegistry: vi.fn(async () => []),
+    } as PersistenceHelpersContext['machineRegistry'],
     sessions: new Map<string, AnySession>(),
     completedSessions: new Map<string, CompletedSession>(),
     exitedStreamSessions: new Map<string, ExitedStreamSessionState>(),

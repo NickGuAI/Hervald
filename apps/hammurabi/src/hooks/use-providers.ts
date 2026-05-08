@@ -6,6 +6,10 @@ import type {
   ProviderRegistryEntry,
   ProviderRegistryResponse,
 } from '@/types'
+import { availableModels as claudeModels } from '../../modules/agents/adapters/claude/models.js'
+import { availableModels as codexModels } from '../../modules/agents/adapters/codex/models.js'
+import { availableModels as geminiModels } from '../../modules/agents/adapters/gemini/models.js'
+import { availableModels as opencodeModels } from '../../modules/agents/adapters/opencode/models.js'
 
 const fallbackQueryClient = new QueryClient({
   defaultOptions: {
@@ -32,6 +36,7 @@ const fallbackProviders: ProviderRegistryEntry[] = [
       supportsLoginMode: true,
       permissionModes: [{ value: 'default', label: 'default', description: 'Default approval policy' }],
     },
+    availableModels: claudeModels,
   },
   {
     id: 'codex',
@@ -49,6 +54,7 @@ const fallbackProviders: ProviderRegistryEntry[] = [
       supportsLoginMode: true,
       permissionModes: [{ value: 'default', label: 'default', description: 'Default approval policy' }],
     },
+    availableModels: codexModels,
   },
   {
     id: 'gemini',
@@ -67,6 +73,7 @@ const fallbackProviders: ProviderRegistryEntry[] = [
       forcedTransport: 'stream',
       permissionModes: [{ value: 'default', label: 'default', description: 'Default approval policy' }],
     },
+    availableModels: geminiModels,
   },
   {
     id: 'opencode',
@@ -84,6 +91,7 @@ const fallbackProviders: ProviderRegistryEntry[] = [
       supportsLoginMode: false,
       permissionModes: [{ value: 'default', label: 'default', description: 'Default approval policy' }],
     },
+    availableModels: opencodeModels,
   },
 ]
 

@@ -1,11 +1,14 @@
 import { rm } from 'node:fs/promises'
 import path from 'node:path'
+import type { Response } from 'express'
 import { sanitizeTranscriptFileKey } from '../../agents/session/persistence.js'
+import { liveSessionToApiPayload } from '../../agents/session/state.js'
 import {
   parseClaudeAdaptiveThinking,
 } from '../../agents/session/input.js'
 import { deleteSessionTranscript } from '../../agents/transcript-store.js'
 import { parseProviderId } from '../../agents/providers/registry.js'
+import { validateModelForAgentType } from '../../agents/providers/validate-model.js'
 import type { AgentType } from '../../agents/types.js'
 import {
   conversationNamesEqual,
@@ -108,14 +111,39 @@ function parseConversationName(raw: unknown): string | null {
   return normalizeConversationName(raw)
 }
 
+function parseConversationModel(
+  raw: unknown,
+): { ok: true; value: string | null | undefined } | { ok: false } {
+  if (raw === undefined) {
+    return { ok: true, value: undefined }
+  }
+  if (raw === null) {
+    return { ok: true, value: null }
+  }
+  if (typeof raw !== 'string') {
+    return { ok: false }
+  }
+
+  const trimmed = raw.trim()
+  return { ok: true, value: trimmed.length > 0 ? trimmed : null }
+}
+
 function withLiveSession(context: CommanderRoutesContext, conversation: Conversation) {
   const liveSession = getLiveConversationSession(context, conversation)
   const defaultConversationId = buildDefaultCommanderConversationId(conversation.commanderId)
   return {
     ...conversation,
     isDefaultConversation: conversation.id === defaultConversationId,
-    liveSession: liveSession ?? null,
+    liveSession: liveSession ? liveSessionToApiPayload(liveSession) : null,
   }
+}
+
+function sendConversationListSerializationFailure(res: Response, error: unknown): void {
+  const detail = error instanceof Error ? error.message : String(error)
+  res.status(500).json({
+    error: 'Conversation list serialization failed',
+    detail,
+  })
 }
 
 async function archiveConversation(
@@ -205,7 +233,11 @@ export function registerConversationRoutes(
     }
 
     const activeChat = await context.conversationStore.getActiveChatForCommander(commanderId)
-    res.json(activeChat ? withLiveSession(context, activeChat) : null)
+    try {
+      res.json(activeChat ? withLiveSession(context, activeChat) : null)
+    } catch (error) {
+      sendConversationListSerializationFailure(res, error)
+    }
   })
 
   commanderRouter.get('/:id/conversations', context.requireReadAccess, async (req, res) => {
@@ -221,7 +253,11 @@ export function registerConversationRoutes(
     }
 
     const conversations = await context.conversationStore.listByCommander(commanderId)
-    res.json(conversations.map((conversation) => withLiveSession(context, conversation)))
+    try {
+      res.json(conversations.map((conversation) => withLiveSession(context, conversation)))
+    } catch (error) {
+      sendConversationListSerializationFailure(res, error)
+    }
   })
 
   commanderRouter.post('/:id/conversations', context.requireWorkerDispatchAccess, async (req, res) => {
@@ -279,13 +315,26 @@ export function registerConversationRoutes(
       return
     }
 
+    const requestedModel = parseConversationModel(req.body?.model)
+    if (!requestedModel.ok) {
+      res.status(400).json({ error: 'model must be a string or null when provided' })
+      return
+    }
+    const selectedAgentType = requestedAgentType ?? commander.agentType ?? 'claude'
+    const modelValidation = validateModelForAgentType(selectedAgentType, requestedModel.value ?? null)
+    if (!modelValidation.ok) {
+      res.status(400).json({ error: modelValidation.error, validIds: modelValidation.validIds })
+      return
+    }
+
     const nowIso = context.now().toISOString()
     const created = await context.conversationStore.create({
       ...(requestedId ? { id: requestedId } : {}),
       commanderId: commander.id,
       surface,
       ...(channelMeta ? { channelMeta } : {}),
-      ...(requestedAgentType ? { agentType: requestedAgentType } : {}),
+      ...(requestedAgentType || requestedModel.value !== undefined ? { agentType: selectedAgentType } : {}),
+      ...(requestedModel.value !== undefined ? { model: requestedModel.value } : {}),
       status: 'idle',
       currentTask: null,
       lastHeartbeat: null,
@@ -328,6 +377,12 @@ export function registerConversationRoutes(
       return
     }
 
+    const requestedModel = parseConversationModel(req.body?.model)
+    if (!requestedModel.ok) {
+      res.status(400).json({ error: 'model must be a string or null when provided' })
+      return
+    }
+
     const requestedStatus = req.body?.status === undefined
       ? undefined
       : parseConversationStatus(req.body?.status)
@@ -339,9 +394,10 @@ export function registerConversationRoutes(
     if (
       requestedName === undefined
       && requestedAgentType === undefined
+      && requestedModel.value === undefined
       && requestedStatus === undefined
     ) {
-      res.status(400).json({ error: 'At least one of name, agentType, or status is required' })
+      res.status(400).json({ error: 'At least one of name, agentType, model, or status is required' })
       return
     }
 
@@ -357,10 +413,37 @@ export function registerConversationRoutes(
       }
     }
 
+    const commander = await context.sessionStore.get(conversation.commanderId)
+    const nextAgentType = requestedAgentType ?? conversation.agentType ?? commander?.agentType ?? 'claude'
+    const providerChanged = Boolean(requestedAgentType && requestedAgentType !== conversation.agentType)
+    const nextModel = requestedModel.value !== undefined
+      ? requestedModel.value
+      : providerChanged
+        ? null
+        : conversation.model ?? null
+    if (providerChanged || requestedModel.value !== undefined) {
+      const modelValidation = validateModelForAgentType(nextAgentType, nextModel)
+      if (!modelValidation.ok) {
+        res.status(400).json({ error: modelValidation.error, validIds: modelValidation.validIds })
+        return
+      }
+    }
+    if (
+      (requestedAgentType !== undefined || requestedModel.value !== undefined)
+      && (conversation.status === 'active' || getLiveConversationSession(context, conversation))
+    ) {
+      res.status(409).json({
+        error: `Conversation "${conversation.id}" is active; stop it before changing provider or model`,
+      })
+      return
+    }
+
     let updated = conversation
-    if (requestedAgentType && requestedAgentType !== conversation.agentType) {
+    if (providerChanged || requestedModel.value !== undefined) {
       try {
-        updated = await swapConversationProvider(context, updated, requestedAgentType)
+        updated = await swapConversationProvider(context, updated, nextAgentType, {
+          model: nextModel,
+        })
       } catch (error) {
         if (error instanceof ConversationProviderSwapConflictError) {
           res.status(409).json({ error: error.message })
@@ -430,6 +513,17 @@ export function registerConversationRoutes(
       return
     }
 
+    const requestedModel = parseConversationModel(body.model)
+    if (!requestedModel.ok) {
+      res.status(400).json({ error: 'model must be a string or null when provided' })
+      return
+    }
+    const modelValidation = validateModelForAgentType(agentType, requestedModel.value ?? null)
+    if (!modelValidation.ok) {
+      res.status(400).json({ error: modelValidation.error, validIds: modelValidation.validIds })
+      return
+    }
+
     const parsedAdaptiveThinking = parseClaudeAdaptiveThinking(body.adaptiveThinking)
     if (body.adaptiveThinking !== undefined && parsedAdaptiveThinking === null) {
       res.status(400).json({ error: 'Invalid adaptiveThinking. Expected one of: enabled, disabled' })
@@ -450,6 +544,7 @@ export function registerConversationRoutes(
 
       const spawnOptions: ConversationSpawnOptions = {
         agentType,
+        ...(requestedModel.value !== undefined ? { model: requestedModel.value } : {}),
         ...(adaptiveThinking !== undefined ? { adaptiveThinking } : {}),
       }
       const started = await startConversationSession(
@@ -473,7 +568,7 @@ export function registerConversationRoutes(
       })
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error)
-      res.status(503).json({ error: detail, providerSpawnFailed: true })
+      res.status(503).json({ error: detail })
     }
   })
 

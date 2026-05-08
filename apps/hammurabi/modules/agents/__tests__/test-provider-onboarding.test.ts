@@ -21,7 +21,6 @@ import {
 } from '../providers/registry.js'
 import {
   buildNewAutomationCreateRequestBody,
-  validateHireCommanderWizardStep,
 } from '../../org/forms/helpers.js'
 import type { ProviderRegistryEntry } from '@/types'
 
@@ -660,22 +659,6 @@ describe('provider onboarding acceptance', () => {
           },
         ),
       ).not.toBeNull()
-
-      const hireCommanderErrors = validateHireCommanderWizardStep({
-        displayName: 'Test Foo Commander',
-        roleKey: 'engineering',
-        persona: '',
-        agentType: TEST_PROVIDER_ID,
-        effort: 'medium',
-      }, 'review', {
-        existingCommanderNames: [],
-        providers,
-      })
-      expect(hireCommanderErrors).toEqual({
-        global: null,
-        displayName: null,
-        roleKey: null,
-      })
 
       expect(
         providers

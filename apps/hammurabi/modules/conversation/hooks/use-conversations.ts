@@ -22,6 +22,8 @@ export interface ConversationRecord extends Omit<ConversationContract, 'currentT
   currentTask: CommanderCurrentTask | null
   status: ConversationStatus
   surface: ConversationSurface
+  agentType?: AgentType | null
+  model?: string | null
   liveSession: AgentSession | null
 }
 
@@ -38,11 +40,13 @@ export interface CreateConversationInput {
   channelMeta?: Record<string, unknown>
   currentTask?: CommanderCurrentTask | null
   agentType?: AgentType
+  model?: string | null
 }
 
 export interface StartConversationInput {
   conversationId: string
   agentType: AgentType
+  model?: string | null
   effort?: ClaudeEffortLevel
   adaptiveThinking?: ClaudeAdaptiveThinkingMode
   cwd?: string
@@ -57,6 +61,7 @@ export interface UpdateConversationInput {
   conversationId: string
   name?: string
   agentType?: AgentType
+  model?: string | null
   status?: ConversationStatus
 }
 
@@ -186,6 +191,7 @@ async function postCreateConversation(
         ...(input.channelMeta !== undefined ? { channelMeta: input.channelMeta } : {}),
         ...(input.currentTask !== undefined ? { currentTask: input.currentTask } : {}),
         ...(input.agentType !== undefined ? { agentType: input.agentType } : {}),
+        ...(input.model !== undefined ? { model: input.model } : {}),
       }),
     },
   )
@@ -203,6 +209,7 @@ async function postStartConversation(
       },
       body: JSON.stringify({
         agentType: input.agentType,
+        ...(input.model !== undefined ? { model: input.model } : {}),
         ...(input.effort !== undefined ? { effort: input.effort } : {}),
         ...(input.adaptiveThinking !== undefined
           ? { adaptiveThinking: input.adaptiveThinking }
@@ -240,6 +247,7 @@ async function patchConversation(
       body: JSON.stringify({
         ...(input.name !== undefined ? { name: input.name } : {}),
         ...(input.agentType !== undefined ? { agentType: input.agentType } : {}),
+        ...(input.model !== undefined ? { model: input.model } : {}),
         ...(input.status !== undefined ? { status: input.status } : {}),
       }),
     },

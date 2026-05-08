@@ -21,7 +21,6 @@ function createCommander(overrides: Partial<OrgNode> = {}): OrgNode {
     kind: 'commander',
     parentId: 'founder-1',
     displayName: 'Atlas',
-    roleKey: 'engineering',
     avatarUrl: null,
     status: 'active',
     costUsd: 0,

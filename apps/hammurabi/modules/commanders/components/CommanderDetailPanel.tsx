@@ -168,7 +168,9 @@ export function CommanderDetailPanel({
             </div>
             <p className="text-whisper text-sumi-mist mt-1 font-mono truncate pl-4">{commander.id}</p>
             <p className="text-whisper text-sumi-diluted mt-1 pl-4">
-              agent: {commander.agentType ?? 'claude'} · effort: {commander.effort ?? 'max'}
+              agent: {commander.agentType ?? 'claude'}
+              {commander.model ? ` · model: ${commander.model}` : ''}
+              · effort: {commander.effort ?? 'max'}
             </p>
           </div>
 

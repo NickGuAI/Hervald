@@ -560,6 +560,7 @@ export function parseQuestContract(raw: unknown): CommanderQuestContract | null 
       cwd: process.cwd(),
       permissionMode: 'default',
       agentType: 'claude',
+      model: null,
       skillsToUse: [],
     }
   }
@@ -571,6 +572,9 @@ export function parseQuestContract(raw: unknown): CommanderQuestContract | null 
   const cwd = parseMessage(raw.cwd) ?? process.cwd()
   const permissionMode = parseOptionalClaudePermissionMode(raw.permissionMode)
   const agentType = parseProviderId(raw.agentType) ?? 'claude'
+  const model = raw.model === null
+    ? null
+    : (parseMessage(raw.model) ?? undefined)
   const skillsToUse = parseOptionalStringArray(raw.skillsToUse)
   if (permissionMode === null || skillsToUse === null) {
     return null
@@ -580,6 +584,7 @@ export function parseQuestContract(raw: unknown): CommanderQuestContract | null 
     cwd,
     permissionMode: permissionMode ?? 'default',
     agentType,
+    model: model ?? null,
     skillsToUse,
   }
 }

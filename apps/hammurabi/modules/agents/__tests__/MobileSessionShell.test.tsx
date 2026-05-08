@@ -40,6 +40,7 @@ vi.mock('@modules/agents/components/SessionComposer', async () => {
         variant,
         onOpenAddToChat,
         showWorkspaceShortcut,
+        queueSnapshot,
       }: {
         disabled?: boolean
         isStreaming?: boolean
@@ -47,6 +48,7 @@ vi.mock('@modules/agents/components/SessionComposer', async () => {
         variant?: 'desktop' | 'mobile'
         onOpenAddToChat?: () => void
         showWorkspaceShortcut?: boolean
+        queueSnapshot?: { totalCount?: number; maxSize?: number }
       },
       ref,
     ) {
@@ -64,6 +66,8 @@ vi.mock('@modules/agents/components/SessionComposer', async () => {
           data-theme={theme}
           data-variant={variant}
           data-workspace-shortcut={String(Boolean(showWorkspaceShortcut))}
+          data-queue-total={String(queueSnapshot?.totalCount ?? 0)}
+          data-queue-max={String(queueSnapshot?.maxSize ?? 0)}
         >
           SessionComposer
           <button type="button" onClick={onOpenAddToChat}>
@@ -204,19 +208,18 @@ function clickSelector(selector: string) {
   ;(element as HTMLButtonElement).click()
 }
 
-function clickButtonByText(label: string) {
+function findButtonByText(label: string): HTMLButtonElement {
   const button = Array.from(document.body.querySelectorAll('button'))
     .find((candidate) => candidate.textContent?.includes(label))
   expect(button, `Expected button with text: ${label}`).toBeTruthy()
-  ;(button as HTMLButtonElement).click()
+  return button as HTMLButtonElement
 }
 
-beforeEach(() => {
-  openImagePickerSpy.mockReset()
-  openSkillsPickerSpy.mockReset()
-})
+function clickButtonByText(label: string) {
+  findButtonByText(label).click()
+}
 
-afterEach(() => {
+function cleanupShell() {
   if (root) {
     flushSync(() => {
       root?.unmount()
@@ -226,8 +229,25 @@ afterEach(() => {
   container?.remove()
   container = null
   document.body.innerHTML = ''
+}
+
+beforeEach(() => {
+  openImagePickerSpy.mockReset()
+  openSkillsPickerSpy.mockReset()
+})
+
+afterEach(() => {
+  cleanupShell()
   vi.restoreAllMocks()
 })
+
+function expectSemanticMenuButton(element: Element | null) {
+  expect(element).not.toBeNull()
+  expect(element?.classList.contains('text-sumi-black')).toBe(true)
+  expect(element?.classList.contains('hover:bg-ink-wash')).toBe(true)
+  expect(element?.classList.contains('text-washi-white/85')).toBe(false)
+  expect(element?.classList.contains('hover:bg-white/5')).toBe(false)
+}
 
 describe('MobileSessionShell', () => {
   it('renders the header with label and meta', async () => {
@@ -287,7 +307,78 @@ describe('MobileSessionShell', () => {
     expect(document.body.textContent).toContain('Workers')
     expect(document.body.textContent).toContain('Workspace')
     expect(document.body.textContent).toContain('Kill Session')
-    expect(document.body.textContent).toContain('Back to Sessions')
+    expect(document.body.textContent).toContain('Back to Org')
+  })
+
+  it('uses semantic overflow menu foreground and divider tokens in both themes', async () => {
+    for (const theme of ['dark', 'light'] as const) {
+      renderShell({
+        theme,
+        rootClassName: `session-view-overlay hv-${theme}`,
+        onNewQuest: vi.fn(),
+        conversation: buildConversation({ status: 'active' }),
+        onStopConversation: vi.fn(async () => undefined),
+        onRenameConversation: vi.fn(async () => undefined),
+        onSwapConversationProvider: vi.fn(async () => undefined),
+        onArchiveConversation: vi.fn(async () => undefined),
+        onRemoveConversation: vi.fn(async () => undefined),
+      })
+
+      flushSync(() => {
+        clickSelector('button[aria-label="Session actions"]')
+      })
+
+      const menu = document.body.querySelector('[data-testid="mobile-session-overflow-menu"]')
+      expect(menu).not.toBeNull()
+      expect(menu?.classList.contains('text-sumi-black')).toBe(true)
+
+      expectSemanticMenuButton(document.body.querySelector('button[aria-label="Approvals (1 pending)"]'))
+      expectSemanticMenuButton(findButtonByText('New Quest'))
+      expectSemanticMenuButton(findButtonByText('Workers'))
+      expectSemanticMenuButton(findButtonByText('Workspace'))
+      expectSemanticMenuButton(document.body.querySelector('[data-testid="mobile-chat-rename-button"]'))
+      expect(document.body.querySelector('[data-testid="mobile-chat-provider-menu-button"]')).toBeNull()
+      expectSemanticMenuButton(document.body.querySelector('[data-testid="mobile-chat-close-button"]'))
+      expectSemanticMenuButton(findButtonByText('Stop chat'))
+
+      const backToOrg = findButtonByText('Back to Org')
+      expect(backToOrg.classList.contains('text-sumi-diluted')).toBe(true)
+      expect(backToOrg.classList.contains('hover:bg-ink-wash')).toBe(true)
+      expect(backToOrg.classList.contains('text-washi-white/65')).toBe(false)
+      expect(backToOrg.classList.contains('hover:bg-white/5')).toBe(false)
+
+      expect(document.body.querySelector('[data-testid="mobile-chat-remove-button"]')?.classList.contains('text-accent-vermillion')).toBe(true)
+      expect(findButtonByText('Kill Session').classList.contains('text-accent-vermillion')).toBe(true)
+
+      const dividers = Array.from(menu?.querySelectorAll('div') ?? [])
+        .filter((element) => element.classList.contains('h-px'))
+      expect(dividers.length).toBeGreaterThan(0)
+      for (const divider of dividers) {
+        expect(divider.classList.contains('bg-ink-border')).toBe(true)
+        expect(divider.classList.contains('bg-white/10')).toBe(false)
+      }
+
+      cleanupShell()
+    }
+  })
+
+  it('uses semantic foreground tokens for Start chat in both themes', async () => {
+    for (const theme of ['dark', 'light'] as const) {
+      renderShell({
+        theme,
+        rootClassName: `session-view-overlay hv-${theme}`,
+        conversation: buildConversation({ status: 'idle' }),
+        onStartConversation: vi.fn(async () => undefined),
+      })
+
+      flushSync(() => {
+        clickSelector('button[aria-label="Session actions"]')
+      })
+
+      expectSemanticMenuButton(findButtonByText('Start chat'))
+
+      cleanupShell()
+    }
   })
 
   it('invokes window.confirm before kill and only calls onKill when confirmed', async () => {
@@ -334,7 +425,7 @@ describe('MobileSessionShell', () => {
     expect(onOpenWorkspace).toHaveBeenCalledTimes(1)
   })
 
-  it('renders the queue dock header collapsed by default when queueing is enabled and items exist', async () => {
+  it('removes the legacy queue header strip above the composer', async () => {
     renderShell({
       queueSnapshot: {
         currentMessage: null,
@@ -349,19 +440,11 @@ describe('MobileSessionShell', () => {
       },
     })
 
-    expect(document.body.textContent).toContain('Queue')
-    expect(document.body.textContent).toContain('1 queued')
-
-    // Initial render: only the one-line header is visible. Detail content
-    // (current-message card, queued-item list, empty hint) is hidden.
+    expect(document.body.querySelector('[data-testid="mobile-queue-header"]')).toBeNull()
     expect(document.body.querySelector('[data-testid="mobile-queue-details"]')).toBeNull()
-    expect(document.body.textContent).not.toContain('Investigate the mobile shell gap')
-
-    const header = document.body.querySelector('[data-testid="mobile-queue-header"]')
-    expect(header?.getAttribute('aria-expanded')).toBe('false')
   })
 
-  it('expands the queue panel when the header is tapped and collapses on second tap', async () => {
+  it('passes queue state through to SessionComposer for the mobile queue button', async () => {
     renderShell({
       queueSnapshot: {
         currentMessage: null,
@@ -376,92 +459,9 @@ describe('MobileSessionShell', () => {
       },
     })
 
-    const header = document.body.querySelector('[data-testid="mobile-queue-header"]') as HTMLElement | null
-    expect(header).not.toBeNull()
-    expect(header?.getAttribute('aria-expanded')).toBe('false')
-
-    flushSync(() => {
-      ;(header as HTMLElement).click()
-    })
-
-    const headerExpanded = document.body.querySelector('[data-testid="mobile-queue-header"]')
-    expect(headerExpanded?.getAttribute('aria-expanded')).toBe('true')
-    expect(document.body.querySelector('[data-testid="mobile-queue-details"]')).not.toBeNull()
-    expect(document.body.textContent).toContain('Investigate the mobile shell gap')
-
-    flushSync(() => {
-      ;(headerExpanded as HTMLElement).click()
-    })
-
-    const headerCollapsed = document.body.querySelector('[data-testid="mobile-queue-header"]')
-    expect(headerCollapsed?.getAttribute('aria-expanded')).toBe('false')
-    expect(document.body.querySelector('[data-testid="mobile-queue-details"]')).toBeNull()
-    expect(document.body.textContent).not.toContain('Investigate the mobile shell gap')
-  })
-
-  it('does not toggle the queue panel when Clear is tapped (event propagation stops)', async () => {
-    const onClearQueue = vi.fn()
-    renderShell({
-      queueSnapshot: {
-        currentMessage: null,
-        items: [{
-          id: 'queued-1',
-          text: 'Investigate the mobile shell gap',
-          priority: 'normal',
-          queuedAt: '2026-04-21T15:00:00.000Z',
-        }],
-        totalCount: 1,
-        maxSize: 8,
-      },
-      onClearQueue,
-    })
-
-    const header = document.body.querySelector('[data-testid="mobile-queue-header"]') as HTMLElement | null
-    expect(header?.getAttribute('aria-expanded')).toBe('false')
-
-    // Expand first so we can confirm Clear does not collapse.
-    flushSync(() => {
-      ;(header as HTMLElement).click()
-    })
-
-    const headerExpanded = document.body.querySelector('[data-testid="mobile-queue-header"]')
-    expect(headerExpanded?.getAttribute('aria-expanded')).toBe('true')
-
-    const clearButton = Array.from(document.body.querySelectorAll('button'))
-      .find((candidate) => candidate.textContent?.trim() === 'Clear') as HTMLButtonElement | undefined
-    expect(clearButton).toBeTruthy()
-
-    flushSync(() => {
-      clearButton?.click()
-    })
-
-    expect(onClearQueue).toHaveBeenCalledTimes(1)
-
-    const headerAfterClear = document.body.querySelector('[data-testid="mobile-queue-header"]')
-    expect(headerAfterClear?.getAttribute('aria-expanded')).toBe('true')
-    expect(document.body.querySelector('[data-testid="mobile-queue-details"]')).not.toBeNull()
-  })
-
-  it('keeps Clear enabled when a direct-send preemption slot is pending', async () => {
-    renderShell({
-      queueSnapshot: {
-        currentMessage: {
-          id: 'send-1',
-          text: 'stop',
-          priority: 'high',
-          queuedAt: '2026-04-21T15:00:00.000Z',
-        },
-        items: [],
-        totalCount: 1,
-        maxSize: 8,
-      },
-    })
-
-    const clearButton = Array.from(document.body.querySelectorAll('button'))
-      .find((candidate) => candidate.textContent?.includes('Clear'))
-    expect(clearButton).toBeTruthy()
-    expect((clearButton as HTMLButtonElement).disabled).toBe(false)
-    expect(document.body.textContent).toContain('Working on send')
+    const composer = document.body.querySelector('[data-testid="session-composer"]')
+    expect(composer?.getAttribute('data-queue-total')).toBe('1')
+    expect(composer?.getAttribute('data-queue-max')).toBe('8')
   })
 
   it('passes the mobile composer variant and streaming state through to SessionComposer', async () => {
@@ -586,9 +586,9 @@ describe('MobileSessionShell', () => {
     expect(onStopConversation).toHaveBeenCalledWith('conv-1')
   })
 
-  it('exposes Rename, Swap provider, Close, and Remove inside the drawer', async () => {
+  it('exposes Rename, Provider / model, Close, and Remove inside the drawer for idle chats', async () => {
     renderShell({
-      conversation: buildConversation(),
+      conversation: buildConversation({ status: 'idle' }),
       onRenameConversation: vi.fn(async () => undefined),
       onSwapConversationProvider: vi.fn(async () => undefined),
       onArchiveConversation: vi.fn(async () => undefined),
@@ -600,9 +600,55 @@ describe('MobileSessionShell', () => {
     })
 
     expect(document.body.querySelector('[data-testid="mobile-chat-rename-button"]')?.textContent).toContain('Rename')
-    expect(document.body.querySelector('[data-testid="mobile-chat-provider-menu-button"]')?.textContent).toContain('Swap provider')
+    expect(document.body.querySelector('[data-testid="mobile-chat-provider-menu-button"]')?.textContent).toContain('Provider / model')
     expect(document.body.querySelector('[data-testid="mobile-chat-close-button"]')?.textContent).toContain('Close')
     expect(document.body.querySelector('[data-testid="mobile-chat-remove-button"]')?.textContent).toContain('Remove')
+  })
+
+  it('saves provider and model edits for idle chats from the overflow drawer', async () => {
+    const onSwapConversationProvider = vi.fn(async () => undefined)
+    renderShell({
+      conversation: buildConversation({ status: 'idle', agentType: 'claude', model: null }),
+      onSwapConversationProvider,
+    })
+
+    flushSync(() => {
+      clickSelector('button[aria-label="Session actions"]')
+    })
+    flushSync(() => {
+      clickSelector('[data-testid="mobile-chat-provider-menu-button"]')
+    })
+
+    const providerSelect = document.body.querySelector(
+      '[data-testid="mobile-chat-provider-select"]',
+    ) as HTMLSelectElement | null
+    const modelSelect = document.body.querySelector(
+      '[data-testid="mobile-chat-model-select"]',
+    ) as HTMLSelectElement | null
+    const saveButton = document.body.querySelector(
+      '[data-testid="mobile-chat-provider-save-button"]',
+    ) as HTMLButtonElement | null
+
+    expect(providerSelect).not.toBeNull()
+    expect(modelSelect).not.toBeNull()
+    expect(saveButton).not.toBeNull()
+
+    flushSync(() => {
+      if (providerSelect) {
+        providerSelect.value = 'codex'
+        providerSelect.dispatchEvent(new Event('change', { bubbles: true }))
+      }
+    })
+    flushSync(() => {
+      if (modelSelect) {
+        modelSelect.value = 'gpt-5.5'
+        modelSelect.dispatchEvent(new Event('change', { bubbles: true }))
+      }
+      saveButton?.click()
+    })
+    await Promise.resolve()
+
+    expect(onSwapConversationProvider).toHaveBeenCalledWith('conv-1', 'codex', 'gpt-5.5')
   })
 
   it('moves Approvals from the header into the drawer when there are pending items', async () => {

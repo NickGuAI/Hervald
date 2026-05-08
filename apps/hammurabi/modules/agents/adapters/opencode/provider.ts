@@ -21,6 +21,7 @@ import type {
 } from '../../types.js'
 import { opencodeMachineProvider } from './machine-adapter.js'
 import { opencodeApprovalAdapter } from './approval-adapter.js'
+import { availableModels } from './models.js'
 import {
   createOpenCodeAcpSession,
   createOpenCodeSessionAdapter,
@@ -71,6 +72,7 @@ function snapshotOpenCodeSession(session: StreamSession): PersistedStreamSession
     creator: session.creator,
     conversationId: session.conversationId,
     agentType: session.agentType,
+    model: session.model,
     mode: session.mode,
     cwd: session.cwd,
     host: session.host,
@@ -104,6 +106,7 @@ function snapshotExitedOpenCodeSession(session: StreamSession): ExitedStreamSess
     creator: session.creator,
     conversationId: session.conversationId,
     agentType: session.agentType,
+    model: session.model,
     mode: session.mode,
     cwd: session.cwd,
     host: session.host,
@@ -136,6 +139,7 @@ export const opencodeProvider: ProviderAdapter = registerProvider({
     supportsCommanderConversation: true,
     supportsWorkerDispatch: true,
   },
+  availableModels,
   machineAuth: opencodeMachineProvider,
   uiCapabilities: {
     supportsEffort: false,
@@ -197,7 +201,7 @@ export const opencodeProvider: ProviderAdapter = registerProvider({
       resumeSessionId: context?.sessionId,
       systemPrompt: undefined,
       maxTurns: undefined,
-      model: undefined,
+      model: entry.model,
       createdAt: entry.createdAt,
       spawnedBy: entry.spawnedBy,
       spawnedWorkers: entry.spawnedWorkers,

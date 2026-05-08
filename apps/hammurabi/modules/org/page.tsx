@@ -1,4 +1,4 @@
-import { OrgPage } from '@/surfaces/org/OrgPage'
+import { OrgPage } from './OrgPage'
 
 export default function OrgRoutePage() {
   return <OrgPage />

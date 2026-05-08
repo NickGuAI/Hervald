@@ -57,6 +57,8 @@ describe('ConversationStore', () => {
     const created = await store.create({
       commanderId: '00000000-0000-4000-a000-0000000000aa',
       surface: 'api',
+      agentType: 'codex',
+      model: 'gpt-5.5',
       status: 'idle',
       currentTask: null,
       lastHeartbeat: null,
@@ -114,6 +116,8 @@ describe('ConversationStore', () => {
     expect(listed).toHaveLength(1)
     expect(listed[0]).toEqual(expect.objectContaining({
       id: created.id,
+      agentType: 'codex',
+      model: 'gpt-5.5',
       status: 'archived',
       heartbeatTickCount: 3,
       completedTasks: 2,

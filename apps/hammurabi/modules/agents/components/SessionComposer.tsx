@@ -11,10 +11,12 @@ import {
 import { ArrowUp, ListPlus, Mic, Paperclip, Plus, Zap } from 'lucide-react'
 import { useOpenAITranscription, useOpenAITranscriptionConfig } from '@/hooks/use-openai-transcription'
 import { useSpeechRecognition } from '@/hooks/use-speech-recognition'
-import type { AgentType } from '@/types'
+import type { AgentType, SessionQueueSnapshot } from '@/types'
 import { cn } from '@/lib/utils'
 import { supportsQueuedDrafts } from '../queue-capability'
+import { getQueuePendingCount } from '../queue-state'
 import { SkillsPicker } from './SkillsPicker'
+import { MobileQueuePanel } from './MobileQueuePanel'
 import { useSessionDraft } from '../page-shell/use-session-draft'
 
 export interface SessionComposerImage {
@@ -43,6 +45,12 @@ interface SessionComposerProps {
   onOpenWorkspace?: () => void
   onOpenAddToChat?: () => void
   showWorkspaceShortcut?: boolean
+  queueSnapshot?: SessionQueueSnapshot
+  queueError?: string | null
+  isQueueMutating?: boolean
+  onClearQueue?: () => void
+  onMoveQueuedMessage?: (id: string, offset: number) => void
+  onRemoveQueuedMessage?: (id: string) => void
   onSend: (payload: SessionComposerSubmitPayload) => boolean | void | Promise<boolean | void>
   onQueue?: (
     payload: SessionComposerSubmitPayload,
@@ -80,6 +88,12 @@ export const SessionComposer = forwardRef<SessionComposerHandle, SessionComposer
   onOpenWorkspace,
   onOpenAddToChat,
   showWorkspaceShortcut = false,
+  queueSnapshot,
+  queueError,
+  isQueueMutating = false,
+  onClearQueue,
+  onMoveQueuedMessage,
+  onRemoveQueuedMessage,
   onSend,
   onQueue,
 }, ref) {
@@ -93,6 +107,7 @@ export const SessionComposer = forwardRef<SessionComposerHandle, SessionComposer
   } = useSessionDraft(sessionName)
   const [pendingImages, setPendingImages] = useState<SessionComposerImage[]>([])
   const [showSkills, setShowSkills] = useState(false)
+  const [showQueuePanel, setShowQueuePanel] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const { data: realtimeTranscriptionConfig } = useOpenAITranscriptionConfig()
   const openAITranscription = useOpenAITranscription({
@@ -113,6 +128,9 @@ export const SessionComposer = forwardRef<SessionComposerHandle, SessionComposer
 
   const isMobileVariant = variant === 'mobile'
   const queueDraftsSupported = !disabled && supportsQueuedDrafts(agentType) && typeof onQueue === 'function'
+  const totalQueuedCount = getQueuePendingCount(queueSnapshot)
+  const queueMaxSize = typeof queueSnapshot?.maxSize === 'number' ? queueSnapshot.maxSize : 0
+  const showMobileQueueButton = isMobileVariant && !disabled && queueMaxSize > 0
   const canQueueDraft = (
     queueDraftsSupported
     && (inputText.trim().length > 0 || pendingImages.length > 0)
@@ -380,6 +398,18 @@ export const SessionComposer = forwardRef<SessionComposerHandle, SessionComposer
                 <Plus size={18} />
               </button>
 
+              {showMobileQueueButton && (
+                <button
+                  type="button"
+                  className="composer-queue-btn composer-queue-btn--mobile"
+                  onClick={() => setShowQueuePanel(true)}
+                  aria-label="Open queue"
+                  title={`Queue ${totalQueuedCount}/${queueMaxSize}`}
+                >
+                  {`Queue ${totalQueuedCount}/${queueMaxSize}`}
+                </button>
+              )}
+
               <div className="composer-mobile-actions">
                 {isMicSupported && (
                   <button
@@ -505,6 +535,18 @@ export const SessionComposer = forwardRef<SessionComposerHandle, SessionComposer
           focusTextarea()
         }}
         onClose={() => setShowSkills(false)}
+      />
+
+      <MobileQueuePanel
+        open={showQueuePanel}
+        theme={theme}
+        queueSnapshot={queueSnapshot}
+        queueError={queueError}
+        isQueueMutating={isQueueMutating}
+        onClearQueue={onClearQueue}
+        onMoveQueuedMessage={onMoveQueuedMessage}
+        onRemoveQueuedMessage={onRemoveQueuedMessage}
+        onClose={() => setShowQueuePanel(false)}
       />
     </div>
   )

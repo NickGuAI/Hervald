@@ -21,6 +21,7 @@ export interface CommanderQuestContract {
   cwd: string
   permissionMode: 'default'
   agentType: string
+  model?: string | null
   skillsToUse: string[]
 }
 
@@ -237,6 +238,9 @@ function normalizeContract(
   const cwd = asTrimmedString(raw.cwd)
   const permissionMode = parseClaudePermissionMode(raw.permissionMode)
   const agentType = asTrimmedString(raw.agentType)
+  const model = raw.model === null
+    ? null
+    : asTrimmedString(raw.model) ?? undefined
   const skillsToUse = normalizeSkillsToUse(raw.skillsToUse)
   if (!cwd || permissionMode === null || !agentType || skillsToUse === null) {
     return { contract: null }
@@ -247,6 +251,7 @@ function normalizeContract(
       cwd,
       permissionMode,
       agentType,
+      ...(model !== undefined ? { model } : {}),
       skillsToUse,
     },
     aliasLiteral: permissionModeInput.aliasLiteral,

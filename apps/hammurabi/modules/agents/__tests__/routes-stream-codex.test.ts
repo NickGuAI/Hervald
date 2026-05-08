@@ -8,6 +8,7 @@ import { ActionPolicyGate } from '../../policies/action-policy-gate'
 import { ApprovalCoordinator } from '../../policies/pending-store'
 import { PolicyStore } from '../../policies/store'
 import type { PtySpawner } from '../routes'
+import { DEFAULT_CODEX_MODEL_ID } from '../adapters/codex/models'
 import {
   AUTH_HEADERS,
   INTERNAL_AUTH_HEADERS,
@@ -180,6 +181,7 @@ describe("stream sessions", () => {
         expect(turnRequests).toHaveLength(1)
         expect(turnRequests[0].params).toEqual({
           threadId: 'thread-1',
+          effort: 'xhigh',
           input: [{ type: 'text', text: 'Commander runtime started. Acknowledge readiness and await instructions.' }],
         })
       } finally {
@@ -299,13 +301,23 @@ describe("stream sessions", () => {
         expect(threadRequests).toHaveLength(1)
         const threadStartParams = threadRequests[0].params as Record<string, unknown>
         expect(Object.prototype.hasOwnProperty.call(threadStartParams, 'developerInstructions')).toBe(false)
+        expect(threadStartParams.model).toBe(DEFAULT_CODEX_MODEL_ID)
 
         const turnRequests = sidecar.getRequests('turn/start')
         expect(turnRequests).toHaveLength(1)
         expect(turnRequests[0].params).toEqual({
           threadId: 'thread-1',
+          effort: 'xhigh',
           input: [{ type: 'text', text: initialTask }],
         })
+
+        const sessionsResponse = await fetch(`${server.baseUrl}/api/agents/sessions`, {
+          headers: AUTH_HEADERS,
+        })
+        expect(sessionsResponse.status).toBe(200)
+        const sessions = await sessionsResponse.json() as Array<{ name: string; model?: string }>
+        expect(sessions.find((session) => session.name === 'codex-task-bootstrap')?.model)
+          .toBe(DEFAULT_CODEX_MODEL_ID)
       } finally {
         await sidecar.closeServer()
         await server.close()
@@ -328,7 +340,7 @@ describe("stream sessions", () => {
             mode: 'default',
             transportType: 'stream',
             agentType: 'codex',
-            model: 'claude-opus-4-6',
+            model: 'gpt-5.4',
             task: 'Review failing tests.',
           }),
         })
@@ -337,7 +349,38 @@ describe("stream sessions", () => {
         const threadStartParams = sidecar.getRequests('thread/start')[0]?.params as
           | Record<string, unknown>
           | undefined
-        expect(threadStartParams?.model).toBe('claude-opus-4-6')
+        expect(threadStartParams?.model).toBe('gpt-5.4')
+      } finally {
+        await sidecar.closeServer()
+        await server.close()
+      }
+    })
+
+  it('rejects cross-provider models with 400 and validIds', async () => {
+      const sidecar = installMockCodexSidecar()
+      const server = await startServer()
+
+      try {
+        const createResponse = await fetch(`${server.baseUrl}/api/agents/sessions`, {
+          method: 'POST',
+          headers: {
+            ...AUTH_HEADERS,
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify({
+            name: 'codex-invalid-model',
+            mode: 'default',
+            transportType: 'stream',
+            agentType: 'codex',
+            model: 'claude-opus-4-6',
+          }),
+        })
+        expect(createResponse.status).toBe(400)
+        expect(await createResponse.json()).toEqual({
+          error: 'Model "claude-opus-4-6" is not valid for provider "codex"',
+          validIds: expect.arrayContaining(['gpt-5.4', 'gpt-5.5']),
+        })
+        expect(sidecar.getRequests('thread/start')).toHaveLength(0)
       } finally {
         await sidecar.closeServer()
         await server.close()
@@ -365,7 +408,7 @@ describe("stream sessions", () => {
             mode: 'default',
             transportType: 'stream',
             agentType: 'codex',
-            model: 'claude-opus-4-6',
+            model: 'gpt-5.4',
           }),
         })
         expect(createResponse.status).toBe(201)
@@ -394,6 +437,7 @@ describe("stream sessions", () => {
           expect(turnStarts).toHaveLength(1)
           expect(turnStarts[0]?.params).toEqual({
             threadId: 'thread-1',
+            effort: 'xhigh',
             input: [{ type: 'text', text: 'first codex turn' }],
           })
         })
@@ -438,8 +482,8 @@ describe("stream sessions", () => {
           request.params as Record<string, unknown>
         ))
         expect(threadStartParams).toHaveLength(2)
-        expect(threadStartParams[0]?.model).toBe('claude-opus-4-6')
-        expect(threadStartParams[1]?.model).toBe('claude-opus-4-6')
+        expect(threadStartParams[0]?.model).toBe('gpt-5.4')
+        expect(threadStartParams[1]?.model).toBe('gpt-5.4')
 
         const secondMessageResponse = await fetch(`${server.baseUrl}/api/agents/sessions/codex-auto-rotate/message`, {
           method: 'POST',
@@ -456,6 +500,7 @@ describe("stream sessions", () => {
           expect(turnStarts).toHaveLength(2)
           expect(turnStarts[1]?.params).toEqual({
             threadId: 'thread-2',
+            effort: 'xhigh',
             input: [{ type: 'text', text: 'second codex turn' }],
           })
         })
@@ -507,7 +552,7 @@ describe("stream sessions", () => {
             creator: { kind: 'commander', id: 'codex-rotate' },
             transportType: 'stream',
             agentType: 'codex',
-            model: 'claude-opus-4-6',
+            model: 'gpt-5.4',
           }),
         })
         expect(createResponse.status).toBe(201)
@@ -527,6 +572,7 @@ describe("stream sessions", () => {
           expect(turnStarts).toHaveLength(1)
           expect(turnStarts[0]?.params).toEqual({
             threadId: 'thread-1',
+            effort: 'xhigh',
             input: [{ type: 'text', text: 'first commander codex turn' }],
           })
         })
@@ -559,6 +605,7 @@ describe("stream sessions", () => {
           expect(turnStarts).toHaveLength(2)
           expect(turnStarts[1]?.params).toEqual({
             threadId: 'thread-2',
+            effort: 'xhigh',
             input: [{ type: 'text', text: 'second commander codex turn' }],
           })
         })
@@ -720,6 +767,7 @@ describe("stream sessions", () => {
         expect(turnRequests).toHaveLength(1)
         expect(turnRequests[0].params).toEqual({
           threadId: 'thread-1',
+          effort: 'xhigh',
           input: [{ type: 'text', text: 'status?' }],
         })
 
@@ -781,6 +829,7 @@ describe("stream sessions", () => {
         expect(turnStarts.length).toBeLessThan(5)
         expect(turnStarts[turnStarts.length - 1]?.params).toEqual({
           threadId: 'thread-1',
+          effort: 'xhigh',
           input: [{ type: 'text', text: 'interrupt follow-up' }],
         })
       } finally {
@@ -2905,6 +2954,7 @@ describe("stream sessions", () => {
           expect(turnRequests).toHaveLength(1)
           expect(turnRequests[0].params).toEqual({
             threadId: 'thread-1',
+            effort: 'xhigh',
             input: [{ type: 'text', text: 'heartbeat' }],
           })
         })
@@ -2952,6 +3002,7 @@ describe("stream sessions", () => {
           expect(turnRequests).toHaveLength(1)
           expect(turnRequests[0]?.params).toEqual({
             threadId: 'thread-1',
+            effort: 'xhigh',
             input: [{ type: 'text', text: startupMessage }],
           })
         })
@@ -2998,6 +3049,7 @@ describe("stream sessions", () => {
           expect(turnRequests).toHaveLength(1)
           expect(turnRequests[0]?.params).toEqual({
             threadId: 'thread-1',
+            effort: 'xhigh',
             input: [{ type: 'text', text: task }],
           })
         })

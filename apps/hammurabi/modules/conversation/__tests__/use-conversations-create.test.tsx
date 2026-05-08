@@ -77,7 +77,7 @@ describe('useCreateConversation', () => {
   it('posts to the commander conversations route, updates both caches, and returns the created conversation', async () => {
     await renderHook()
 
-    const commanderId = 'commander/atlas'
+    const commanderId = 'commander/orion'
     const existingConversation: ConversationRecord = {
       id: 'conv-existing',
       commanderId,
@@ -133,7 +133,7 @@ describe('useCreateConversation', () => {
     })
 
     expect(mocks.fetchJson).toHaveBeenCalledWith(
-      '/api/commanders/commander%2Fathena/conversations',
+      '/api/commanders/commander%2Forion/conversations',
       {
         method: 'POST',
         headers: {

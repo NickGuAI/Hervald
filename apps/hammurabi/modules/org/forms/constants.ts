@@ -4,7 +4,6 @@ import {
   type ClaudeEffortLevel,
 } from '../../claude-effort.js'
 import type { ProviderRegistryEntry } from '@/types'
-import type { OrgCommanderRoleKey } from '../types.js'
 import type {
   NewAutomationCadencePreset,
   NewAutomationTrigger,
@@ -12,22 +11,11 @@ import type {
   OrgFormOption,
 } from './types.js'
 
-export const DEFAULT_HIRE_COMMANDER_AGENT_TYPE: OrgAgentType = 'claude'
-export const DEFAULT_HIRE_COMMANDER_EFFORT: ClaudeEffortLevel = DEFAULT_CLAUDE_EFFORT_LEVEL
 export const DEFAULT_NEW_AUTOMATION_AGENT_TYPE: OrgAgentType = 'claude'
 export const DEFAULT_NEW_AUTOMATION_TRIGGER: NewAutomationTrigger = 'schedule'
 export const DEFAULT_NEW_AUTOMATION_CADENCE_PRESET: NewAutomationCadencePreset = 'every-5-minutes'
 export const HOST_PATTERN = /^[a-zA-Z0-9_-]+$/
 export const CRON_SEGMENT_PATTERN = /^\s*\S+(?:\s+\S+){4}\s*$/
-
-export const HIRE_COMMANDER_ROLE_OPTIONS: ReadonlyArray<OrgFormOption<OrgCommanderRoleKey>> = [
-  { value: 'engineering', label: 'Engineering' },
-  { value: 'research', label: 'Research' },
-  { value: 'ops', label: 'Ops' },
-  { value: 'content', label: 'Content' },
-  { value: 'validator', label: 'Validator' },
-  { value: 'ea', label: 'EA' },
-]
 
 function toAgentOption(provider: Pick<ProviderRegistryEntry, 'id' | 'label'>): OrgFormOption<OrgAgentType> {
   return {

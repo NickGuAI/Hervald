@@ -53,6 +53,7 @@ function toOpenCodeRuntimeProcessError(error: Error): Error {
 export class GeminiAcpRuntime implements GeminiAcpRuntimeHandle {
   readonly sessionName: string
   readonly machine: (MachineConfig & { host: string }) | null
+  readonly model?: string
   process: ChildProcess | null = null
   requestId = 0
   pendingRequests = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void }>()
@@ -63,9 +64,10 @@ export class GeminiAcpRuntime implements GeminiAcpRuntimeHandle {
   transportInitialized = false
   stdioBuffer = ''
 
-  constructor(sessionName: string, machine?: MachineConfig) {
+  constructor(sessionName: string, machine?: MachineConfig, model?: string) {
     this.sessionName = sessionName
     this.machine = isRemoteMachine(machine) ? machine : null
+    this.model = typeof model === 'string' && model.trim().length > 0 ? model.trim() : undefined
   }
 
   private log(level: 'info' | 'warn' | 'error', message: string, extra: Record<string, unknown> = {}): void {
@@ -73,6 +75,7 @@ export class GeminiAcpRuntime implements GeminiAcpRuntimeHandle {
       sessionName: this.sessionName,
       pid: this.process?.pid ?? null,
       machineId: this.machine?.id ?? null,
+      model: this.model ?? null,
       pendingRequests: this.pendingRequests.size,
       listenerSessions: this.notificationListeners.size,
       ...(this.stderrTail.length > 0 ? { stderrTail: this.stderrTail } : {}),
@@ -261,7 +264,7 @@ export class GeminiAcpRuntime implements GeminiAcpRuntimeHandle {
         ? (() => {
             const preparedLaunch = prepareMachineLaunchEnvironment(this.machine, process.env)
             const remoteCommand = buildLoginShellCommand(
-              buildGeminiAcpInvocation(),
+              buildGeminiAcpInvocation(this.model),
               undefined,
               preparedLaunch.sourcedEnvFile,
             )
@@ -280,10 +283,16 @@ export class GeminiAcpRuntime implements GeminiAcpRuntimeHandle {
               },
             )
           })()
-        : spawn(GEMINI_ACP_COMMAND, GEMINI_ACP_ARGS, {
-          stdio: ['pipe', 'pipe', 'pipe'],
-          env: { ...process.env },
-        })
+        : spawn(
+          GEMINI_ACP_COMMAND,
+          this.model
+            ? [...GEMINI_ACP_ARGS, '--model', this.model]
+            : GEMINI_ACP_ARGS,
+          {
+            stdio: ['pipe', 'pipe', 'pipe'],
+            env: { ...process.env },
+          },
+        )
       this.attachProcess(cp)
       this.log('info', this.machine ? 'Spawned remote Gemini ACP runtime' : 'Spawned Gemini ACP runtime')
     }
@@ -311,13 +320,20 @@ export class GeminiAcpRuntime implements GeminiAcpRuntimeHandle {
         reject(error instanceof Error ? error : new Error(String(error)))
         return
       }
-      setTimeout(() => {
-        if (this.pendingRequests.has(id)) {
-          this.pendingRequests.delete(id)
-          this.log('warn', 'Gemini ACP request timed out', { id, method, timeoutMs: 30000 })
-          reject(new Error(`Gemini ACP request ${method} timed out`))
-        }
-      }, 30000)
+      // session/prompt is the open-ended agent turn — it streams session/update
+      // notifications and only resolves when the turn completes. A fixed
+      // timeout here SIGTERMs healthy long-running turns. Process exit /
+      // 'error' events still reject pendingRequests, so unbounded waits are
+      // safe.
+      if (method !== 'session/prompt') {
+        setTimeout(() => {
+          if (this.pendingRequests.has(id)) {
+            this.pendingRequests.delete(id)
+            this.log('warn', 'Gemini ACP request timed out', { id, method, timeoutMs: 30000 })
+            reject(new Error(`Gemini ACP request ${method} timed out`))
+          }
+        }, 30000)
+      }
     })
   }
 
@@ -676,13 +692,20 @@ export class OpenCodeAcpRuntime implements OpenCodeAcpRuntimeHandle {
         reject(error instanceof Error ? error : new Error(String(error)))
         return
       }
-      setTimeout(() => {
-        if (this.pendingRequests.has(id)) {
-          this.pendingRequests.delete(id)
-          this.log('warn', 'OpenCode ACP request timed out', { id, method, timeoutMs: 30000 })
-          reject(new Error(`OpenCode ACP request ${method} timed out`))
-        }
-      }, 30000)
+      // session/prompt is the open-ended agent turn — it streams session/update
+      // notifications and only resolves when the turn completes. A fixed
+      // timeout here SIGTERMs healthy long-running turns. Process exit /
+      // 'error' events still reject pendingRequests, so unbounded waits are
+      // safe.
+      if (method !== 'session/prompt') {
+        setTimeout(() => {
+          if (this.pendingRequests.has(id)) {
+            this.pendingRequests.delete(id)
+            this.log('warn', 'OpenCode ACP request timed out', { id, method, timeoutMs: 30000 })
+            reject(new Error(`OpenCode ACP request ${method} timed out`))
+          }
+        }, 30000)
+      }
     })
   }
 

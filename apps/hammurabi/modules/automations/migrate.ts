@@ -4,7 +4,10 @@ import { parseProviderId } from '../agents/providers/registry.js'
 import type { AgentType } from '../agents/types.js'
 import { resolveCommanderDataDir } from '../commanders/paths.js'
 import { resolveAutomationsDataDir } from '../data-dir.js'
-import { resolveFounderOperatorId } from './resolve-founder-operator.js'
+import {
+  isMissingFounderOperatorError,
+  resolveFounderOperatorId,
+} from './resolve-founder-operator.js'
 import type {
   Automation,
   AutomationExecutionSource,
@@ -106,6 +109,7 @@ export interface MigrateLegacyAutomationsOptions {
 
 export interface MigrateLegacyAutomationsResult {
   migratedIds: string[]
+  deferred: boolean
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -688,6 +692,17 @@ async function moveCommandRoomToBackup(roots: MigrationRoots): Promise<void> {
   await rename(roots.commandRoomDir, roots.commandRoomBackupDir)
 }
 
+async function resolveOptionalFounderOperatorId(): Promise<string | null> {
+  try {
+    return await resolveFounderOperatorId()
+  } catch (error) {
+    if (isMissingFounderOperatorError(error)) {
+      return null
+    }
+    throw error
+  }
+}
+
 export async function migrateLegacyAutomations(
   options: MigrateLegacyAutomationsOptions = {},
 ): Promise<MigrateLegacyAutomationsResult> {
@@ -696,15 +711,44 @@ export async function migrateLegacyAutomations(
   const roots = resolveMigrationRoots(automationsDir)
   await mkdir(automationsDir, { recursive: true })
 
-  const operatorId = await resolveFounderOperatorId()
   const manifest = await readManifest(roots.manifestPath)
   const migratedIds = new Set<string>()
   const now = new Date().toISOString()
+  const shouldLoadCronData = !manifest.cronTasksImported || !manifest.cronRunsMerged
+  const tasks = shouldLoadCronData
+    ? await loadLegacyCronTasks(roots, commanderDataDir)
+    : []
+  const runsByTaskId = shouldLoadCronData
+    ? await loadLegacyRuns(roots, commanderDataDir)
+    : new Map<string, LegacyWorkflowRun[]>()
+  const sentinels = !manifest.sentinelsImported
+    ? await loadLegacySentinels(roots)
+    : []
+  const needsFounderForMigration =
+    (!manifest.cronTasksImported && tasks.length > 0)
+    || (
+      !manifest.cronRunsMerged
+      && tasks.some((task) => (runsByTaskId.get(task.id) ?? []).length > 0)
+    )
+    || (!manifest.sentinelsImported && sentinels.length > 0)
+  const operatorId = needsFounderForMigration
+    ? await resolveOptionalFounderOperatorId()
+    : null
+
+  if (needsFounderForMigration && !operatorId) {
+    return {
+      migratedIds: [],
+      deferred: true,
+    }
+  }
+  const requireMigrationOperatorId = (): string => {
+    if (operatorId) {
+      return operatorId
+    }
+    throw new Error('Founder operator id is required for legacy automation migration')
+  }
 
   if (!manifest.cronTasksImported || !manifest.cronRunsMerged) {
-    const tasks = await loadLegacyCronTasks(roots, commanderDataDir)
-    const runsByTaskId = await loadLegacyRuns(roots, commanderDataDir)
-
     if (!manifest.cronTasksImported) {
       for (const task of tasks) {
         const filePath = path.join(automationsDir, `${task.id}.json`)
@@ -713,7 +757,7 @@ export async function migrateLegacyAutomations(
           continue
         }
 
-        const automation = buildCronAutomation(task, operatorId, automationsDir, now)
+        const automation = buildCronAutomation(task, requireMigrationOperatorId(), automationsDir, now)
         await ensureAutomationArtifacts(path.join(automationsDir, task.id), automation)
         await writeJsonFileAtomic(filePath, automation)
         migratedIds.add(task.id)
@@ -733,7 +777,7 @@ export async function migrateLegacyAutomations(
 
         const filePath = path.join(automationsDir, `${task.id}.json`)
         const existing = asAutomationRecord(await readJsonFile(filePath))
-        const base = existing ?? buildCronAutomation(task, operatorId, automationsDir, now)
+        const base = existing ?? buildCronAutomation(task, requireMigrationOperatorId(), automationsDir, now)
         const history = mergeHistory(base.history, additions)
         const totals = resolveTotals(history)
         const nextAutomation: Automation = {
@@ -756,10 +800,10 @@ export async function migrateLegacyAutomations(
   }
 
   if (!manifest.sentinelsImported) {
-    for (const sentinel of await loadLegacySentinels(roots)) {
+    for (const sentinel of sentinels) {
       const filePath = path.join(automationsDir, `${sentinel.id}.json`)
       const existing = asAutomationRecord(await readJsonFile(filePath))
-      const base = existing ?? buildSentinelAutomation(sentinel, operatorId, automationsDir, now)
+      const base = existing ?? buildSentinelAutomation(sentinel, requireMigrationOperatorId(), automationsDir, now)
       const history = mergeHistory(base.history, (sentinel.history ?? []).map(mapSentinelHistory))
       const totals = resolveTotals(history)
       const nextAutomation: Automation = {
@@ -789,5 +833,6 @@ export async function migrateLegacyAutomations(
 
   return {
     migratedIds: [...migratedIds].sort((left, right) => left.localeCompare(right)),
+    deferred: false,
   }
 }

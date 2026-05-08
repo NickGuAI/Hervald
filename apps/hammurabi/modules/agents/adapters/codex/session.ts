@@ -50,6 +50,7 @@ import {
   parseCodexSidecarError,
   parseCodexApprovalMethod,
 } from './helpers.js'
+import { DEFAULT_CODEX_MODEL_ID } from './models.js'
 
 const CODEX_TRANSPORT_RECOVERY_GRACE_MS = 250
 const codexTransportRecoveryPromises = new WeakMap<StreamSession, Promise<void>>()
@@ -118,6 +119,13 @@ function resolveCodexTransportPolicy(mode: ClaudePermissionMode): {
     sandbox: 'danger-full-access',
     approvalPolicy: ALWAYS_ON_CODEX_APPROVAL_POLICY,
   }
+}
+
+function resolveCodexSessionModel(options: CodexSessionCreateOptions): string | undefined {
+  const explicitModel = typeof options.model === 'string' && options.model.trim().length > 0
+    ? options.model.trim()
+    : undefined
+  return explicitModel ?? (options.resumeSessionId ? undefined : DEFAULT_CODEX_MODEL_ID)
 }
 
 function buildCodexTransportRecoveredEvent(reason: string): StreamJsonEvent {
@@ -224,6 +232,7 @@ export async function startCodexTurn(session: StreamSession, text: string): Prom
   await runtime.ensureConnected()
   await runtime.sendRequest('turn/start', {
     threadId: resumeThreadId,
+    effort: 'xhigh',
     input: buildCodexTurnInput(text),
   })
 }
@@ -1022,6 +1031,11 @@ export async function createCodexAppServerSession(
 
   const sessionCwd = cwd || process.env.HOME || '/tmp'
   const { sandbox, approvalPolicy } = resolveCodexTransportPolicy(mode)
+  const sessionModel = resolveCodexSessionModel(options)
+  const sessionOptions: CodexSessionCreateOptions = {
+    ...options,
+    model: sessionModel,
+  }
 
   const hasSystemPrompt = typeof options.systemPrompt === 'string' && options.systemPrompt.length > 0
   const initialTask = hasSystemPrompt ? '' : task
@@ -1040,8 +1054,10 @@ export async function createCodexAppServerSession(
   if (hasSystemPrompt) {
     threadStartParams.developerInstructions = options.systemPrompt
   }
-  if (typeof options.model === 'string' && options.model.trim().length > 0) {
-    threadStartParams.model = options.model.trim()
+  // Codex resolves the model on the thread/start JSON-RPC payload rather
+  // than as a CLI --model flag on the long-lived app-server transport.
+  if (sessionModel) {
+    threadStartParams.model = sessionModel
   }
 
   let threadId: string
@@ -1071,6 +1087,6 @@ export async function createCodexAppServerSession(
     runtime,
     initialTask,
     deps,
-    options,
+    sessionOptions,
   )
 }

@@ -1,5 +1,6 @@
 import cron from 'node-cron'
 import { getProvider, parseProviderId } from '../../agents/providers/registry.js'
+import { validateModelForAgentType } from '../../agents/providers/validate-model.js'
 import { parseOptionalClaudePermissionMode } from '../../agents/session/input.js'
 import {
   buildGitHubHeaders,
@@ -469,6 +470,11 @@ export function registerCommandRoomRoutes(
       res.status(400).json({ error: 'model must be a string when provided' })
       return
     }
+    const modelValidation = validateModelForAgentType(agentType, model ?? null)
+    if (!modelValidation.ok) {
+      res.status(400).json({ error: modelValidation.error, validIds: modelValidation.validIds })
+      return
+    }
     const machine = typeof req.body?.machine === 'string' ? req.body.machine.trim() : ''
     const status = explicitStatus ?? (enabled === false ? 'paused' : 'active')
     const createInput: CreateAutomationInput = {
@@ -703,6 +709,13 @@ export function registerCommandRoomRoutes(
       const current = await context.automationStore.get(automationId)
       if (!current || current.parentCommanderId !== commanderId) {
         res.status(404).json({ error: 'Automation not found' })
+        return
+      }
+      const nextAgentType = patch.agentType ?? current.agentType
+      const nextModel = patch.model !== undefined ? patch.model : (current.model ?? null)
+      const modelValidation = validateModelForAgentType(nextAgentType, nextModel ?? null)
+      if (!modelValidation.ok) {
+        res.status(400).json({ error: modelValidation.error, validIds: modelValidation.validIds })
         return
       }
       const updated = await context.automationScheduler!.updateAutomation(automationId, patch)

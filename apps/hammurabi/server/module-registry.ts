@@ -32,6 +32,7 @@ import { CommanderSessionStore } from '../modules/commanders/store.js'
 import { ConversationStore } from '../modules/commanders/conversation-store.js'
 import { createOrgRouter } from '../modules/org/route.js'
 import { createOperatorsRouter } from '../modules/operators/routes.js'
+import { OperatorStore } from '../modules/operators/store.js'
 import { maintainCommanderTranscriptIndex } from '../modules/commanders/transcript-index.js'
 import { createApprovalsRouter } from '../modules/policies/approvals-routes.js'
 import { ActionPolicyGate } from '../modules/policies/action-policy-gate.js'
@@ -45,6 +46,7 @@ import { createSkillsRouter } from '../modules/skills/routes.js'
 import { createTelemetryRouterWithHub } from '../modules/telemetry/routes.js'
 import { createOtelRouter } from '../modules/telemetry/otel-receiver.js'
 import { createWhatsAppBridgeRouter } from '../modules/whatsapp-bridge/routes.js'
+import type { ProviderSecretsStoreLike } from './api-keys/provider-secrets-store.js'
 import type { ApiKeyStoreLike } from './api-keys/store.js'
 import type { OpenAITranscriptionKeyStoreLike } from './api-keys/transcription-store.js'
 import { createRealtimeProxy } from './realtime/proxy.js'
@@ -60,6 +62,7 @@ export interface HammurabiModule {
 
 interface ModuleRegistryOptions {
   apiKeyStore?: ApiKeyStoreLike
+  providerSecretsStore?: ProviderSecretsStoreLike
   transcriptionKeyStore?: OpenAITranscriptionKeyStoreLike
   auth0Domain?: string
   auth0Audience?: string
@@ -67,6 +70,8 @@ interface ModuleRegistryOptions {
   /** Max concurrent agent sessions (default 10). Set via HAMMURABI_MAX_AGENT_SESSIONS. */
   maxAgentSessions?: number
   appSettingsStore?: AppSettingsStore
+  /** Disable background scheduler boot in route-level tests that only need registry wiring. */
+  initializeAutomationScheduler?: boolean
 }
 
 export interface ModuleRegistryResult {
@@ -145,6 +150,7 @@ export function createModules(options: ModuleRegistryOptions = {}): ModuleRegist
   const commanderSessionStorePath = resolveCommanderSessionStorePath(commanderDataDir)
   const commanderConversationStore = new ConversationStore(commanderDataDir)
   const commanderSessionStore = new CommanderSessionStore(commanderSessionStorePath)
+  const operatorStore = new OperatorStore()
   const emailConfigStore = new CommanderEmailConfigStore(commanderDataDir)
   const emailStateStore = new CommanderEmailStateStore(commanderDataDir)
   const emailPoller = new EmailPoller({
@@ -167,13 +173,18 @@ export function createModules(options: ModuleRegistryOptions = {}): ModuleRegist
     commanderStore: commanderSessionStore,
     questEventBus,
   })
-  const automationSchedulerInitialized = automationScheduler.initialize()
-  void automationSchedulerInitialized.catch((error) => {
-    console.error('[automations] Failed to initialize shared scheduler:', error)
-  })
+  const automationSchedulerInitialized = options.initializeAutomationScheduler === false
+    ? Promise.resolve()
+    : automationScheduler.initialize()
+  if (options.initializeAutomationScheduler !== false) {
+    void automationSchedulerInitialized.catch((error) => {
+      console.error('[automations] Failed to initialize shared scheduler:', error)
+    })
+  }
 
   const commanders = createCommandersRouter({
     apiKeyStore: options.apiKeyStore,
+    providerSecretsStore: options.providerSecretsStore,
     auth0Domain: options.auth0Domain,
     auth0Audience: options.auth0Audience,
     auth0ClientId: options.auth0ClientId,
@@ -250,6 +261,7 @@ export function createModules(options: ModuleRegistryOptions = {}): ModuleRegist
     monitorOptions: commandRoomMonitorOptions,
   })
   const operators = createOperatorsRouter({
+    store: operatorStore,
     apiKeyStore: options.apiKeyStore,
     auth0Domain: options.auth0Domain,
     auth0Audience: options.auth0Audience,
@@ -261,6 +273,7 @@ export function createModules(options: ModuleRegistryOptions = {}): ModuleRegist
     automationStore,
     conversationStore: commanderConversationStore,
     questStore,
+    operatorStore,
     commanderDataDir,
     apiKeyStore: options.apiKeyStore,
     auth0Domain: options.auth0Domain,

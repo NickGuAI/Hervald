@@ -30,6 +30,8 @@ export interface Conversation {
   surface: ConversationSurface
   channelMeta?: Record<string, unknown>
   lastRoute?: Record<string, unknown>
+  agentType?: string | null
+  model?: string | null
   name: string
   status: ConversationStatus
   currentTask: Record<string, unknown> | null

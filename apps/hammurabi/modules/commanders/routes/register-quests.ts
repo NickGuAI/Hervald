@@ -18,6 +18,7 @@ import {
   type CommanderQuestStatus,
   type QuestArtifact,
 } from '../quest-store.js'
+import { validateModelForAgentType } from '../../agents/providers/validate-model.js'
 import {
   buildQuestInstructionFromGitHubIssue,
 } from './context.js'
@@ -191,6 +192,11 @@ export function registerQuestRoutes(
     const contract = parseQuestContract(body.contract)
     if (!contract) {
       res.status(400).json({ error: 'contract is invalid' })
+      return
+    }
+    const modelValidation = validateModelForAgentType(contract.agentType, contract.model ?? null)
+    if (!modelValidation.ok) {
+      res.status(400).json({ error: modelValidation.error, validIds: modelValidation.validIds })
       return
     }
 

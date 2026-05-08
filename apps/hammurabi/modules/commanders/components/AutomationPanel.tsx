@@ -11,7 +11,6 @@ import {
   type AutomationTriggerFilter,
 } from '../../automations/hooks/useAutomations'
 import { SentinelCreateForm } from '../../sentinels/components/SentinelCreateForm'
-import type { CommanderSession } from '../hooks/useCommander'
 import { CreateAutomationTaskForm } from './CreateAutomationTaskForm'
 
 type CreateMode = null | 'chooser' | 'task' | 'monitor'
@@ -22,7 +21,9 @@ export type AutomationPanelScope =
     }
   | {
       kind: 'commander'
-      commander: CommanderSession
+      commander: {
+        id: string
+      }
     }
 
 interface AutomationPanelProps {

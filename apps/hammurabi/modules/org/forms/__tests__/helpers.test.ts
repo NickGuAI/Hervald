@@ -1,11 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
   buildAutomationScheduleFromPreset,
-  buildHiddenCommanderHost,
-  buildHireCommanderCreateRequestBody,
   buildNewAutomationCreateRequestBody,
   looksLikeCronExpression,
-  validateHireCommanderWizardStep,
   validateNewAutomationWizardStep,
 } from '../helpers'
 
@@ -49,48 +46,10 @@ const PROVIDERS = [
 ] as const
 
 describe('org wizard helpers', () => {
-  it('builds hidden hosts and validates cron-like expressions', () => {
-    expect(buildHiddenCommanderHost('Atlas Ops', 'abc123')).toBe('atlas-ops-abc123')
-    expect(buildHiddenCommanderHost('!!!', '***')).toBe('commander-new')
-
+  it('validates cron-like expressions', () => {
     expect(looksLikeCronExpression('0 9 * * *')).toBe(true)
     expect(looksLikeCronExpression('*/5 * * * *')).toBe(true)
     expect(looksLikeCronExpression('every morning')).toBe(false)
-  })
-
-  it('validates and builds a hire commander payload', () => {
-    const invalid = validateHireCommanderWizardStep({
-      displayName: '',
-      roleKey: '',
-      persona: '',
-      agentType: 'claude',
-      effort: 'low',
-    }, 'details', {
-      existingCommanderNames: ['Atlas'],
-      providers: PROVIDERS as never,
-    })
-
-    expect(invalid.displayName).toBe('Display name is required.')
-    expect(invalid.roleKey).toBe('Select a valid role.')
-
-    expect(buildHireCommanderCreateRequestBody({
-      displayName: ' Atlas ',
-      roleKey: 'engineering',
-      persona: ' Keeps the system stable. ',
-      agentType: 'codex',
-      effort: 'high',
-    }, {
-      existingCommanderNames: [],
-      host: ' atlas-hidden ',
-      providers: PROVIDERS as never,
-    })).toEqual({
-      host: 'atlas-hidden',
-      displayName: 'Atlas',
-      roleKey: 'engineering',
-      persona: 'Keeps the system stable.',
-      agentType: 'codex',
-      effort: 'high',
-    })
   })
 
   it('builds schedule and quest automation payloads', () => {

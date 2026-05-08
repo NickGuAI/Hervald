@@ -37,7 +37,19 @@ export function registerWorkerRoutes(
     try {
       const result = await context.sessionsInterface.dispatchWorkerForCommander({
         commanderId,
-        rawBody: req.body,
+        rawBody: (
+          req.body && typeof req.body === 'object' && !Array.isArray(req.body)
+            ? {
+                ...(req.body as Record<string, unknown>),
+                ...(
+                  !Object.prototype.hasOwnProperty.call(req.body, 'model')
+                  && commander.model !== undefined
+                    ? { model: commander.model }
+                    : {}
+                ),
+              }
+            : req.body
+        ),
       })
       res.status(result.status).json(result.body)
     } catch (error) {

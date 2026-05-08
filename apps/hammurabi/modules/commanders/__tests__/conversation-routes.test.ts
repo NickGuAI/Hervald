@@ -46,6 +46,7 @@ interface RunningServer {
 
 interface ActiveSessionState {
   agentType: AgentType
+  model?: string
   conversationId?: string
   providerContext?: {
     providerId: AgentType
@@ -56,6 +57,7 @@ interface ActiveSessionState {
   conversationEntryCount: number
   lastTurnCompleted: boolean
   pendingDirectSendMessages: Array<Record<string, unknown>>
+  codexTurnWatchdogTimer?: NodeJS.Timeout
   usage: {
     inputTokens: number
     outputTokens: number
@@ -75,6 +77,7 @@ interface MockSessionsFixture {
       priority?: 'high' | 'normal' | 'low'
     }
   }>
+  dispose: () => void
 }
 
 const tempDirs: string[] = []
@@ -145,7 +148,9 @@ function createTestApiKeyStore(): ApiKeyStoreLike {
   }
 }
 
-function createMockSessionsInterface(): MockSessionsFixture {
+function createMockSessionsInterface(
+  options: { attachCodexWatchdogTimer?: boolean } = {},
+): MockSessionsFixture {
   const createCalls: Array<Parameters<CommanderSessionsInterface['createCommanderSession']>[0]> = []
   const sendCalls: Array<{
     name: string
@@ -156,13 +161,23 @@ function createMockSessionsInterface(): MockSessionsFixture {
     }
   }> = []
   const activeSessions = new Map<string, ActiveSessionState>()
+  const timers: NodeJS.Timeout[] = []
 
   function buildSessionState(
     params: Parameters<CommanderSessionsInterface['createCommanderSession']>[0],
     previous?: ActiveSessionState,
   ): ActiveSessionState {
+    const codexTurnWatchdogTimer = options.attachCodexWatchdogTimer && params.agentType === 'codex'
+      ? setTimeout(() => {}, 30_000)
+      : undefined
+    codexTurnWatchdogTimer?.unref()
+    if (codexTurnWatchdogTimer) {
+      timers.push(codexTurnWatchdogTimer)
+    }
+
     return {
       agentType: params.agentType,
+      model: params.model,
       conversationId: params.conversationId,
       providerContext: params.agentType === 'claude'
         ? {
@@ -184,6 +199,7 @@ function createMockSessionsInterface(): MockSessionsFixture {
       conversationEntryCount: previous?.conversationEntryCount ?? 0,
       lastTurnCompleted: true,
       pendingDirectSendMessages: [],
+      codexTurnWatchdogTimer,
       usage: {
         inputTokens: previous?.usage.inputTokens ?? 10,
         outputTokens: previous?.usage.outputTokens ?? 20,
@@ -201,6 +217,7 @@ function createMockSessionsInterface(): MockSessionsFixture {
         kind: 'stream',
         name: params.name,
         agentType: params.agentType,
+        model: params.model,
         conversationId: params.conversationId,
         providerContext: next.providerContext,
         usage: { ...next.usage },
@@ -220,6 +237,7 @@ function createMockSessionsInterface(): MockSessionsFixture {
         kind: 'stream',
         name: params.name,
         agentType: params.agentType,
+        model: params.model,
         conversationId: params.conversationId,
         providerContext: next.providerContext,
         usage: { ...next.usage },
@@ -260,6 +278,7 @@ function createMockSessionsInterface(): MockSessionsFixture {
         kind: 'stream',
         name,
         agentType: active.agentType,
+        model: active.model,
         conversationId: active.conversationId,
         providerContext: active.providerContext,
         usage: { ...active.usage },
@@ -267,6 +286,7 @@ function createMockSessionsInterface(): MockSessionsFixture {
         conversationEntryCount: active.conversationEntryCount,
         lastTurnCompleted: active.lastTurnCompleted,
         pendingDirectSendMessages: [...active.pendingDirectSendMessages],
+        codexTurnWatchdogTimer: active.codexTurnWatchdogTimer,
         currentQueuedMessage: undefined,
         clients: new Set(),
       } as unknown as ReturnType<CommanderSessionsInterface['getSession']>
@@ -281,17 +301,27 @@ function createMockSessionsInterface(): MockSessionsFixture {
     activeSessions,
     createCalls,
     sendCalls,
+    dispose: () => {
+      for (const timer of timers.splice(0)) {
+        clearTimeout(timer)
+      }
+    },
   }
 }
 
-async function seedCommander(storePath: string, commanderId: string): Promise<void> {
+async function seedCommander(
+  storePath: string,
+  commanderId: string,
+  options: { agentType?: AgentType; model?: string | null } = {},
+): Promise<void> {
   const store = new CommanderSessionStore(storePath)
   await store.create({
     id: commanderId,
     host: `host-${commanderId.slice(-4)}`,
     state: 'idle',
     created: '2026-05-01T00:00:00.000Z',
-    agentType: 'claude',
+    agentType: options.agentType ?? 'claude',
+    ...(options.model !== undefined ? { model: options.model } : {}),
     cwd: '/tmp',
     maxTurns: DEFAULT_COMMANDER_MAX_TURNS,
     contextMode: DEFAULT_COMMANDER_CONTEXT_MODE,
@@ -361,6 +391,7 @@ async function createConversation(
     id: string
     surface: 'api' | 'ui' | 'cli' | 'discord' | 'telegram' | 'whatsapp'
     agentType?: AgentType
+    model?: string | null
   },
 ): Promise<Response> {
   return fetch(`${baseUrl}/api/commanders/${commanderId}/conversations`, {
@@ -378,6 +409,7 @@ async function startConversation(
   conversationId: string,
   input: {
     agentType: AgentType
+    model?: string | null
     effort?: 'low' | 'medium' | 'high' | 'max'
     adaptiveThinking?: 'enabled' | 'disabled'
     cwd?: string
@@ -440,7 +472,7 @@ describe('conversation routes', () => {
           id: defaultConversationId,
           isDefaultConversation: true,
           liveSession: expect.objectContaining({
-            conversationId: defaultConversationId,
+            name: expect.stringContaining(`-conversation-${defaultConversationId}`),
           }),
         }),
       ])
@@ -463,7 +495,7 @@ describe('conversation routes', () => {
         isDefaultConversation: false,
         status: 'active',
         liveSession: expect.objectContaining({
-          conversationId: CONVERSATION_A,
+          name: expect.stringContaining(`-conversation-${CONVERSATION_A}`),
         }),
       }))
 
@@ -576,7 +608,7 @@ describe('conversation routes', () => {
           status: string
           agentType?: string | null
           liveSession: {
-            conversationId?: string
+            name?: string
           } | null
         }
       }
@@ -585,7 +617,7 @@ describe('conversation routes', () => {
         status: 'active',
         agentType: 'claude',
       }))
-      expect(started.conversation.liveSession?.conversationId).toBe(CONVERSATION_A)
+      expect(started.conversation.liveSession?.name).toContain(`-conversation-${CONVERSATION_A}`)
       expect(sessions.createCalls).toHaveLength(1)
       expect(sessions.createCalls[0]?.conversationId).toBe(CONVERSATION_A)
 
@@ -605,13 +637,13 @@ describe('conversation routes', () => {
         createdSession: boolean
         conversation: {
           liveSession: {
-            conversationId?: string
+            name?: string
           } | null
         }
       }
       expect(firstMessage.accepted).toBe(true)
       expect(firstMessage.createdSession).toBe(false)
-      expect(firstMessage.conversation.liveSession?.conversationId).toBe(CONVERSATION_A)
+      expect(firstMessage.conversation.liveSession?.name).toContain(`-conversation-${CONVERSATION_A}`)
       expect(sessions.createCalls).toHaveLength(1)
 
       const secondMessageResponse = await fetch(`${server.baseUrl}/api/conversations/${CONVERSATION_A}/message`, {
@@ -670,12 +702,12 @@ describe('conversation routes', () => {
         id: string
         status: string
         liveSession: {
-          conversationId?: string
+          name?: string
         } | null
       }
       expect(resumed.id).toBe(CONVERSATION_A)
       expect(resumed.status).toBe('active')
-      expect(resumed.liveSession?.conversationId).toBe(CONVERSATION_A)
+      expect(resumed.liveSession?.name).toContain(`-conversation-${CONVERSATION_A}`)
       expect(sessions.createCalls).toHaveLength(2)
 
       const archiveResponse = await fetch(`${server.baseUrl}/api/conversations/${CONVERSATION_A}/archive`, {
@@ -709,7 +741,7 @@ describe('conversation routes', () => {
     }
   })
 
-  it('patches a conversation name and swaps providers without dropping replay state', async () => {
+  it('patches a stopped conversation name, provider, and model without starting it', async () => {
     const dir = await createTempDir('hammurabi-commanders-conversation-patch-')
     const storePath = join(dir, 'sessions.json')
     await seedCommander(storePath, COMMANDER_A)
@@ -744,6 +776,12 @@ describe('conversation routes', () => {
       })
       expect(messageResponse.status).toBe(200)
 
+      const pauseResponse = await fetch(`${server.baseUrl}/api/conversations/${CONVERSATION_A}/pause`, {
+        method: 'POST',
+        headers: FULL_AUTH_HEADERS,
+      })
+      expect(pauseResponse.status).toBe(200)
+
       const patchResponse = await fetch(`${server.baseUrl}/api/conversations/${CONVERSATION_A}`, {
         method: 'PATCH',
         headers: {
@@ -753,49 +791,34 @@ describe('conversation routes', () => {
         body: JSON.stringify({
           name: 'quiet-falcon',
           agentType: 'codex',
+          model: 'gpt-5.5',
         }),
       })
       expect(patchResponse.status).toBe(200)
       expect(await patchResponse.json()).toEqual(expect.objectContaining({
         id: CONVERSATION_A,
         name: 'quiet-falcon',
+        status: 'idle',
         agentType: 'codex',
+        model: 'gpt-5.5',
         providerContext: expect.objectContaining({
-          providerId: 'codex',
-          threadId: `codex-${CONVERSATION_A}`,
+          providerId: 'claude',
+          sessionId: `claude-${CONVERSATION_A}`,
         }),
-        liveSession: expect.objectContaining({
-          conversationId: CONVERSATION_A,
-          providerContext: expect.objectContaining({
-            providerId: 'codex',
-            threadId: `codex-${CONVERSATION_A}`,
-          }),
-        }),
+        liveSession: null,
       }))
 
-      const sessionName = buildConversationSessionName({
-        id: CONVERSATION_A,
-        commanderId: COMMANDER_A,
-        surface: 'api',
-        name: 'quiet-falcon',
-        status: 'active',
-        currentTask: null,
-        lastHeartbeat: null,
-        heartbeat: createDefaultHeartbeatConfig(),
-        heartbeatTickCount: 0,
-        completedTasks: 0,
-        totalCostUsd: 0,
-        createdAt: '2026-05-01T00:00:00.000Z',
-        lastMessageAt: '2026-05-01T00:00:00.000Z',
+      expect(sessions.createCalls).toHaveLength(1)
+      expect(sessions.activeSessions.size).toBe(0)
+
+      const restartResponse = await startConversation(server.baseUrl, CONVERSATION_A, {
+        agentType: 'codex',
       })
-      expect(sessions.activeSessions.get(sessionName)?.events).toEqual(expect.arrayContaining([
-        expect.objectContaining({
-          text: 'Carry this transcript forward.',
-        }),
-      ]))
+      expect(restartResponse.status).toBe(200)
       expect(sessions.createCalls).toHaveLength(2)
       expect(sessions.createCalls[1]).toEqual(expect.objectContaining({
         agentType: 'codex',
+        model: 'gpt-5.5',
         resumeProviderContext: expect.objectContaining({
           providerId: 'claude',
           sessionId: `claude-${CONVERSATION_A}`,
@@ -806,7 +829,65 @@ describe('conversation routes', () => {
     }
   })
 
-  it('does not double-count carried usage when swapping providers', async () => {
+  it('patches conversation agentType and model together with registry validation', async () => {
+    const dir = await createTempDir('hammurabi-commanders-conversation-patch-model-')
+    const storePath = join(dir, 'sessions.json')
+    await seedCommander(storePath, COMMANDER_A)
+
+    const sessions = createMockSessionsInterface()
+    const server = await startServer({
+      sessionStorePath: storePath,
+      sessionsInterface: sessions.iface,
+    })
+
+    try {
+      const createResponse = await createConversation(server.baseUrl, COMMANDER_A, {
+        id: CONVERSATION_A,
+        surface: 'api',
+        agentType: 'claude',
+      })
+      expect(createResponse.status).toBe(201)
+
+      const patchResponse = await fetch(`${server.baseUrl}/api/conversations/${CONVERSATION_A}`, {
+        method: 'PATCH',
+        headers: {
+          ...FULL_AUTH_HEADERS,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          agentType: 'codex',
+          model: 'gpt-5.5',
+        }),
+      })
+      expect(patchResponse.status).toBe(200)
+      expect(await patchResponse.json()).toEqual(expect.objectContaining({
+        id: CONVERSATION_A,
+        agentType: 'codex',
+        model: 'gpt-5.5',
+      }))
+
+      const invalidPatchResponse = await fetch(`${server.baseUrl}/api/conversations/${CONVERSATION_A}`, {
+        method: 'PATCH',
+        headers: {
+          ...FULL_AUTH_HEADERS,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          agentType: 'codex',
+          model: 'claude-opus-4-6',
+        }),
+      })
+      expect(invalidPatchResponse.status).toBe(400)
+      expect(await invalidPatchResponse.json()).toEqual({
+        error: expect.stringContaining('not valid'),
+        validIds: expect.arrayContaining(['gpt-5.5']),
+      })
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('rejects provider and model changes while a conversation is active', async () => {
     const dir = await createTempDir('hammurabi-commanders-conversation-swap-cost-')
     const storePath = join(dir, 'sessions.json')
     await seedCommander(storePath, COMMANDER_A)
@@ -851,14 +932,13 @@ describe('conversation routes', () => {
         },
         body: JSON.stringify({
           agentType: 'codex',
+          model: 'gpt-5.5',
         }),
       })
-      expect(patchResponse.status).toBe(200)
-      expect(await patchResponse.json()).toEqual(expect.objectContaining({
-        id: CONVERSATION_A,
-        agentType: 'codex',
-        totalCostUsd: 0,
-      }))
+      expect(patchResponse.status).toBe(409)
+      expect(await patchResponse.json()).toEqual({
+        error: `Conversation "${CONVERSATION_A}" is active; stop it before changing provider or model`,
+      })
       expect(sessions.activeSessions.get(sessionName)?.usage.costUsd).toBe(5)
 
       const pauseResponse = await fetch(`${server.baseUrl}/api/conversations/${CONVERSATION_A}/pause`, {
@@ -869,6 +949,7 @@ describe('conversation routes', () => {
       expect(await pauseResponse.json()).toEqual(expect.objectContaining({
         id: CONVERSATION_A,
         status: 'idle',
+        agentType: 'claude',
         totalCostUsd: 5,
         liveSession: null,
       }))
@@ -969,12 +1050,14 @@ describe('conversation routes', () => {
         id: CONVERSATION_A,
         surface: 'ui',
         agentType: 'codex',
+        model: 'gpt-5.5',
       })
       expect(createResponse.status).toBe(201)
       expect(await createResponse.json()).toEqual(expect.objectContaining({
         id: CONVERSATION_A,
         status: 'idle',
         agentType: 'codex',
+        model: 'gpt-5.5',
         liveSession: null,
       }))
       // Per #1362 contract: creation must NEVER spawn a session.
@@ -988,6 +1071,7 @@ describe('conversation routes', () => {
         id: CONVERSATION_A,
         status: 'idle',
         agentType: 'codex',
+        model: 'gpt-5.5',
         liveSession: null,
       }))
     } finally {
@@ -1021,6 +1105,34 @@ describe('conversation routes', () => {
     }
   })
 
+  it('rejects a cross-provider model on create with valid model ids', async () => {
+    const dir = await createTempDir('hammurabi-commanders-create-invalid-model-')
+    const storePath = join(dir, 'sessions.json')
+    await seedCommander(storePath, COMMANDER_A)
+
+    const sessions = createMockSessionsInterface()
+    const server = await startServer({
+      sessionStorePath: storePath,
+      sessionsInterface: sessions.iface,
+    })
+
+    try {
+      const createResponse = await createConversation(server.baseUrl, COMMANDER_A, {
+        id: CONVERSATION_A,
+        surface: 'ui',
+        agentType: 'codex',
+        model: 'claude-opus-4-6',
+      })
+      expect(createResponse.status).toBe(400)
+      expect(await createResponse.json()).toEqual({
+        error: expect.stringContaining('not valid'),
+        validIds: expect.arrayContaining(['gpt-5.5']),
+      })
+    } finally {
+      await server.close()
+    }
+  })
+
   it('starts an idle conversation and persists the requested agent type', async () => {
     const dir = await createTempDir('hammurabi-commanders-conversation-start-')
     const storePath = join(dir, 'sessions.json')
@@ -1049,7 +1161,7 @@ describe('conversation routes', () => {
           status: 'active',
           agentType: 'claude',
           liveSession: expect.objectContaining({
-            conversationId: CONVERSATION_A,
+            name: expect.stringContaining(`-conversation-${CONVERSATION_A}`),
           }),
         }),
       })
@@ -1069,6 +1181,205 @@ describe('conversation routes', () => {
         agentType: 'claude',
       }))
     } finally {
+      await server.close()
+    }
+  })
+
+  it('uses the commander default model when starting a conversation on the same provider', async () => {
+    const dir = await createTempDir('hammurabi-commanders-conversation-start-model-')
+    const storePath = join(dir, 'sessions.json')
+    await seedCommander(storePath, COMMANDER_A, {
+      agentType: 'codex',
+      model: 'gpt-5.4',
+    })
+
+    const sessions = createMockSessionsInterface()
+    const server = await startServer({
+      sessionStorePath: storePath,
+      sessionsInterface: sessions.iface,
+    })
+
+    try {
+      const createResponse = await createConversation(server.baseUrl, COMMANDER_A, {
+        id: CONVERSATION_A,
+        surface: 'api',
+        agentType: 'codex',
+      })
+      expect(createResponse.status).toBe(201)
+
+      const startResponse = await startConversation(server.baseUrl, CONVERSATION_A, {
+        agentType: 'codex',
+      })
+      expect(startResponse.status).toBe(200)
+      expect(sessions.createCalls[0]).toEqual(expect.objectContaining({
+        agentType: 'codex',
+        model: 'gpt-5.4',
+        conversationId: CONVERSATION_A,
+      }))
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('prefers the stored conversation model over the commander default when starting', async () => {
+    const dir = await createTempDir('hammurabi-commanders-conversation-start-stored-model-')
+    const storePath = join(dir, 'sessions.json')
+    await seedCommander(storePath, COMMANDER_A, {
+      agentType: 'codex',
+      model: 'gpt-5.4',
+    })
+
+    const sessions = createMockSessionsInterface()
+    const server = await startServer({
+      sessionStorePath: storePath,
+      sessionsInterface: sessions.iface,
+    })
+
+    try {
+      const createResponse = await createConversation(server.baseUrl, COMMANDER_A, {
+        id: CONVERSATION_A,
+        surface: 'api',
+        agentType: 'codex',
+        model: 'gpt-5.5',
+      })
+      expect(createResponse.status).toBe(201)
+
+      const startResponse = await startConversation(server.baseUrl, CONVERSATION_A, {
+        agentType: 'codex',
+      })
+      expect(startResponse.status).toBe(200)
+      expect(sessions.createCalls[0]).toEqual(expect.objectContaining({
+        agentType: 'codex',
+        model: 'gpt-5.5',
+        conversationId: CONVERSATION_A,
+      }))
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('accepts and validates an explicit model at conversation start', async () => {
+    const dir = await createTempDir('hammurabi-commanders-conversation-start-explicit-model-')
+    const storePath = join(dir, 'sessions.json')
+    await seedCommander(storePath, COMMANDER_A, {
+      agentType: 'codex',
+      model: 'gpt-5.4',
+    })
+
+    const sessions = createMockSessionsInterface()
+    const server = await startServer({
+      sessionStorePath: storePath,
+      sessionsInterface: sessions.iface,
+    })
+
+    try {
+      const createResponse = await createConversation(server.baseUrl, COMMANDER_A, {
+        id: CONVERSATION_A,
+        surface: 'api',
+        agentType: 'codex',
+      })
+      expect(createResponse.status).toBe(201)
+
+      const startResponse = await startConversation(server.baseUrl, CONVERSATION_A, {
+        agentType: 'codex',
+        model: 'gpt-5.5',
+      })
+      expect(startResponse.status).toBe(200)
+      expect(sessions.createCalls[0]).toEqual(expect.objectContaining({
+        agentType: 'codex',
+        model: 'gpt-5.5',
+        conversationId: CONVERSATION_A,
+      }))
+
+      const invalidStartResponse = await startConversation(server.baseUrl, CONVERSATION_B, {
+        agentType: 'codex',
+        model: 'claude-opus-4-6',
+      })
+      expect(invalidStartResponse.status).toBe(400)
+      expect(await invalidStartResponse.json()).toEqual({
+        error: expect.stringContaining('not valid'),
+        validIds: expect.arrayContaining(['gpt-5.5']),
+      })
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('starts and lists Codex conversations when the live session has a watchdog timer', async () => {
+    const dir = await createTempDir('hammurabi-commanders-conversation-codex-timer-')
+    const storePath = join(dir, 'sessions.json')
+    await seedCommander(storePath, COMMANDER_A, {
+      agentType: 'codex',
+      model: 'gpt-5.4',
+    })
+
+    const sessions = createMockSessionsInterface({ attachCodexWatchdogTimer: true })
+    const server = await startServer({
+      sessionStorePath: storePath,
+      sessionsInterface: sessions.iface,
+    })
+
+    try {
+      const createResponse = await createConversation(server.baseUrl, COMMANDER_A, {
+        id: CONVERSATION_A,
+        surface: 'api',
+        agentType: 'codex',
+      })
+      expect(createResponse.status).toBe(201)
+
+      const startResponse = await startConversation(server.baseUrl, CONVERSATION_A, {
+        agentType: 'codex',
+      })
+      expect(startResponse.status).toBe(200)
+      const startPayload = await startResponse.json() as {
+        conversation: {
+          liveSession: Record<string, unknown> | null
+        }
+      }
+      expect(startPayload.conversation.liveSession).toEqual(expect.objectContaining({
+        agentType: 'codex',
+        model: 'gpt-5.4',
+        name: expect.stringContaining(`-conversation-${CONVERSATION_A}`),
+      }))
+      expect(startPayload.conversation.liveSession).not.toHaveProperty('codexTurnWatchdogTimer')
+      expect(startPayload.conversation.liveSession).not.toHaveProperty('queuedMessageRetryTimer')
+      expect(startPayload.conversation.liveSession).not.toHaveProperty('process')
+
+      const activeResponse = await fetch(
+        `${server.baseUrl}/api/commanders/${COMMANDER_A}/conversations/active`,
+        { headers: READ_ONLY_AUTH_HEADERS },
+      )
+      expect(activeResponse.status).toBe(200)
+      const activePayload = await activeResponse.json() as {
+        liveSession: Record<string, unknown> | null
+      }
+      expect(activePayload.liveSession).toEqual(expect.objectContaining({
+        agentType: 'codex',
+        model: 'gpt-5.4',
+      }))
+      expect(activePayload.liveSession).not.toHaveProperty('codexTurnWatchdogTimer')
+
+      const listResponse = await fetch(
+        `${server.baseUrl}/api/commanders/${COMMANDER_A}/conversations`,
+        { headers: READ_ONLY_AUTH_HEADERS },
+      )
+      expect(listResponse.status).toBe(200)
+      const listPayload = await listResponse.json() as Array<{
+        id: string
+        liveSession: Record<string, unknown> | null
+      }>
+      expect(listPayload).toEqual([
+        expect.objectContaining({
+          id: CONVERSATION_A,
+          liveSession: expect.objectContaining({
+            agentType: 'codex',
+            model: 'gpt-5.4',
+          }),
+        }),
+      ])
+      expect(listPayload[0]?.liveSession).not.toHaveProperty('codexTurnWatchdogTimer')
+    } finally {
+      sessions.dispose()
       await server.close()
     }
   })
@@ -1221,7 +1532,7 @@ describe('conversation routes', () => {
         id: CONVERSATION_B,
         status: 'active',
         liveSession: expect.objectContaining({
-          conversationId: CONVERSATION_B,
+          name: expect.stringContaining(`-conversation-${CONVERSATION_B}`),
         }),
       }))
     } finally {
@@ -1383,7 +1694,7 @@ describe('conversation routes', () => {
     } finally {
       await server.close()
     }
-  })
+  }, 15_000)
 
   it('channel-message preserves collect mode by queueing the send instead of pushing live', async () => {
     // Regression for codex-review P1 on PR #1279 (comment 3174491798):

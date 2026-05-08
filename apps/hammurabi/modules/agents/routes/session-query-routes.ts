@@ -5,6 +5,7 @@ import {
   canResumeLiveStreamSession,
   getCommanderLabels,
   getWorldAgentStatus,
+  liveSessionToApiPayload,
   summarizeWorkerStates,
   toCompletedSession,
 } from '../session/state.js'
@@ -231,10 +232,18 @@ export function registerSessionQueryRoutes(deps: SessionQueryRouteDeps): void {
         return
       }
 
-      const pid = active.kind === 'pty'
-        ? active.pty.pid
-        : (active.kind === 'stream' ? (active.process.pid ?? 0) : 0)
-      const workerStates = active.kind === 'stream' ? deps.getWorkerStates(name) : []
+      if (active.kind === 'stream') {
+        const workerStates = deps.getWorkerStates(name)
+        res.json({
+          ...liveSessionToApiPayload(active),
+          completed: false,
+          status: 'running',
+          workerSummary: summarizeWorkerStates(workerStates),
+        })
+        return
+      }
+
+      const pid = active.kind === 'pty' ? active.pty.pid : 0
       res.json({
         name,
         completed: false,
@@ -250,10 +259,6 @@ export function registerSessionQueryRoutes(deps: SessionQueryRouteDeps): void {
         adaptiveThinking: active.adaptiveThinking,
         cwd: active.cwd,
         host: active.host ?? (active.kind === 'external' ? active.machine : undefined),
-        spawnedBy: active.kind === 'stream' ? active.spawnedBy : undefined,
-        spawnedWorkers: active.kind === 'stream' ? [...active.spawnedWorkers] : undefined,
-        workerSummary: active.kind === 'stream' ? summarizeWorkerStates(workerStates) : undefined,
-        queuedMessageCount: active.kind === 'stream' ? countVisibleQueuedMessages(active) : undefined,
         ...(active.kind === 'external' ? { machine: active.machine, metadata: active.metadata } : {}),
       })
       return
@@ -293,6 +298,7 @@ export function registerSessionQueryRoutes(deps: SessionQueryRouteDeps): void {
         creator: exited.creator,
         transportType: 'stream',
         agentType: exited.agentType,
+        model: exited.model,
         effort: exited.effort,
         adaptiveThinking: exited.adaptiveThinking,
         cwd: exited.cwd,
@@ -326,38 +332,38 @@ export function registerSessionQueryRoutes(deps: SessionQueryRouteDeps): void {
         continue
       }
 
-      const pid = session.kind === 'pty'
-        ? session.pty.pid
-        : (session.kind === 'stream' ? (session.process.pid ?? 0) : 0)
-      const workerStates = session.kind === 'stream' ? deps.getWorkerStates(name) : []
+      const label = session.sessionType === 'commander' && session.creator.kind === 'commander' && session.creator.id
+        ? commanderLabels[session.creator.id]
+        : undefined
 
-      let label: string | undefined
-      if (session.sessionType === 'commander' && session.creator.kind === 'commander' && session.creator.id) {
-        label = commanderLabels[session.creator.id]
+      if (session.kind === 'stream') {
+        const workerStates = deps.getWorkerStates(name)
+        const livePayload = liveSessionToApiPayload(session)
+        result.push({
+          ...livePayload,
+          ...(label ? { label } : {}),
+          workerSummary: summarizeWorkerStates(workerStates),
+          resumeAvailable: canResumeLiveStreamSession(session),
+        })
+        continue
       }
 
       result.push({
         name,
-        label,
+        ...(label ? { label } : {}),
         created: session.createdAt,
-        pid,
+        pid: session.kind === 'pty' ? session.pty.pid : 0,
         sessionType: session.sessionType,
         creator: session.creator,
-        transportType: session.kind === 'external' ? 'external' : (session.kind === 'pty' ? 'pty' : 'stream'),
+        transportType: session.kind === 'external' ? 'external' : 'pty',
         agentType: session.agentType,
         effort: session.effort,
         adaptiveThinking: session.adaptiveThinking,
         cwd: session.cwd,
         host: session.host ?? (session.kind === 'external' ? session.machine : undefined),
-        spawnedBy: session.kind === 'stream' ? session.spawnedBy : undefined,
-        spawnedWorkers: session.kind === 'stream' ? [...session.spawnedWorkers] : undefined,
-        workerSummary: session.kind === 'stream' ? summarizeWorkerStates(workerStates) : undefined,
         processAlive: true,
-        hadResult: session.kind === 'stream' ? Boolean(session.finalResultEvent) : undefined,
-        resumedFrom: session.kind === 'stream' ? session.resumedFrom : undefined,
-        queuedMessageCount: session.kind === 'stream' ? countVisibleQueuedMessages(session) : undefined,
         status: getWorldAgentStatus(session, nowMs),
-        resumeAvailable: session.kind === 'stream' ? canResumeLiveStreamSession(session) : false,
+        resumeAvailable: false,
       })
     }
 
@@ -376,6 +382,7 @@ export function registerSessionQueryRoutes(deps: SessionQueryRouteDeps): void {
         creator: exited.creator,
         transportType: 'stream',
         agentType: exited.agentType,
+        model: exited.model,
         effort: exited.effort,
         adaptiveThinking: exited.adaptiveThinking,
         cwd: exited.cwd,

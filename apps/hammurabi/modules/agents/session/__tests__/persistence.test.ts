@@ -12,6 +12,7 @@ import { writeJsonFileAtomically } from '../../../../migrations/write-json-file-
 import {
   readPersistedSessionsState,
   restorePersistedSessions,
+  serializePersistedSessionsState,
 } from '../persistence.js'
 import {
   resetTranscriptStoreRoot,
@@ -30,6 +31,7 @@ function buildPersistedSession(name: string): PersistedStreamSession {
   return {
     name,
     agentType: 'claude',
+    model: 'claude-sonnet-4-6',
     mode: 'default',
     cwd: '/tmp/project',
     createdAt: '2026-05-04T00:00:00.000Z',
@@ -49,6 +51,7 @@ function buildRestoredSession(entry: PersistedStreamSession): StreamSession {
     sessionType: entry.sessionType ?? 'commander',
     creator: entry.creator ?? { kind: 'commander', id: 'commander-1' },
     agentType: entry.agentType,
+    model: entry.model,
     mode: entry.mode,
     cwd: entry.cwd,
     createdAt: entry.createdAt,
@@ -142,6 +145,35 @@ describe('session persistence quick wins', () => {
       providerId: 'claude',
       sessionId: 'canonical-session-resume',
     }))
+    expect(parsed.sessions[0]?.model).toBe('claude-sonnet-4-6')
     expect(writeJsonFileAtomicallyMock).not.toHaveBeenCalled()
+  })
+
+  it('round-trips model through restore and serialization', async () => {
+    const entries = [buildPersistedSession('restore-model')]
+    const sessionStorePath = join(tempDir, 'stream-sessions.json')
+    await writeFile(sessionStorePath, JSON.stringify({ sessions: entries }, null, 2), 'utf8')
+
+    const sessions = new Map<string, StreamSession>()
+    await restorePersistedSessions({
+      sessionStorePath,
+      sessions,
+      completedSessions: new Map<string, CompletedSession>(),
+      exitedStreamSessions: new Map<string, ExitedStreamSessionState>(),
+      maxSessions: 10,
+      machineRegistry: {
+        readMachineRegistry: vi.fn(async () => []),
+      } as never,
+      applyUsageEvent: vi.fn(),
+      restoreProviderSession: vi.fn(async (entry: PersistedStreamSession) => buildRestoredSession(entry)),
+    })
+
+    expect(sessions.get('restore-model')?.model).toBe('claude-sonnet-4-6')
+
+    const serialized = serializePersistedSessionsState({
+      sessions: new Map(sessions),
+      exitedStreamSessions: new Map<string, ExitedStreamSessionState>(),
+    })
+    expect(serialized.sessions[0]?.model).toBe('claude-sonnet-4-6')
   })
 })

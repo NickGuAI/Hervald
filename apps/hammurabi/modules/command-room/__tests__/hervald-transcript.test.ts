@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { mapSessionMessagesToTranscript } from '../../../src/surfaces/hervald/transcript'
+import { mapSessionMessagesToTranscript } from '../components/transcript'
 
 describe('mapSessionMessagesToTranscript', () => {
   it('preserves the rich MsgItem transcript shape for Hervald rendering parity', () => {

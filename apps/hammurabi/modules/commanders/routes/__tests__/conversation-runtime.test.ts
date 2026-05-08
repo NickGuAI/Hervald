@@ -18,7 +18,7 @@ import type { Conversation } from '../../conversation-store.js'
 import type { CommanderRoutesContext } from '../types.js'
 import type { StreamSession } from '../../../agents/types.js'
 
-function buildLiveSession(name: string): StreamSession {
+function buildLiveSession(name: string, overrides: Partial<StreamSession> = {}): StreamSession {
   return {
     kind: 'stream',
     name,
@@ -53,6 +53,7 @@ function buildLiveSession(name: string): StreamSession {
     queuedMessageDrainPending: false,
     queuedMessageDrainPendingForce: false,
     restoredIdle: false,
+    ...overrides,
   } as StreamSession
 }
 
@@ -143,5 +144,98 @@ describe('conversation-runtime quick wins', () => {
     expect(liveSession.maxTurns).toBe(12)
     expect(started.sent).toBe(true)
     expect(started.conversation.status).toBe('active')
+  })
+
+  it('uses a stored conversation model when resuming a non-default provider conversation', async () => {
+    const commanderId = '00000000-0000-4000-a000-0000000000aa'
+    let currentConversation: Conversation = {
+      id: '66666666-6666-4666-8666-666666666666',
+      commanderId,
+      surface: 'ui',
+      agentType: 'codex',
+      model: 'gpt-5.5',
+      name: 'stored-model-session',
+      status: 'idle',
+      currentTask: null,
+      providerContext: {
+        providerId: 'codex',
+        threadId: 'codex-thread-1',
+      },
+      lastHeartbeat: null,
+      heartbeatTickCount: 0,
+      completedTasks: 0,
+      totalCostUsd: 0,
+      createdAt: '2026-05-04T00:00:00.000Z',
+      lastMessageAt: '2026-05-04T00:00:00.000Z',
+    }
+    const sessionName = `commander-${commanderId}-conversation-${currentConversation.id}`
+    const createdLiveSession = buildLiveSession(sessionName, {
+      agentType: 'codex',
+      model: 'gpt-5.5',
+      providerContext: {
+        providerId: 'codex',
+        threadId: 'codex-thread-1',
+      },
+    })
+
+    const sessionsInterface = {
+      getSession: vi.fn(() => undefined),
+      deleteSession: vi.fn(),
+      createCommanderSession: vi.fn(async () => createdLiveSession),
+      sendToSession: vi.fn(async () => true),
+    }
+    const context = {
+      commanderBasePath: '/tmp/commanders',
+      now: () => new Date('2026-05-04T00:00:00.000Z'),
+      sessionStore: {
+        get: vi.fn(async () => ({
+          id: commanderId,
+          name: 'Commander',
+          created: '2026-05-04T00:00:00.000Z',
+          heartbeat: { intervalSeconds: 30 },
+          agentType: 'claude',
+          cwd: '/tmp/workspace',
+          host: undefined,
+          persona: '',
+          currentTask: null,
+          taskSource: null,
+          maxTurns: 12,
+        })),
+        update: vi.fn(async (_id, updater) => updater({
+          id: commanderId,
+          state: 'idle',
+        })),
+      },
+      conversationStore: {
+        update: vi.fn(async (_id, updater) => {
+          currentConversation = updater(currentConversation)
+          return currentConversation
+        }),
+        listByCommander: vi.fn(async () => [{ ...currentConversation, status: 'active' }]),
+      },
+      sessionsInterface,
+      heartbeatManager: {
+        start: vi.fn(),
+        stop: vi.fn(),
+      },
+      runtimes: new Map(),
+      activeCommanderSessions: new Map(),
+    } as unknown as CommanderRoutesContext
+
+    const started = await startConversationSession(
+      context,
+      commanderId,
+      currentConversation,
+    )
+
+    expect(sessionsInterface.createCommanderSession).toHaveBeenCalledWith(expect.objectContaining({
+      agentType: 'codex',
+      model: 'gpt-5.5',
+      resumeProviderContext: {
+        providerId: 'codex',
+        threadId: 'codex-thread-1',
+      },
+    }))
+    expect(started.conversation.model).toBe('gpt-5.5')
   })
 })

@@ -7,9 +7,7 @@ import {
   type ReactNode,
 } from 'react'
 import {
-  ChevronDown,
   ChevronLeft,
-  ChevronUp,
   Cpu,
   DollarSign,
   Moon,
@@ -23,7 +21,7 @@ import {
 } from 'lucide-react'
 import { useProviderRegistry } from '@/hooks/use-providers'
 import { cn, formatCost } from '@/lib/utils'
-import type { AgentType, SessionQueueSnapshot } from '@/types'
+import type { AgentType, ProviderModelOption, ProviderRegistryEntry, SessionQueueSnapshot } from '@/types'
 import type { PendingApproval } from '@/hooks/use-approvals'
 import { AddToChatSheet } from '@modules/agents/components/AddToChatSheet'
 import Transcript from '@modules/agents/components/Transcript'
@@ -33,11 +31,6 @@ import {
   type SessionComposerSubmitPayload,
 } from '@modules/agents/components/SessionComposer'
 import type { MsgItem } from '@modules/agents/messages/model'
-import {
-  formatQueuePreview,
-  getQueuePendingCount,
-  getQueuedMessageLabel,
-} from '@modules/agents/queue-state'
 import type { ConversationRecord } from '@modules/conversation/hooks/use-conversations'
 import { StreamingDots } from './StreamingDots'
 import { SessionApprovalsButton } from './SessionApprovalsButton'
@@ -106,11 +99,17 @@ export interface MobileSessionShellProps {
   onStartConversation?: (conversationId: string) => void | Promise<void>
   onStopConversation?: (conversationId: string) => void | Promise<void>
   onRenameConversation?: (conversationId: string, name: string) => void | Promise<void>
-  onSwapConversationProvider?: (conversationId: string, agentType: AgentType) => void | Promise<void>
+  onSwapConversationProvider?: (
+    conversationId: string,
+    agentType: AgentType,
+    model: string | null,
+  ) => void | Promise<void>
   onArchiveConversation?: (conversationId: string) => void | Promise<void>
   onRemoveConversation?: (conversationId: string) => void | Promise<void>
   belowHeader?: ReactNode
 }
+
+type ConversationProviderOption = Pick<ProviderRegistryEntry, 'id' | 'label' | 'availableModels'>
 
 function formatDuration(durationSec?: number): string | null {
   if (typeof durationSec !== 'number' || Number.isNaN(durationSec) || durationSec < 0) {
@@ -180,7 +179,8 @@ export function MobileSessionShell({
   const [showAddToChatSheet, setShowAddToChatSheet] = useState(false)
   const [isKilling, setIsKilling] = useState(false)
   const [conversationActionBusy, setConversationActionBusy] = useState<string | null>(null)
-  const [queueExpanded, setQueueExpanded] = useState(false)
+  const [conversationProviderDraft, setConversationProviderDraft] = useState<AgentType | ''>('')
+  const [conversationModelDraft, setConversationModelDraft] = useState('')
   const composerRef = useRef<SessionComposerHandle>(null)
   const emptyStateActive = Boolean(emptyState) && !composerEnabled
 
@@ -214,41 +214,61 @@ export function MobileSessionShell({
     return parts
   }, [durationSec, wsStatus])
 
-  const currentQueuedMessage = queueSnapshot.currentMessage ?? null
-  const queueItems = queueSnapshot.items
-  const totalQueuedCount = getQueuePendingCount(queueSnapshot)
   const workspaceShortcutLabel = typeof navigator !== 'undefined' && navigator.platform?.includes('Mac')
     ? '\u2318K'
     : 'Ctrl+K'
-  const queueStatusText = currentQueuedMessage
-    ? `Working on ${getQueuedMessageLabel(currentQueuedMessage)}`
-    : totalQueuedCount > 0
-      ? `${totalQueuedCount} queued`
-      : 'Queue empty'
-  const canClearQueue = (totalQueuedCount > 0 || currentQueuedMessage !== null) && !isQueueMutating
   const workerCount = workers?.length ?? 0
   const { data: providers = [] } = useProviderRegistry()
-  const providerOptions = providers.length > 0
-    ? providers.map((provider) => ({
-      id: provider.id,
-      label: provider.label,
-    }))
-    : (conversation?.agentType
-      ? [{ id: conversation.agentType, label: conversation.agentType }]
-      : [])
+  const providerOptions: ConversationProviderOption[] = useMemo(
+    () => providers.length > 0
+      ? providers.map((provider) => ({
+        id: provider.id,
+        label: provider.label,
+        availableModels: provider.availableModels,
+      }))
+      : (conversation?.agentType
+        ? [{ id: conversation.agentType, label: conversation.agentType, availableModels: [] }]
+        : []),
+    [conversation?.agentType, providers],
+  )
   const conversationName = conversation?.name?.trim() || (conversation ? `chat ${conversation.id.slice(0, 8)}` : '')
   const canStartConversation = conversation?.status === 'idle' || conversation?.status === 'paused'
   const canStopConversation = conversation?.status === 'active'
+  const canEditConversationProviderModel = canStartConversation && Boolean(onSwapConversationProvider)
+  const activeConversationProvider = providerOptions.find(
+    (provider) => provider.id === conversationProviderDraft,
+  ) ?? null
+  const availableConversationModels: readonly ProviderModelOption[] =
+    activeConversationProvider?.availableModels ?? []
+  const providerModelChanged = Boolean(conversationProviderDraft)
+    && (
+      conversationProviderDraft !== (conversation?.agentType ?? '')
+      || conversationModelDraft !== (conversation?.model ?? '')
+    )
   const showConversationDrawerActions = Boolean(
     conversation && (
       canStartConversation
       || canStopConversation
       || onRenameConversation
-      || onSwapConversationProvider
+      || canEditConversationProviderModel
       || onArchiveConversation
       || onRemoveConversation
     ),
   )
+
+  useEffect(() => {
+    if (!conversation) {
+      setConversationProviderDraft('')
+      setConversationModelDraft('')
+      return
+    }
+    const nextProvider = conversation.agentType
+      && providerOptions.some((provider) => provider.id === conversation.agentType)
+      ? conversation.agentType
+      : providerOptions[0]?.id ?? conversation.agentType ?? ''
+    setConversationProviderDraft(nextProvider)
+    setConversationModelDraft(conversation.model ?? '')
+  }, [conversation?.agentType, conversation?.id, conversation?.model, providerOptions])
 
   const closeOverflowMenu = useCallback(() => {
     setShowConversationProviderMenu(false)
@@ -329,19 +349,41 @@ export function MobileSessionShell({
     onRenameConversation,
   ])
 
-  const handleSwapConversationProvider = useCallback(async (provider: AgentType) => {
-    if (!conversation || !onSwapConversationProvider || provider === conversation.agentType) {
+  const handleConversationProviderDraftChange = useCallback((provider: AgentType) => {
+    setConversationProviderDraft(provider)
+    const nextModels = providerOptions.find((option) => option.id === provider)?.availableModels ?? []
+    setConversationModelDraft((current) => (
+      current && nextModels.some((option) => option.id === current)
+        ? current
+        : ''
+    ))
+  }, [providerOptions])
+
+  const handleSaveConversationProviderModel = useCallback(async () => {
+    if (
+      !conversation
+      || !onSwapConversationProvider
+      || !conversationProviderDraft
+      || !providerModelChanged
+    ) {
       return
     }
-    await handleConversationAction(`provider:${provider}`, async () => {
-      await onSwapConversationProvider(conversation.id, provider)
+    await handleConversationAction('provider-model', async () => {
+      await onSwapConversationProvider(
+        conversation.id,
+        conversationProviderDraft,
+        conversationModelDraft || null,
+      )
       setShowConversationProviderMenu(false)
       setShowOverflowMenu(false)
     })
   }, [
     conversation,
+    conversationModelDraft,
+    conversationProviderDraft,
     handleConversationAction,
     onSwapConversationProvider,
+    providerModelChanged,
   ])
 
   const handleArchive = useCallback(async () => {
@@ -427,7 +469,7 @@ export function MobileSessionShell({
                 : 'text-sumi-diluted hover:bg-ink-wash',
             )}
             onClick={onBack}
-            aria-label="Back to sessions"
+            aria-label="Back to org"
           >
             <ChevronLeft size={18} />
           </button>
@@ -502,11 +544,12 @@ export function MobileSessionShell({
 
                   <div
                     className={cn(
-                      'absolute right-0 top-full z-50 mt-1 min-w-[188px] overflow-hidden rounded-[3px_10px_3px_10px] border p-1 shadow-ink-md',
+                      'absolute right-0 top-full z-50 mt-1 min-w-[188px] overflow-hidden rounded-[3px_10px_3px_10px] border p-1 text-sumi-black shadow-ink-md',
                       theme === 'dark'
                         ? 'border-white/10 bg-[#242428]'
                         : 'border-ink-border bg-washi-white',
                     )}
+                    data-testid="mobile-session-overflow-menu"
                   >
                     {approvals && approvals.length > 0 && onApprovalDecision && (
                       <SessionApprovalsButton
@@ -514,24 +557,14 @@ export function MobileSessionShell({
                         onDecision={onApprovalDecision}
                         layout="row"
                         rootClassName="mb-0.5"
-                        buttonClassName={cn(
-                          '!flex !h-auto !w-full !justify-start rounded-md px-3 py-2.5 text-left',
-                          theme === 'dark'
-                            ? 'text-washi-white/85 hover:bg-white/5'
-                            : 'text-sumi-black hover:bg-ink-wash',
-                        )}
+                        buttonClassName="!flex !h-auto !w-full !justify-start rounded-md px-3 py-2.5 text-left text-sumi-black hover:bg-ink-wash"
                       />
                     )}
 
                     {onNewQuest && (
                       <button
                         type="button"
-                        className={cn(
-                          'flex w-full items-center gap-2 rounded-md px-3 py-2.5 text-left text-xs transition-colors',
-                          theme === 'dark'
-                            ? 'text-washi-white/85 hover:bg-white/5'
-                            : 'text-sumi-black hover:bg-ink-wash',
-                        )}
+                        className="flex w-full items-center gap-2 rounded-md px-3 py-2.5 text-left text-xs text-sumi-black transition-colors hover:bg-ink-wash"
                         onClick={() => {
                           composerRef.current?.seedText('Create a new quest on your quest board: ')
                           onNewQuest()
@@ -546,12 +579,7 @@ export function MobileSessionShell({
                     {onOpenWorkers && (
                       <button
                         type="button"
-                        className={cn(
-                          'flex w-full items-center gap-2 rounded-md px-3 py-2.5 text-left text-xs transition-colors',
-                          theme === 'dark'
-                            ? 'text-washi-white/85 hover:bg-white/5'
-                            : 'text-sumi-black hover:bg-ink-wash',
-                        )}
+                        className="flex w-full items-center gap-2 rounded-md px-3 py-2.5 text-left text-xs text-sumi-black transition-colors hover:bg-ink-wash"
                         onClick={() => {
                           closeOverflowMenu()
                           onOpenWorkers()
@@ -560,11 +588,7 @@ export function MobileSessionShell({
                         <Cpu size={13} className="shrink-0" />
                         <span className="flex-1">Workers</span>
                         {workerCount > 0 && (
-                          <span className={cn(
-                            'font-mono text-[10px]',
-                            theme === 'dark' ? 'text-white/45' : 'text-sumi-mist',
-                          )}
-                          >
+                          <span className="font-mono text-[10px] text-sumi-diluted">
                             {workerCount}
                           </span>
                         )}
@@ -574,12 +598,7 @@ export function MobileSessionShell({
                     {onOpenWorkspace && (
                       <button
                         type="button"
-                        className={cn(
-                          'flex w-full items-center gap-2 rounded-md px-3 py-2.5 text-left text-xs transition-colors',
-                          theme === 'dark'
-                            ? 'text-washi-white/85 hover:bg-white/5'
-                            : 'text-sumi-black hover:bg-ink-wash',
-                        )}
+                        className="flex w-full items-center gap-2 rounded-md px-3 py-2.5 text-left text-xs text-sumi-black transition-colors hover:bg-ink-wash"
                         onClick={() => {
                           closeOverflowMenu()
                           onOpenWorkspace()
@@ -587,18 +606,14 @@ export function MobileSessionShell({
                       >
                         <Warehouse size={13} className="shrink-0" />
                         <span className="flex-1">Workspace</span>
-                        <span className={cn(
-                          'font-mono text-[10px]',
-                          theme === 'dark' ? 'text-white/45' : 'text-sumi-mist',
-                        )}
-                        >
+                        <span className="font-mono text-[10px] text-sumi-diluted">
                           {workspaceShortcutLabel}
                         </span>
                       </button>
                     )}
 
                     {typeof costUsd === 'number' && (
-                      <div className="flex w-full items-center gap-2 rounded-md px-3 py-2.5 text-xs cursor-default">
+                      <div className="flex w-full cursor-default items-center gap-2 rounded-md px-3 py-2.5 text-xs text-sumi-black">
                         <DollarSign size={13} className="shrink-0" />
                         <span className="flex-1 text-left">Cost</span>
                         <span className="font-mono opacity-75">{formatCost(costUsd)}</span>
@@ -607,14 +622,9 @@ export function MobileSessionShell({
 
                     {onSetTheme && (
                       <>
-                        <div className={cn('my-1 h-px', theme === 'dark' ? 'bg-white/10' : 'bg-ink-border')} />
+                        <div className="my-1 h-px bg-ink-border" />
                         <div className="flex items-center gap-3 rounded-md px-3 py-2.5 text-xs">
-                          <div
-                            className={cn(
-                              'flex items-center gap-2',
-                              theme === 'dark' ? 'text-washi-white/85' : 'text-sumi-black',
-                            )}
-                          >
+                          <div className="flex items-center gap-2 text-sumi-black">
                             <Sun size={13} className="shrink-0" />
                             <span>Theme</span>
                           </div>
@@ -664,18 +674,13 @@ export function MobileSessionShell({
                     )}
 
                     {showConversationDrawerActions && (
-                      <div className={cn('my-1 h-px', theme === 'dark' ? 'bg-white/10' : 'bg-ink-border')} />
+                      <div className="my-1 h-px bg-ink-border" />
                     )}
 
                     {canStartConversation && onStartConversation && (
                       <button
                         type="button"
-                        className={cn(
-                          'flex w-full items-center gap-2 rounded-md px-3 py-2.5 text-left text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-50',
-                          theme === 'dark'
-                            ? 'text-washi-white/85 hover:bg-white/5'
-                            : 'text-sumi-black hover:bg-ink-wash',
-                        )}
+                        className="flex w-full items-center gap-2 rounded-md px-3 py-2.5 text-left text-xs text-sumi-black transition-colors hover:bg-ink-wash disabled:cursor-not-allowed disabled:opacity-50"
                         onClick={() => {
                           void handleStart()
                         }}
@@ -689,12 +694,7 @@ export function MobileSessionShell({
                     {canStopConversation && onStopConversation && (
                       <button
                         type="button"
-                        className={cn(
-                          'flex w-full items-center gap-2 rounded-md px-3 py-2.5 text-left text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-50',
-                          theme === 'dark'
-                            ? 'text-washi-white/85 hover:bg-white/5'
-                            : 'text-sumi-black hover:bg-ink-wash',
-                        )}
+                        className="flex w-full items-center gap-2 rounded-md px-3 py-2.5 text-left text-xs text-sumi-black transition-colors hover:bg-ink-wash disabled:cursor-not-allowed disabled:opacity-50"
                         onClick={() => {
                           void handleStop()
                         }}
@@ -708,12 +708,7 @@ export function MobileSessionShell({
                     {onRenameConversation && conversation && (
                       <button
                         type="button"
-                        className={cn(
-                          'flex w-full items-center gap-2 rounded-md px-3 py-2.5 text-left text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-50',
-                          theme === 'dark'
-                            ? 'text-washi-white/85 hover:bg-white/5'
-                            : 'text-sumi-black hover:bg-ink-wash',
-                        )}
+                        className="flex w-full items-center gap-2 rounded-md px-3 py-2.5 text-left text-xs text-sumi-black transition-colors hover:bg-ink-wash disabled:cursor-not-allowed disabled:opacity-50"
                         data-testid="mobile-chat-rename-button"
                         onClick={() => {
                           void handleRename()
@@ -724,52 +719,63 @@ export function MobileSessionShell({
                       </button>
                     )}
 
-                    {onSwapConversationProvider && conversation && (
+                    {canEditConversationProviderModel && conversation && (
                       <>
                         <button
                           type="button"
-                          className={cn(
-                            'flex w-full items-center gap-2 rounded-md px-3 py-2.5 text-left text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-50',
-                            theme === 'dark'
-                              ? 'text-washi-white/85 hover:bg-white/5'
-                              : 'text-sumi-black hover:bg-ink-wash',
-                          )}
+                          className="flex w-full items-center gap-2 rounded-md px-3 py-2.5 text-left text-xs text-sumi-black transition-colors hover:bg-ink-wash disabled:cursor-not-allowed disabled:opacity-50"
                           data-testid="mobile-chat-provider-menu-button"
                           onClick={() => setShowConversationProviderMenu((current) => !current)}
                           disabled={conversationActionBusy !== null}
                         >
-                          <span>Swap provider</span>
+                          <span>Provider / model</span>
                           <span className="ml-auto">{showConversationProviderMenu ? '▾' : '▸'}</span>
                         </button>
                         {showConversationProviderMenu && (
                           <div
-                            className={cn(
-                              'mt-1 border-t pl-3 pt-1',
-                              theme === 'dark' ? 'border-white/10' : 'border-ink-border',
-                            )}
+                            className="mt-1 grid gap-2 border-t border-ink-border pl-3 pt-2"
                           >
-                            {providerOptions.map((provider) => (
-                              <button
-                                key={provider.id}
-                                type="button"
-                                className={cn(
-                                  'flex w-full items-center gap-2 rounded-md px-3 py-2.5 text-left text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-50',
-                                  theme === 'dark'
-                                    ? 'text-washi-white/85 hover:bg-white/5'
-                                    : 'text-sumi-black hover:bg-ink-wash',
-                                )}
-                                data-testid={`mobile-chat-provider-option-${provider.id}`}
-                                onClick={() => {
-                                  void handleSwapConversationProvider(provider.id)
-                                }}
-                                disabled={conversationActionBusy !== null || provider.id === conversation.agentType}
+                            <label className="grid gap-1 px-3 text-[10px] uppercase tracking-[0.08em] text-sumi-diluted">
+                              <span>Provider</span>
+                              <select
+                                className="w-full rounded-md border border-ink-border bg-washi-white px-2 py-2 text-xs normal-case tracking-normal text-sumi-black"
+                                data-testid="mobile-chat-provider-select"
+                                value={conversationProviderDraft}
+                                onChange={(event) =>
+                                  handleConversationProviderDraftChange(event.target.value as AgentType)}
+                                disabled={conversationActionBusy !== null}
                               >
-                                <span>{provider.label}</span>
-                                {provider.id === conversation.agentType && (
-                                  <span className="ml-auto">current</span>
-                                )}
-                              </button>
-                            ))}
+                                {providerOptions.map((provider) => (
+                                  <option key={provider.id} value={provider.id}>{provider.label}</option>
+                                ))}
+                              </select>
+                            </label>
+                            <label className="grid gap-1 px-3 text-[10px] uppercase tracking-[0.08em] text-sumi-diluted">
+                              <span>Model</span>
+                              <select
+                                className="w-full rounded-md border border-ink-border bg-washi-white px-2 py-2 text-xs normal-case tracking-normal text-sumi-black"
+                                data-testid="mobile-chat-model-select"
+                                value={conversationModelDraft}
+                                onChange={(event) => setConversationModelDraft(event.target.value)}
+                                disabled={conversationActionBusy !== null}
+                              >
+                                <option value="">Adapter default</option>
+                                {availableConversationModels.map((model) => (
+                                  <option key={model.id} value={model.id}>{model.label}</option>
+                                ))}
+                              </select>
+                            </label>
+                            <button
+                              type="button"
+                              className="mx-3 mb-1 flex items-center justify-center rounded-md bg-sumi-black px-3 py-2 text-xs text-washi-white transition-opacity disabled:cursor-not-allowed disabled:opacity-50"
+                              data-testid="mobile-chat-provider-save-button"
+                              onClick={() => {
+                                void handleSaveConversationProviderModel()
+                              }}
+                              disabled={conversationActionBusy !== null || !providerModelChanged}
+                            >
+                              {conversationActionBusy === 'provider-model' ? 'Saving' : 'Save'}
+                            </button>
                           </div>
                         )}
                       </>
@@ -778,12 +784,7 @@ export function MobileSessionShell({
                     {onArchiveConversation && conversation && (
                       <button
                         type="button"
-                        className={cn(
-                          'flex w-full items-center gap-2 rounded-md px-3 py-2.5 text-left text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-50',
-                          theme === 'dark'
-                            ? 'text-washi-white/85 hover:bg-white/5'
-                            : 'text-sumi-black hover:bg-ink-wash',
-                        )}
+                        className="flex w-full items-center gap-2 rounded-md px-3 py-2.5 text-left text-xs text-sumi-black transition-colors hover:bg-ink-wash disabled:cursor-not-allowed disabled:opacity-50"
                         data-testid="mobile-chat-close-button"
                         onClick={() => {
                           void handleArchive()
@@ -810,7 +811,7 @@ export function MobileSessionShell({
 
                     {onKill && (
                       <>
-                        <div className={cn('my-1 h-px', theme === 'dark' ? 'bg-white/10' : 'bg-ink-border')} />
+                        <div className="my-1 h-px bg-ink-border" />
                         <button
                           type="button"
                           className="flex w-full items-center gap-2 rounded-md px-3 py-2.5 text-left text-xs text-accent-vermillion transition-colors hover:bg-accent-vermillion/5 disabled:cursor-not-allowed disabled:opacity-50"
@@ -826,22 +827,17 @@ export function MobileSessionShell({
                       </>
                     )}
 
-                    <div className={cn('my-1 h-px', theme === 'dark' ? 'bg-white/10' : 'bg-ink-border')} />
+                    <div className="my-1 h-px bg-ink-border" />
                     <button
                       type="button"
-                      className={cn(
-                        'flex w-full items-center gap-2 rounded-md px-3 py-2.5 text-left text-xs transition-colors',
-                        theme === 'dark'
-                          ? 'text-washi-white/65 hover:bg-white/5'
-                          : 'text-sumi-diluted hover:bg-ink-wash',
-                      )}
+                      className="flex w-full items-center gap-2 rounded-md px-3 py-2.5 text-left text-xs text-sumi-diluted transition-colors hover:bg-ink-wash"
                       onClick={() => {
                         closeOverflowMenu()
                         onBack()
                       }}
                     >
                       <ChevronLeft size={13} className="shrink-0" />
-                      Back to Sessions
+                      Back to Org
                     </button>
                   </div>
                 </>
@@ -883,224 +879,6 @@ export function MobileSessionShell({
               </div>
             )}
           </div>
-
-          {canQueueDraft && (
-            <div
-              className={cn(
-                'border-t px-3 py-2',
-                theme === 'dark'
-                  ? 'border-white/10 bg-[#1d1d21]'
-                  : 'border-ink-border bg-washi-white',
-              )}
-            >
-              <div
-                className={cn(
-                  'rounded-xl border',
-                  theme === 'dark'
-                    ? 'border-white/10 bg-white/[0.03]'
-                    : 'border-ink-border bg-washi-aged/35',
-                )}
-              >
-                <div
-                  role="button"
-                  tabIndex={0}
-                  aria-expanded={queueExpanded}
-                  aria-label="Toggle queue details"
-                  data-testid="mobile-queue-header"
-                  className="flex cursor-pointer items-center justify-between gap-3 px-3 py-1.5"
-                  onClick={() => setQueueExpanded((prev) => !prev)}
-                  onKeyDown={(event) => {
-                    if (event.key === 'Enter' || event.key === ' ') {
-                      event.preventDefault()
-                      setQueueExpanded((prev) => !prev)
-                    }
-                  }}
-                >
-                  <div className="flex min-w-0 flex-1 items-center gap-2">
-                    {queueExpanded ? (
-                      <ChevronUp
-                        size={14}
-                        className={cn(
-                          'shrink-0',
-                          theme === 'dark' ? 'text-white/45' : 'text-sumi-mist',
-                        )}
-                      />
-                    ) : (
-                      <ChevronDown
-                        size={14}
-                        className={cn(
-                          'shrink-0',
-                          theme === 'dark' ? 'text-white/45' : 'text-sumi-mist',
-                        )}
-                      />
-                    )}
-                    <span className={cn(
-                      'shrink-0 font-mono text-[11px] uppercase tracking-[0.2em]',
-                      theme === 'dark' ? 'text-white/45' : 'text-sumi-mist',
-                    )}
-                    >
-                      Queue
-                    </span>
-                    <span className={cn(
-                      'truncate text-xs',
-                      theme === 'dark' ? 'text-white/55' : 'text-sumi-diluted',
-                    )}
-                    >
-                      {queueStatusText}
-                      {queueSnapshot.maxSize ? ` · ${totalQueuedCount}/${queueSnapshot.maxSize}` : ''}
-                    </span>
-                  </div>
-                  <button
-                    type="button"
-                    className={cn(
-                      'shrink-0 rounded-lg border px-2.5 py-1.5 text-[11px] font-mono transition-colors disabled:cursor-not-allowed disabled:opacity-50',
-                      theme === 'dark'
-                        ? 'border-white/10 text-white/55 hover:bg-white/5'
-                        : 'border-ink-border text-sumi-diluted hover:bg-ink-wash',
-                    )}
-                    onClick={(event) => {
-                      event.stopPropagation()
-                      onClearQueue?.()
-                    }}
-                    disabled={!canClearQueue || !onClearQueue}
-                  >
-                    Clear
-                  </button>
-                </div>
-
-                {queueExpanded && (
-                  <div
-                    data-testid="mobile-queue-details"
-                    className={cn(
-                      'border-t px-3 py-3',
-                      theme === 'dark' ? 'border-white/10' : 'border-ink-border',
-                    )}
-                  >
-                    {currentQueuedMessage && (
-                      <div
-                        className={cn(
-                          'rounded-lg border px-3 py-2',
-                          theme === 'dark'
-                            ? 'border-emerald-400/25 bg-emerald-400/10'
-                            : 'border-emerald-500/20 bg-emerald-500/5',
-                        )}
-                      >
-                        <div className="flex items-center justify-between gap-3">
-                          <span className="badge-sumi bg-emerald-500/10 text-[10px] text-emerald-500">
-                            Working on
-                          </span>
-                          <span className="font-mono text-[10px] uppercase tracking-wide text-emerald-500">
-                            {getQueuedMessageLabel(currentQueuedMessage)}
-                          </span>
-                        </div>
-                        <p className={cn(
-                          'mt-2 text-sm leading-relaxed',
-                          theme === 'dark' ? 'text-washi-white' : 'text-sumi-black',
-                        )}
-                        >
-                          {formatQueuePreview(currentQueuedMessage)}
-                        </p>
-                      </div>
-                    )}
-
-                    {queueItems.length > 0 ? (
-                      <div className={cn('space-y-2', currentQueuedMessage ? 'mt-3' : '')}>
-                        {queueItems.map((message, index) => (
-                          <div
-                            key={message.id}
-                            className={cn(
-                              'rounded-lg border px-3 py-2',
-                              theme === 'dark'
-                                ? 'border-white/10 bg-white/[0.04]'
-                                : 'border-ink-border bg-washi-white',
-                            )}
-                          >
-                            <div className="flex items-start justify-between gap-3">
-                              <div className="min-w-0 flex-1">
-                                <div className="flex items-center gap-2">
-                                  <span className={cn(
-                                    'font-mono text-[10px]',
-                                    theme === 'dark' ? 'text-white/45' : 'text-sumi-mist',
-                                  )}
-                                  >
-                                    #{index + 1}
-                                  </span>
-                                  <span className="badge-sumi bg-black/5 text-[10px] text-sumi-diluted">
-                                    {getQueuedMessageLabel(message)}
-                                  </span>
-                                </div>
-                                <p className={cn(
-                                  'mt-1 text-sm leading-relaxed',
-                                  theme === 'dark' ? 'text-washi-white' : 'text-sumi-black',
-                                )}
-                                >
-                                  {formatQueuePreview(message)}
-                                </p>
-                              </div>
-                              <div className="flex items-center gap-1">
-                                <button
-                                  type="button"
-                                  className={cn(
-                                    'rounded-md border px-2 py-1 text-[11px] transition-colors disabled:cursor-not-allowed disabled:opacity-40',
-                                    theme === 'dark'
-                                      ? 'border-white/10 text-white/55 hover:bg-white/5'
-                                      : 'border-ink-border text-sumi-diluted hover:bg-ink-wash',
-                                  )}
-                                  onClick={() => onMoveQueuedMessage?.(message.id, -1)}
-                                  disabled={index === 0 || isQueueMutating || !onMoveQueuedMessage}
-                                  aria-label={`Move queued message ${index + 1} up`}
-                                >
-                                  ↑
-                                </button>
-                                <button
-                                  type="button"
-                                  className={cn(
-                                    'rounded-md border px-2 py-1 text-[11px] transition-colors disabled:cursor-not-allowed disabled:opacity-40',
-                                    theme === 'dark'
-                                      ? 'border-white/10 text-white/55 hover:bg-white/5'
-                                      : 'border-ink-border text-sumi-diluted hover:bg-ink-wash',
-                                  )}
-                                  onClick={() => onMoveQueuedMessage?.(message.id, 1)}
-                                  disabled={index === queueItems.length - 1 || isQueueMutating || !onMoveQueuedMessage}
-                                  aria-label={`Move queued message ${index + 1} down`}
-                                >
-                                  ↓
-                                </button>
-                                <button
-                                  type="button"
-                                  className="rounded-md border border-accent-vermillion/30 px-2 py-1 text-[11px] text-accent-vermillion transition-colors hover:bg-accent-vermillion/10 disabled:cursor-not-allowed disabled:opacity-40"
-                                  onClick={() => onRemoveQueuedMessage?.(message.id)}
-                                  disabled={isQueueMutating || !onRemoveQueuedMessage}
-                                  aria-label={`Remove queued message ${index + 1}`}
-                                >
-                                  ×
-                                </button>
-                              </div>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    ) : !currentQueuedMessage ? (
-                      <p className={cn(
-                        'text-[11px]',
-                        theme === 'dark' ? 'text-white/45' : 'text-sumi-mist',
-                      )}
-                      >
-                        Press Tab or click Queue to stack a follow-up without interrupting the current turn.
-                      </p>
-                    ) : null}
-
-                    {queueError && (
-                      <div className="mt-3 rounded-lg bg-accent-vermillion/10 px-3 py-2 text-[11px] text-accent-vermillion">
-                        {queueError}
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
-
           <div
             className={cn(
               'border-t px-3 py-2',
@@ -1128,6 +906,12 @@ export function MobileSessionShell({
               onOpenWorkspace={onOpenWorkspace}
               onOpenAddToChat={handleOpenAddToChat}
               showWorkspaceShortcut={showComposerWorkspaceShortcut}
+              queueSnapshot={queueSnapshot}
+              queueError={queueError}
+              isQueueMutating={isQueueMutating}
+              onClearQueue={onClearQueue}
+              onMoveQueuedMessage={onMoveQueuedMessage}
+              onRemoveQueuedMessage={onRemoveQueuedMessage}
             />
           </div>
         </>

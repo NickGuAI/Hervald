@@ -140,6 +140,7 @@ export function createCommanderSessionsInterface(
     conversationId,
     systemPrompt,
     agentType,
+    model,
     effort,
     cwd,
     resumeProviderContext,
@@ -162,6 +163,7 @@ export function createCommanderSessionsInterface(
       : undefined
     const baseOptions: ProviderSessionCreateOptions = {
       systemPrompt,
+      model,
       effort,
       maxTurns,
       sessionType: 'commander',

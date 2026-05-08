@@ -31,6 +31,7 @@ describe('QuestStore', () => {
         cwd: '/tmp/example-repo',
         permissionMode: 'default',
         agentType: 'claude',
+        model: 'claude-sonnet-4-6',
         skillsToUse: ['issue-finder'],
       },
     })
@@ -38,10 +39,12 @@ describe('QuestStore', () => {
     expect(created.id).toBeTruthy()
     expect(created.commanderId).toBe('cmdr-1')
     expect(created.status).toBe('pending')
+    expect(created.contract.model).toBe('claude-sonnet-4-6')
 
     const listed = await store.list('cmdr-1')
     expect(listed).toHaveLength(1)
     expect(listed[0]?.id).toBe(created.id)
+    expect(listed[0]?.contract.model).toBe('claude-sonnet-4-6')
 
     const updated = await store.update('cmdr-1', created.id, {
       status: 'done',

@@ -1,11 +1,11 @@
-import { Suspense, lazy, useCallback, useEffect, useState } from 'react'
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
+import { useCallback, useEffect, useState } from 'react'
+import { BrowserRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Auth0Provider, useAuth0 } from '@auth0/auth0-react'
 import { LandingPage } from '@/components/LandingPage'
 import { ApiKeyLandingPage } from '@/components/ApiKeyLandingPage'
-import { Shell } from '@/surfaces/hervald/Shell'
 import { AuthProvider } from '@/contexts/AuthContext'
+import { AuthenticatedAppRouter } from '@/app/AuthenticatedAppRouter'
 import { modules } from '@/module-registry'
 import { setAccessTokenResolver, setUnauthorizedHandler } from '@/lib/api'
 import { isCapacitorNative } from '@/lib/api-base'
@@ -32,12 +32,6 @@ function Loading() {
   )
 }
 
-// Build lazy components from module registry
-const moduleRoutes = modules.map((mod) => ({
-  path: mod.path,
-  Component: lazy(mod.component),
-}))
-
 function AppFrame({
   signOut,
   user,
@@ -54,20 +48,7 @@ function AppFrame({
       <ThemeProvider>
         <BrowserRouter>
           <AuthProvider signOut={signOut} user={user}>
-            <Shell modules={modules}>
-              <Suspense fallback={<Loading />}>
-                <Routes>
-                  <Route path="/" element={<Navigate to="/org" replace />} />
-                  {moduleRoutes.map((route) => (
-                    <Route
-                      key={route.path}
-                      path={route.path + '/*'}
-                      element={<route.Component />}
-                    />
-                  ))}
-                </Routes>
-              </Suspense>
-            </Shell>
+            <AuthenticatedAppRouter modules={modules} />
             {/*
               ApprovalCenter is the global desktop floating drawer. Mobile has
               the canonical /command-room/inbox route as its native approvals

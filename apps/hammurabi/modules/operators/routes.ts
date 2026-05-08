@@ -14,6 +14,7 @@ import {
   resolveOperatorUiRoot,
   writeOperatorUiProfile,
 } from './profile.js'
+import { FOUNDER_OPERATOR_NOT_FOUND_ERROR } from './constants.js'
 import { OperatorStore } from './store.js'
 
 export interface OperatorsRouterOptions {
@@ -111,7 +112,7 @@ export function createOperatorsRouter(options: OperatorsRouterOptions = {}): Rou
   router.get('/founder/avatar', async (_req, res) => {
     const founder = await store.getFounder()
     if (!founder) {
-      res.status(404).json({ error: 'Founder operator not found' })
+      res.status(404).json({ error: FOUNDER_OPERATOR_NOT_FOUND_ERROR })
       return
     }
 
@@ -135,7 +136,7 @@ export function createOperatorsRouter(options: OperatorsRouterOptions = {}): Rou
   router.get('/founder', requireReadAccess, async (req, res) => {
     const founder = await getFounderForUser(store, req.user)
     if (!founder) {
-      res.status(404).json({ error: 'Founder operator not found' })
+      res.status(404).json({ error: FOUNDER_OPERATOR_NOT_FOUND_ERROR })
       return
     }
 
@@ -145,7 +146,7 @@ export function createOperatorsRouter(options: OperatorsRouterOptions = {}): Rou
   router.patch('/founder/profile', requireWriteAccess, async (req, res) => {
     const founder = await getFounderForUser(store, req.user)
     if (!founder) {
-      res.status(404).json({ error: 'Founder operator not found' })
+      res.status(404).json({ error: FOUNDER_OPERATOR_NOT_FOUND_ERROR })
       return
     }
 
@@ -166,7 +167,7 @@ export function createOperatorsRouter(options: OperatorsRouterOptions = {}): Rou
   router.post('/founder/avatar', requireWriteAccess, avatarUpload.single('avatar'), async (req, res) => {
     const founder = await getFounderForUser(store, req.user)
     if (!founder) {
-      res.status(404).json({ error: 'Founder operator not found' })
+      res.status(404).json({ error: FOUNDER_OPERATOR_NOT_FOUND_ERROR })
       return
     }
 

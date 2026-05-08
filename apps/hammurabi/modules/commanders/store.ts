@@ -21,7 +21,6 @@ import {
   DEFAULT_COMMANDER_RUNTIME_LIMIT_MAX_TURNS,
   type CommanderRuntimeConfig,
 } from './runtime-config.shared.js'
-import type { OrgCommanderRoleKey } from '../org/types.js'
 import { writeJsonFileAtomically } from '../../migrations/write-json-file-atomically.js'
 import {
   migrateProviderContext,
@@ -93,6 +92,7 @@ export interface CommanderSession {
   state: 'idle' | 'running' | 'paused' | 'stopped'
   created: string
   agentType?: AgentType
+  model?: string | null
   effort?: ClaudeEffortLevel
   providerContext?: ProviderSessionContext
   cwd?: string
@@ -102,7 +102,6 @@ export interface CommanderSession {
   contextConfig?: HeartbeatContextConfig
   taskSource: CommanderTaskSource | null
   operatorId?: string
-  roleKey?: OrgCommanderRoleKey
   templateId?: string | null
   replicatedFromCommanderId?: string | null
   archived?: boolean
@@ -221,17 +220,6 @@ function parseRemoteOrigin(raw: unknown): CommanderRemoteOrigin | undefined {
 function parseOptionalNonEmptyString(raw: unknown): string | undefined {
   return typeof raw === 'string' && raw.trim().length > 0
     ? raw.trim()
-    : undefined
-}
-
-function parseOptionalCommanderRoleKey(raw: unknown): OrgCommanderRoleKey | undefined {
-  return raw === 'engineering'
-    || raw === 'research'
-    || raw === 'ops'
-    || raw === 'content'
-    || raw === 'validator'
-    || raw === 'ea'
-    ? raw
     : undefined
 }
 
@@ -354,6 +342,9 @@ function parseCommanderSession(
     : undefined
   const created = typeof raw.created === 'string' ? raw.created.trim() : ''
   const agentType = parseProviderId(raw.agentType) ?? 'claude'
+  const model = raw.model === null
+    ? null
+    : (typeof raw.model === 'string' && raw.model.trim().length > 0 ? raw.model.trim() : undefined)
   const effort = normalizeClaudeEffortLevel(raw.effort, DEFAULT_CLAUDE_EFFORT_LEVEL)
   const providerContext = parseCanonicalProviderContext(raw.providerContext, { effort }) ?? undefined
   const cwd = typeof raw.cwd === 'string' && raw.cwd.trim().length > 0
@@ -366,7 +357,6 @@ function parseCommanderSession(
   const heartbeat = normalizeHeartbeatConfig(raw.heartbeat)
   const heartbeatMissing = !hasOwnProperty(raw, 'heartbeat')
   const operatorId = parseOptionalNonEmptyString(raw.operatorId)
-  const roleKey = parseOptionalCommanderRoleKey(raw.roleKey)
   const templateId = raw.templateId === null ? null : parseOptionalNonEmptyString(raw.templateId)
   const replicatedFromCommanderId = raw.replicatedFromCommanderId === null
     ? null
@@ -393,6 +383,7 @@ function parseCommanderSession(
     state: state as CommanderSession['state'],
     created,
     agentType,
+    ...(model !== undefined ? { model } : {}),
     effort,
     ...(providerContext ? { providerContext } : {}),
     cwd,
@@ -402,7 +393,6 @@ function parseCommanderSession(
     contextConfig,
     taskSource,
     ...(operatorId ? { operatorId } : {}),
-    ...(roleKey ? { roleKey } : {}),
     ...(templateId !== undefined ? { templateId } : {}),
     ...(replicatedFromCommanderId !== undefined ? { replicatedFromCommanderId } : {}),
     ...(archived ? { archived: true } : {}),

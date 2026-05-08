@@ -26,6 +26,7 @@ export function getLiveConversationSession(
 
 export interface ConversationSpawnOptions {
   agentType?: AgentType
+  model?: string | null
   adaptiveThinking?: ClaudeAdaptiveThinkingMode
 }
 
@@ -38,6 +39,7 @@ interface PreparedConversationSession {
     conversationId: string
     systemPrompt: string
     agentType: AgentType
+    model?: string
     effort?: ClaudeEffortLevel
     adaptiveThinking?: ClaudeAdaptiveThinkingMode
     cwd?: string
@@ -75,8 +77,20 @@ async function prepareConversationSession(
     throw new Error('sessionsInterface not configured')
   }
 
-  const agentType = spawnOptions?.agentType ?? commander.agentType ?? 'claude'
+  const commanderAgentType = commander.agentType ?? 'claude'
+  const agentType = spawnOptions?.agentType ?? conversation.agentType ?? commanderAgentType
   const provider = getProvider(agentType)
+  const hasSpawnModel = spawnOptions
+    ? Object.prototype.hasOwnProperty.call(spawnOptions, 'model')
+    : false
+  const conversationModel = conversation.agentType === agentType
+    ? (conversation.model ?? undefined)
+    : undefined
+  const model = hasSpawnModel
+    ? (spawnOptions?.model ?? undefined)
+    : conversationModel ?? (agentType === commanderAgentType
+      ? (commander.model ?? undefined)
+      : undefined)
   const effort = provider?.uiCapabilities.supportsEffort
     ? commander.effort
     : undefined
@@ -112,6 +126,7 @@ async function prepareConversationSession(
       conversationId: conversation.id,
       systemPrompt: built.systemPrompt,
       agentType,
+      model,
       effort,
       adaptiveThinking,
       cwd,
@@ -131,6 +146,7 @@ function applyLiveSessionState(
   return {
     ...current,
     agentType: nextAgentType,
+    model: liveSession?.model,
     providerContext: sanitizeConversationProviderContext(liveSession) ?? current.providerContext,
     status: nextStatus,
     lastHeartbeat: nextStatus === 'active' ? null : current.lastHeartbeat,
@@ -162,6 +178,7 @@ function isCompatibleLiveConversationSession(
 
   const expectedCwd = createSessionInput.cwd ?? process.env.HOME ?? '/tmp'
   return liveSession.agentType === createSessionInput.agentType
+    && liveSession.model === createSessionInput.model
     && liveSession.cwd === expectedCwd
     && isDeepStrictEqual(
       sanitizeConversationProviderContext(liveSession) ?? null,
@@ -285,13 +302,14 @@ export async function swapConversationProvider(
   agentType: AgentType,
   spawnOptions?: Omit<ConversationSpawnOptions, 'agentType'>,
 ): Promise<Conversation> {
-  const sessionsInterface = context.sessionsInterface
-  if (!sessionsInterface?.replaceCommanderSession) {
-    throw new ConversationProviderSwapUnavailableError(
-      'sessionsInterface does not support provider swapping',
-    )
-  }
-  if (conversation.agentType === agentType && !getLiveConversationSession(context, conversation)) {
+  const modelProvided = spawnOptions
+    ? Object.prototype.hasOwnProperty.call(spawnOptions, 'model')
+    : false
+  if (
+    conversation.agentType === agentType
+    && !modelProvided
+    && !getLiveConversationSession(context, conversation)
+  ) {
     return conversation
   }
 
@@ -300,9 +318,17 @@ export async function swapConversationProvider(
     const updated = await context.conversationStore.update(conversation.id, (current) => ({
       ...current,
       agentType,
+      ...(modelProvided ? { model: spawnOptions?.model ?? null } : {}),
       lastMessageAt: new Date().toISOString(),
     }))
     return updated ?? conversation
+  }
+
+  const sessionsInterface = context.sessionsInterface
+  if (!sessionsInterface?.replaceCommanderSession) {
+    throw new ConversationProviderSwapUnavailableError(
+      'sessionsInterface does not support provider swapping',
+    )
   }
 
   if (!liveSession.lastTurnCompleted) {
@@ -364,6 +390,7 @@ export async function persistConversationRuntimeSnapshot(
   const usageCostUsd = liveSession?.usage?.costUsd ?? 0
   return context.conversationStore.update(conversation.id, (current) => ({
     ...current,
+    model: liveSession?.model,
     providerContext: sanitizeConversationProviderContext(liveSession) ?? current.providerContext,
     totalCostUsd: current.totalCostUsd + usageCostUsd,
     status: nextStatus,

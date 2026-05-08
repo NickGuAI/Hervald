@@ -45,6 +45,7 @@ export interface CommanderSession {
   state: CommanderState
   created: string
   agentType?: CommanderAgentType
+  model?: string | null
   effort?: ClaudeEffortLevel
   cwd?: string
   persona?: string
@@ -99,6 +100,7 @@ export interface CommanderCreateInput {
   host: string
   displayName?: string
   agentType?: CommanderAgentType
+  model?: string | null
   effort?: ClaudeEffortLevel
   cwd?: string
   persona?: string
@@ -127,6 +129,10 @@ export interface CommanderProfileUpdateInput {
 export interface CommanderAvatarUploadInput {
   commanderId: string
   file: File
+}
+
+export interface CommanderAvatarGenerateInput {
+  commanderId: string
 }
 
 interface CommanderMessageInput {
@@ -414,6 +420,15 @@ async function uploadCommanderAvatar(input: CommanderAvatarUploadInput): Promise
   )
 }
 
+export async function generateCommanderAvatar(
+  input: CommanderAvatarGenerateInput,
+): Promise<{ avatarUrl: string }> {
+  return fetchJson<{ avatarUrl: string }>(
+    `/api/commanders/${encodeURIComponent(input.commanderId)}/avatar/generate`,
+    { method: 'POST' },
+  )
+}
+
 function toErrorMessage(error: unknown): string | null {
   if (!error) {
     return null
@@ -645,6 +660,13 @@ export function useCommander() {
     },
   })
 
+  const generateAvatarMutation = useMutation({
+    mutationFn: generateCommanderAvatar,
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: COMMANDERS_QUERY_KEY })
+    },
+  })
+
   const createCommander = useCallback(
     async (input: CommanderCreateInput) => {
       return createSessionMutation.mutateAsync(input)
@@ -743,6 +765,13 @@ export function useCommander() {
     [uploadAvatarMutation],
   )
 
+  const generateAvatar = useCallback(
+    async (input: CommanderAvatarGenerateInput) => {
+      return generateAvatarMutation.mutateAsync(input)
+    },
+    [generateAvatarMutation],
+  )
+
   return {
     commanders,
     selectedCommanderId,
@@ -770,6 +799,7 @@ export function useCommander() {
     deleteCommander,
     updateProfile,
     uploadAvatar,
+    generateAvatar,
     createCommanderPending: createSessionMutation.isPending,
     startPending: startMutation.isPending,
     stopPending: stopMutation.isPending,
@@ -790,6 +820,7 @@ export function useCommander() {
     deleteCommanderPending: deleteSessionMutation.isPending,
     updateProfilePending: updateProfileMutation.isPending,
     uploadAvatarPending: uploadAvatarMutation.isPending,
+    generateAvatarPending: generateAvatarMutation.isPending,
     actionError:
       toErrorMessage(createSessionMutation.error) ??
       toErrorMessage(startMutation.error) ??
@@ -802,6 +833,7 @@ export function useCommander() {
       toErrorMessage(updateCronMutation.error) ??
       toErrorMessage(triggerCronMutation.error) ??
       toErrorMessage(deleteCronMutation.error) ??
-      toErrorMessage(deleteSessionMutation.error),
+      toErrorMessage(deleteSessionMutation.error) ??
+      toErrorMessage(generateAvatarMutation.error),
   }
 }

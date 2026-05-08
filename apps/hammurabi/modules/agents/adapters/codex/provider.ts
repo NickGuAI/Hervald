@@ -18,6 +18,7 @@ import type {
 import { codexMachineProvider } from './machine-adapter.js'
 import { codexApprovalAdapter } from './approval-adapter.js'
 import { clearCodexTurnWatchdog } from './helpers.js'
+import { availableModels } from './models.js'
 import {
   createCodexSessionAdapter,
   createCodexAppServerSession,
@@ -72,6 +73,7 @@ function snapshotCodexSession(
     creator: session.creator,
     conversationId: session.conversationId,
     agentType: session.agentType,
+    model: session.model,
     mode: session.mode,
     cwd: session.cwd,
     host: session.host,
@@ -105,6 +107,7 @@ function snapshotExitedCodexSession(session: StreamSession): ExitedStreamSession
     creator: session.creator,
     conversationId: session.conversationId,
     agentType: session.agentType,
+    model: session.model,
     mode: session.mode,
     cwd: session.cwd,
     host: session.host,
@@ -137,6 +140,7 @@ export const codexProvider: ProviderAdapter = registerProvider({
     supportsCommanderConversation: true,
     supportsWorkerDispatch: true,
   },
+  availableModels,
   machineAuth: codexMachineProvider,
   uiCapabilities: {
     supportsEffort: false,
@@ -199,7 +203,7 @@ export const codexProvider: ProviderAdapter = registerProvider({
       machine,
       resumeSessionId: context?.threadId,
       systemPrompt: undefined,
-      model: undefined,
+      model: entry.model,
       createdAt: entry.createdAt,
       spawnedBy: entry.spawnedBy,
       spawnedWorkers: entry.spawnedWorkers,

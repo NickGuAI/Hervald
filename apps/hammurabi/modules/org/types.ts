@@ -12,13 +12,6 @@ import type { AutomationTrigger } from '../automations/types.js'
 import type { OrgIdentity } from '../org-identity/types.js'
 
 export type OrgNodeKind = 'operator' | 'commander' | 'automation'
-export type OrgCommanderRoleKey =
-  | 'engineering'
-  | 'research'
-  | 'ops'
-  | 'content'
-  | 'validator'
-  | 'ea'
 
 /** Per-provider channel binding counts for a commander. Always populated. */
 export interface OrgChannelsByProvider {
@@ -38,15 +31,21 @@ export interface OrgCommanderCounts {
   activeChats: number
 }
 
+export interface OrgNodeProfile {
+  borderColor?: string
+  accentColor?: string
+  speakingTone?: string
+}
+
 export interface OrgNode {
   id: string
   kind: OrgNodeKind
   parentId: string | null
   displayName: string
-  /** Commander only — closed enum from the `roleKey` doctrine. */
-  roleKey?: OrgCommanderRoleKey
   /** Commander only — sourced from CommanderProfile, not Commander (Constraint #20). */
   avatarUrl?: string | null
+  /** Commander only — sanitized UI profile fields from CommanderProfile. */
+  profile?: OrgNodeProfile | null
   /**
    * Passthrough of the underlying entity status (Constraint #19).
    * Never invents new status values. Unknown values render neutral.

@@ -54,7 +54,11 @@ export interface GeminiSessionDeps {
   deleteSessionEventHandlers(sessionName: string): void
   getActiveSession(sessionName: string): AnySession | undefined
   resetActiveTurnState(session: StreamSession): void
-  runtimeFactory?: (sessionName: string, machine?: MachineConfig) => GeminiAcpRuntimeHandle
+  runtimeFactory?: (
+    sessionName: string,
+    machine?: MachineConfig,
+    model?: string,
+  ) => GeminiAcpRuntimeHandle
   schedulePersistedSessionsWrite(): void
   setCompletedSession(sessionName: string, session: CompletedSession): void
   setExitedSession(sessionName: string, session: ExitedStreamSessionState): void
@@ -286,8 +290,9 @@ export async function createGeminiAcpSession(
 ): Promise<StreamSession> {
   deps.clearExitedSession(sessionName)
 
-  const runtimeFactory = deps.runtimeFactory ?? ((name: string, machine?: MachineConfig) => new GeminiAcpRuntime(name, machine))
-  const runtime = runtimeFactory(sessionName, options.machine)
+  const runtimeFactory = deps.runtimeFactory
+    ?? ((name: string, machine?: MachineConfig, model?: string) => new GeminiAcpRuntime(name, machine, model))
+  const runtime = runtimeFactory(sessionName, options.machine, options.model)
   const initializedAt = new Date().toISOString()
   const sessionCwd = cwd || process.env.HOME || '/tmp'
 
@@ -353,6 +358,7 @@ export async function createGeminiAcpSession(
     lastEventAt: initializedAt,
     systemPrompt: options.systemPrompt,
     maxTurns: options.maxTurns,
+    model: options.model,
     usage: { inputTokens: 0, outputTokens: 0, costUsd: 0 },
     stdoutBuffer: '',
     stdinDraining: false,

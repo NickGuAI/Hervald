@@ -63,12 +63,20 @@ export interface ProviderMachineAuthDescriptor {
   loginStatusCommand: string | null
 }
 
+export interface ProviderModelOption {
+  id: string
+  label: string
+  description?: string
+  default?: boolean
+}
+
 export interface ProviderRegistryEntry {
   id: AgentType
   label: string
   eventProvider: string
   capabilities: ProviderCapabilities
   uiCapabilities: ProviderUiCapabilities
+  availableModels: ProviderModelOption[]
   machineAuth?: ProviderMachineAuthDescriptor
 }
 
@@ -116,6 +124,7 @@ export interface ProviderAdapter {
   readonly approvalAdapter: ProviderApprovalAdapter<unknown, unknown>
   readonly capabilities: ProviderCapabilities
   readonly uiCapabilities: ProviderUiCapabilities
+  readonly availableModels: readonly ProviderModelOption[]
   readonly machineAuth?: MachineProviderAdapter
   /** Provider-specific PTY env overrides. Route-managed env still wins. */
   preparePtyEnv?(args: {

@@ -1,10 +1,8 @@
 import type { ClaudeEffortLevel } from '@modules/claude-effort.js'
 import type {
-  HireCommanderCreateRequestBody,
   NewAutomationCreateRequestBody,
   OrgAgentType,
 } from '@modules/org/forms'
-import type { OrgCommanderRoleKey } from '@modules/org/types'
 import { fetchJson, fetchVoid } from '@/lib/api'
 
 export type CommanderContextMode = 'thin' | 'fat'
@@ -12,10 +10,10 @@ export type CommanderContextMode = 'thin' | 'fat'
 export interface OrgCommanderDetail {
   id: string
   displayName?: string | null
+  avatarUrl?: string | null
   operatorId?: string | null
   createdAt?: string | null
   created?: string | null
-  roleKey?: OrgCommanderRoleKey | null
   persona?: string | null
   agentType?: OrgAgentType | null
   effort?: ClaudeEffortLevel | null
@@ -115,16 +113,6 @@ export async function runOrgCommanderNow(
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ message }),
-  })
-}
-
-export async function createOrgCommander(
-  payload: HireCommanderCreateRequestBody,
-): Promise<OrgMutationResult> {
-  return fetchJson<OrgMutationResult>('/api/commanders', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(payload),
   })
 }
 

@@ -4,8 +4,8 @@ import { createElement } from 'react'
 import { createRoot } from 'react-dom/client'
 import { flushSync } from 'react-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { STATE_COLOR } from '@/surfaces/hervald'
-import { SessionsColumn } from '../../../src/surfaces/hervald/SessionsColumn'
+import { STATE_COLOR } from '@modules/components/hervald'
+import { SessionsColumn } from '../components/desktop/SessionsColumn'
 
 describe('Hervald SessionsColumn', () => {
   beforeEach(() => {

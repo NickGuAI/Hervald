@@ -1,4 +1,4 @@
-import { AgentAvatar } from '@/surfaces/hervald'
+import { AgentAvatar } from '@modules/components/hervald'
 import type { Operator } from '../../operators/types'
 
 export function OperatorCard({
@@ -7,8 +7,8 @@ export function OperatorCard({
   operator: Operator
 }) {
   return (
-    <article className="card-sumi p-5">
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+    <article className="rounded-[16px] border border-ink-border/70 bg-washi-white/55 px-5 py-4">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center gap-4">
           <AgentAvatar
             commander={{
@@ -20,7 +20,7 @@ export function OperatorCard({
           />
           <div className="space-y-1">
             <div className="flex flex-wrap items-center gap-2">
-              <h2 className="text-xl font-medium text-sumi-black">{operator.displayName}</h2>
+              <h2 className="text-lg font-medium text-sumi-black">{operator.displayName}</h2>
               <span className="rounded-full bg-ink-wash px-2.5 py-1 text-xs uppercase tracking-[0.16em] text-sumi-diluted">
                 Founder
               </span>

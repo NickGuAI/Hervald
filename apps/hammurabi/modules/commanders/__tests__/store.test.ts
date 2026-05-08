@@ -166,6 +166,34 @@ describe('CommanderSessionStore', () => {
     expect(persisted.sessions.find((entry) => entry.id === 'heartbeat-roundtrip')?.heartbeat).toEqual(heartbeat)
   })
 
+  it('roundtrips commander model selections through save and load', async () => {
+    const dir = await createTempDir('hammurabi-commander-model-roundtrip-')
+    const storePath = join(dir, 'sessions.json')
+    const store = new CommanderSessionStore(storePath)
+
+    await store.create({
+      id: 'model-roundtrip',
+      host: 'model-host',
+      state: 'idle',
+      created: '2026-05-01T00:00:00.000Z',
+      agentType: 'codex',
+      model: 'gpt-5.4',
+      maxTurns: DEFAULT_COMMANDER_MAX_TURNS,
+      contextMode: DEFAULT_COMMANDER_CONTEXT_MODE,
+      heartbeat: createDefaultHeartbeatConfig(),
+      taskSource: null,
+    })
+
+    const reloaded = new CommanderSessionStore(storePath)
+    const session = await reloaded.get('model-roundtrip')
+    expect(session?.model).toBe('gpt-5.4')
+
+    const persisted = JSON.parse(await readFile(storePath, 'utf8')) as {
+      sessions: Array<{ id: string; model?: string | null }>
+    }
+    expect(persisted.sessions.find((entry) => entry.id === 'model-roundtrip')?.model).toBe('gpt-5.4')
+  })
+
   it('loads legacy commander heartbeat lastSentAt and drops it on serialize', async () => {
     const dir = await createTempDir('hammurabi-commander-heartbeat-last-sent-discard-')
     const storePath = join(dir, 'sessions.json')

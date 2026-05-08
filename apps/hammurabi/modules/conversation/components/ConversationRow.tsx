@@ -1,4 +1,4 @@
-import { STATE_COLOR } from '@/surfaces/hervald'
+import { STATE_COLOR } from '@modules/components/hervald'
 import type { ConversationRecord } from '../hooks/use-conversations'
 
 interface ConversationRowProps {

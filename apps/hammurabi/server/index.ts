@@ -5,8 +5,8 @@ import path from 'node:path'
 import express from 'express'
 import cors from 'cors'
 import { bootstrapDefaultMasterKey } from './api-keys/bootstrap.js'
+import { ProviderSecretsStore } from './api-keys/provider-secrets-store.js'
 import { ApiKeyJsonStore } from './api-keys/store.js'
-import { OpenAITranscriptionKeyStore } from './api-keys/transcription-store.js'
 import { createModules } from './module-registry.js'
 import { isCorsOriginAllowed, parseAllowedCorsOrigins } from './cors.js'
 import { createApiKeysRouter } from './routes/api-keys.js'
@@ -67,13 +67,14 @@ void bootstrapDefaultMasterKey(apiKeyStore, {
   logError(`[api-keys] Failed to inspect bootstrap key state\n${formatError(error)}`)
 })
 
-const transcriptionKeyStore = new OpenAITranscriptionKeyStore()
+const providerSecretsStore = new ProviderSecretsStore()
 const maxAgentSessions = process.env.HAMMURABI_MAX_AGENT_SESSIONS
   ? parseInt(process.env.HAMMURABI_MAX_AGENT_SESSIONS, 10)
   : undefined
 const { modules, otelRouter } = createModules({
   apiKeyStore,
-  transcriptionKeyStore,
+  providerSecretsStore,
+  transcriptionKeyStore: providerSecretsStore,
   auth0Domain: process.env.AUTH0_DOMAIN,
   auth0Audience: process.env.AUTH0_AUDIENCE,
   auth0ClientId: process.env.AUTH0_CLIENT_ID,
@@ -127,7 +128,7 @@ app.use(
   '/api/auth',
   createApiKeysRouter({
     store: apiKeyStore,
-    transcriptionKeyStore,
+    providerSecretsStore,
   }),
 )
 

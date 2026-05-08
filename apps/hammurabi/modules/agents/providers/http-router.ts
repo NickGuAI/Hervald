@@ -32,6 +32,7 @@ function toRegistryEntry(provider: ProviderAdapter): ProviderRegistryEntry {
         ? { infoBanner: { ...provider.uiCapabilities.infoBanner } }
         : {}),
     },
+    availableModels: provider.availableModels as ProviderRegistryEntry['availableModels'],
     ...(provider.machineAuth
       ? {
           machineAuth: {

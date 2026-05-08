@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
-# Hammurabi local installer.
+# Hervald installer.
 #
-# From apps/hammurabi (or anywhere), run:
+# Piped (no local checkout):
+#   curl -fsSL https://hervald.gehirn.ai/install.sh | bash
+#
+# From a local checkout (apps/hammurabi):
 #   ./install.sh
 
 set -euo pipefail
@@ -19,7 +22,30 @@ ok()   { printf "${GREEN}✓${NC} %s\n" "$*"; }
 warn() { printf "${YELLOW}!${NC} %s\n" "$*"; }
 fail() { printf "${RED}✗${NC} %s\n" "$*" >&2; exit 1; }
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Piped mode: when invoked via `curl ... | bash`, BASH_SOURCE[0] is empty
+# and there is no local checkout to install from. Clone the public Hervald
+# repo (or refresh an existing clone) and re-exec the in-tree installer.
+SCRIPT_PATH="${BASH_SOURCE[0]:-}"
+if [ -z "$SCRIPT_PATH" ] || [ ! -f "$SCRIPT_PATH" ]; then
+  command -v git >/dev/null || fail "git not found (required when piping the installer)"
+  REPO_URL="${HERVALD_REPO_URL:-https://github.com/NickGuAI/Hervald.git}"
+  REPO_REF="${HERVALD_REPO_REF:-main}"
+  CHECKOUT_DIR="${HERVALD_CHECKOUT_DIR:-$HOME/Hervald}"
+
+  if [ -d "$CHECKOUT_DIR/.git" ]; then
+    step "Refreshing existing Hervald checkout at $CHECKOUT_DIR"
+    git -C "$CHECKOUT_DIR" fetch --quiet origin "$REPO_REF"
+    git -C "$CHECKOUT_DIR" checkout --quiet "$REPO_REF"
+    git -C "$CHECKOUT_DIR" reset --quiet --hard "origin/$REPO_REF"
+  else
+    step "Cloning Hervald into $CHECKOUT_DIR"
+    git clone --quiet --branch "$REPO_REF" --single-branch "$REPO_URL" "$CHECKOUT_DIR"
+  fi
+
+  exec bash "$CHECKOUT_DIR/apps/hammurabi/install.sh"
+fi
+
+SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
 APP_DIR="$SCRIPT_DIR"
 REPO_ROOT="$(cd "$APP_DIR/../.." && pwd)"
 CLI_PKG_DIR="$REPO_ROOT/packages/hammurabi-cli"
@@ -37,6 +63,9 @@ LAUNCH_AGENT_TEMPLATE="$REPO_ROOT/operations/deploy/mac-mini/io.gehirn.hervald.p
 LAUNCH_AGENT_DIR="$HOME/Library/LaunchAgents"
 LAUNCH_AGENT_PATH="$LAUNCH_AGENT_DIR/io.gehirn.hervald.plist"
 LAUNCH_LOG_DIR="$HOME/Library/Logs/hervald"
+SKILLS_INSTALLER="$REPO_ROOT/agent-skills/install.sh"
+CLAUDE_RUNTIME_ROOT="$HOME/.claude"
+CODEX_RUNTIME_ROOT="$HOME/.codex"
 
 escape_sed_replacement() {
   local value="$1"
@@ -67,6 +96,29 @@ ensure_local_path_setup() {
   ensure_path_block "$HOME/.zshrc"
   ensure_path_block "$HOME/.bash_profile"
   ensure_path_block "$HOME/.profile"
+}
+
+ensure_default_master_key_env() {
+  local env_file="$APP_DIR/.env"
+
+  [ -f "$env_file" ] || return 0
+  if grep -Eq '^[[:space:]]*HAMMURABI_ALLOW_DEFAULT_MASTER_KEY=' "$env_file"; then
+    ok "bootstrap API-key sign-in already configured in $env_file"
+    return 0
+  fi
+
+  printf '\nHAMMURABI_ALLOW_DEFAULT_MASTER_KEY=1\n' >> "$env_file"
+  ok "enabled bootstrap API-key sign-in in $env_file"
+}
+
+install_default_skills() {
+  [[ -f "$SKILLS_INSTALLER" ]] || fail "Skill installer missing at $SKILLS_INSTALLER"
+  [[ -x "$SKILLS_INSTALLER" ]] || chmod +x "$SKILLS_INSTALLER" 2>/dev/null || true
+
+  step "Installing default skills"
+  bash "$SKILLS_INSTALLER" --platform claude --target-root "$CLAUDE_RUNTIME_ROOT"
+  bash "$SKILLS_INSTALLER" --platform codex --target-root "$CODEX_RUNTIME_ROOT"
+  ok "installed default skills"
 }
 
 install_launch_agent_if_needed() {
@@ -201,6 +253,7 @@ if [ ! -f "$APP_DIR/.env" ]; then
 else
   ok ".env already present"
 fi
+ensure_default_master_key_env
 
 step "Recording app path"
 mkdir -p "$DATA_DIR"
@@ -216,6 +269,8 @@ EOF
 chmod +x "$SHIM_PATH"
 ensure_local_path_setup
 ok "installed $SHIM_PATH"
+
+install_default_skills
 
 case ":$PATH:" in
   *":$BIN_DIR:"*) ok "$BIN_DIR already on PATH" ;;

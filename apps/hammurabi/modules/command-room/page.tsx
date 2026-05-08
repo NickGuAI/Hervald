@@ -3,7 +3,7 @@
  *
  * Renders the full Command Room with SessionsColumn, CenterColumn, and TeamColumn.
  */
-import { CommandRoom } from '@/surfaces/hervald/CommandRoom'
+import { CommandRoom } from './components/CommandRoom'
 
 export default function CommandRoomPage() {
   return <CommandRoom />

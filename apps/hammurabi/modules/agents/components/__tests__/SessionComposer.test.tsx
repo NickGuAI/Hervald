@@ -141,7 +141,7 @@ describe('SessionComposer', () => {
     expect(document.body.querySelector('.composer-preview-markdown')).toBeNull()
   })
 
-  it('renders exactly three bottom-row controls in the mobile variant', async () => {
+  it('renders exactly three bottom-row controls in the mobile variant when queue access is unavailable', async () => {
     renderComposer({ variant: 'mobile' })
 
     const buttons = Array.from(composerRow().querySelectorAll('button'))
@@ -149,6 +149,46 @@ describe('SessionComposer', () => {
     expect(findButtonByLabel('Add to chat')).toBeDefined()
     expect(findButtonByLabel('Start voice input')).toBeDefined()
     expect(findButtonByLabel('Send message')).toBeDefined()
+  })
+
+  it('renders the mobile queue button and opens the queue panel with controls', async () => {
+    const onClearQueue = vi.fn()
+    const onMoveQueuedMessage = vi.fn()
+    const onRemoveQueuedMessage = vi.fn()
+
+    renderComposer({
+      variant: 'mobile',
+      queueSnapshot: {
+        currentMessage: null,
+        items: [{
+          id: 'queued-1',
+          text: 'Investigate the mobile shell gap',
+          priority: 'normal',
+          queuedAt: '2026-04-21T15:00:00.000Z',
+        }],
+        totalCount: 1,
+        maxSize: 8,
+      },
+      onClearQueue,
+      onMoveQueuedMessage,
+      onRemoveQueuedMessage,
+    })
+
+    const queueButton = Array.from(composerRow().querySelectorAll('button'))
+      .find((candidate) => candidate.textContent?.trim() === 'Queue 1/8')
+    expect(queueButton).toBeTruthy()
+
+    flushSync(() => {
+      ;(queueButton as HTMLButtonElement).click()
+    })
+
+    const panel = document.body.querySelector('[data-testid="mobile-queue-panel"]')
+    expect(panel).not.toBeNull()
+    expect(panel?.textContent).toContain('Investigate the mobile shell gap')
+    expect(panel?.textContent).toContain('Clear')
+    expect(document.body.querySelector('button[aria-label="Move queued message 1 up"]')).not.toBeNull()
+    expect(document.body.querySelector('button[aria-label="Move queued message 1 down"]')).not.toBeNull()
+    expect(document.body.querySelector('button[aria-label="Remove queued message 1"]')).not.toBeNull()
   })
 
   it('sends from the mobile primary action when the session is idle', async () => {

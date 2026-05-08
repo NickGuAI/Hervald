@@ -1,9 +1,11 @@
+import { EventEmitter } from 'node:events'
 import { describe, expect, it, vi } from 'vitest'
 import { createGeminiAcpSession } from '../session'
 
 function createRuntime() {
+  const process = Object.assign(new EventEmitter(), { pid: 1234 })
   return {
-    process: null,
+    process,
     ensureConnected: vi.fn().mockResolvedValue(undefined),
     sendRequest: vi.fn(),
     sendNotification: vi.fn(),
@@ -50,5 +52,27 @@ describe('createGeminiAcpSession', () => {
       reason: 'Gemini runtime failed to start: spawn gemini ENOENT',
     })
     expect(runtime.sendRequest).not.toHaveBeenCalled()
+  })
+
+  it('passes model through the runtime factory and stores it on the session', async () => {
+    const runtime = createRuntime()
+    runtime.sendRequest.mockResolvedValue({ sessionId: 'gemini-session-1' })
+    const runtimeFactory = vi.fn(() => runtime)
+
+    const session = await createGeminiAcpSession(
+      'gemini-worker-model',
+      'default',
+      '',
+      '/tmp/gemini-worker',
+      { model: 'gemini-3.1-pro-preview' },
+      createDeps(runtimeFactory) as Parameters<typeof createGeminiAcpSession>[5],
+    )
+
+    expect(runtimeFactory).toHaveBeenCalledWith(
+      'gemini-worker-model',
+      undefined,
+      'gemini-3.1-pro-preview',
+    )
+    expect(session.model).toBe('gemini-3.1-pro-preview')
   })
 })

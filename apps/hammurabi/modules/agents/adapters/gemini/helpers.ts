@@ -1,8 +1,13 @@
 import { buildRemoteCommand } from '../../machines.js'
 import type { ClaudePermissionMode } from '../../types.js'
 
-export function buildGeminiAcpInvocation(): string {
-  return buildRemoteCommand('gemini', ['--acp'])
+export function buildGeminiAcpInvocation(model?: string): string {
+  return buildRemoteCommand(
+    'gemini',
+    typeof model === 'string' && model.trim().length > 0
+      ? ['--acp', '--model', model.trim()]
+      : ['--acp'],
+  )
 }
 
 export function mapGeminiMode(mode: ClaudePermissionMode): 'default' | 'autoEdit' | 'yolo' {

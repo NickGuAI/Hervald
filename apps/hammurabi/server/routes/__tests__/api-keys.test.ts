@@ -8,7 +8,7 @@ import {
   ApiKeyJsonStore,
   DEFAULT_BOOTSTRAP_MASTER_KEY_SCOPES,
 } from '../../api-keys/store'
-import { OpenAITranscriptionKeyStore } from '../../api-keys/transcription-store'
+import { ProviderSecretsStore } from '../../api-keys/provider-secrets-store'
 import { createApiKeysRouter } from '../api-keys'
 import { createTelemetryRouterWithHub } from '../../../modules/telemetry/routes'
 
@@ -47,9 +47,9 @@ async function removeDirectoryWithRetry(directory: string): Promise<void> {
 async function startServer(): Promise<RunningServer> {
   const directory = await createTestDirectory()
   const apiKeyStore = new ApiKeyJsonStore(path.join(directory, 'api-keys.json'))
-  const transcriptionKeyStore = new OpenAITranscriptionKeyStore({
-    filePath: path.join(directory, 'transcription-secrets.json'),
-    keyFilePath: path.join(directory, 'transcription-secrets.key'),
+  const providerSecretsStore = new ProviderSecretsStore({
+    filePath: path.join(directory, 'provider-secrets.json'),
+    keyFilePath: path.join(directory, 'provider-secrets.key'),
     encryptionKey: 'test-encryption-key',
   })
   const telemetryStorePath = path.join(directory, 'telemetry.jsonl')
@@ -119,7 +119,7 @@ async function startServer(): Promise<RunningServer> {
     '/api/auth',
     createApiKeysRouter({
       store: apiKeyStore,
-      transcriptionKeyStore,
+      providerSecretsStore,
       verifyToken: verifyAuth0Token,
     }),
   )
@@ -546,6 +546,98 @@ describe('api key auth routes', () => {
       },
     })
     expect(listResponse.status).toBe(403)
+
+    await server.close()
+  })
+
+  it('stores Gemini image generation key without exposing plaintext on read', async () => {
+    const server = await startServer()
+
+    const initialStatus = await fetch(`${server.baseUrl}/api/auth/image-generation/gemini`, {
+      headers: {
+        authorization: 'Bearer valid-auth0-admin-token',
+      },
+    })
+    expect(initialStatus.status).toBe(200)
+    expect(await initialStatus.json()).toEqual({
+      configured: false,
+      updatedAt: null,
+    })
+
+    const storeResponse = await fetch(`${server.baseUrl}/api/auth/image-generation/gemini`, {
+      method: 'PUT',
+      headers: {
+        authorization: 'Bearer valid-auth0-admin-token',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ apiKey: 'AIza-test-gemini-image' }),
+    })
+    expect(storeResponse.status).toBe(204)
+
+    const afterStoreStatus = await fetch(`${server.baseUrl}/api/auth/image-generation/gemini`, {
+      headers: {
+        authorization: 'Bearer valid-auth0-admin-token',
+      },
+    })
+    expect(afterStoreStatus.status).toBe(200)
+    const afterStorePayload = (await afterStoreStatus.json()) as {
+      configured: boolean
+      updatedAt: string | null
+      apiKey?: string
+    }
+    expect(afterStorePayload.configured).toBe(true)
+    expect(typeof afterStorePayload.updatedAt).toBe('string')
+    expect(afterStorePayload).not.toHaveProperty('apiKey')
+
+    const clearResponse = await fetch(`${server.baseUrl}/api/auth/image-generation/gemini`, {
+      method: 'DELETE',
+      headers: {
+        authorization: 'Bearer valid-auth0-admin-token',
+      },
+    })
+    expect(clearResponse.status).toBe(204)
+
+    const afterClearStatus = await fetch(`${server.baseUrl}/api/auth/image-generation/gemini`, {
+      headers: {
+        authorization: 'Bearer valid-auth0-admin-token',
+      },
+    })
+    expect(afterClearStatus.status).toBe(200)
+    expect(await afterClearStatus.json()).toEqual({
+      configured: false,
+      updatedAt: null,
+    })
+
+    await server.close()
+  })
+
+  it('enforces services:write specifically for Gemini image-generation PUT/DELETE — services:read alone is not enough', async () => {
+    const server = await startServer()
+
+    const getResponse = await fetch(`${server.baseUrl}/api/auth/image-generation/gemini`, {
+      headers: {
+        authorization: 'Bearer valid-auth0-services-read-token',
+      },
+    })
+    expect(getResponse.status).toBe(200)
+
+    const putResponse = await fetch(`${server.baseUrl}/api/auth/image-generation/gemini`, {
+      method: 'PUT',
+      headers: {
+        authorization: 'Bearer valid-auth0-services-read-token',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ apiKey: 'AIza-test' }),
+    })
+    expect(putResponse.status).toBe(403)
+
+    const deleteResponse = await fetch(`${server.baseUrl}/api/auth/image-generation/gemini`, {
+      method: 'DELETE',
+      headers: {
+        authorization: 'Bearer valid-auth0-services-read-token',
+      },
+    })
+    expect(deleteResponse.status).toBe(403)
 
     await server.close()
   })

@@ -17,3 +17,5 @@ apps/hammurabi/data/machines.json
 
 packages/*/node_modules/
 packages/*/dist/
+
+operations/logs/

@@ -2,10 +2,13 @@ import { FormEvent, useMemo, useState } from 'react'
 import { AlertTriangle, Copy, KeyRound, LogOut, Trash2 } from 'lucide-react'
 import {
   useApiKeys,
+  useClearGeminiImageGenerationKey,
   useClearOpenAITranscriptionKey,
   useCreateApiKey,
+  useGeminiImageGenerationSettings,
   useOpenAITranscriptionSettings,
   useRevokeApiKey,
+  useSetGeminiImageGenerationKey,
   useSetOpenAITranscriptionKey,
   type CreatedApiKey,
 } from '@/hooks/use-api-keys'
@@ -42,6 +45,7 @@ export default function ApiKeysPage() {
       .map((scope) => scope.value),
   ])
   const [openAIApiKey, setOpenAIApiKey] = useState('')
+  const [geminiApiKey, setGeminiApiKey] = useState('')
   const [createdKey, setCreatedKey] = useState<CreatedApiKey | null>(null)
   const [copyState, setCopyState] = useState<'idle' | 'copied'>('idle')
 
@@ -54,8 +58,12 @@ export default function ApiKeysPage() {
   const revokeMutation = useRevokeApiKey()
   const { data: transcriptionSettings, error: transcriptionSettingsError } =
     useOpenAITranscriptionSettings()
+  const { data: geminiImageSettings, error: geminiImageSettingsError } =
+    useGeminiImageGenerationSettings()
   const setOpenAIMutation = useSetOpenAITranscriptionKey()
   const clearOpenAIMutation = useClearOpenAITranscriptionKey()
+  const setGeminiMutation = useSetGeminiImageGenerationKey()
+  const clearGeminiMutation = useClearGeminiImageGenerationKey()
 
   const sortedKeys = useMemo(
     () =>
@@ -79,6 +87,16 @@ export default function ApiKeysPage() {
       : null) ??
     (transcriptionSettingsError instanceof Error
       ? transcriptionSettingsError.message
+      : null)
+  const imageGenerationError =
+    (setGeminiMutation.error instanceof Error
+      ? setGeminiMutation.error.message
+      : null) ??
+    (clearGeminiMutation.error instanceof Error
+      ? clearGeminiMutation.error.message
+      : null) ??
+    (geminiImageSettingsError instanceof Error
+      ? geminiImageSettingsError.message
       : null)
   const listError = error instanceof Error ? error.message : null
 
@@ -126,6 +144,26 @@ export default function ApiKeysPage() {
     }
 
     await clearOpenAIMutation.mutateAsync()
+  }
+
+  async function handleSaveGeminiKey(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const trimmedKey = geminiApiKey.trim()
+    if (!trimmedKey) {
+      return
+    }
+
+    await setGeminiMutation.mutateAsync(trimmedKey)
+    setGeminiApiKey('')
+  }
+
+  async function handleClearGeminiKey() {
+    const confirmed = window.confirm('Remove the Gemini image generation key?')
+    if (!confirmed) {
+      return
+    }
+
+    await clearGeminiMutation.mutateAsync()
   }
 
   return (
@@ -297,6 +335,73 @@ export default function ApiKeysPage() {
                 <div className="mt-3 flex items-start gap-2 rounded-lg bg-accent-vermillion/10 px-3 py-2 text-sm text-accent-vermillion">
                   <AlertTriangle size={15} className="mt-0.5" />
                   <span>{transcriptionError}</span>
+                </div>
+              )}
+            </div>
+
+            <div className="card-sumi p-5">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <p className="section-title">Image Generation (Gemini API)</p>
+                  <p className="mt-2 text-sm text-sumi-diluted">
+                    Used by sumi-style avatar generation in commander edit form.
+                  </p>
+                  <p className="mt-2 text-sm text-accent-vermillion">
+                    <strong>This key is for sumi-style avatar generation only. It is NOT the same as the Gemini CLI provider key configured per-machine for agent runtimes.</strong>
+                  </p>
+                </div>
+                <span
+                  className={`badge-sumi ${
+                    geminiImageSettings?.configured ? 'badge-active' : 'badge-idle'
+                  }`}
+                >
+                  {geminiImageSettings?.configured ? 'Configured' : 'Not configured'}
+                </span>
+              </div>
+
+              <form className="mt-4 space-y-3" onSubmit={handleSaveGeminiKey}>
+                <input
+                  type="password"
+                  value={geminiApiKey}
+                  onChange={(event) => setGeminiApiKey(event.target.value)}
+                  placeholder={
+                    geminiImageSettings?.configured
+                      ? 'AIza... (stored)'
+                      : 'AIza...'
+                  }
+                  className="w-full px-3 py-2 rounded-lg border border-ink-border bg-washi-aged text-[16px] md:text-sm focus:outline-none focus:border-ink-border-hover"
+                />
+                <div className="flex items-center gap-2">
+                  <button
+                    type="submit"
+                    disabled={setGeminiMutation.isPending}
+                    className="btn-primary disabled:opacity-60 disabled:cursor-not-allowed"
+                  >
+                    {setGeminiMutation.isPending ? 'Saving...' : 'Save Gemini Key'}
+                  </button>
+                  {geminiImageSettings?.configured && (
+                    <button
+                      type="button"
+                      disabled={clearGeminiMutation.isPending}
+                      className="btn-ghost text-accent-vermillion disabled:opacity-60 disabled:cursor-not-allowed"
+                      onClick={handleClearGeminiKey}
+                    >
+                      {clearGeminiMutation.isPending ? 'Removing...' : 'Remove'}
+                    </button>
+                  )}
+                </div>
+              </form>
+
+              {geminiImageSettings?.updatedAt && (
+                <p className="mt-3 text-whisper text-sumi-mist">
+                  Updated {timeAgo(geminiImageSettings.updatedAt)}
+                </p>
+              )}
+
+              {imageGenerationError && (
+                <div className="mt-3 flex items-start gap-2 rounded-lg bg-accent-vermillion/10 px-3 py-2 text-sm text-accent-vermillion">
+                  <AlertTriangle size={15} className="mt-0.5" />
+                  <span>{imageGenerationError}</span>
                 </div>
               )}
             </div>

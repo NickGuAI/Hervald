@@ -1,10 +1,11 @@
 import { aggregateCommanderWorldAgentSource } from '../agents/session/state.js'
 import type { Automation } from '../automations/types.js'
+import { FOUNDER_OPERATOR_NOT_FOUND_ERROR } from '../operators/constants.js'
 import type { Operator } from '../operators/types.js'
 import type {
   OrgChannelsByProvider,
-  OrgCommanderRoleKey,
   OrgNode,
+  OrgNodeProfile,
   OrgQuestsInFlight,
   OrgTree,
 } from './types.js'
@@ -33,7 +34,6 @@ export interface OrgCommanderRecord {
   operatorId: string
   state: string
   created: string
-  roleKey?: OrgCommanderRoleKey
   templateId?: string | null
   replicatedFromCommanderId?: string | null
   activeWorkers?: number
@@ -73,12 +73,13 @@ export interface BuildOrgTreeDependencies {
   }
   profileStore: {
     getAvatarUrl(commanderId: string): Promise<string | null>
+    getProfile(commanderId: string): Promise<OrgNodeProfile | null>
   }
 }
 
 export class OrgOperatorNotFoundError extends Error {
   constructor() {
-    super('Founder operator not found')
+    super(FOUNDER_OPERATOR_NOT_FOUND_ERROR)
     this.name = 'OrgOperatorNotFoundError'
   }
 }
@@ -154,9 +155,10 @@ export async function buildOrgTree({
       conversations = []
     }
 
-    const [quests, avatarUrl] = await Promise.all([
+    const [quests, avatarUrl, profile] = await Promise.all([
       questStore.list(commander.id),
       profileStore.getAvatarUrl(commander.id),
+      profileStore.getProfile(commander.id),
     ])
 
     const worldAgentSource = aggregateCommanderWorldAgentSource(conversations)
@@ -167,8 +169,8 @@ export async function buildOrgTree({
       kind: 'commander',
       parentId: commander.operatorId,
       displayName: commander.displayName,
-      roleKey: commander.roleKey,
       avatarUrl,
+      profile,
       status: commander.state,
       costUsd: worldAgentSource.totalCostUsd ?? 0,
       recentActivityAt: worldAgentSource.lastUpdatedAt ?? null,

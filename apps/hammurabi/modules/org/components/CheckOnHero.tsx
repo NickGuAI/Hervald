@@ -1,5 +1,11 @@
+import { useQueryClient } from '@tanstack/react-query'
 import { MessageSquare } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
+import {
+  ACTIVE_CONVERSATION_FETCH_STALE_MS,
+  commanderActiveConversationQueryKey,
+  fetchCommanderActiveConversation,
+} from '@modules/conversation/hooks/use-conversations'
 import type { OrgNode } from '../types'
 
 export function CheckOnHero({
@@ -8,14 +14,37 @@ export function CheckOnHero({
   commander: OrgNode
 }) {
   const navigate = useNavigate()
+  const queryClient = useQueryClient()
+
+  const handleClick = async () => {
+    let activeConversationId: string | null = null
+    try {
+      const activeConversation = await queryClient.fetchQuery({
+        queryKey: commanderActiveConversationQueryKey(commander.id),
+        queryFn: () => fetchCommanderActiveConversation(commander.id),
+        staleTime: ACTIVE_CONVERSATION_FETCH_STALE_MS,
+      })
+      activeConversationId = activeConversation?.id ?? null
+    } catch {
+      activeConversationId = null
+    }
+
+    const params = new URLSearchParams({ commander: commander.id })
+    if (activeConversationId) {
+      params.set('conversation', activeConversationId)
+    }
+    navigate(`/command-room?${params.toString()}`)
+  }
 
   return (
     <button
       type="button"
       data-testid="commander-check-on-hero"
       data-commander-id={commander.id}
-      onClick={() => navigate(`/command-room?commander=${encodeURIComponent(commander.id)}`)}
-      className="card-sumi flex w-full items-center justify-between gap-4 p-5 text-left transition-colors hover:bg-ink-wash"
+      onClick={() => {
+        void handleClick()
+      }}
+      className="card-sumi flex w-full items-center gap-4 p-5 text-left transition-colors hover:bg-ink-wash"
     >
       <span className="flex min-w-0 items-center gap-3">
         <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-ink-wash text-sumi-black">
@@ -25,7 +54,6 @@ export function CheckOnHero({
           Check On {commander.displayName}
         </span>
       </span>
-      <span className="shrink-0 text-lg text-sumi-diluted" aria-hidden="true">→</span>
     </button>
   )
 }

@@ -6,9 +6,11 @@ import {
   type ApiKeyScope,
 } from '../api-keys/store.js'
 import {
-  OpenAITranscriptionKeyStore,
-  type OpenAITranscriptionKeyStoreLike,
-} from '../api-keys/transcription-store.js'
+  GEMINI_IMAGE_GENERATION_PROVIDER_ID,
+  OPENAI_REALTIME_TRANSCRIPTION_PROVIDER_ID,
+  ProviderSecretsStore,
+  type ProviderSecretsStoreLike,
+} from '../api-keys/provider-secrets-store.js'
 import { combinedAuth } from '../middleware/combined-auth.js'
 import { type Auth0Options } from '../middleware/auth0.js'
 
@@ -24,7 +26,7 @@ interface ApiKeyView {
 
 interface ApiKeysRouterOptions extends Auth0Options {
   store?: ApiKeyJsonStore
-  transcriptionKeyStore?: OpenAITranscriptionKeyStoreLike
+  providerSecretsStore?: ProviderSecretsStoreLike
   now?: () => Date
 }
 
@@ -69,7 +71,7 @@ function parseScopes(value: unknown): ApiKeyScope[] | null {
   return value
 }
 
-function parseOpenAIApiKey(value: unknown): string | null {
+function parseProviderApiKey(value: unknown): string | null {
   if (typeof value !== 'string') {
     return null
   }
@@ -85,8 +87,8 @@ function parseOpenAIApiKey(value: unknown): string | null {
 export function createApiKeysRouter(options: ApiKeysRouterOptions = {}): Router {
   const router = Router()
   const store = options.store ?? new ApiKeyJsonStore()
-  const transcriptionKeyStore =
-    options.transcriptionKeyStore ?? new OpenAITranscriptionKeyStore()
+  const providerSecretsStore =
+    options.providerSecretsStore ?? new ProviderSecretsStore()
   const now = options.now ?? (() => new Date())
 
   // Per-route auth: master-API-key management requires `agents:admin` (the
@@ -174,7 +176,9 @@ export function createApiKeysRouter(options: ApiKeysRouterOptions = {}): Router 
 
   router.get('/transcription/openai', transcriptionReadAuth, async (_req, res) => {
     try {
-      const status = await transcriptionKeyStore.getStatus()
+      const status = await providerSecretsStore.getSecretStatus(
+        OPENAI_REALTIME_TRANSCRIPTION_PROVIDER_ID,
+      )
       res.json(status)
     } catch {
       res.status(500).json({ error: 'Failed to read transcription settings' })
@@ -182,14 +186,16 @@ export function createApiKeysRouter(options: ApiKeysRouterOptions = {}): Router 
   })
 
   router.put('/transcription/openai', transcriptionWriteAuth, async (req, res) => {
-    const rawKey = parseOpenAIApiKey(req.body?.apiKey)
+    const rawKey = parseProviderApiKey(req.body?.apiKey)
     if (!rawKey) {
       res.status(400).json({ error: 'apiKey is required' })
       return
     }
 
     try {
-      await transcriptionKeyStore.setOpenAIApiKey(rawKey, { now: now() })
+      await providerSecretsStore.setSecret(OPENAI_REALTIME_TRANSCRIPTION_PROVIDER_ID, rawKey, {
+        now: now(),
+      })
       res.status(204).send()
     } catch {
       res.status(500).json({ error: 'Failed to store transcription settings' })
@@ -198,10 +204,47 @@ export function createApiKeysRouter(options: ApiKeysRouterOptions = {}): Router 
 
   router.delete('/transcription/openai', transcriptionWriteAuth, async (_req, res) => {
     try {
-      await transcriptionKeyStore.clearOpenAIApiKey()
+      await providerSecretsStore.deleteSecret(OPENAI_REALTIME_TRANSCRIPTION_PROVIDER_ID)
       res.status(204).send()
     } catch {
       res.status(500).json({ error: 'Failed to clear transcription settings' })
+    }
+  })
+
+  router.get('/image-generation/gemini', transcriptionReadAuth, async (_req, res) => {
+    try {
+      const status = await providerSecretsStore.getSecretStatus(
+        GEMINI_IMAGE_GENERATION_PROVIDER_ID,
+      )
+      res.json(status)
+    } catch {
+      res.status(500).json({ error: 'Failed to read image generation settings' })
+    }
+  })
+
+  router.put('/image-generation/gemini', transcriptionWriteAuth, async (req, res) => {
+    const rawKey = parseProviderApiKey(req.body?.apiKey)
+    if (!rawKey) {
+      res.status(400).json({ error: 'apiKey is required' })
+      return
+    }
+
+    try {
+      await providerSecretsStore.setSecret(GEMINI_IMAGE_GENERATION_PROVIDER_ID, rawKey, {
+        now: now(),
+      })
+      res.status(204).send()
+    } catch {
+      res.status(500).json({ error: 'Failed to store image generation settings' })
+    }
+  })
+
+  router.delete('/image-generation/gemini', transcriptionWriteAuth, async (_req, res) => {
+    try {
+      await providerSecretsStore.deleteSecret(GEMINI_IMAGE_GENERATION_PROVIDER_ID)
+      res.status(204).send()
+    } catch {
+      res.status(500).json({ error: 'Failed to clear image generation settings' })
     }
   })
 

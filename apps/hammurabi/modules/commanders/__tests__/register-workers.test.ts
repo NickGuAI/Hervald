@@ -203,7 +203,10 @@ async function startServer(
   }
 }
 
-async function seedCommander(storePath: string): Promise<void> {
+async function seedCommander(
+  storePath: string,
+  options: { agentType?: 'claude' | 'codex' | 'gemini' | 'opencode'; model?: string | null } = {},
+): Promise<void> {
   await writeFile(
     storePath,
     JSON.stringify(
@@ -215,7 +218,9 @@ async function seedCommander(storePath: string): Promise<void> {
             pid: null,
             state: 'idle',
             created: '2026-02-20T00:00:00.000Z',
+            agentType: options.agentType ?? 'claude',
             lastHeartbeat: null,
+            ...(options.model !== undefined ? { model: options.model } : {}),
             taskSource: { owner: 'NickGuAI', repo: 'example-repo', label: 'commander' },
             currentTask: null,
             completedTasks: 0,
@@ -381,6 +386,69 @@ describe('POST /api/commanders/:id/workers', () => {
       // Crucial: the request body did NOT carry creator (URL-baked design),
       // so the dispatch helper sees no creator field on the forwarded body.
       expect('creator' in body).toBe(false)
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('applies commander default model when the request omits model', async () => {
+    const dir = await createTempDir('hammurabi-register-workers-commander-model-default-')
+    const storePath = join(dir, 'sessions.json')
+    await seedCommander(storePath, { agentType: 'codex', model: 'gpt-5.4' })
+
+    const { iface, dispatchCalls } = createMockSessionsInterface()
+    const server = await startServer({ sessionStorePath: storePath, sessionsInterface: iface })
+
+    try {
+      const response = await fetch(
+        `${server.baseUrl}/api/commanders/${COMMANDER_ID}/workers`,
+        {
+          method: 'POST',
+          headers: {
+            ...FULL_AUTH_HEADERS,
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify({
+            name: 'worker-uses-commander-model',
+            agentType: 'codex',
+          }),
+        },
+      )
+      expect(response.status).toBe(201)
+      expect(dispatchCalls).toHaveLength(1)
+      expect((dispatchCalls[0]?.rawBody as Record<string, unknown>).model).toBe('gpt-5.4')
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('preserves an explicit request model over the commander default', async () => {
+    const dir = await createTempDir('hammurabi-register-workers-request-model-wins-')
+    const storePath = join(dir, 'sessions.json')
+    await seedCommander(storePath, { agentType: 'codex', model: 'gpt-5.4' })
+
+    const { iface, dispatchCalls } = createMockSessionsInterface()
+    const server = await startServer({ sessionStorePath: storePath, sessionsInterface: iface })
+
+    try {
+      const response = await fetch(
+        `${server.baseUrl}/api/commanders/${COMMANDER_ID}/workers`,
+        {
+          method: 'POST',
+          headers: {
+            ...FULL_AUTH_HEADERS,
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify({
+            name: 'worker-uses-request-model',
+            agentType: 'codex',
+            model: 'gpt-5.5',
+          }),
+        },
+      )
+      expect(response.status).toBe(201)
+      expect(dispatchCalls).toHaveLength(1)
+      expect((dispatchCalls[0]?.rawBody as Record<string, unknown>).model).toBe('gpt-5.5')
     } finally {
       await server.close()
     }

@@ -272,6 +272,17 @@ ensure_local_path_setup() {
   ensure_path_block "$HOME/.profile"
 }
 
+install_default_skills() {
+  local skills_installer="$INSTALL_DIR/agent-skills/install.sh"
+
+  [[ -f "$skills_installer" ]] || die "Missing skill installer at $skills_installer"
+  [[ -x "$skills_installer" ]] || chmod +x "$skills_installer" 2>/dev/null || true
+
+  log "Installing default skills..."
+  bash "$skills_installer" --platform claude --target-root "$HOME/.claude"
+  bash "$skills_installer" --platform codex --target-root "$HOME/.codex"
+}
+
 install_provider_clis() {
   log "Installing provider CLIs..."
   mkdir -p "$LOCAL_BIN_DIR"
@@ -424,6 +435,19 @@ copy_env_example_if_missing() {
 
   cp "$APP_DIR/.env.example" "$APP_DIR/.env"
   log "Created ${APP_DIR}/.env with zero-config defaults"
+}
+
+ensure_default_master_key_env() {
+  local env_file="$APP_DIR/.env"
+
+  [[ -f "$env_file" ]] || return 0
+  if grep -Eq '^[[:space:]]*HAMMURABI_ALLOW_DEFAULT_MASTER_KEY=' "$env_file"; then
+    log "Bootstrap API-key sign-in already configured in ${env_file}"
+    return 0
+  fi
+
+  printf '\nHAMMURABI_ALLOW_DEFAULT_MASTER_KEY=1\n' >> "$env_file"
+  log "Enabled bootstrap API-key sign-in in ${env_file}"
 }
 
 write_app_path_file() {
@@ -596,8 +620,10 @@ main() {
   resolve_repo_layout
   install_and_build
   copy_env_example_if_missing
+  ensure_default_master_key_env
   write_app_path_file
   link_cli
+  install_default_skills
   install_provider_clis
 
   local port

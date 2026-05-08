@@ -51,7 +51,7 @@ vi.mock('@/hooks/use-approvals', () => ({
   useApprovalDecision: () => ({ mutateAsync: vi.fn() }),
 }))
 
-vi.mock('../../../src/surfaces/hervald/CenterColumn', () => ({
+vi.mock('../components/desktop/CenterColumn', () => ({
   CenterColumn: ({ commander }: { commander?: { name?: string } }) => createElement(
     'div',
     { 'data-testid': 'selected-commander' },
@@ -59,15 +59,15 @@ vi.mock('../../../src/surfaces/hervald/CenterColumn', () => ({
   ),
 }))
 
-vi.mock('../../../src/surfaces/hervald/TeamColumn', () => ({
+vi.mock('../components/desktop/TeamColumn', () => ({
   TeamColumn: () => null,
 }))
 
-vi.mock('../../../src/surfaces/hervald/WorkspaceModal', () => ({
+vi.mock('../components/desktop/WorkspaceModal', () => ({
   WorkspaceModal: () => null,
 }))
 
-import { CommandRoom } from '../../../src/surfaces/hervald/CommandRoom'
+import { CommandRoom } from '../components/CommandRoom'
 
 const reactActEnvironment = globalThis as typeof globalThis & {
   IS_REACT_ACT_ENVIRONMENT?: boolean

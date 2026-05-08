@@ -1,5 +1,6 @@
 import { type ReactNode, useEffect, useRef } from 'react'
 import { X } from 'lucide-react'
+import { useTheme } from '@/lib/theme-context'
 import { cn } from '@/lib/utils'
 
 interface ModalFormContainerProps {
@@ -32,6 +33,18 @@ function getFocusableElements(container: HTMLElement): HTMLElement[] {
   })
 }
 
+function resolveThemeClassName(theme: 'light' | 'dark'): 'hv-light' | 'hv-dark' {
+  if (typeof document !== 'undefined') {
+    if (document.documentElement.classList.contains('hv-dark')) {
+      return 'hv-dark'
+    }
+    if (document.documentElement.classList.contains('hv-light')) {
+      return 'hv-light'
+    }
+  }
+  return theme === 'dark' ? 'hv-dark' : 'hv-light'
+}
+
 export function ModalFormContainer({
   open,
   title,
@@ -42,6 +55,8 @@ export function ModalFormContainer({
   const mobileDialogRef = useRef<HTMLDivElement | null>(null)
   const desktopDialogRef = useRef<HTMLDivElement | null>(null)
   const onCloseRef = useRef(onClose)
+  const { theme } = useTheme()
+  const themeClassName = resolveThemeClassName(theme)
   onCloseRef.current = onClose
 
   useEffect(() => {
@@ -121,7 +136,7 @@ export function ModalFormContainer({
       <div className="md:hidden">
         <div
           ref={mobileDialogRef}
-          className="sheet visible"
+          className={cn('sheet visible', themeClassName)}
           role="dialog"
           aria-modal="true"
           aria-label={title}
@@ -155,6 +170,7 @@ export function ModalFormContainer({
           aria-label={title}
           className={cn(
             'card-sumi w-full max-w-3xl max-h-[85dvh] overflow-y-auto p-5',
+            themeClassName,
             contentClassName,
           )}
           tabIndex={-1}

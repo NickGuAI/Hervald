@@ -49,6 +49,12 @@ async function renderHook() {
   })
 }
 
+async function waitForStep(step: ReturnType<typeof useNewAutomationWizardForm>['step']) {
+  await vi.waitFor(() => {
+    expect(latestForm?.step).toBe(step)
+  })
+}
+
 describe('useNewAutomationWizardForm', () => {
   beforeEach(() => {
     previousActEnvironment = reactActEnvironment.IS_REACT_ACT_ENVIRONMENT
@@ -101,7 +107,7 @@ describe('useNewAutomationWizardForm', () => {
     })
 
     expect(advanced).toBe(true)
-    expect(latestForm?.step).toBe('details')
+    await waitForStep('details')
   })
 
   it('validates details before review and builds a request body when valid', async () => {
@@ -126,7 +132,7 @@ describe('useNewAutomationWizardForm', () => {
     })
 
     expect(advanced).toBe(true)
-    expect(latestForm?.step).toBe('review')
+    await waitForStep('review')
 
     let payload = null
     await act(async () => {
@@ -173,7 +179,7 @@ describe('useNewAutomationWizardForm', () => {
     })
 
     expect(advanced).toBe(false)
-    expect(latestForm?.step).toBe('details')
+    await waitForStep('details')
     expect(latestForm?.errors.cron).toBe('Cron expression must contain exactly five fields.')
   })
 })

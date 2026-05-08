@@ -21,6 +21,7 @@ import type {
 } from '../../types.js'
 import { geminiMachineProvider } from './machine-adapter.js'
 import { geminiApprovalAdapter } from './approval-adapter.js'
+import { availableModels } from './models.js'
 import {
   createGeminiAcpSession,
   createGeminiSessionAdapter,
@@ -71,6 +72,7 @@ function snapshotGeminiSession(session: StreamSession): PersistedStreamSession |
     creator: session.creator,
     conversationId: session.conversationId,
     agentType: session.agentType,
+    model: session.model,
     mode: session.mode,
     cwd: session.cwd,
     host: session.host,
@@ -104,6 +106,7 @@ function snapshotExitedGeminiSession(session: StreamSession): ExitedStreamSessio
     creator: session.creator,
     conversationId: session.conversationId,
     agentType: session.agentType,
+    model: session.model,
     mode: session.mode,
     cwd: session.cwd,
     host: session.host,
@@ -136,6 +139,7 @@ export const geminiProvider: ProviderAdapter = registerProvider({
     supportsCommanderConversation: true,
     supportsWorkerDispatch: true,
   },
+  availableModels,
   machineAuth: geminiMachineProvider,
   uiCapabilities: {
     supportsEffort: false,
@@ -172,6 +176,7 @@ export const geminiProvider: ProviderAdapter = registerProvider({
         resumeSessionId: options.resumeSessionId,
         systemPrompt: options.systemPrompt,
         maxTurns: options.maxTurns,
+        model: options.model,
         createdAt: options.createdAt,
         spawnedBy: options.spawnedBy,
         spawnedWorkers: options.spawnedWorkers,
@@ -196,6 +201,7 @@ export const geminiProvider: ProviderAdapter = registerProvider({
       resumeSessionId: context?.sessionId,
       systemPrompt: undefined,
       maxTurns: undefined,
+      model: entry.model,
       createdAt: entry.createdAt,
       spawnedBy: entry.spawnedBy,
       spawnedWorkers: entry.spawnedWorkers,

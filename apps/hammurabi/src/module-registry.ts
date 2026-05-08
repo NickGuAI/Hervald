@@ -10,6 +10,14 @@ export const modules: FrontendModule[] = [
     component: () => import('@modules/org/page'),
   },
   {
+    name: 'welcome',
+    label: 'Welcome',
+    icon: 'Sparkles',
+    path: '/welcome',
+    hideFromNav: true,
+    component: () => import('@modules/onboarding/page'),
+  },
+  {
     name: 'command-room',
     label: 'Command Room',
     icon: 'CalendarClock',

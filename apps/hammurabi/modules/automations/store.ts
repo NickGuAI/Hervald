@@ -275,6 +275,7 @@ export class AutomationStore {
   private readonly commanderDataDir: string
   private loaded = false
   private loadPromise: Promise<void> | null = null
+  private legacyMigrationDeferred = false
   private mutationQueue: Promise<void> = Promise.resolve()
   private automations = new Map<string, Automation>()
 
@@ -284,7 +285,7 @@ export class AutomationStore {
   }
 
   async ensureLoaded(): Promise<void> {
-    if (this.loaded) {
+    if (this.loaded && !this.legacyMigrationDeferred) {
       return
     }
     if (this.loadPromise) {
@@ -292,10 +293,11 @@ export class AutomationStore {
       return
     }
     this.loadPromise = (async () => {
-      await migrateLegacyAutomations({
+      const migration = await migrateLegacyAutomations({
         automationsDir: this.dirPath,
         commanderDataDir: this.commanderDataDir,
       })
+      this.legacyMigrationDeferred = migration.deferred
       this.automations = await this.readFromDisk()
       this.loaded = true
     })()

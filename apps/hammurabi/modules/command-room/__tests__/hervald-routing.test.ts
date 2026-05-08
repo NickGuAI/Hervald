@@ -66,7 +66,7 @@ vi.mock('../../commanders/hooks/useCommander', () => ({
   useCommander: mocks.useCommander,
 }))
 
-vi.mock('../../../src/surfaces/hervald/SessionsColumn', () => ({
+vi.mock('../components/desktop/SessionsColumn', () => ({
   SessionsColumn: ({
     onCreateSession,
     commanders = [],
@@ -99,11 +99,11 @@ vi.mock('../../../src/surfaces/hervald/SessionsColumn', () => ({
   ),
 }))
 
-vi.mock('../../../src/surfaces/hervald/TeamColumn', () => ({
+vi.mock('../components/desktop/TeamColumn', () => ({
   TeamColumn: () => createElement('div', undefined, 'TeamColumn'),
 }))
 
-vi.mock('../../../src/surfaces/hervald/WorkspaceModal', () => ({
+vi.mock('../components/desktop/WorkspaceModal', () => ({
   WorkspaceModal: () => null,
 }))
 

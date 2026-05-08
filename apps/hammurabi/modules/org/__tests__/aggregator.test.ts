@@ -6,6 +6,7 @@ import {
   type BuildOrgTreeDependencies,
   type OrgCommanderRecord,
   type OrgConversationRecord,
+  type OrgNodeProfile,
   type OrgQuestRecord,
 } from '../aggregator'
 
@@ -28,7 +29,6 @@ function createCommander(overrides: Partial<OrgCommanderRecord> = {}): OrgComman
     operatorId: 'founder-1',
     state: 'running',
     created: '2026-05-01T01:00:00.000Z',
-    roleKey: 'engineering',
     templateId: 'template-atlas',
     replicatedFromCommanderId: null,
     ...overrides,
@@ -77,6 +77,7 @@ function createDeps(input: {
   conversationsByCommander?: Record<string, ReadonlyArray<OrgConversationRecord>>
   questsByCommander?: Record<string, ReadonlyArray<OrgQuestRecord>>
   avatarsByCommander?: Record<string, string | null>
+  profilesByCommander?: Record<string, OrgNodeProfile | null>
   conversationErrorCommanderIds?: string[]
 } = {}): BuildOrgTreeDependencies {
   const founder = input.founder ?? createFounder()
@@ -85,6 +86,7 @@ function createDeps(input: {
   const conversationsByCommander = input.conversationsByCommander ?? {}
   const questsByCommander = input.questsByCommander ?? {}
   const avatarsByCommander = input.avatarsByCommander ?? {}
+  const profilesByCommander = input.profilesByCommander ?? {}
   const conversationErrorCommanderIds = new Set(input.conversationErrorCommanderIds ?? [])
 
   return {
@@ -119,6 +121,9 @@ function createDeps(input: {
     profileStore: {
       async getAvatarUrl(commanderId: string) {
         return avatarsByCommander[commanderId] ?? null
+      },
+      async getProfile(commanderId: string) {
+        return profilesByCommander[commanderId] ?? null
       },
     },
   }
@@ -173,6 +178,12 @@ describe('buildOrgTree', () => {
       avatarsByCommander: {
         [commander.id]: '/api/commanders/cmdr-1/avatar',
       },
+      profilesByCommander: {
+        [commander.id]: {
+          borderColor: '#4F46E5',
+          accentColor: '#8B5CF6',
+        },
+      },
     }))
 
     expect(tree.commanders).toEqual([
@@ -181,8 +192,11 @@ describe('buildOrgTree', () => {
         kind: 'commander',
         parentId: 'founder-1',
         displayName: 'Atlas',
-        roleKey: 'engineering',
         avatarUrl: '/api/commanders/cmdr-1/avatar',
+        profile: {
+          borderColor: '#4F46E5',
+          accentColor: '#8B5CF6',
+        },
         status: 'running',
         costUsd: 8,
         recentActivityAt: '2026-05-01T04:00:00.000Z',
@@ -204,7 +218,6 @@ describe('buildOrgTree', () => {
       id: 'cmdr-hermes',
       displayName: 'Hermes',
       state: 'paused',
-      roleKey: 'validator',
       templateId: null,
       replicatedFromCommanderId: 'cmdr-atlas',
     })
@@ -222,13 +235,14 @@ describe('buildOrgTree', () => {
         id: 'cmdr-atlas',
         status: 'running',
         avatarUrl: null,
+        profile: null,
         questsInFlight: { active: 1, pending: 0 },
       }),
       expect.objectContaining({
         id: 'cmdr-hermes',
         status: 'paused',
-        roleKey: 'validator',
         avatarUrl: null,
+        profile: null,
         questsInFlight: { active: 0, pending: 2 },
         replicatedFromCommanderId: 'cmdr-atlas',
       }),

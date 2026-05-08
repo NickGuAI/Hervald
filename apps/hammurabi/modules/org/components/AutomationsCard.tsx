@@ -16,7 +16,7 @@ export function AutomationsCard({
       type="button"
       data-testid="commander-automations-card"
       data-commander-id={commander.id}
-      onClick={() => navigate(`/command-room?commander=${encodeURIComponent(commander.id)}&panel=automation`)}
+      onClick={() => navigate(`/automations?commander=${encodeURIComponent(commander.id)}`)}
       className="card-sumi flex h-full min-h-40 flex-col justify-between gap-4 p-5 text-left transition-colors hover:bg-ink-wash"
     >
       <span>

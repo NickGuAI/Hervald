@@ -1,4 +1,4 @@
-import { type FormEvent, useState } from 'react'
+import { type FormEvent, useEffect, useState } from 'react'
 import { useProviderRegistry } from '@/hooks/use-providers'
 import { useSkills } from '@/hooks/use-skills'
 import type { AgentType, Machine, SessionTransportType } from '@/types'
@@ -12,6 +12,7 @@ import {
 } from '../../claude-effort.js'
 import type { CreateAutomationTaskInput } from '../../automations/hooks/useAutomations'
 import { NewSessionForm } from '../../agents/components/NewSessionForm'
+import { ProviderModelSelect, resolveProviderModelOptions } from './ProviderModelSelect'
 
 function detectBrowserTimezone(): string {
   const resolved = Intl.DateTimeFormat().resolvedOptions().timeZone
@@ -34,12 +35,6 @@ function listIanaTimezones(): string[] {
 }
 
 const TIMEZONE_OPTIONS = listIanaTimezones()
-const MODEL_OPTIONS = [
-  'claude-opus-4-6',
-  'claude-sonnet-4-6',
-  'claude-haiku-3-5',
-] as const
-
 function prependSkillInvocation(instruction: string, skillName: string): string {
   const command = `/${skillName}`
   const trimmed = instruction.trim()
@@ -82,13 +77,20 @@ export function CreateAutomationTaskForm({
   const [adaptiveThinking, setAdaptiveThinking] = useState<ClaudeAdaptiveThinkingMode>(
     DEFAULT_CLAUDE_ADAPTIVE_THINKING_MODE,
   )
-  const [model, setModel] = useState('')
+  const [model, setModel] = useState<string | null>(null)
   const [selectedHost, setSelectedHost] = useState('')
   const [selectedSkill, setSelectedSkill] = useState('')
   const [createError, setCreateError] = useState<string | null>(null)
 
   const activeSkill = skillList.find((s) => s.name === selectedSkill) ?? null
   const currentProvider = providers.find((provider) => provider.id === agentType) ?? null
+  const availableModels = resolveProviderModelOptions(providers, agentType)
+
+  useEffect(() => {
+    if (model && !availableModels.some((option) => option.id === model)) {
+      setModel(null)
+    }
+  }, [availableModels, model])
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -119,7 +121,7 @@ export function CreateAutomationTaskForm({
       setTransportType('stream')
       setEffort(DEFAULT_CLAUDE_EFFORT_LEVEL)
       setAdaptiveThinking(DEFAULT_CLAUDE_ADAPTIVE_THINKING_MODE)
-      setModel('')
+      setModel(null)
       setSelectedHost('')
       setSelectedSkill('')
       onClose()
@@ -217,19 +219,13 @@ export function CreateAutomationTaskForm({
               </div>
             ) : null}
             <div>
-              <label className="section-title block mb-2">Model</label>
-              <select
+              <ProviderModelSelect
+                providers={providers}
+                agentType={agentType}
                 value={model}
-                onChange={(event) => setModel(event.target.value)}
+                onChange={setModel}
                 className="w-full px-3 py-2 rounded-lg border border-ink-border bg-washi-aged text-[16px] md:text-sm focus:outline-none focus:border-ink-border-hover"
-              >
-                <option value="">— Default —</option>
-                {MODEL_OPTIONS.map((option) => (
-                  <option key={option} value={option}>
-                    {option}
-                  </option>
-                ))}
-              </select>
+              />
             </div>
           </div>
         }

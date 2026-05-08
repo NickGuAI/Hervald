@@ -39,6 +39,7 @@ import type { ProviderSessionContext } from '../providers/provider-session-conte
 import { getProvider, parseProviderId } from '../providers/registry.js'
 import type {
   ActiveSkillInvocation,
+  AgentSession,
   AnySession,
   CompletedSession,
   CompletedSessionMetadata,
@@ -233,6 +234,9 @@ export function parsePersistedStreamSessionEntry(value: unknown): PersistedStrea
   }
 
   const agentType = parseProviderId(entry.agentType) ?? 'claude'
+  const model = typeof entry.model === 'string' && entry.model.trim().length > 0
+    ? entry.model.trim()
+    : undefined
   const mode = 'default'
   const cwd = typeof entry.cwd === 'string' && entry.cwd.trim().length > 0
     ? entry.cwd.trim()
@@ -304,6 +308,7 @@ export function parsePersistedStreamSessionEntry(value: unknown): PersistedStrea
     creator,
     conversationId,
     agentType,
+    model,
     effort: supportsEffort ? effort : undefined,
     adaptiveThinking: supportsAdaptiveThinking ? adaptiveThinking : undefined,
     mode,
@@ -597,6 +602,9 @@ export function mergePersistedSessionWithTranscriptMeta(
   return {
     ...entry,
     agentType,
+    model: typeof meta.model === 'string' && meta.model.trim().length > 0
+      ? meta.model.trim()
+      : entry.model,
     effort: supportsEffort ? effort : undefined,
     adaptiveThinking: supportsAdaptiveThinking ? adaptiveThinking : undefined,
     cwd,
@@ -823,6 +831,55 @@ export function getWorldAgentStatus(session: AnySession, nowMs: number): WorldAg
   return 'stale'
 }
 
+function countLiveSessionVisibleQueuedMessages(session: StreamSession): number {
+  const queue = session.messageQueue as { list?: () => unknown[] } | undefined
+  const queuedMessages = typeof queue?.list === 'function' ? queue.list() : []
+  const pendingDirectSends = Array.isArray(session.pendingDirectSendMessages)
+    ? session.pendingDirectSendMessages
+    : []
+  return queuedMessages.length + pendingDirectSends.length
+}
+
+export function liveSessionToApiPayload(session: StreamSession): AgentSession {
+  const created = typeof session.createdAt === 'string' && session.createdAt.length > 0
+    ? session.createdAt
+    : new Date(0).toISOString()
+  const lastActivityAt = typeof session.lastEventAt === 'string' && session.lastEventAt.length > 0
+    ? session.lastEventAt
+    : created
+  const process = session.process as { pid?: number } | undefined
+
+  const payload: AgentSession = {
+    name: session.name,
+    created,
+    lastActivityAt,
+    pid: typeof process?.pid === 'number' ? process.pid : 0,
+    transportType: 'stream',
+    processAlive: true,
+    hadResult: Boolean(session.finalResultEvent),
+    status: getWorldAgentStatus({
+      ...session,
+      createdAt: created,
+      lastEventAt: lastActivityAt,
+    }, Date.now()),
+    queuedMessageCount: countLiveSessionVisibleQueuedMessages(session),
+  }
+
+  if (session.sessionType) payload.sessionType = session.sessionType
+  if (session.creator) payload.creator = session.creator
+  if (session.agentType) payload.agentType = session.agentType
+  if (session.effort) payload.effort = session.effort
+  if (session.adaptiveThinking) payload.adaptiveThinking = session.adaptiveThinking
+  if (session.model) payload.model = session.model
+  if (session.cwd) payload.cwd = session.cwd
+  if (session.host) payload.host = session.host
+  if (session.spawnedBy) payload.spawnedBy = session.spawnedBy
+  if (Array.isArray(session.spawnedWorkers)) payload.spawnedWorkers = [...session.spawnedWorkers]
+  if (session.resumedFrom) payload.resumedFrom = session.resumedFrom
+
+  return payload
+}
+
 export function getWorldAgentPhase(session: AnySession, nowMs: number): WorldAgentPhase {
   if (session.kind === 'pty') return 'idle'
   if (session.kind === 'stream' && session.lastTurnCompleted && session.completedTurnAt) {
@@ -937,6 +994,7 @@ export function snapshotExitedStreamSession(session: StreamSession): ExitedStrea
     sessionType: session.sessionType,
     creator: session.creator,
     agentType: session.agentType,
+    model: session.model,
     effort: session.effort,
     adaptiveThinking: session.adaptiveThinking,
     mode: session.mode,
@@ -974,6 +1032,7 @@ export function snapshotDeletedResumableStreamSession(session: StreamSession): E
     sessionType: persisted.sessionType ?? session.sessionType,
     creator: persisted.creator ?? session.creator,
     agentType: persisted.agentType,
+    model: persisted.model,
     effort: persisted.effort,
     adaptiveThinking: persisted.adaptiveThinking,
     mode: persisted.mode,
@@ -1005,6 +1064,7 @@ export function buildPersistedEntryFromExitedSession(
     creator: exited.creator,
     conversationId: exited.conversationId,
     agentType: exited.agentType,
+    model: exited.model,
     effort: exited.effort,
     adaptiveThinking: exited.adaptiveThinking,
     mode: exited.mode,
@@ -1048,6 +1108,7 @@ export function buildPersistedEntryFromLiveStreamSession(
     creator: session.creator,
     conversationId: session.conversationId,
     agentType: session.agentType,
+    model: session.model,
     effort: session.effort,
     adaptiveThinking: session.adaptiveThinking,
     mode: session.mode,

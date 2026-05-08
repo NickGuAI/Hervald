@@ -1,9 +1,11 @@
+import { createHash } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { Router } from 'express'
 import type { AuthUser } from '@gehirn/auth-providers'
 import type { ApiKeyStoreLike } from '../../server/api-keys/store.js'
 import { combinedAuth } from '../../server/middleware/combined-auth.js'
 import {
+  profileForApiResponse,
   readCommanderUiProfile,
   resolveCommanderAvatarPath,
 } from '../commanders/commander-profile.js'
@@ -16,11 +18,13 @@ import {
 import { QuestStore } from '../commanders/quest-store.js'
 import { CommanderSessionStore, type CommanderSession } from '../commanders/store.js'
 import { defaultOperatorStorePath, OperatorStore } from '../operators/store.js'
+import { FOUNDER_OPERATOR_NOT_FOUND_ERROR } from '../operators/constants.js'
 import type { Operator } from '../operators/types.js'
 import { createFounderBootstrapCandidate } from '../operators/founder-bootstrap.js'
+import type { FounderOrgSetupRequest, FounderOrgSetupResponse } from '../onboarding/contracts.js'
+import { FOUNDER_SETUP_EMAIL_PATTERN } from '../onboarding/contracts.js'
 import { createOrgIdentityRouter } from '../org-identity/route.js'
-import { OrgIdentityStore } from '../org-identity/store.js'
-import type { OrgCommanderRoleKey } from './types.js'
+import { normalizeOrgName, OrgIdentityStore, OrgIdentityValidationError } from '../org-identity/store.js'
 import { buildOrgTree, type BuildOrgTreeDependencies, type OrgCommanderRecord } from './aggregator.js'
 
 export interface OrgRouterOptions {
@@ -43,7 +47,6 @@ export interface OrgRouterOptions {
 type FutureCommanderOrgFields = {
   displayName?: string
   operatorId?: string
-  roleKey?: OrgCommanderRoleKey
   templateId?: string | null
   replicatedFromCommanderId?: string | null
   activeWorkers?: number
@@ -53,6 +56,18 @@ type FutureCommanderOrgFields = {
 
 type DiskBackedOperatorStore = BuildOrgTreeDependencies['operatorStore'] & {
   getFounderForUser(user: AuthUser | undefined): Promise<Operator | null>
+  saveFounder(operator: Operator): Promise<Operator>
+}
+
+type FounderWriteStore = BuildOrgTreeDependencies['operatorStore'] & {
+  saveFounder(operator: Operator): Promise<Operator>
+}
+
+class OrgSetupValidationError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'OrgSetupValidationError'
+  }
 }
 
 async function readCommanderDisplayNames(dataDir: string): Promise<Record<string, string>> {
@@ -88,11 +103,10 @@ function createCommanderOrgStore(
             operatorId: future.operatorId?.trim() || fallbackOperatorId,
             state: session.state,
             created: session.created,
-          roleKey: future.roleKey,
-          templateId: future.templateId ?? null,
-          replicatedFromCommanderId: future.replicatedFromCommanderId ?? null,
-          activeWorkers: future.activeWorkers ?? (session.state === 'running' ? 1 : 0),
-          archived: future.archived === true,
+            templateId: future.templateId ?? null,
+            replicatedFromCommanderId: future.replicatedFromCommanderId ?? null,
+            activeWorkers: future.activeWorkers ?? (session.state === 'running' ? 1 : 0),
+            archived: future.archived === true,
             archivedAt: future.archivedAt,
           }
         })
@@ -107,6 +121,9 @@ function createProfileStore(commanderDataDir: string): BuildOrgTreeDependencies[
       const avatarPath = await resolveCommanderAvatarPath(commanderId, commanderDataDir, profile)
       return avatarPath ? `/api/commanders/${encodeURIComponent(commanderId)}/avatar` : null
     },
+    async getProfile(commanderId: string) {
+      return profileForApiResponse(await readCommanderUiProfile(commanderId, commanderDataDir))
+    },
   }
 }
 
@@ -118,6 +135,59 @@ function createAutomationStoreFallback(): BuildOrgTreeDependencies['automationSt
   }
 }
 
+function parseFounderDisplayName(raw: unknown): string {
+  if (typeof raw !== 'string') {
+    throw new OrgSetupValidationError('founder.displayName must be a non-empty string up to 120 characters')
+  }
+
+  const normalized = raw.trim()
+  if (normalized.length === 0 || normalized.length > 120) {
+    throw new OrgSetupValidationError('founder.displayName must be a non-empty string up to 120 characters')
+  }
+
+  return normalized
+}
+
+function parseFounderEmail(raw: unknown): string {
+  if (typeof raw !== 'string') {
+    throw new OrgSetupValidationError('founder.email must be a valid email address')
+  }
+
+  const normalized = raw.trim()
+  if (!FOUNDER_SETUP_EMAIL_PATTERN.test(normalized)) {
+    throw new OrgSetupValidationError('founder.email must be a valid email address')
+  }
+
+  return normalized
+}
+
+function parseFounderOrgSetupRequest(raw: unknown): FounderOrgSetupRequest {
+  const body = typeof raw === 'object' && raw !== null ? raw as Record<string, unknown> : null
+  const founder = typeof body?.founder === 'object' && body.founder !== null
+    ? body.founder as Record<string, unknown>
+    : null
+
+  try {
+    return {
+      displayName: normalizeOrgName(body?.displayName),
+      founder: {
+        displayName: parseFounderDisplayName(founder?.displayName),
+        email: parseFounderEmail(founder?.email),
+      },
+    }
+  } catch (error) {
+    if (error instanceof OrgIdentityValidationError) {
+      throw new OrgSetupValidationError(error.message)
+    }
+    throw error
+  }
+}
+
+function buildFounderIdFromEmail(email: string): string {
+  const digest = createHash('sha256').update(email.trim().toLowerCase()).digest('hex')
+  return `founder-${digest.slice(0, 12)}`
+}
+
 function createDiskBackedOperatorStore(): DiskBackedOperatorStore {
   const filePath = defaultOperatorStorePath()
   const store = new OperatorStore(filePath)
@@ -126,6 +196,9 @@ function createDiskBackedOperatorStore(): DiskBackedOperatorStore {
   return {
     async getFounder() {
       return store.getFounder()
+    },
+    async saveFounder(operator) {
+      return store.saveFounder(operator)
     },
     async getFounderForUser(user) {
       const founder = await store.getFounder()
@@ -172,11 +245,16 @@ export function createOrgRouter(options: OrgRouterOptions = {}): Router {
   const commanderDataDir = options.commanderDataDir ?? resolveCommanderDataDir()
   let operatorStore: BuildOrgTreeDependencies['operatorStore']
   let diskBackedOperatorStore: DiskBackedOperatorStore | null = null
+  let founderWriteStore: FounderWriteStore | null = null
   if (options.operatorStore) {
     operatorStore = options.operatorStore
+    founderWriteStore = typeof (options.operatorStore as Partial<FounderWriteStore>).saveFounder === 'function'
+      ? options.operatorStore as FounderWriteStore
+      : null
   } else {
     diskBackedOperatorStore = createDiskBackedOperatorStore()
     operatorStore = diskBackedOperatorStore
+    founderWriteStore = diskBackedOperatorStore
   }
   const sessionStore = options.sessionStore
     ?? new CommanderSessionStore(resolveCommanderSessionStorePath(commanderDataDir))
@@ -195,6 +273,15 @@ export function createOrgRouter(options: OrgRouterOptions = {}): Router {
     verifyToken: options.verifyAuth0Token,
     internalToken: options.internalToken,
   })
+  const requireWriteAccess = combinedAuth({
+    apiKeyStore: options.apiKeyStore,
+    requiredApiKeyScopes: ['org:write'],
+    domain: options.auth0Domain,
+    audience: options.auth0Audience,
+    clientId: options.auth0ClientId,
+    verifyToken: options.verifyAuth0Token,
+    internalToken: options.internalToken,
+  })
 
   router.use('/identity', createOrgIdentityRouter({
     store: orgIdentityStore,
@@ -206,12 +293,61 @@ export function createOrgRouter(options: OrgRouterOptions = {}): Router {
     internalToken: options.internalToken,
   }))
 
+  router.post('/', requireWriteAccess, async (req, res) => {
+    if (!founderWriteStore) {
+      res.status(500).json({ error: 'Founder setup is not available for this org router' })
+      return
+    }
+
+    let payload: FounderOrgSetupRequest
+    try {
+      payload = parseFounderOrgSetupRequest(req.body)
+    } catch (error) {
+      if (error instanceof OrgSetupValidationError) {
+        res.status(400).json({ error: error.message })
+        return
+      }
+      throw error
+    }
+
+    const existingFounder = await founderWriteStore.getFounder()
+    const bootstrapCandidate = createFounderBootstrapCandidate(req.user)
+    const founderId = existingFounder?.id
+      ?? bootstrapCandidate?.id
+      ?? buildFounderIdFromEmail(payload.founder.email)
+    const founderAvatarUrl = existingFounder?.avatarUrl
+      ?? bootstrapCandidate?.avatarUrl
+      ?? null
+    const founderCreatedAt = existingFounder?.createdAt
+      ?? bootstrapCandidate?.createdAt
+      ?? new Date().toISOString()
+
+    const [operator, orgIdentity] = await Promise.all([
+      founderWriteStore.saveFounder({
+        id: founderId,
+        kind: 'founder',
+        displayName: payload.founder.displayName,
+        email: payload.founder.email,
+        avatarUrl: founderAvatarUrl,
+        createdAt: founderCreatedAt,
+      }),
+      orgIdentityStore.updateName(payload.displayName),
+    ])
+
+    const response: FounderOrgSetupResponse = {
+      operator,
+      orgIdentity,
+    }
+
+    res.status(existingFounder ? 200 : 201).json(response)
+  })
+
   router.get('/', requireReadAccess, async (req, res) => {
     const founder = diskBackedOperatorStore
       ? await diskBackedOperatorStore.getFounderForUser(req.user)
       : await operatorStore.getFounder()
     if (!founder) {
-      res.status(404).json({ error: 'Founder operator not found' })
+      res.status(404).json({ error: FOUNDER_OPERATOR_NOT_FOUND_ERROR })
       return
     }
 

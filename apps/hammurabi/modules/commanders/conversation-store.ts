@@ -59,6 +59,7 @@ export interface Conversation {
   channelMeta?: CommanderChannelMeta
   lastRoute?: CommanderLastRoute
   agentType?: AgentType | null
+  model?: string | null
   name: string
   status: 'active' | 'idle' | 'archived'
   currentTask: CommanderCurrentTask | null
@@ -93,6 +94,19 @@ function asNullableString(value: unknown): string | null {
   return typeof value === 'string'
     ? (value.trim() || null)
     : null
+}
+
+function asOptionalNullableString(value: unknown): string | null | undefined {
+  if (value === undefined) {
+    return undefined
+  }
+  if (value === null) {
+    return null
+  }
+  if (typeof value !== 'string') {
+    return undefined
+  }
+  return value.trim() || null
 }
 
 function buildHistoricalDefaultCommanderConversationId(commanderId: string): string {
@@ -191,6 +205,7 @@ function parseConversation(raw: unknown): ParsedConversation | null {
     normalizeHeartbeatConfig(raw.heartbeat)
   }
   const agentType = parseProviderId(raw.agentType)
+  const model = asOptionalNullableString(raw.model)
   const providerContext = parseProviderContext(raw)
 
   return {
@@ -200,6 +215,7 @@ function parseConversation(raw: unknown): ParsedConversation | null {
     channelMeta: parseCommanderChannelMeta(raw.channelMeta),
     lastRoute: parseCommanderLastRoute(raw.lastRoute),
     agentType,
+    ...(model !== undefined ? { model } : {}),
     ...(asOptionalString(raw.name) ? { name: asOptionalString(raw.name) } : {}),
     status,
     currentTask: parseCurrentTask(raw.currentTask),
@@ -233,6 +249,7 @@ function normalizeConversation(
   if (!CONVERSATION_STATUSES.has(input.status)) {
     throw new Error(`Invalid conversation status "${input.status}"`)
   }
+  const model = asOptionalNullableString(input.model)
 
   return {
     id: input.id,
@@ -241,6 +258,7 @@ function normalizeConversation(
     ...(input.channelMeta ? { channelMeta: { ...input.channelMeta } } : {}),
     ...(input.lastRoute ? { lastRoute: { ...input.lastRoute } } : {}),
     agentType: input.agentType ?? null,
+    ...(model !== undefined ? { model } : {}),
     name,
     status: input.status,
     currentTask: input.currentTask ? { ...input.currentTask } : null,

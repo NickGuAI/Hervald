@@ -58,17 +58,19 @@ interface ActiveSessionState {
   conversationId?: string
 }
 
+interface MockSendCall {
+  name: string
+  text: string
+  options?: {
+    queue?: boolean
+    priority?: 'high' | 'normal' | 'low'
+  }
+}
+
 interface MockSessionsInterface {
   interface: CommanderSessionsInterface
   createCalls: MockSessionEntry[]
-  sendCalls: Array<{
-    name: string
-    text: string
-    options?: {
-      queue?: boolean
-      priority?: 'high' | 'normal' | 'low'
-    }
-  }>
+  sendCalls: MockSendCall[]
   activeSessions: Set<string>
   triggerEvent: (sessionName: string, event: unknown) => void
   setUsage: (usage: {
@@ -170,16 +172,11 @@ function createMockSessionsInterface(opts: {
   initialActiveSessions?: string[]
   /** ordered send results returned by sendToSession before falling back to session presence */
   sendResults?: boolean[]
+  /** optional per-call override returned by sendToSession before ordered sendResults */
+  sendResultForCall?: (call: MockSendCall & { callIndex: number }) => boolean | undefined
 } = {}): MockSessionsInterface {
   const createCalls: MockSessionEntry[] = []
-  const sendCalls: Array<{
-    name: string
-    text: string
-    options?: {
-      queue?: boolean
-      priority?: 'high' | 'normal' | 'low'
-    }
-  }> = []
+  const sendCalls: MockSendCall[] = []
   const activeSessions = new Set<string>(opts.initialActiveSessions ?? [])
   const activeSessionStates = new Map<string, ActiveSessionState>(
     (opts.initialActiveSessions ?? []).map((sessionName) => [
@@ -226,7 +223,15 @@ function createMockSessionsInterface(opts: {
       }
     },
     async sendToSession(name, text, options) {
-      sendCalls.push(options ? { name, text, options } : { name, text })
+      const call = options ? { name, text, options } : { name, text }
+      sendCalls.push(call)
+      const callResult = opts.sendResultForCall?.({
+        ...call,
+        callIndex: sendCalls.length - 1,
+      })
+      if (typeof callResult === 'boolean') {
+        return callResult
+      }
       if (sendResults.length > 0) {
         return sendResults.shift() ?? false
       }
@@ -1290,23 +1295,25 @@ describe('commanders routes', () => {
       })
       expect(mock.sendCalls.some((call) => call.text.includes('[HEARTBEAT QUICK '))).toBe(true)
 
-      const listResponse = await fetch(`${server.baseUrl}/api/commanders`, {
-        headers: AUTH_HEADERS,
+      await vi.waitFor(async () => {
+        const listResponse = await fetch(`${server.baseUrl}/api/commanders`, {
+          headers: AUTH_HEADERS,
+        })
+        const sessions = (await listResponse.json()) as Array<{
+          id: string
+          state: string
+          lastHeartbeat: string | null
+          heartbeat: {
+            intervalMs: number
+            messageTemplate: string
+          }
+        }>
+        const updated = sessions.find((session) => session.id === created.id)
+        expect(updated?.state).toBe('running')
+        expect(updated?.heartbeat.intervalMs).toBe(25)
+        expect(updated?.heartbeat.messageTemplate).toBe('[HEARTBEAT QUICK {{timestamp}}]')
+        expect(updated?.lastHeartbeat).toBeTruthy()
       })
-      const sessions = (await listResponse.json()) as Array<{
-        id: string
-        state: string
-        lastHeartbeat: string | null
-        heartbeat: {
-          intervalMs: number
-          messageTemplate: string
-        }
-      }>
-      const updated = sessions.find((session) => session.id === created.id)
-      expect(updated?.state).toBe('running')
-      expect(updated?.heartbeat.intervalMs).toBe(25)
-      expect(updated?.heartbeat.messageTemplate).toBe('[HEARTBEAT QUICK {{timestamp}}]')
-      expect(updated?.lastHeartbeat).toBeTruthy()
 
       const stopResponse = await fetch(`${server.baseUrl}/api/commanders/${created.id}/stop`, {
         method: 'POST',
@@ -1330,8 +1337,15 @@ describe('commanders routes', () => {
     const dir = await createTempDir('hammurabi-commanders-heartbeat-backpressure-')
     const storePath = join(dir, 'sessions.json')
     const memoryBasePath = join(dir, 'memory')
+    let heartbeatSendCount = 0
     const mock = createMockSessionsInterface({
-      sendResults: [true, false, true],
+      sendResultForCall: ({ text }) => {
+        if (!text.includes('[HEARTBEAT QUICK ')) {
+          return true
+        }
+        heartbeatSendCount += 1
+        return heartbeatSendCount !== 1
+      },
     })
 
     const server = await startServer({
@@ -1383,10 +1397,10 @@ describe('commanders routes', () => {
       expect(startResponse.status).toBe(200)
 
       await vi.waitFor(() => {
-        expect(mock.sendCalls.length).toBeGreaterThanOrEqual(3)
+        const heartbeatCalls = mock.sendCalls.filter((call) =>
+          call.text.includes('[HEARTBEAT QUICK '))
+        expect(heartbeatCalls.length).toBeGreaterThanOrEqual(2)
       })
-      expect(mock.sendCalls[1]?.text).toContain('[HEARTBEAT QUICK ')
-      expect(mock.sendCalls[2]?.text).toContain('[HEARTBEAT QUICK ')
 
       const listResponse = await fetch(`${server.baseUrl}/api/commanders`, {
         headers: AUTH_HEADERS,
@@ -1547,10 +1561,27 @@ describe('commanders routes', () => {
       })
       expect(startResponse.status).toBe(200)
 
-      // Wait for at least one send (startup prompt) confirming commander is running
+      // Wait for startup, then for the periodic heartbeat loop to prove it is active.
       await vi.waitFor(() => {
         expect(mock.sendCalls.length).toBeGreaterThanOrEqual(1)
       })
+      await vi.waitFor(() => {
+        expect(
+          mock.sendCalls.some((call) => call.text.includes('[HEARTBEAT QUICK ')),
+        ).toBe(true)
+      }, { timeout: 2000 })
+      await vi.waitFor(async () => {
+        const heartbeatLogResponse = await fetch(
+          `${server.baseUrl}/api/commanders/${created.id}/heartbeat-log`,
+          { headers: AUTH_HEADERS },
+        )
+        const payload = (await heartbeatLogResponse.json()) as {
+          entries: Array<{ outcome: string }>
+        }
+        expect(
+          payload.entries.some((entry) => entry.outcome === 'ok' || entry.outcome === 'no-quests'),
+        ).toBe(true)
+      }, { timeout: 3000 })
 
       // Simulate the commander's session being stopped externally (state → stopped)
       const sessions = await sessionStore.list()
@@ -1573,24 +1604,11 @@ describe('commanders routes', () => {
         const payload = (await heartbeatLogResponse.json()) as {
           entries: Array<{ outcome: string; errorMessage?: string }>
         }
-        expect(payload.entries.some((entry) => entry.outcome === 'error')).toBe(true)
-      }, { timeout: 2000 })
-
-      const heartbeatLogResponse = await fetch(
-        `${server.baseUrl}/api/commanders/${created.id}/heartbeat-log`,
-        { headers: AUTH_HEADERS },
-      )
-      expect(heartbeatLogResponse.status).toBe(200)
-      const payload = (await heartbeatLogResponse.json()) as {
-        entries: Array<{
-          outcome: string
-          errorMessage?: string
-        }>
-      }
-
-      expect(payload.entries.some((entry) =>
-        entry.outcome === 'error' &&
-        entry.errorMessage === 'Commander session was not running when heartbeat fired')).toBe(true)
+        const hasStoppedSessionError = payload.entries.some((entry) =>
+          entry.outcome === 'error' &&
+          entry.errorMessage === 'Commander session was not running when heartbeat fired')
+        expect(hasStoppedSessionError).toBe(true)
+      }, { timeout: 3000 })
     } finally {
       await server.close()
     }
@@ -3974,12 +3992,15 @@ describe('commanders routes', () => {
 
       await vi.waitFor(async () => {
         const entries = await heartbeatLog.read(commander.id, 5)
-        expect(entries[0]).toEqual(expect.objectContaining({
+        const successEntry = entries.find((entry) =>
+          entry.questCount === 4 &&
+          entry.outcome === 'ok' &&
+          entry.claimedQuestId === undefined &&
+          entry.claimedQuestInstruction === undefined)
+        expect(successEntry).toEqual(expect.objectContaining({
           questCount: 4,
           outcome: 'ok',
         }))
-        expect(entries[0]).not.toHaveProperty('claimedQuestId')
-        expect(entries[0]).not.toHaveProperty('claimedQuestInstruction')
       })
 
       const stopResponse = await fetch(`${server.baseUrl}/api/commanders/${commander.id}/stop`, {

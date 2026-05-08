@@ -1,5 +1,5 @@
-@import './surfaces/hervald/tokens.css';
-@import './surfaces/hervald/animations.css';
+@import './styles/hervald/tokens.css';
+@import './styles/hervald/animations.css';
 
 @tailwind base;
 @tailwind components;
@@ -428,6 +428,17 @@
     -webkit-font-smoothing: antialiased;
   }
 
+  .session-view-overlay.hv-light {
+    --msg-bg: var(--hv-bg);
+    --msg-surface: var(--hv-bg-raised);
+    --msg-surface-elevated: var(--hv-bg-raised);
+    --msg-border: var(--hv-border-hair);
+    --msg-border-subtle: var(--hv-border-soft);
+    --msg-text: var(--hv-fg);
+    --msg-text-secondary: var(--hv-fg-muted);
+    --msg-text-muted: var(--hv-fg-faint);
+  }
+
   .mobile-session-shell.session-view-overlay {
     position: relative;
     inset: auto;
@@ -440,8 +451,8 @@
   /* ── Session Header ───────────────────────────── */
   .session-view-overlay .session-header {
     display: flex;
-    align-items: center;
-    justify-content: space-between;
+    flex-direction: column;
+    align-items: stretch;
     padding: 12px 16px;
     padding-top: calc(12px + var(--safe-top));
     background: transparent;
@@ -1809,6 +1820,18 @@
     background: var(--hv-bg-raised);
     color: var(--hv-fg);
   }
+  .hervald-session-composer .composer-queue-btn--mobile {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 36px;
+    padding: 0 12px;
+    font-family: var(--hv-font-mono);
+    font-size: 11px;
+    letter-spacing: 0.04em;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
   .hervald-session-composer .send-btn {
     display: flex;
     align-items: center;
@@ -1832,6 +1855,7 @@
     padding: 8px 0 0;
   }
   .hervald-session-composer .composer-field-stack {
+    display: flex;
     min-height: 40px;
   }
   .hervald-session-composer .composer-row--mobile {

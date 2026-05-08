@@ -16,6 +16,7 @@ import {
 } from '../runtime-config.shared.js'
 import { CommanderMdPreview } from './CommanderMdPreview'
 import { CreateCommanderForm } from './CreateCommanderForm'
+import { ProviderModelSelect, resolveProviderModelOptions } from './ProviderModelSelect'
 import { WizardChatPanel } from './WizardChatPanel'
 
 const HOST_PATTERN = /^[a-zA-Z0-9_-]+$/
@@ -35,6 +36,7 @@ type WizardStep = 1 | 2 | 3
 type CommanderCreateInputWithWizardFields = CommanderCreateInput & {
   displayName?: string
   agentType?: AgentType
+  model?: string | null
   effort?: ClaudeEffortLevel
   persona?: string
   heartbeat?: {
@@ -87,6 +89,7 @@ export function CreateCommanderWizard({
   const [displayName, setDisplayName] = useState('')
   const [archetypeId, setArchetypeId] = useState(initialArchetype?.id ?? 'custom')
   const [agentType, setAgentType] = useState<AgentType>('claude')
+  const [model, setModel] = useState<string | null>(null)
   const [effort, setEffort] = useState<ClaudeEffortLevel>(DEFAULT_CLAUDE_EFFORT_LEVEL)
   const [persona, setPersona] = useState(initialArchetype?.defaultPersona ?? '')
   const [cwd, setCwd] = useState('')
@@ -121,12 +124,26 @@ export function CreateCommanderWizard({
     () => providers.find((provider) => provider.id === agentType) ?? null,
     [agentType, providers],
   )
+  const availableModels = useMemo(
+    () => resolveProviderModelOptions(providers, agentType),
+    [agentType, providers],
+  )
+  const selectedModel = useMemo(
+    () => availableModels.find((option) => option.id === model) ?? null,
+    [availableModels, model],
+  )
 
   useEffect(() => {
     if (providers.length > 0 && !currentProvider) {
       setAgentType(providers[0]!.id)
     }
   }, [currentProvider, providers])
+
+  useEffect(() => {
+    if (model && !availableModels.some((option) => option.id === model)) {
+      setModel(null)
+    }
+  }, [availableModels, model])
 
   const parsedFatPinInterval = fatPinInterval.trim()
     ? Number.parseInt(fatPinInterval.trim(), 10)
@@ -225,6 +242,7 @@ export function CreateCommanderWizard({
       host: trimmedHost,
       displayName: displayName.trim() || undefined,
       agentType,
+      model,
       effort,
       cwd: cwd.trim() || undefined,
       persona: persona.trim() || undefined,
@@ -449,6 +467,16 @@ export function CreateCommanderWizard({
               </select>
             </label>
 
+            <ProviderModelSelect
+              providers={providers}
+              agentType={agentType}
+              value={model}
+              onChange={setModel}
+              label="Model"
+              labelClassName={`${LABEL_CLASS} mb-1 block`}
+              className={INPUT_CLASS}
+            />
+
             {currentProvider?.uiCapabilities.supportsEffort ? (
               <label className="block">
                 <span className={`${LABEL_CLASS} mb-1 block`}>Claude effort</span>
@@ -600,6 +628,7 @@ export function CreateCommanderWizard({
             <p>Archetype: {selectedArchetype?.label ?? 'custom'}</p>
             <p>
               Agent: {currentProvider?.label ?? agentType}
+              {selectedModel ? ` · Model: ${selectedModel.label}` : ''}
               {currentProvider?.uiCapabilities.supportsEffort ? ` · Effort: ${effort}` : ''}
             </p>
             <p>

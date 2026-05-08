@@ -1,6 +1,11 @@
 import { randomUUID } from 'node:crypto'
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
+import { GEMINI_IMAGE_GENERATION_PROVIDER_ID } from '../../../server/api-keys/provider-secrets-store.js'
+import {
+  buildSumiPortraitPrompt,
+  extractCommanderMdExcerpt,
+} from '../../../server/image-generation/sumi-portrait-prompt.js'
 import { DEFAULT_CLAUDE_EFFORT_LEVEL } from '../../claude-effort.js'
 import {
   mimeTypeForAvatarFile,
@@ -74,8 +79,8 @@ import type { CommanderRoutesContext, CommanderRuntime, StreamEvent } from './ty
 import { resolveCommanderWorkflow } from '../workflow-resolution.js'
 import { COMMANDER_WORKFLOW_FILE } from '../workflow.js'
 import { getLiveConversationSession, stopConversationSession } from './conversation-runtime.js'
-import type { OrgCommanderRoleKey } from '../../org/types.js'
 import type { AgentType } from '../../agents/types.js'
+import { validateModelForAgentType } from '../../agents/providers/validate-model.js'
 import type { ClaudeEffortLevel } from '../../claude-effort.js'
 
 const WIZARD_SESSION_PREFIX = 'commander-wizard-'
@@ -98,9 +103,9 @@ interface CommanderTemplatePackage {
     id?: string
     host?: string
     displayName: string
-    roleKey?: OrgCommanderRoleKey
     persona?: string
     agentType?: AgentType
+    model?: string | null
     effort?: ClaudeEffortLevel
     maxTurns?: number
     contextMode?: CommanderContextMode
@@ -117,27 +122,6 @@ interface CommanderTemplatePackage {
     skillId: string
     version?: string
   }>
-}
-
-function parseOptionalCommanderRoleKey(
-  raw: unknown,
-): OrgCommanderRoleKey | undefined | null {
-  if (
-    raw === undefined
-    || raw === null
-    || (typeof raw === 'string' && raw.trim().length === 0)
-  ) {
-    return undefined
-  }
-
-  return raw === 'engineering'
-    || raw === 'research'
-    || raw === 'ops'
-    || raw === 'content'
-    || raw === 'validator'
-    || raw === 'ea'
-    ? raw
-    : null
 }
 
 function parseConversationId(raw: unknown): string | null {
@@ -281,6 +265,26 @@ function parseNonNegativeInteger(raw: unknown): number | null {
     : null
 }
 
+function parseOptionalModelSelection(
+  raw: unknown,
+): { ok: true; value: string | null | undefined } | { ok: false } {
+  if (raw === undefined) {
+    return { ok: true, value: undefined }
+  }
+  if (raw === null) {
+    return { ok: true, value: null }
+  }
+  if (typeof raw !== 'string') {
+    return { ok: false }
+  }
+
+  const trimmed = raw.trim()
+  return {
+    ok: true,
+    value: trimmed.length > 0 ? trimmed : null,
+  }
+}
+
 async function readCommanderDisplayNames(dataDir: string): Promise<Record<string, string>> {
   try {
     const namesPath = resolveCommanderNamesPath(dataDir)
@@ -306,6 +310,49 @@ async function upsertCommanderDisplayName(
     }
     names[commanderId] = displayName
   })
+}
+
+function avatarExtensionForMimeType(mimeType: string): string {
+  const extMap: Record<string, string> = {
+    'image/jpeg': '.jpg',
+    'image/png': '.png',
+    'image/webp': '.webp',
+    'image/gif': '.gif',
+  }
+
+  return extMap[mimeType] ?? '.bin'
+}
+
+function sanitizeAvatarGenerationError(error: unknown): string {
+  const fallback = 'Gemini avatar generation failed'
+  if (!(error instanceof Error)) {
+    return fallback
+  }
+
+  const sanitized = error.message
+    .replace(/AIza[0-9A-Za-z\-_]{20,}/g, '[redacted-api-key]')
+    .replace(/\s+/g, ' ')
+    .trim()
+
+  return sanitized || fallback
+}
+
+async function writeCommanderAvatarBytes(
+  commanderId: string,
+  basePath: string,
+  bytes: Uint8Array,
+  mimeType: string,
+): Promise<void> {
+  const avatarFileName = `avatar${avatarExtensionForMimeType(mimeType)}`
+  const { commanderRoot } = resolveCommanderPaths(commanderId, basePath)
+  await mkdir(commanderRoot, { recursive: true })
+  await writeFile(path.join(commanderRoot, avatarFileName), bytes)
+
+  const existing = await readCommanderUiProfile(commanderId, basePath)
+  await writeCommanderUiProfile(commanderId, basePath, {
+    ...(existing ?? {}),
+    avatar: avatarFileName,
+  } satisfies CommanderUiProfile)
 }
 
 export function registerCoreRoutes(
@@ -597,24 +644,83 @@ export function registerCoreRoutes(
       return
     }
 
-    const extMap: Record<string, string> = {
-      'image/jpeg': '.jpg',
-      'image/png': '.png',
-      'image/webp': '.webp',
-      'image/gif': '.gif',
+    await writeCommanderAvatarBytes(
+      commanderId,
+      context.commanderBasePath,
+      file.buffer,
+      file.mimetype,
+    )
+
+    res.json({ avatarUrl: `/api/commanders/${encodeURIComponent(commanderId)}/avatar` })
+  })
+
+  router.post('/:id/avatar/generate', context.requireWriteAccess, async (req, res) => {
+    const commanderId = parseSessionId(req.params.id)
+    if (!commanderId) {
+      res.status(400).json({ error: 'Invalid commander id' })
+      return
     }
-    const ext = extMap[file.mimetype] ?? '.bin'
-    const avatarFileName = `avatar${ext}`
 
-    const { commanderRoot } = resolveCommanderPaths(commanderId, context.commanderBasePath)
-    await mkdir(commanderRoot, { recursive: true })
-    await writeFile(path.join(commanderRoot, avatarFileName), file.buffer)
+    const session = await context.sessionStore.get(commanderId)
+    if (!session) {
+      res.status(404).json({ error: `Commander "${commanderId}" not found` })
+      return
+    }
 
-    const existing = await readCommanderUiProfile(commanderId, context.commanderBasePath)
-    await writeCommanderUiProfile(commanderId, context.commanderBasePath, {
-      ...(existing ?? {}),
-      avatar: avatarFileName,
-    } satisfies CommanderUiProfile)
+    const apiKey = await context.providerSecretsStore.getSecret(
+      GEMINI_IMAGE_GENERATION_PROVIDER_ID,
+    )
+    if (!apiKey) {
+      res.status(412).json({
+        error: 'Configure Gemini API key in Settings → Image Generation',
+      })
+      return
+    }
+
+    const commanderMd = await readCommanderWorkflowMarkdown(
+      commanderId,
+      context.commanderBasePath,
+    )
+    if (!commanderMd || commanderMd.trim().length === 0) {
+      res.status(412).json({
+        error: 'Commander has no COMMANDER.md — initialize first',
+      })
+      return
+    }
+
+    const displayNames = await readCommanderDisplayNames(context.commanderDataDir)
+    const displayName = displayNames[commanderId]?.trim() || session.host
+    const commanderMdExcerpt = extractCommanderMdExcerpt(commanderMd)
+    const prompt = buildSumiPortraitPrompt({
+      displayName,
+      commanderMdExcerpt,
+    })
+
+    let avatarBytes: Buffer
+    try {
+      avatarBytes = await context.generateGeminiImage({
+        apiKey,
+        prompt,
+        aspectRatio: '1:1',
+      })
+    } catch (error) {
+      res.status(502).json({
+        error: sanitizeAvatarGenerationError(error),
+      })
+      return
+    }
+
+    try {
+      await writeCommanderAvatarBytes(
+        commanderId,
+        context.commanderBasePath,
+        avatarBytes,
+        'image/png',
+      )
+    } catch {
+      res.status(500).json({ error: 'Failed to write generated avatar' })
+      return
+    }
 
     res.json({ avatarUrl: `/api/commanders/${encodeURIComponent(commanderId)}/avatar` })
   })
@@ -840,13 +946,6 @@ export function registerCoreRoutes(
     }
     const cwd = parseMessage(req.body?.cwd) ?? undefined
     const avatarSeed = parseMessage(req.body?.avatarSeed) ?? undefined
-    const roleKey = parseOptionalCommanderRoleKey(req.body?.roleKey)
-    if (roleKey === null) {
-      res.status(400).json({
-        error: 'roleKey must be one of: engineering, research, ops, content, validator, ea',
-      })
-      return
-    }
     const templateId = req.body?.templateId === null
       ? null
       : (parseMessage(req.body?.templateId) ?? undefined)
@@ -884,9 +983,20 @@ export function registerCoreRoutes(
       res.status(400).json({ error: 'agentType must be a registered provider id' })
       return
     }
+    const parsedModelCreate = parseOptionalModelSelection(req.body?.model)
+    if (!parsedModelCreate.ok) {
+      res.status(400).json({ error: 'model must be a string or null when provided' })
+      return
+    }
     const parsedEffortCreate = parseOptionalCommanderEffort(req.body?.effort)
     if (parsedEffortCreate === null) {
       res.status(400).json({ error: 'effort must be one of: low, medium, high, max' })
+      return
+    }
+    const selectedAgentType = parsedAgentTypeCreate ?? 'claude'
+    const modelValidation = validateModelForAgentType(selectedAgentType, parsedModelCreate.value ?? null)
+    if (!modelValidation.ok) {
+      res.status(400).json({ error: modelValidation.error, validIds: modelValidation.validIds })
       return
     }
 
@@ -897,7 +1007,8 @@ export function registerCoreRoutes(
       persona,
       state: 'idle',
       created: context.now().toISOString(),
-      agentType: parsedAgentTypeCreate ?? 'claude',
+      agentType: selectedAgentType,
+      ...(parsedModelCreate.value !== undefined ? { model: parsedModelCreate.value } : {}),
       effort: parsedEffortCreate ?? DEFAULT_CLAUDE_EFFORT_LEVEL,
       maxTurns: parsedMaxTurns.value ?? context.runtimeConfig.defaults.maxTurns,
       contextMode: parsedContextMode.value ?? DEFAULT_COMMANDER_CONTEXT_MODE,
@@ -905,7 +1016,6 @@ export function registerCoreRoutes(
       heartbeat,
       taskSource,
       cwd,
-      ...(roleKey ? { roleKey } : {}),
       ...(templateId !== undefined ? { templateId } : {}),
       ...(replicatedFromCommanderId !== undefined ? { replicatedFromCommanderId } : {}),
     }
@@ -957,9 +1067,9 @@ export function registerCoreRoutes(
           id: session.id,
           host: session.host,
           displayName,
-          ...(session.roleKey ? { roleKey: session.roleKey } : {}),
           ...(session.persona ? { persona: session.persona } : {}),
           ...(session.agentType ? { agentType: session.agentType } : {}),
+          ...(session.model !== undefined ? { model: session.model } : {}),
           ...(session.effort ? { effort: session.effort } : {}),
           maxTurns: session.maxTurns,
           contextMode: session.contextMode,
@@ -999,14 +1109,6 @@ export function registerCoreRoutes(
       return
     }
 
-    const roleKey = parseOptionalCommanderRoleKey(commander.roleKey)
-    if (roleKey === null) {
-      res.status(400).json({
-        error: 'roleKey must be one of: engineering, research, ops, content, validator, ea',
-      })
-      return
-    }
-
     const parsedPersona = parseOptionalPersona(commander.persona)
     if (!parsedPersona.valid) {
       res.status(400).json({ error: `persona must be a string up to ${MAX_PERSONA_LENGTH} characters` })
@@ -1016,6 +1118,11 @@ export function registerCoreRoutes(
     const parsedAgentType = parseOptionalCommanderAgentType(commander.agentType)
     if (parsedAgentType === null) {
       res.status(400).json({ error: 'agentType must be a registered provider id' })
+      return
+    }
+    const parsedModel = parseOptionalModelSelection(commander.model)
+    if (!parsedModel.ok) {
+      res.status(400).json({ error: 'model must be a string or null when provided' })
       return
     }
 
@@ -1087,6 +1194,12 @@ export function registerCoreRoutes(
     const memoryMd = memorySnapshot
       ? (memorySnapshot.memoryMd as string)
       : undefined
+    const importedAgentType = parsedAgentType ?? 'claude'
+    const importedModelValidation = validateModelForAgentType(importedAgentType, parsedModel.value ?? null)
+    if (!importedModelValidation.ok) {
+      res.status(400).json({ error: importedModelValidation.error, validIds: importedModelValidation.validIds })
+      return
+    }
 
     const session: CommanderSession = {
       id: randomUUID(),
@@ -1094,14 +1207,14 @@ export function registerCoreRoutes(
       persona: parsedPersona.value,
       state: 'idle',
       created: context.now().toISOString(),
-      agentType: parsedAgentType ?? 'claude',
+      agentType: importedAgentType,
+      ...(parsedModel.value !== undefined ? { model: parsedModel.value } : {}),
       effort: parsedEffort ?? DEFAULT_CLAUDE_EFFORT_LEVEL,
       maxTurns: parsedMaxTurns.value ?? context.runtimeConfig.defaults.maxTurns,
       contextMode: parsedContextMode.value ?? DEFAULT_COMMANDER_CONTEXT_MODE,
       contextConfig: parsedContextConfig.value,
       heartbeat: createDefaultHeartbeatConfig(),
       taskSource,
-      ...(roleKey ? { roleKey } : {}),
       ...(sourceCommanderId ? { templateId: sourceCommanderId } : {}),
     }
 
@@ -1191,6 +1304,7 @@ export function registerCoreRoutes(
       state: 'idle',
       created: context.now().toISOString(),
       agentType: source.agentType ?? 'claude',
+      ...(source.model !== undefined ? { model: source.model } : {}),
       effort: source.effort ?? DEFAULT_CLAUDE_EFFORT_LEVEL,
       cwd: source.cwd,
       maxTurns: source.maxTurns,
@@ -1198,7 +1312,6 @@ export function registerCoreRoutes(
       contextConfig: source.contextConfig ? { ...source.contextConfig } : undefined,
       heartbeat: { ...source.heartbeat },
       taskSource: source.taskSource ? { ...source.taskSource } : null,
-      ...(source.roleKey ? { roleKey: source.roleKey } : {}),
       ...(source.templateId !== undefined ? { templateId: source.templateId } : {}),
       replicatedFromCommanderId: source.id,
     }
@@ -1229,9 +1342,9 @@ export function registerCoreRoutes(
     }
 
     const displayNameProvided = req.body?.displayName !== undefined
-    const roleKeyProvided = req.body?.roleKey !== undefined
     const personaProvided = req.body?.persona !== undefined
     const agentTypeProvided = req.body?.agentType !== undefined
+    const modelProvided = req.body?.model !== undefined
     const effortProvided = req.body?.effort !== undefined
     const cwdProvided = req.body?.cwd !== undefined
     const maxTurnsProvided = req.body?.maxTurns !== undefined
@@ -1239,9 +1352,9 @@ export function registerCoreRoutes(
 
     if (
       !displayNameProvided
-      && !roleKeyProvided
       && !personaProvided
       && !agentTypeProvided
+      && !modelProvided
       && !effortProvided
       && !cwdProvided
       && !maxTurnsProvided
@@ -1256,14 +1369,6 @@ export function registerCoreRoutes(
       : undefined
     if (displayNameProvided && !displayName) {
       res.status(400).json({ error: 'displayName must be a non-empty string' })
-      return
-    }
-
-    const roleKey = parseOptionalCommanderRoleKey(req.body?.roleKey)
-    if (roleKeyProvided && roleKey === null) {
-      res.status(400).json({
-        error: 'roleKey must be one of: engineering, research, ops, content, validator, ea',
-      })
       return
     }
 
@@ -1284,6 +1389,12 @@ export function registerCoreRoutes(
       res.status(400).json({ error: 'effort must be one of: low, medium, high, max' })
       return
     }
+    const parsedModel = parseOptionalModelSelection(req.body?.model)
+    if (modelProvided && !parsedModel.ok) {
+      res.status(400).json({ error: 'model must be a string or null when provided' })
+      return
+    }
+    const parsedModelValue = parsedModel.ok ? parsedModel.value : undefined
 
     if (maxTurnsProvided && req.body?.maxTurns === null) {
       res.status(400).json({
@@ -1346,20 +1457,24 @@ export function registerCoreRoutes(
         throw error
       }
     }
+    const nextAgentType = parsedAgentType ?? session.agentType ?? 'claude'
+    const nextModel = modelProvided ? parsedModelValue : (session.model ?? null)
+    const modelValidation = validateModelForAgentType(nextAgentType, nextModel ?? null)
+    if (!modelValidation.ok) {
+      res.status(400).json({ error: modelValidation.error, validIds: modelValidation.validIds })
+      return
+    }
 
     const updated = await context.sessionStore.update(commanderId, (current) => {
       const nextContextMode = parsedContextMode.value ?? current.contextMode
-      const nextAgentType = parsedAgentType ?? current.agentType
       const nextEffort = parsedEffort ?? DEFAULT_CLAUDE_EFFORT_LEVEL
       return {
         ...current,
-        ...(roleKeyProvided
-          ? (roleKey ? { roleKey } : { roleKey: undefined })
-          : {}),
         ...(personaProvided ? { persona: parsedPersona.value } : {}),
         ...(agentTypeProvided
           ? (nextAgentType ? { agentType: nextAgentType } : { agentType: undefined })
           : {}),
+        ...(modelProvided ? { model: parsedModelValue } : {}),
         ...(effortProvided ? { effort: nextEffort } : {}),
         ...(cwdProvided ? { cwd } : {}),
         ...(maxTurnsProvided && parsedMaxTurns.value !== undefined ? { maxTurns: parsedMaxTurns.value } : {}),
@@ -1541,6 +1656,7 @@ export function registerCoreRoutes(
         conversationId: activeConversation?.id ?? defaultConversation.id,
         systemPrompt: built.systemPrompt,
         agentType: selectedAgentType,
+        model: started.model ?? undefined,
         effort: selectedAgentType === 'claude'
           ? started.effort ?? DEFAULT_CLAUDE_EFFORT_LEVEL
           : undefined,

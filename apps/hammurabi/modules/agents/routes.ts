@@ -39,6 +39,7 @@ import {
   type WorkspaceCommandRunner,
 } from '../workspace/index.js'
 import { createAgentsAuthContext } from './router-context.js'
+import { validateModelForAgentType } from './providers/validate-model.js'
 import { registerDiscoveryRoutes } from './routes/discovery-routes.js'
 import { registerExternalSessionRoutes } from './routes/external-session-routes.js'
 import { registerMachineWorldRoutes } from './routes/machine-world-routes.js'
@@ -2128,6 +2129,12 @@ export function createAgentsRouter(options: AgentsRouterOptions = {}): AgentsRou
       res.status(400).json({ error: `Unknown provider: ${agentType}` })
       return
     }
+    const effectiveModel = resumeSource?.source.model ?? model ?? null
+    const modelValidation = validateModelForAgentType(agentType, effectiveModel)
+    if (!modelValidation.ok) {
+      res.status(400).json({ error: modelValidation.error, validIds: modelValidation.validIds })
+      return
+    }
     const effort = provider.uiCapabilities.supportsEffort
       ? (resumeSource?.source.effort ?? parsedEffort ?? DEFAULT_CLAUDE_EFFORT_LEVEL)
       : undefined
@@ -2523,6 +2530,13 @@ export function createAgentsRouter(options: AgentsRouterOptions = {}): AgentsRou
       return {
         status: 400,
         body: { error: `Provider ${agentType} cannot dispatch worker sessions` },
+      }
+    }
+    const modelValidation = validateModelForAgentType(agentType, model ?? null)
+    if (!modelValidation.ok) {
+      return {
+        status: 400,
+        body: { error: modelValidation.error, validIds: modelValidation.validIds },
       }
     }
     const effort = provider.uiCapabilities.supportsEffort

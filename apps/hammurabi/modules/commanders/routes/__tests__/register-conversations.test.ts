@@ -187,7 +187,7 @@ async function createConversation(baseUrl: string, commanderId: string): Promise
 }
 
 describe('registerConversationRoutes', () => {
-  it('returns 503 with providerSpawnFailed when session creation rejects', async () => {
+  it('returns 503 without a providerSpawnFailed misdiagnosis when session creation rejects', async () => {
     const dir = await createTempDir('hammurabi-register-conversations-')
     const storePath = join(dir, 'sessions.json')
     await seedCommander(storePath, COMMANDER_ID)
@@ -217,7 +217,6 @@ describe('registerConversationRoutes', () => {
       expect(startResponse.status).toBe(503)
       expect(await startResponse.json()).toEqual({
         error: 'OpenCode runtime failed to start: spawn opencode ENOENT',
-        providerSpawnFailed: true,
       })
     } finally {
       await server.close()

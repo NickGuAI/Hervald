@@ -2803,18 +2803,8 @@ describe("stream sessions", () => {
       // Wait for processing
       await new Promise((r) => setTimeout(r, 100))
 
-      // Connect and check replay
-      const ws = await connectWs(server.baseUrl, 'stream-cap')
-      const replayPromise = new Promise<{ events: unknown[] }>((resolve) => {
-        ws.on('message', (data) => {
-          const parsed = JSON.parse(data.toString()) as { type: string; events?: unknown[] }
-          if (parsed.type === 'replay') {
-            resolve(parsed as { events: unknown[] })
-          }
-        })
-      })
-
-      const replay = await replayPromise
+      // Connect and capture replay before the server's immediate replay frame can race past the listener.
+      const { ws, replay } = await connectWsWithReplay(server.baseUrl, 'stream-cap')
       // Should be capped at 1000
       expect(replay.events.length).toBeLessThanOrEqual(1000)
       // The last event should be the most recent (chunk-1009)

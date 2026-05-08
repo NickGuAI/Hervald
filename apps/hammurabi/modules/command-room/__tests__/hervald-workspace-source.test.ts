@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { describe, expect, it } from 'vitest'
-import { resolveWorkspaceSource } from '../../../src/surfaces/hervald/CommandRoom'
+import { resolveWorkspaceSource } from '../components/CommandRoom'
 
 describe('resolveWorkspaceSource', () => {
   it('builds a commander workspace source when a commander is selected', () => {

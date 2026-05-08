@@ -26,6 +26,11 @@ export interface OpenAITranscriptionSettings {
   updatedAt: string | null
 }
 
+export interface GeminiImageGenerationSettings {
+  configured: boolean
+  updatedAt: string | null
+}
+
 async function fetchApiKeys(): Promise<ApiKeyView[]> {
   return fetchJson<ApiKeyView[]>('/api/auth/keys')
 }
@@ -80,6 +85,37 @@ async function clearOpenAITranscriptionKey(): Promise<void> {
   if (!response.ok) {
     const body = await response.text()
     throw new Error(`Failed to clear OpenAI key (${response.status}): ${body}`)
+  }
+}
+
+async function fetchGeminiImageGenerationSettings(): Promise<GeminiImageGenerationSettings> {
+  return fetchJson<GeminiImageGenerationSettings>('/api/auth/image-generation/gemini')
+}
+
+async function setGeminiImageGenerationKey(apiKey: string): Promise<void> {
+  const headers = await buildRequestHeaders({
+    'content-type': 'application/json',
+  })
+  const response = await fetch(getFullUrl('/api/auth/image-generation/gemini'), {
+    method: 'PUT',
+    headers,
+    body: JSON.stringify({ apiKey }),
+  })
+  if (!response.ok) {
+    const body = await response.text()
+    throw new Error(`Failed to save Gemini key (${response.status}): ${body}`)
+  }
+}
+
+async function clearGeminiImageGenerationKey(): Promise<void> {
+  const headers = await buildRequestHeaders()
+  const response = await fetch(getFullUrl('/api/auth/image-generation/gemini'), {
+    method: 'DELETE',
+    headers,
+  })
+  if (!response.ok) {
+    const body = await response.text()
+    throw new Error(`Failed to clear Gemini key (${response.status}): ${body}`)
   }
 }
 
@@ -148,6 +184,40 @@ export function useClearOpenAITranscriptionKey() {
       })
       await queryClient.invalidateQueries({
         queryKey: ['realtime', 'transcription', 'config'],
+      })
+    },
+  })
+}
+
+export function useGeminiImageGenerationSettings() {
+  return useQuery({
+    queryKey: ['auth', 'gemini-image-generation-settings'],
+    queryFn: fetchGeminiImageGenerationSettings,
+    refetchInterval: 15_000,
+  })
+}
+
+export function useSetGeminiImageGenerationKey() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: setGeminiImageGenerationKey,
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({
+        queryKey: ['auth', 'gemini-image-generation-settings'],
+      })
+    },
+  })
+}
+
+export function useClearGeminiImageGenerationKey() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: clearGeminiImageGenerationKey,
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({
+        queryKey: ['auth', 'gemini-image-generation-settings'],
       })
     },
   })

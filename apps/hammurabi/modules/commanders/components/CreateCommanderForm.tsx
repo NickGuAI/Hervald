@@ -12,6 +12,7 @@ import {
   createDefaultCommanderRuntimeConfig,
   type CommanderRuntimeConfig,
 } from '../runtime-config.shared.js'
+import { ProviderModelSelect, resolveProviderModelOptions } from './ProviderModelSelect'
 
 const HOST_PATTERN = /^[a-zA-Z0-9_-]+$/
 const MIN_HEARTBEAT_MINUTES = 1
@@ -65,9 +66,11 @@ export function CreateCommanderForm({
   const [host, setHost] = useState('')
   const [displayName, setDisplayName] = useState('')
   const [agentType, setAgentType] = useState<AgentType>('claude')
+  const [model, setModel] = useState<string | null>(null)
   const [effort, setEffort] = useState<ClaudeEffortLevel>(DEFAULT_CLAUDE_EFFORT_LEVEL)
   const { data: providers = [] } = useProviderRegistry()
   const currentProvider = providers.find((provider) => provider.id === agentType) ?? null
+  const availableModels = resolveProviderModelOptions(providers, agentType)
 
   // Working directory
   const [cwd, setCwd] = useState('')
@@ -105,6 +108,12 @@ export function CreateCommanderForm({
       setAgentType(providers[0]!.id)
     }
   }, [currentProvider, providers])
+
+  useEffect(() => {
+    if (model && !availableModels.some((option) => option.id === model)) {
+      setModel(null)
+    }
+  }, [availableModels, model])
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault()
@@ -154,6 +163,7 @@ export function CreateCommanderForm({
         host: trimmedHost,
         displayName: displayName.trim() || undefined,
         agentType,
+        model,
         effort,
         cwd: trimmedCwd,
         persona: trimmedPersona,
@@ -183,6 +193,7 @@ export function CreateCommanderForm({
       setHost('')
       setDisplayName('')
       setAgentType('claude')
+      setModel(null)
       setEffort(DEFAULT_CLAUDE_EFFORT_LEVEL)
       setCwd('')
       setPersona('')
@@ -266,6 +277,16 @@ export function CreateCommanderForm({
             ))}
           </select>
         </label>
+
+        <ProviderModelSelect
+          providers={providers}
+          agentType={agentType}
+          value={model}
+          onChange={setModel}
+          label="Model"
+          labelClassName={`${LABEL_CLASS} mb-1 block`}
+          className={INPUT_CLASS}
+        />
 
         {currentProvider?.uiCapabilities.supportsEffort ? (
           <label className="block">

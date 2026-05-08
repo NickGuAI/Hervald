@@ -5,19 +5,6 @@ import { CheckOnHero } from './CheckOnHero'
 import { MoreCard } from './MoreCard'
 import { StatusCard } from './StatusCard'
 
-export const ROLE_LABELS: Record<string, string> = {
-  engineering: 'Engineering',
-  research: 'Research',
-  ops: 'Ops',
-  content: 'Content',
-  validator: 'Validator',
-  ea: 'EA',
-}
-
-function roleLabel(roleKey: string | undefined) {
-  return ROLE_LABELS[roleKey ?? ''] ?? 'Commander'
-}
-
 function initials(name: string): string {
   const [first = 'C', second = 'M'] = name.trim().split(/\s+/)
   return `${first.charAt(0)}${second.charAt(0)}`.toUpperCase()
@@ -72,15 +59,22 @@ export function CommanderRow({
             </div>
           )}
           <div className="min-w-0">
-            <p className="text-[11px] uppercase tracking-[0.2em] text-sumi-diluted">
-              Commander · {roleLabel(commander.roleKey)}
-            </p>
+            <p className="text-[11px] uppercase tracking-[0.2em] text-sumi-diluted">Commander</p>
             <h2 className="truncate text-lg font-medium text-sumi-black">{commander.displayName}</h2>
           </div>
         </div>
         <div className="flex items-center gap-3 text-sm text-sumi-diluted">
           <span className={`h-2.5 w-2.5 rounded-full ${statusDotClass(commander.status)}`} />
           <span>{commander.status}</span>
+          <button
+            type="button"
+            data-testid="commander-edit-button"
+            data-commander-id={commander.id}
+            onClick={() => onEdit(commander)}
+            className="rounded-full border border-ink-border px-3 py-1.5 text-sm text-sumi-black transition-colors hover:bg-ink-wash"
+          >
+            Edit
+          </button>
           {commander.archived ? (
             <>
               <span className="badge-sumi badge-idle">Archived</span>

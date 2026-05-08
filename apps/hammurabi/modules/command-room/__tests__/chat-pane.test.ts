@@ -2,7 +2,7 @@ import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
 import type { MsgItem } from '../../agents/messages/model'
-import { ChatPane } from '../../../src/surfaces/hervald/ChatPane'
+import { ChatPane } from '../components/desktop/ChatPane'
 
 function renderMessages(messages: MsgItem[], themeClass = 'hv-light'): string {
   return renderToStaticMarkup(

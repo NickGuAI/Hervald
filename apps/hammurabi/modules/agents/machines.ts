@@ -307,8 +307,12 @@ export function buildCodexAppServerInvocation(listenUrl = 'stdio://'): string {
   return `${buildUnsetEnvironmentCommand(ANTHROPIC_MODEL_ENV_KEYS)} && codex app-server --listen ${shellEscape(listenUrl)}`
 }
 
-export function buildGeminiAcpInvocation(): string {
-  return 'gemini --acp'
+export function buildGeminiAcpInvocation(model?: string): string {
+  const args = ['gemini', '--acp']
+  if (typeof model === 'string' && model.trim().length > 0) {
+    args.push('--model', shellEscape(model.trim()))
+  }
+  return args.join(' ')
 }
 
 export function mapGeminiMode(mode: ClaudePermissionMode): 'default' | 'autoEdit' | 'yolo' {

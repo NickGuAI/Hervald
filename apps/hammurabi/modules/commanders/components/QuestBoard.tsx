@@ -21,6 +21,7 @@ type QuestDisplayStatus = QuestStatus | 'unknown'
 interface QuestContract {
   cwd?: string | null
   agentType?: string | null
+  model?: string | null
   permissionMode?: string | null
   skillsToUse?: string[] | null
 }

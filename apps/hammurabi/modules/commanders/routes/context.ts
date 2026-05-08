@@ -2,6 +2,8 @@ import { access, readFile } from 'node:fs/promises'
 import path from 'node:path'
 import multer from 'multer'
 import { type Request, type Response as ExpressResponse } from 'express'
+import { ProviderSecretsStore } from '../../../server/api-keys/provider-secrets-store.js'
+import { generateGeminiImage } from '../../../server/image-generation/gemini-client.js'
 import { combinedAuth } from '../../../server/middleware/combined-auth.js'
 import type { CommanderSessionsInterface } from '../../agents/routes.js'
 import { AutomationStore } from '../../automations/store.js'
@@ -668,6 +670,9 @@ export function buildCommandersContext(
     options.contextPressureInputTokenThreshold,
   )
   const fetchImpl = options.fetchImpl ?? fetch
+  const providerSecretsStore = options.providerSecretsStore ?? new ProviderSecretsStore()
+  const generateGeminiImageWithFetch = options.generateGeminiImage
+    ?? ((input) => generateGeminiImage({ ...input, fetchImpl }))
   const githubToken = resolveGitHubToken(options.githubToken)
   const runtimeConfigPath = options.runtimeConfigPath
     ?? defaultCommanderRuntimeConfigPath()
@@ -1365,6 +1370,8 @@ export function buildCommandersContext(
     commanderBasePath,
     contextPressureInputTokenThreshold,
     fetchImpl,
+    providerSecretsStore,
+    generateGeminiImage: generateGeminiImageWithFetch,
     githubToken,
     runtimeConfig,
     sessionStore,

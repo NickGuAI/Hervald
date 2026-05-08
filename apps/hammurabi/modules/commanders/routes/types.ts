@@ -1,6 +1,7 @@
 import type { AuthUser } from '@gehirn/auth-providers'
 import type { Request, RequestHandler, Response as ExpressResponse, Router } from 'express'
 import type { ApiKeyStoreLike } from '../../../server/api-keys/store.js'
+import type { ProviderSecretsStoreLike } from '../../../server/api-keys/provider-secrets-store.js'
 import type { CommanderSessionsInterface } from '../../agents/routes.js'
 import type { AutomationStore } from '../../automations/store.js'
 import type { AutomationScheduler } from '../../automations/scheduler.js'
@@ -29,6 +30,7 @@ import type {
 } from '../store.js'
 import type { GhTasks } from '../tools/gh-tasks.js'
 import type { CommanderRuntimeConfig } from '../runtime-config.shared.js'
+import type { GeminiImageGenerationOptions } from '../../../server/image-generation/gemini-client.js'
 
 export interface CommanderChannelReplyDispatchInput {
   commanderId: string
@@ -56,6 +58,10 @@ export interface CommandersRouterOptions {
   ghTasksFactory?: (repo: string) => Pick<GhTasks, 'readTask'>
   heartbeatLog?: HeartbeatLog
   fetchImpl?: typeof fetch
+  providerSecretsStore?: ProviderSecretsStoreLike
+  generateGeminiImage?: (
+    options: GeminiImageGenerationOptions,
+  ) => Promise<Buffer>
   sessionsInterface?: CommanderSessionsInterface
   automationStore?: AutomationStore
   automationScheduler?: AutomationScheduler
@@ -182,6 +188,10 @@ export interface CommanderRoutesContext {
   commanderBasePath: string
   contextPressureInputTokenThreshold: number
   fetchImpl: typeof fetch
+  providerSecretsStore: ProviderSecretsStoreLike
+  generateGeminiImage: (
+    options: GeminiImageGenerationOptions,
+  ) => Promise<Buffer>
   githubToken: string | null
   runtimeConfig: CommanderRuntimeConfig
   sessionStore: CommanderSessionStore

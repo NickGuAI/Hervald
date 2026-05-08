@@ -90,6 +90,7 @@ export function warnTranscriptStoreFailure(action: string, sessionName: string, 
 export function buildTranscriptMeta(session: StreamSession): TranscriptMeta {
   return {
     agentType: session.agentType,
+    model: session.model,
     effort: session.effort,
     adaptiveThinking: session.adaptiveThinking,
     cwd: session.cwd,

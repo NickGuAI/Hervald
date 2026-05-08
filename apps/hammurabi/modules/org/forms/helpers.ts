@@ -1,25 +1,16 @@
-import { MAX_PERSONA_LENGTH } from '../../commanders/persona.js'
 import {
   CADENCE_PRESET_TO_CRON,
   CRON_SEGMENT_PATTERN,
-  DEFAULT_HIRE_COMMANDER_AGENT_TYPE,
-  DEFAULT_HIRE_COMMANDER_EFFORT,
   DEFAULT_NEW_AUTOMATION_AGENT_TYPE,
   DEFAULT_NEW_AUTOMATION_CADENCE_PRESET,
   DEFAULT_NEW_AUTOMATION_TRIGGER,
-  HIRE_COMMANDER_ROLE_OPTIONS,
   HOST_PATTERN,
   listSupportedAutomationProviders,
-  listSupportedCommanderConversationProviders,
   NEW_AUTOMATION_CADENCE_PRESET_OPTIONS,
   NEW_AUTOMATION_TRIGGER_OPTIONS,
 } from './constants.js'
 import type { ProviderRegistryEntry } from '@/types'
 import type {
-  HireCommanderCreateRequestBody,
-  HireCommanderWizardFormErrors,
-  HireCommanderWizardFormValues,
-  HireCommanderWizardStep,
   NewAutomationCadencePreset,
   NewAutomationCommander,
   NewAutomationCreateRequestBody,
@@ -50,14 +41,6 @@ function commanderExists(commanders: ReadonlyArray<NewAutomationCommander>, comm
   return commanders.some((commander) => commander.id === trimmedCommanderId)
 }
 
-export function createEmptyHireCommanderWizardErrors(): HireCommanderWizardFormErrors {
-  return {
-    global: null,
-    displayName: null,
-    roleKey: null,
-  }
-}
-
 export function createEmptyNewAutomationWizardErrors(): NewAutomationWizardFormErrors {
   return {
     global: null,
@@ -65,18 +48,6 @@ export function createEmptyNewAutomationWizardErrors(): NewAutomationWizardFormE
     cron: null,
     name: null,
     instruction: null,
-  }
-}
-
-export function createDefaultHireCommanderWizardValues(
-  defaultAgentType: string = DEFAULT_HIRE_COMMANDER_AGENT_TYPE,
-): HireCommanderWizardFormValues {
-  return {
-    displayName: '',
-    roleKey: '',
-    persona: '',
-    agentType: defaultAgentType,
-    effort: DEFAULT_HIRE_COMMANDER_EFFORT,
   }
 }
 
@@ -95,18 +66,6 @@ export function createDefaultNewAutomationWizardValues(
   }
 }
 
-export function buildHiddenCommanderHost(displayName: string, uniqueSuffix = Date.now().toString(36)): string {
-  const base = normalizeText(displayName)
-    .toLocaleLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '') || 'commander'
-  const suffix = String(uniqueSuffix)
-    .toLocaleLowerCase()
-    .replace(/[^a-z0-9]+/g, '') || 'new'
-  const host = `${base}-${suffix.slice(-6)}`
-  return HOST_PATTERN.test(host) ? host : 'commander-new'
-}
-
 export function looksLikeCronExpression(expression: string): boolean {
   return CRON_SEGMENT_PATTERN.test(expression)
 }
@@ -121,71 +80,6 @@ export function buildAutomationScheduleFromPreset(
   }
 
   return CADENCE_PRESET_TO_CRON[cadencePreset] ?? null
-}
-
-export function validateHireCommanderWizardStep(
-  values: HireCommanderWizardFormValues,
-  step: HireCommanderWizardStep,
-  options: {
-    existingCommanderNames: ReadonlyArray<string>
-    providers: readonly ProviderRegistryEntry[]
-  },
-): HireCommanderWizardFormErrors {
-  const errors = createEmptyHireCommanderWizardErrors()
-  const trimmedDisplayName = normalizeText(values.displayName)
-  const validAgentTypes = toOptionSet(listSupportedCommanderConversationProviders(options.providers))
-  const validRoles = toOptionSet(HIRE_COMMANDER_ROLE_OPTIONS)
-
-  if (!validAgentTypes.has(values.agentType)) {
-    errors.global = 'Agent type must be a supported provider.'
-  } else if (normalizeText(values.persona).length > MAX_PERSONA_LENGTH) {
-    errors.global = `Persona must be ${MAX_PERSONA_LENGTH} characters or fewer.`
-  }
-
-  if (step === 'details' || step === 'review') {
-    if (!trimmedDisplayName) {
-      errors.displayName = 'Display name is required.'
-    } else if (
-      options.existingCommanderNames.some(
-        (existingName) => normalizeName(existingName) === normalizeName(trimmedDisplayName),
-      )
-    ) {
-      errors.displayName = 'Display name already exists.'
-    }
-
-    if (!validRoles.has(values.roleKey)) {
-      errors.roleKey = 'Select a valid role.'
-    }
-  }
-
-  return errors
-}
-
-export function buildHireCommanderCreateRequestBody(
-  values: HireCommanderWizardFormValues,
-  options: {
-    existingCommanderNames: ReadonlyArray<string>
-    host: string
-    providers: readonly ProviderRegistryEntry[]
-  },
-): HireCommanderCreateRequestBody | null {
-  const errors = validateHireCommanderWizardStep(values, 'review', {
-    existingCommanderNames: options.existingCommanderNames,
-    providers: options.providers,
-  })
-  if (Object.values(errors).some((error) => error !== null)) {
-    return null
-  }
-
-  const trimmedPersona = normalizeText(values.persona)
-  return {
-    host: normalizeText(options.host),
-    displayName: normalizeText(values.displayName),
-    roleKey: values.roleKey as HireCommanderCreateRequestBody['roleKey'],
-    ...(trimmedPersona ? { persona: trimmedPersona } : {}),
-    agentType: values.agentType,
-    effort: values.effort,
-  }
 }
 
 export function validateNewAutomationWizardStep(
