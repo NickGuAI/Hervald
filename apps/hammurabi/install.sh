@@ -6,6 +6,9 @@
 #
 # From a local checkout (apps/hammurabi):
 #   ./install.sh
+#
+# From a local checkout (repo root):
+#   bash install.sh
 
 set -euo pipefail
 
@@ -16,6 +19,8 @@ CYAN='\033[0;36m'
 NC='\033[0m'
 
 PRODUCT_NAME="Hervald"
+NODE_VERSION="${HERVALD_NODE_VERSION:-22.12.0}"
+PNPM_VERSION="${HERVALD_PNPM_VERSION:-10.23.0}"
 
 step() { printf "${CYAN}==>${NC} %s\n" "$*"; }
 ok()   { printf "${GREEN}✓${NC} %s\n" "$*"; }
@@ -46,11 +51,16 @@ if [ -z "$SCRIPT_PATH" ] || [ ! -f "$SCRIPT_PATH" ]; then
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
+if [ -f "$SCRIPT_DIR/apps/hammurabi/install.sh" ]; then
+  exec bash "$SCRIPT_DIR/apps/hammurabi/install.sh" "$@"
+fi
+
 APP_DIR="$SCRIPT_DIR"
 REPO_ROOT="$(cd "$APP_DIR/../.." && pwd)"
 CLI_PKG_DIR="$REPO_ROOT/packages/hammurabi-cli"
 CLI_BIN_REL="bin/hammurabi.mjs"
 DATA_DIR="${HAMMURABI_DATA_DIR:-$HOME/.hammurabi}"
+TOOLCHAIN_DIR="${HAMMURABI_TOOLCHAIN_DIR:-$DATA_DIR/toolchain}"
 APP_PATH_FILE="$DATA_DIR/app-path"
 BOOTSTRAP_KEY_FILE="$DATA_DIR/bootstrap-key.txt"
 BOOTSTRAP_LOG_DIR="$DATA_DIR/logs"
@@ -59,23 +69,29 @@ BIN_DIR="${HAMMURABI_BIN_DIR:-$HOME/.local/bin}"
 SHIM_PATH="$BIN_DIR/hammurabi"
 DEFAULT_PORT="20001"
 HEALTHCHECK_TIMEOUT_SECONDS="${HAMMURABI_INSTALL_TIMEOUT_SECONDS:-120}"
-LAUNCH_AGENT_TEMPLATE="$REPO_ROOT/operations/deploy/mac-mini/io.gehirn.hervald.plist"
 LAUNCH_AGENT_DIR="$HOME/Library/LaunchAgents"
 LAUNCH_AGENT_PATH="$LAUNCH_AGENT_DIR/io.gehirn.hervald.plist"
 LAUNCH_LOG_DIR="$HOME/Library/Logs/hervald"
 SKILLS_INSTALLER="$REPO_ROOT/agent-skills/install.sh"
 CLAUDE_RUNTIME_ROOT="$HOME/.claude"
 CODEX_RUNTIME_ROOT="$HOME/.codex"
+NODE_HOME=""
+NODE_BIN=""
+PNPM_HOME=""
+PNPM_BIN=""
 
-escape_sed_replacement() {
+xml_escape() {
   local value="$1"
-  value="${value//\\/\\\\}"
-  value="${value//&/\\&}"
+  value="${value//&/&amp;}"
+  value="${value//</&lt;}"
+  value="${value//>/&gt;}"
+  value="${value//\"/&quot;}"
+  value="${value//\'/&apos;}"
   printf '%s' "$value"
 }
 
 mac_launch_path() {
-  printf '%s' "$BIN_DIR:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+  printf '%s' "$BIN_DIR:$PNPM_HOME/bin:$NODE_HOME/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 }
 
 ensure_path_block() {
@@ -94,8 +110,79 @@ ensure_path_block() {
 
 ensure_local_path_setup() {
   ensure_path_block "$HOME/.zshrc"
+  ensure_path_block "$HOME/.bashrc"
   ensure_path_block "$HOME/.bash_profile"
   ensure_path_block "$HOME/.profile"
+}
+
+node_platform() {
+  case "$(uname -s)" in
+    Darwin) printf 'darwin' ;;
+    Linux) printf 'linux' ;;
+    *) fail "unsupported operating system for hermetic Node install: $(uname -s)" ;;
+  esac
+}
+
+node_arch() {
+  case "$(uname -m)" in
+    x86_64|amd64) printf 'x64' ;;
+    arm64|aarch64) printf 'arm64' ;;
+    *) fail "unsupported CPU architecture for hermetic Node install: $(uname -m)" ;;
+  esac
+}
+
+ensure_node() {
+  local platform arch archive stem url tmp_dir
+
+  platform="$(node_platform)"
+  arch="$(node_arch)"
+  stem="node-v${NODE_VERSION}-${platform}-${arch}"
+  NODE_HOME="$TOOLCHAIN_DIR/$stem"
+  NODE_BIN="$NODE_HOME/bin/node"
+
+  if [ -x "$NODE_BIN" ] && [ "$("$NODE_BIN" -p 'process.versions.node')" = "$NODE_VERSION" ]; then
+    ok "node v$NODE_VERSION at $NODE_BIN"
+    return 0
+  fi
+
+  step "Installing hermetic Node v${NODE_VERSION}"
+  mkdir -p "$TOOLCHAIN_DIR"
+  tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/hervald-node.XXXXXX")"
+  archive="$tmp_dir/${stem}.tar.gz"
+  url="https://nodejs.org/dist/v${NODE_VERSION}/${stem}.tar.gz"
+
+  curl -fsSL "$url" -o "$archive"
+  tar -xzf "$archive" -C "$tmp_dir"
+  rm -rf "$NODE_HOME"
+  mv "$tmp_dir/$stem" "$NODE_HOME"
+  rm -rf "$tmp_dir"
+
+  [ -x "$NODE_BIN" ] || fail "Node install failed at $NODE_HOME"
+  ok "node $("$NODE_BIN" --version) at $NODE_BIN"
+}
+
+ensure_pnpm() {
+  local current_version
+
+  PNPM_HOME="$TOOLCHAIN_DIR/pnpm-${PNPM_VERSION}"
+  PNPM_BIN="$PNPM_HOME/bin/pnpm"
+
+  if [ -x "$PNPM_BIN" ]; then
+    current_version="$("$PNPM_BIN" --version 2>/dev/null || true)"
+    if [ "$current_version" = "$PNPM_VERSION" ]; then
+      ok "pnpm $PNPM_VERSION at $PNPM_BIN"
+      return 0
+    fi
+  fi
+
+  step "Installing hermetic pnpm ${PNPM_VERSION}"
+  rm -rf "$PNPM_HOME"
+  mkdir -p "$PNPM_HOME"
+  "$NODE_HOME/bin/npm" install --global --prefix "$PNPM_HOME" "pnpm@${PNPM_VERSION}"
+
+  current_version="$("$PNPM_BIN" --version 2>/dev/null || true)"
+  [ "$current_version" = "$PNPM_VERSION" ] || fail "pnpm $PNPM_VERSION install failed"
+  ok "pnpm $current_version at $PNPM_BIN"
 }
 
 ensure_default_master_key_env() {
@@ -131,18 +218,49 @@ install_launch_agent_if_needed() {
     return 0
   fi
 
-  [[ -f "$LAUNCH_AGENT_TEMPLATE" ]] || fail "LaunchAgent template missing at $LAUNCH_AGENT_TEMPLATE"
-
   step "Installing launchd LaunchAgent"
   mkdir -p "$LAUNCH_AGENT_DIR" "$LAUNCH_LOG_DIR"
 
-  sed \
-    -e "s|__HAMMURABI_BIN__|$(escape_sed_replacement "$SHIM_PATH")|g" \
-    -e "s|__HOME__|$(escape_sed_replacement "$HOME")|g" \
-    -e "s|__PATH__|$(escape_sed_replacement "$(mac_launch_path)")|g" \
-    -e "s|__DATA_DIR__|$(escape_sed_replacement "$DATA_DIR")|g" \
-    -e "s|__LOG_DIR__|$(escape_sed_replacement "$LAUNCH_LOG_DIR")|g" \
-    "$LAUNCH_AGENT_TEMPLATE" > "$LAUNCH_AGENT_PATH"
+  cat > "$LAUNCH_AGENT_PATH" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>io.gehirn.hervald</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>$(xml_escape "$SHIM_PATH")</string>
+    <string>up</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key>
+    <string>$(xml_escape "$HOME")</string>
+    <key>PATH</key>
+    <string>$(xml_escape "$(mac_launch_path)")</string>
+    <key>HAMMURABI_DATA_DIR</key>
+    <string>$(xml_escape "$DATA_DIR")</string>
+  </dict>
+  <key>WorkingDirectory</key>
+  <string>$(xml_escape "$HOME")</string>
+  <key>LimitLoadToSessionType</key>
+  <array>
+    <string>Aqua</string>
+  </array>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>$(xml_escape "$LAUNCH_LOG_DIR")/stdout.log</string>
+  <key>StandardErrorPath</key>
+  <string>$(xml_escape "$LAUNCH_LOG_DIR")/stderr.log</string>
+</dict>
+</plist>
+EOF
 
   launchctl unload -w "$LAUNCH_AGENT_PATH" >/dev/null 2>&1 || true
   launchctl load -w "$LAUNCH_AGENT_PATH"
@@ -230,18 +348,17 @@ printf "  bin:  %s\n\n" "$SHIM_PATH"
 
 step "Checking prerequisites"
 command -v curl >/dev/null || fail "curl not found"
-command -v node >/dev/null || fail "node not found (need Node 22+)"
-NODE_MAJOR=$(node -p 'process.versions.node.split(".")[0]')
-[ "$NODE_MAJOR" -ge 22 ] || fail "node $NODE_MAJOR detected; need Node 22+"
-ok "node $(node --version)"
-command -v pnpm >/dev/null || fail "pnpm not found (install via: corepack enable && corepack prepare pnpm@10.23.0 --activate)"
-ok "pnpm $(pnpm --version)"
+command -v git >/dev/null || fail "git not found"
+command -v tar >/dev/null || fail "tar not found"
+ensure_node
+ensure_pnpm
+export PATH="$PNPM_HOME/bin:$NODE_HOME/bin:$PATH"
 
 step "Installing workspace dependencies"
-pnpm --dir "$REPO_ROOT" install --frozen-lockfile
+"$PNPM_BIN" --dir "$REPO_ROOT" install --frozen-lockfile
 
 step "Building Hammurabi"
-pnpm --dir "$REPO_ROOT" --filter hammurabi run build
+"$PNPM_BIN" --dir "$REPO_ROOT" --filter hammurabi run build
 
 [ -x "$CLI_PKG_DIR/$CLI_BIN_REL" ] || chmod +x "$CLI_PKG_DIR/$CLI_BIN_REL" 2>/dev/null || true
 [ -f "$CLI_PKG_DIR/dist/index.js" ] || fail "CLI build missing at $CLI_PKG_DIR/dist/index.js"
@@ -264,7 +381,8 @@ step "Installing hammurabi CLI shim"
 mkdir -p "$BIN_DIR"
 cat > "$SHIM_PATH" <<EOF
 #!/usr/bin/env bash
-exec node "$CLI_PKG_DIR/$CLI_BIN_REL" "\$@"
+export PATH="$PNPM_HOME/bin:$NODE_HOME/bin:\$PATH"
+exec "$NODE_BIN" "$CLI_PKG_DIR/$CLI_BIN_REL" "\$@"
 EOF
 chmod +x "$SHIM_PATH"
 ensure_local_path_setup

@@ -1,18 +1,24 @@
 # Hervald
 
-Hervald owns orchestration; connectivity is delegated.
+Hervald is the agent orchestration OS.
 
-Hervald is the public entry point for the Hammurabi engine. The product-facing brand is Hervald. The internal code paths stay `apps/hammurabi`, `hammurabi-cli`, `~/.hammurabi`, and `HAMMURABI_*`.
+Cursor is obsolete. Pair-programming with one chatbot is a dead end; the future of agent interaction is a fleet of agents running on machines you control, holding persistent memory, and answering to an approval system you own.
+
+Hervald owns mission state, worker orchestration, memory, approvals, and the command-room surface. Connectivity is delegated to infrastructure you already trust: SSH, Tailscale, hosted runtimes, and your own reverse proxy. The mission graph and execution rules stay stable even when the underlying transport changes.
+
+The product-facing brand is Hervald. Internal code paths still use the Hammurabi engine names: `apps/hammurabi`, `hammurabi-cli`, `~/.hammurabi`, and `HAMMURABI_*`.
 
 ## Quickstart
 
-### Mac mini
+The installer is hermetic for the Node toolchain. It needs `git`, `curl`, `tar`, and outbound HTTPS; it installs Node `22.12.0` and pnpm `10.23.0` under `~/.hammurabi/toolchain` without replacing or relying on your system Node.
+
+### Mac mini / Local workstation
 
 ```bash
 curl -fsSL https://hervald.gehirn.ai/install.sh | bash
 ```
 
-The installer prepares `apps/hammurabi/.env`, boots the shell once, seeds a one-time bootstrap API key, and prints the local sign-in URL.
+The installer clones Hervald, prepares `apps/hammurabi/.env`, installs the hermetic toolchain and dependencies, builds the app, boots the shell once, seeds a one-time bootstrap API key, and prints the local sign-in URL.
 
 ### EC2
 
