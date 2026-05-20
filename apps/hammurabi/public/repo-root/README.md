@@ -18,6 +18,24 @@ curl -fsSL https://hervald.gehirn.ai/install.sh | bash
 
 The installer clones Hervald, prepares `apps/hammurabi/.env`, installs the hermetic toolchain and dependencies, builds the app, boots the shell once, seeds a one-time bootstrap API key, and prints the local sign-in URL.
 
+## Bundled Commander Workforce
+
+Fresh Hervald installs include a backend-owned commander marketplace and a
+starter workforce:
+
+- Asina: engineering manager for issue triage, code investigation, review,
+  orchestration, and release follow-through.
+- Einstein: research intelligence analyst for web research, knowledge search,
+  domain distillation, and reports.
+- Alfred: general assistant for meeting prep, scheduling support, inbox/doc
+  triage, and daily follow-through.
+
+Open the Marketplace page or complete first-run onboarding to install the
+starter workforce. Packages are inspectable on disk under
+`apps/hammurabi/modules/commanders/packages/bundled/`; each package contains
+`COMMANDER.md`, `skills.manifest.json`, `memory-seed.md`, `onboarding.md`, and
+examples.
+
 ### EC2
 
 1. Provision a box with working SSH and outbound internet access.

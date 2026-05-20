@@ -1,0 +1,31 @@
+{
+  "required": [
+    {
+      "id": "legion-investigate",
+      "label": "Investigation",
+      "purpose": "Turn bug reports or unclear engineering failures into root-cause issue plans."
+    },
+    {
+      "id": "engineering-review",
+      "label": "Engineering Review",
+      "purpose": "Review code, issue plans, and PRs for correctness, risks, missing tests, and architectural violations."
+    },
+    {
+      "id": "legion-implement",
+      "label": "Implementation Delivery",
+      "purpose": "Drive an issue through implementation, verification, and PR readiness."
+    }
+  ],
+  "optional": [
+    {
+      "id": "create-quests",
+      "label": "Quest Breakdown",
+      "purpose": "Break large delivery goals into ordered, non-overlapping execution quests."
+    },
+    {
+      "id": "debrief",
+      "label": "Debrief",
+      "purpose": "Capture what happened, why it happened, and what operational lesson should persist."
+    }
+  ]
+}

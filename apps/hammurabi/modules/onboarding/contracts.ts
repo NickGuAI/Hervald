@@ -48,6 +48,7 @@ export type OnboardingStepId =
   | 'instance'
   | 'founder-org'
   | 'gaia'
+  | 'starter-workforce'
   | 'providers-machines'
   | 'launch'
 
@@ -97,6 +98,22 @@ export interface GaiaOnboardingStatus {
   defaultProviderId: string | null
 }
 
+export interface StarterCommanderPackageStatus {
+  packageId: string
+  displayName: string
+  role: string
+  summary: string
+  installed: boolean
+  commanderId: string | null
+}
+
+export interface StarterWorkforceOnboardingStatus {
+  packages: StarterCommanderPackageStatus[]
+  installedCount: number
+  totalCount: number
+  complete: boolean
+}
+
 export interface OnboardingReceipt {
   url: string
   account: string
@@ -112,6 +129,7 @@ export interface OnboardingStatus {
   steps: OnboardingStep[]
   founderSetup: FounderSetupStatus
   gaia: GaiaOnboardingStatus
+  starterWorkforce: StarterWorkforceOnboardingStatus
   providers: ProviderOnboardingReadiness[]
   machines: MachineOnboardingReadiness[]
   receipt: OnboardingReceipt
@@ -120,6 +138,11 @@ export interface OnboardingStatus {
 
 export interface SeedGaiaOnboardingResponse {
   gaia: GaiaOnboardingStatus
+  status: OnboardingStatus
+}
+
+export interface SeedStarterWorkforceOnboardingResponse {
+  starterWorkforce: StarterWorkforceOnboardingStatus
   status: OnboardingStatus
 }
 

@@ -20,6 +20,12 @@ export const moduleComponentBindings: FrontendModuleBinding[] = [
     component: () => import('@modules/command-room/page'),
   },
   {
+    name: 'commander-marketplace',
+    routeId: 'commanders.marketplace-ui',
+    componentKey: 'modules/commanders/packages/page',
+    component: () => import('@modules/commanders/packages/page'),
+  },
+  {
     name: 'automations',
     routeId: 'automations.ui',
     componentKey: 'modules/automations/page',

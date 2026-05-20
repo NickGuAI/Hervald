@@ -1,0 +1,31 @@
+{
+  "required": [
+    {
+      "id": "google-calendar",
+      "label": "Calendar",
+      "purpose": "Inspect calendars, prepare schedule options, and draft safe meeting changes."
+    },
+    {
+      "id": "gmail",
+      "label": "Gmail",
+      "purpose": "Search, summarize, and draft replies from mailbox context with explicit send confirmation."
+    },
+    {
+      "id": "daily-briefing",
+      "label": "Daily Briefing",
+      "purpose": "Prepare daily priorities, calendar context, and actionable updates."
+    }
+  ],
+  "optional": [
+    {
+      "id": "google-drive",
+      "label": "Drive",
+      "purpose": "Find, summarize, and route documents."
+    },
+    {
+      "id": "remind",
+      "label": "Reminder",
+      "purpose": "Surface a simple timed reminder."
+    }
+  ]
+}

@@ -8,6 +8,7 @@ import type {
   FounderSetupStatus,
   OnboardingStatus,
   SeedGaiaOnboardingResponse,
+  SeedStarterWorkforceOnboardingResponse,
 } from '../contracts'
 
 export const FOUNDER_SETUP_STATUS_QUERY_KEY = ['onboarding', 'founder-setup-status'] as const
@@ -33,6 +34,14 @@ async function createFounderOrgSetup(
 
 async function seedGaiaCommander(): Promise<SeedGaiaOnboardingResponse> {
   return fetchJson<SeedGaiaOnboardingResponse>('/api/onboarding/actions/seed-gaia', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({}),
+  })
+}
+
+async function seedStarterWorkforce(): Promise<SeedStarterWorkforceOnboardingResponse> {
+  return fetchJson<SeedStarterWorkforceOnboardingResponse>('/api/onboarding/actions/seed-starter-workforce', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({}),
@@ -84,6 +93,21 @@ export function useSeedGaiaCommander() {
 
   return useMutation({
     mutationFn: seedGaiaCommander,
+    onSuccess: async (result) => {
+      queryClient.setQueryData(ONBOARDING_STATUS_QUERY_KEY, result.status)
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ONBOARDING_STATUS_QUERY_KEY }),
+        queryClient.invalidateQueries({ queryKey: ORG_QUERY_KEY }),
+      ])
+    },
+  })
+}
+
+export function useSeedStarterWorkforce() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: seedStarterWorkforce,
     onSuccess: async (result) => {
       queryClient.setQueryData(ONBOARDING_STATUS_QUERY_KEY, result.status)
       await Promise.all([

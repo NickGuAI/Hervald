@@ -1,0 +1,31 @@
+{
+  "required": [
+    {
+      "id": "wide-research",
+      "label": "Wide Research",
+      "purpose": "Run parallel web research and synthesize independent findings into a coherent report."
+    },
+    {
+      "id": "knowledge-search",
+      "label": "Knowledge Search",
+      "purpose": "Search local knowledge stores before duplicating prior research."
+    },
+    {
+      "id": "domain-distill",
+      "label": "Domain Distillation",
+      "purpose": "Convert research and observations into durable domain knowledge."
+    }
+  ],
+  "optional": [
+    {
+      "id": "publish-report",
+      "label": "Publish Report",
+      "purpose": "Publish self-contained HTML research reports."
+    },
+    {
+      "id": "create-deck",
+      "label": "Create Deck",
+      "purpose": "Turn research synthesis into a presentation deck."
+    }
+  ]
+}

@@ -24,6 +24,15 @@ import { createFounderBootstrapCandidate } from '../operators/founder-bootstrap.
 import type { OperatorStore } from '../operators/store.js'
 import { OrgIdentityStore } from '../org-identity/store.js'
 import {
+  STARTER_COMMANDER_PACKAGE_IDS,
+  loadCommanderPackage,
+} from '../commanders/packages/registry.js'
+import type { CommanderPackageDefinition } from '../commanders/packages/types.js'
+import {
+  getCommanderPackageInstallState,
+  installCommanderPackage,
+} from '../commanders/packages/install.js'
+import {
   DEFAULT_FOUNDER_ORG_SETUP_FORM_VALUES,
   FOUNDER_SETUP_COMPLETED_PATH,
   FOUNDER_SETUP_PATH,
@@ -37,6 +46,8 @@ import {
   type OnboardingStep,
   type OnboardingStepId,
   type ProviderOnboardingReadiness,
+  type StarterCommanderPackageStatus,
+  type StarterWorkforceOnboardingStatus,
 } from './contracts.js'
 
 const execFile = promisify(execFileCallback)
@@ -77,6 +88,11 @@ export interface BuildOnboardingStatusOptions {
 export interface SeedGaiaOptions extends BuildOnboardingStatusOptions {
   sessionStore: Pick<CommanderSessionStore, 'list' | 'create'>
   conversationStore?: Pick<ConversationStore, 'listByCommander' | 'getActiveChatForCommander' | 'ensureDefaultConversation'>
+}
+
+export interface SeedStarterWorkforceOptions extends BuildOnboardingStatusOptions {
+  sessionStore: Pick<CommanderSessionStore, 'list' | 'create' | 'delete'>
+  conversationStore?: Pick<ConversationStore, 'listByCommander' | 'getActiveChatForCommander' | 'ensureDefaultConversation' | 'delete'>
 }
 
 function quoteShell(value: string): string {
@@ -211,6 +227,40 @@ async function buildGaiaStatus(
   }
 }
 
+async function buildStarterWorkforceStatus(
+  options: Pick<BuildOnboardingStatusOptions, 'sessionStore' | 'commanderDataDir'>,
+): Promise<StarterWorkforceOnboardingStatus> {
+  const packages = await Promise.all(
+    STARTER_COMMANDER_PACKAGE_IDS.map(async (packageId): Promise<StarterCommanderPackageStatus | null> => {
+      const definition = await loadCommanderPackage(packageId)
+      if (!definition) {
+        return null
+      }
+      const installState = await getCommanderPackageInstallState(definition, {
+        sessionStore: options.sessionStore,
+        commanderDataDir: options.commanderDataDir,
+      })
+      return {
+        packageId: definition.id,
+        displayName: definition.displayName,
+        role: definition.role,
+        summary: definition.summary,
+        installed: installState.installed,
+        commanderId: installState.commanderId,
+      }
+    }),
+  )
+  const visiblePackages = packages.filter((entry): entry is StarterCommanderPackageStatus => Boolean(entry))
+  const installedCount = visiblePackages.filter((entry) => entry.installed).length
+
+  return {
+    packages: visiblePackages,
+    installedCount,
+    totalCount: visiblePackages.length,
+    complete: visiblePackages.length > 0 && installedCount === visiblePackages.length,
+  }
+}
+
 async function probeProvider(
   provider: ProviderAdapter,
   env: NodeJS.ProcessEnv,
@@ -320,6 +370,7 @@ async function buildMachineReadiness(
 function buildSteps(args: {
   founderSetup: FounderSetupStatus
   gaia: GaiaOnboardingStatus
+  starterWorkforce: StarterWorkforceOnboardingStatus
   providers: readonly ProviderOnboardingReadiness[]
   machines: readonly MachineOnboardingReadiness[]
 }): { currentStepId: OnboardingStepId; steps: OnboardingStep[] } {
@@ -329,18 +380,24 @@ function buildSteps(args: {
     ? 'founder-org'
     : !args.gaia.exists
       ? 'gaia'
-      : (!hasProviderReady || !hasMachineReady)
-        ? 'providers-machines'
-        : 'launch'
+      : !args.starterWorkforce.complete
+        ? 'starter-workforce'
+        : (!hasProviderReady || !hasMachineReady)
+          ? 'providers-machines'
+          : 'launch'
 
   const stateFor = (id: OnboardingStepId): OnboardingStep['state'] => {
     if (id === currentStepId) return 'current'
     if (id === 'instance') return 'complete'
     if (id === 'founder-org') return args.founderSetup.setupComplete ? 'complete' : 'pending'
     if (id === 'gaia') return args.gaia.exists ? 'complete' : 'pending'
+    if (id === 'starter-workforce') {
+      if (args.starterWorkforce.complete) return 'complete'
+      return args.gaia.exists ? 'current' : 'pending'
+    }
     if (id === 'providers-machines') {
       if (hasProviderReady && hasMachineReady) return 'complete'
-      return args.gaia.exists ? 'warning' : 'pending'
+      return args.starterWorkforce.complete ? 'warning' : 'pending'
     }
     return currentStepId === 'launch' ? 'current' : 'pending'
   }
@@ -349,6 +406,7 @@ function buildSteps(args: {
     { id: 'instance', label: 'Instance ready', state: stateFor('instance'), summary: 'Local Hervald app and bootstrap admin are available.' },
     { id: 'founder-org', label: 'Founder + organization', state: stateFor('founder-org'), summary: args.founderSetup.setupComplete ? 'Founder profile and organization exist.' : 'Create the first local operator and org identity.' },
     { id: 'gaia', label: 'Gaia commander', state: stateFor('gaia'), summary: args.gaia.exists ? 'Gaia is ready to guide onboarding.' : 'Seed Gaia as the default onboarding commander.' },
+    { id: 'starter-workforce', label: 'Starter workforce', state: stateFor('starter-workforce'), summary: args.starterWorkforce.complete ? 'Starter commanders are installed.' : 'Install the bundled engineering, research, and assistant commanders.' },
     { id: 'providers-machines', label: 'Providers + machines', state: stateFor('providers-machines'), summary: hasProviderReady && hasMachineReady ? 'At least one provider and machine are ready.' : 'Review provider CLI/auth and machine readiness.' },
     { id: 'launch', label: 'Launch', state: stateFor('launch'), summary: 'Open the org page or command room.' },
   ]
@@ -402,13 +460,21 @@ export async function buildOnboardingStatus(
     buildMachineReadiness(options.env ?? process.env),
   ])
   const gaia = await buildGaiaStatus(options, providers)
-  const { currentStepId, steps } = buildSteps({ founderSetup, gaia, providers, machines })
+  const starterWorkforce = await buildStarterWorkforceStatus(options)
+  const { currentStepId, steps } = buildSteps({
+    founderSetup,
+    gaia,
+    starterWorkforce,
+    providers,
+    machines,
+  })
 
   return {
     currentStepId,
     steps,
     founderSetup,
     gaia,
+    starterWorkforce,
     providers,
     machines,
     receipt: buildReceipt({
@@ -422,6 +488,25 @@ export async function buildOnboardingStatus(
       ? `/command-room?commander=${encodeURIComponent(gaia.commanderId)}&conversation=${encodeURIComponent(gaia.conversationId)}`
       : FOUNDER_SETUP_COMPLETED_PATH,
   }
+}
+
+export async function seedStarterWorkforce(
+  options: SeedStarterWorkforceOptions,
+): Promise<StarterWorkforceOnboardingStatus> {
+  const definitions = (await Promise.all(
+    STARTER_COMMANDER_PACKAGE_IDS.map((packageId) => loadCommanderPackage(packageId)),
+  )).filter((definition): definition is CommanderPackageDefinition => Boolean(definition))
+
+  for (const definition of definitions) {
+    await installCommanderPackage(definition, {
+      sessionStore: options.sessionStore,
+      conversationStore: options.conversationStore,
+      commanderDataDir: options.commanderDataDir,
+      now: () => new Date(),
+    })
+  }
+
+  return buildStarterWorkforceStatus(options)
 }
 
 export async function seedGaiaCommander(options: SeedGaiaOptions): Promise<GaiaOnboardingStatus> {

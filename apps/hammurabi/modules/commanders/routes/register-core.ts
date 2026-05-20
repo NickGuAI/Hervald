@@ -88,6 +88,15 @@ import { getLiveConversationSession, stopConversationSession } from './conversat
 import type { AgentType } from '../../agents/types.js'
 import { validateModelForAgentType } from '../../agents/providers/validate-model.js'
 import type { ClaudeEffortLevel } from '../../claude-effort.js'
+import { listCommanderPackages, loadCommanderPackage } from '../packages/registry.js'
+import {
+  getCommanderPackageInstallState,
+  installCommanderPackage,
+} from '../packages/install.js'
+import type {
+  CommanderPackageDefinition,
+  CommanderPackageResponse,
+} from '../packages/types.js'
 
 const WIZARD_SESSION_PREFIX = 'commander-wizard-'
 const WIZARD_SESSION_NAME_PATTERN = /^commander-wizard-[a-zA-Z0-9_-]+$/
@@ -614,6 +623,36 @@ export function registerCoreRoutes(
     return WIZARD_SESSION_NAME_PATTERN.test(trimmed) ? trimmed : null
   }
 
+  const buildCommanderPackageResponse = async (
+    definition: CommanderPackageDefinition,
+  ): Promise<CommanderPackageResponse> => {
+    const {
+      commanderMd: _commanderMd,
+      memorySeed: _memorySeed,
+      ...publicDefinition
+    } = definition
+
+    return {
+      ...publicDefinition,
+      installState: await getCommanderPackageInstallState(definition, {
+        sessionStore: context.sessionStore,
+        commanderDataDir: context.commanderDataDir,
+      }),
+    }
+  }
+
+  const buildCommanderApiResponse = async (
+    session: CommanderSession,
+    displayName: string,
+  ): Promise<unknown> => {
+    const stats = await context.getCommanderSessionStats(session.id)
+    const base = await toCommanderSessionResponse(session, context.conversationStore, undefined, stats)
+    const withUi = await context.attachCommanderPublicUi(session.id, base)
+    return displayName !== session.host
+      ? { ...withUi, displayName }
+      : withUi
+  }
+
   router.get('/', context.requireReadAccess, async (_req, res) => {
     const sessions = await context.sessionStore.list()
     const displayNames = await readCommanderDisplayNames(context.commanderDataDir)
@@ -633,6 +672,64 @@ export function registerCoreRoutes(
 
   router.get('/runtime-config', context.requireReadAccess, async (_req, res) => {
     res.json(context.runtimeConfig)
+  })
+
+  router.get('/packages', context.requireReadAccess, async (_req, res) => {
+    const definitions = await listCommanderPackages()
+    res.json({
+      packages: await Promise.all(definitions.map(buildCommanderPackageResponse)),
+    })
+  })
+
+  router.get('/packages/:packageId', context.requireReadAccess, async (req, res) => {
+    const packageId = typeof req.params.packageId === 'string' ? req.params.packageId : null
+    if (!packageId) {
+      res.status(400).json({ error: 'Invalid commander package id' })
+      return
+    }
+    const definition = await loadCommanderPackage(packageId)
+    if (!definition) {
+      res.status(404).json({ error: `Commander package "${packageId}" not found` })
+      return
+    }
+
+    res.json({
+      package: await buildCommanderPackageResponse(definition),
+    })
+  })
+
+  router.post('/packages/:packageId/install', context.requireWriteAccess, async (req, res) => {
+    const packageId = typeof req.params.packageId === 'string' ? req.params.packageId : null
+    if (!packageId) {
+      res.status(400).json({ error: 'Invalid commander package id' })
+      return
+    }
+    const definition = await loadCommanderPackage(packageId)
+    if (!definition) {
+      res.status(404).json({ error: `Commander package "${packageId}" not found` })
+      return
+    }
+
+    try {
+      const result = await installCommanderPackage(definition, {
+        sessionStore: context.sessionStore,
+        conversationStore: context.conversationStore,
+        commanderDataDir: context.commanderDataDir,
+        commanderBasePath: context.commanderBasePath,
+        now: context.now,
+      })
+      const packageResponse = await buildCommanderPackageResponse(definition)
+      const commander = await buildCommanderApiResponse(result.commander, result.displayName)
+      res.status(result.created ? 201 : 200).json({
+        package: packageResponse,
+        commander,
+        created: result.created,
+      })
+    } catch (error) {
+      res.status(500).json({
+        error: error instanceof Error ? error.message : 'Failed to install commander package',
+      })
+    }
   })
 
   // No auth on avatar — <img src> cannot send bearer headers, and the URL

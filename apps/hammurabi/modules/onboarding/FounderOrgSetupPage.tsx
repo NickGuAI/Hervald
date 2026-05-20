@@ -4,6 +4,7 @@ import {
   useCreateFounderOrgSetup,
   useOnboardingStatus,
   useSeedGaiaCommander,
+  useSeedStarterWorkforce,
 } from '@modules/onboarding/hooks/useFounderOnboarding'
 import {
   DEFAULT_FOUNDER_ORG_SETUP_FORM_VALUES,
@@ -122,6 +123,7 @@ export function FounderOrgSetupPage() {
   const onboarding = useOnboardingStatus()
   const createFounderOrg = useCreateFounderOrgSetup()
   const seedGaia = useSeedGaiaCommander()
+  const seedStarterWorkforce = useSeedStarterWorkforce()
   const submissionLockRef = useRef(false)
   const defaultsAppliedRef = useRef(false)
   const hasEditedRef = useRef(false)
@@ -209,6 +211,16 @@ export function FounderOrgSetupPage() {
     setActionError(null)
     try {
       await seedGaia.mutateAsync()
+      setActiveStepId('starter-workforce')
+    } catch (error) {
+      setActionError(formatSetupError(error))
+    }
+  }
+
+  async function handleSeedStarterWorkforce() {
+    setActionError(null)
+    try {
+      await seedStarterWorkforce.mutateAsync()
       setActiveStepId('providers-machines')
     } catch (error) {
       setActionError(formatSetupError(error))
@@ -374,13 +386,15 @@ export function FounderOrgSetupPage() {
           box-shadow: none;
         }
         .hv-onboarding-provider-grid,
-        .hv-onboarding-machine-grid {
+        .hv-onboarding-machine-grid,
+        .hv-onboarding-workforce-grid {
           display: grid;
           gap: var(--hv-space-3);
           margin-top: var(--hv-space-4);
         }
         .hv-onboarding-provider,
         .hv-onboarding-machine,
+        .hv-onboarding-workforce-card,
         .hv-onboarding-receipt-row {
           border: 1px solid var(--hv-border-hair);
           background: var(--hv-bg-raised);
@@ -392,6 +406,22 @@ export function FounderOrgSetupPage() {
           grid-template-columns: 1fr auto;
           gap: var(--hv-space-3);
           align-items: start;
+        }
+        .hv-onboarding-workforce-card {
+          display: grid;
+          grid-template-columns: 1fr auto;
+          gap: var(--hv-space-3);
+        }
+        .hv-onboarding-workforce-card h3 {
+          margin: 0;
+          font-family: var(--hv-font-primary);
+          font-size: var(--hv-text-title);
+          font-weight: 300;
+        }
+        .hv-onboarding-workforce-card p {
+          margin: var(--hv-space-1) 0 0;
+          color: var(--hv-fg-muted);
+          line-height: var(--hv-leading-normal);
         }
         .hv-onboarding-provider-title {
           color: var(--hv-fg);
@@ -649,10 +679,46 @@ export function FounderOrgSetupPage() {
               {actionError ? <div className="hv-onboarding-error" role="alert">{actionError}</div> : null}
               <SectionActions
                 onBack={() => setActiveStepId(previousStep?.id ?? 'founder-org')}
-                onNext={status?.gaia.exists ? () => setActiveStepId('providers-machines') : handleSeedGaia}
+                onNext={status?.gaia.exists ? () => setActiveStepId('starter-workforce') : handleSeedGaia}
                 nextDisabled={seedGaia.isPending}
                 nextLabel={status?.gaia.exists ? 'Continue' : seedGaia.isPending ? 'Creating...' : 'Create Gaia'}
                 nextTestId="seed-gaia-submit"
+              />
+            </>
+          ) : null}
+
+          {currentStepId === 'starter-workforce' ? (
+            <>
+              <h2>Starter workforce</h2>
+              <p>
+                Install the bundled commanders that make a fresh Hervald instance useful immediately.
+                Each package is stored on disk and installed through the backend commander API.
+              </p>
+              <section className="hv-onboarding-workforce-grid" aria-label="Starter workforce">
+                {(status?.starterWorkforce.packages ?? []).map((pkg) => (
+                  <article
+                    key={pkg.packageId}
+                    className="hv-onboarding-workforce-card"
+                    data-testid={`starter-workforce-card-${pkg.packageId}`}
+                  >
+                    <div>
+                      <h3>{pkg.displayName}</h3>
+                      <p>{pkg.role}</p>
+                      <p>{pkg.summary}</p>
+                    </div>
+                    <div className={`hv-onboarding-badge ${pkg.installed ? 'hv-onboarding-badge-ready' : 'hv-onboarding-badge-skipped'}`}>
+                      {pkg.installed ? 'installed' : 'ready'}
+                    </div>
+                  </article>
+                ))}
+              </section>
+              {actionError ? <div className="hv-onboarding-error" role="alert">{actionError}</div> : null}
+              <SectionActions
+                onBack={() => setActiveStepId(previousStep?.id ?? 'gaia')}
+                onNext={status?.starterWorkforce.complete ? () => setActiveStepId('providers-machines') : handleSeedStarterWorkforce}
+                nextDisabled={seedStarterWorkforce.isPending}
+                nextLabel={status?.starterWorkforce.complete ? 'Continue' : seedStarterWorkforce.isPending ? 'Installing...' : 'Install starter workforce'}
+                nextTestId="seed-starter-workforce-submit"
               />
             </>
           ) : null}

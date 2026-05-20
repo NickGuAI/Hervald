@@ -300,6 +300,15 @@ export const HAMMURABI_MODULE_SERVER_METADATA = [
         parserIds: ['commanders.avatar-multipart'],
       },
       {
+        id: 'commanders.packages-api',
+        surface: 'api',
+        mount: '/api/commanders/packages',
+        methods: ['GET', 'POST'],
+        auth: 'api-key-or-auth0',
+        ownerModuleId: 'commanders',
+        notes: 'Backend-owned bundled commander package registry and install actions.',
+      },
+      {
         id: 'commanders.quests-api',
         surface: 'api',
         mount: '/api/commanders/:id/quests',

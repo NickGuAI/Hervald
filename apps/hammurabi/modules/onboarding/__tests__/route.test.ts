@@ -245,4 +245,45 @@ describe('onboarding route', () => {
       await server.close()
     }
   })
+
+  it('seeds the starter workforce idempotently through the onboarding action', async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), 'hammurabi-onboarding-route-'))
+    tempDirs.push(dataDir)
+    const server = await startServer(dataDir)
+    try {
+      const first = await fetch(`${server.baseUrl}/api/onboarding/actions/seed-starter-workforce`, {
+        method: 'POST',
+        headers: {
+          ...AUTH_HEADERS,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({}),
+      })
+      expect(first.status).toBe(201)
+      const firstPayload = await first.json() as {
+        starterWorkforce: { complete: boolean; installedCount: number; totalCount: number }
+      }
+      expect(firstPayload.starterWorkforce).toMatchObject({
+        complete: true,
+        installedCount: 3,
+        totalCount: 3,
+      })
+
+      const second = await fetch(`${server.baseUrl}/api/onboarding/actions/seed-starter-workforce`, {
+        method: 'POST',
+        headers: AUTH_HEADERS,
+      })
+      const secondPayload = await second.json() as {
+        starterWorkforce: { complete: boolean; installedCount: number; totalCount: number }
+      }
+      expect(second.status).toBe(200)
+      expect(secondPayload.starterWorkforce).toMatchObject({
+        complete: true,
+        installedCount: 3,
+        totalCount: 3,
+      })
+    } finally {
+      await server.close()
+    }
+  })
 })

@@ -10,6 +10,7 @@ import { OrgIdentityStore } from '../org-identity/store.js'
 import {
   buildOnboardingStatus,
   seedGaiaCommander,
+  seedStarterWorkforce,
   type OnboardingShellRunner,
 } from './status.js'
 
@@ -22,8 +23,8 @@ export interface OnboardingRouterOptions {
   internalToken?: string
   operatorStore: Pick<OperatorStore, 'getFounder'>
   orgIdentityStore?: OrgIdentityStore
-  sessionStore: Pick<CommanderSessionStore, 'list' | 'create'>
-  conversationStore?: Pick<ConversationStore, 'listByCommander' | 'getActiveChatForCommander' | 'ensureDefaultConversation'>
+  sessionStore: Pick<CommanderSessionStore, 'list' | 'create' | 'delete'>
+  conversationStore?: Pick<ConversationStore, 'listByCommander' | 'getActiveChatForCommander' | 'ensureDefaultConversation' | 'delete'>
   commanderDataDir: string
   providerRegistry: ProviderRegistryCapability
   shellRunner?: OnboardingShellRunner
@@ -126,6 +127,25 @@ export function createOnboardingRouter(options: OnboardingRouterOptions): Router
     })
     res.status(before.gaia.exists ? 200 : 201).json({
       gaia,
+      status: await status(req),
+    })
+  })
+
+  router.post('/actions/seed-starter-workforce', requireWriteAccess, async (req, res) => {
+    const before = await status(req)
+    const starterWorkforce = await seedStarterWorkforce({
+      user: req.user,
+      operatorStore: options.operatorStore,
+      orgIdentityStore,
+      sessionStore: options.sessionStore,
+      conversationStore: options.conversationStore,
+      commanderDataDir: options.commanderDataDir,
+      providers: options.providerRegistry.listProviders(),
+      env: options.env,
+      shellRunner: options.shellRunner,
+    })
+    res.status(before.starterWorkforce.complete ? 200 : 201).json({
+      starterWorkforce,
       status: await status(req),
     })
   })

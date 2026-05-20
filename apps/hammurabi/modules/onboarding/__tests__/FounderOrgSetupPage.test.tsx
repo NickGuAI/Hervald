@@ -12,6 +12,7 @@ import type {
   OnboardingStatus,
   OnboardingStepId,
   SeedGaiaOnboardingResponse,
+  SeedStarterWorkforceOnboardingResponse,
 } from '../contracts'
 
 const mocks = vi.hoisted(() => ({
@@ -79,7 +80,42 @@ function onboardingStatus(overrides: Partial<OnboardingStatus> = {}): Onboarding
       summary: 'This server can run provider CLIs directly.',
     },
   ]
-  const currentStepId: OnboardingStepId = overrides.currentStepId ?? (founderSetup.setupComplete ? (gaia.exists ? 'launch' : 'gaia') : 'founder-org')
+  const starterWorkforce = overrides.starterWorkforce ?? {
+    packages: [
+      {
+        packageId: 'engineering-manager',
+        displayName: 'Asina',
+        role: 'Engineering Manager',
+        summary: 'Owns engineering delivery.',
+        installed: false,
+        commanderId: null,
+      },
+      {
+        packageId: 'research-intelligence-analyst',
+        displayName: 'Einstein',
+        role: 'Research Intelligence Analyst',
+        summary: 'Owns research synthesis.',
+        installed: false,
+        commanderId: null,
+      },
+      {
+        packageId: 'general-assistant',
+        displayName: 'Alfred',
+        role: 'General Assistant',
+        summary: 'Owns daily support.',
+        installed: false,
+        commanderId: null,
+      },
+    ],
+    installedCount: 0,
+    totalCount: 3,
+    complete: false,
+  }
+  const currentStepId: OnboardingStepId = overrides.currentStepId ?? (
+    founderSetup.setupComplete
+      ? (gaia.exists ? (starterWorkforce.complete ? 'launch' : 'starter-workforce') : 'gaia')
+      : 'founder-org'
+  )
 
   return {
     currentStepId,
@@ -87,11 +123,13 @@ function onboardingStatus(overrides: Partial<OnboardingStatus> = {}): Onboarding
       { id: 'instance', label: 'Instance ready', state: 'complete', summary: 'Local Hervald app and bootstrap admin are available.' },
       { id: 'founder-org', label: 'Founder + organization', state: founderSetup.setupComplete ? 'complete' : 'current', summary: 'Create the first local operator and org identity.' },
       { id: 'gaia', label: 'Gaia commander', state: gaia.exists ? 'complete' : currentStepId === 'gaia' ? 'current' : 'pending', summary: 'Seed Gaia as the default onboarding commander.' },
+      { id: 'starter-workforce', label: 'Starter workforce', state: starterWorkforce.complete ? 'complete' : currentStepId === 'starter-workforce' ? 'current' : 'pending', summary: 'Install the bundled engineering, research, and assistant commanders.' },
       { id: 'providers-machines', label: 'Providers + machines', state: 'complete', summary: 'At least one provider and machine are ready.' },
       { id: 'launch', label: 'Launch', state: currentStepId === 'launch' ? 'current' : 'pending', summary: 'Open the org page or command room.' },
     ],
     founderSetup,
     gaia,
+    starterWorkforce,
     providers,
     machines,
     receipt: {
@@ -284,7 +322,7 @@ describe('FounderOrgSetupPage', () => {
     })
   })
 
-  it('seeds Gaia through the backend onboarding action and launches the command room', async () => {
+  it('seeds Gaia and the starter workforce through backend onboarding actions before launch', async () => {
     const completedFounder = setupStatus({
       setupComplete: true,
       defaultValues: {
@@ -296,7 +334,7 @@ describe('FounderOrgSetupPage', () => {
       nextRoute: '/org',
     })
     const seeded = onboardingStatus({
-      currentStepId: 'launch',
+      currentStepId: 'starter-workforce',
       founderSetup: completedFounder,
       gaia: {
         commanderId: 'commander-gaia',
@@ -304,6 +342,22 @@ describe('FounderOrgSetupPage', () => {
         exists: true,
         conversationId: 'conversation-gaia',
         defaultProviderId: 'claude',
+      },
+      launchTarget: '/command-room?commander=commander-gaia',
+    })
+    const workforceSeeded = onboardingStatus({
+      currentStepId: 'launch',
+      founderSetup: completedFounder,
+      gaia: seeded.gaia,
+      starterWorkforce: {
+        packages: seeded.starterWorkforce.packages.map((pkg) => ({
+          ...pkg,
+          installed: true,
+          commanderId: `commander-${pkg.packageId}`,
+        })),
+        installedCount: 3,
+        totalCount: 3,
+        complete: true,
       },
       launchTarget: '/command-room?commander=commander-gaia',
     })
@@ -322,6 +376,13 @@ describe('FounderOrgSetupPage', () => {
           status: seeded,
         } satisfies SeedGaiaOnboardingResponse)
       }
+      if (url === '/api/onboarding/actions/seed-starter-workforce') {
+        statusResponse = workforceSeeded
+        return Promise.resolve({
+          starterWorkforce: workforceSeeded.starterWorkforce,
+          status: workforceSeeded,
+        } satisfies SeedStarterWorkforceOnboardingResponse)
+      }
       return Promise.reject(new Error(`Unexpected fetchJson URL: ${url}`))
     })
 
@@ -331,6 +392,15 @@ describe('FounderOrgSetupPage', () => {
     })
     await act(async () => {
       document.body.querySelector<HTMLButtonElement>('[data-testid="seed-gaia-submit"]')?.click()
+    })
+    await flushReact()
+
+    await vi.waitFor(() => {
+      expect(document.body.textContent).toContain('Starter workforce')
+    })
+
+    await act(async () => {
+      document.body.querySelector<HTMLButtonElement>('[data-testid="seed-starter-workforce-submit"]')?.click()
     })
     await flushReact()
 
