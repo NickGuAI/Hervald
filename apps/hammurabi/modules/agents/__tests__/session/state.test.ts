@@ -87,6 +87,59 @@ describe('agents/session/state', () => {
     )
   })
 
+  it('defaults restored Claude sessions to high effort with adaptive thinking disabled', () => {
+    expect(parsePersistedStreamSessionEntry({
+      name: 'claude-defaults',
+      agentType: 'claude',
+      mode: 'default',
+      cwd: '/tmp/worktree',
+      createdAt: '2026-04-24T00:00:00.000Z',
+      providerContext: {
+        providerId: 'claude',
+        sessionId: 'claude-session-1',
+      },
+    })).toEqual(expect.objectContaining({
+      effort: 'high',
+      adaptiveThinking: 'disabled',
+      maxThinkingTokens: 128000,
+      providerContext: expect.objectContaining({
+        providerId: 'claude',
+        sessionId: 'claude-session-1',
+        effort: 'high',
+        adaptiveThinking: 'disabled',
+        maxThinkingTokens: 128000,
+      }),
+    }))
+  })
+
+  it('preserves explicit restored Claude effort and adaptive-thinking values', () => {
+    expect(parsePersistedStreamSessionEntry({
+      name: 'claude-explicit-defaults',
+      agentType: 'claude',
+      mode: 'default',
+      cwd: '/tmp/worktree',
+      createdAt: '2026-04-24T00:00:00.000Z',
+      effort: 'max',
+      adaptiveThinking: 'enabled',
+      maxThinkingTokens: 64000,
+      providerContext: {
+        providerId: 'claude',
+        sessionId: 'claude-session-explicit',
+      },
+    })).toEqual(expect.objectContaining({
+      effort: 'max',
+      adaptiveThinking: 'enabled',
+      maxThinkingTokens: 64000,
+      providerContext: expect.objectContaining({
+        providerId: 'claude',
+        sessionId: 'claude-session-explicit',
+        effort: 'max',
+        adaptiveThinking: 'enabled',
+        maxThinkingTokens: 64000,
+      }),
+    }))
+  })
+
   it('keeps explicit non-Claude legacy contexts on their matching provider', () => {
     expect(parsePersistedStreamSessionEntry({
       name: 'gemini-legacy',

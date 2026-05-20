@@ -89,6 +89,9 @@ export interface ProviderDefaults {
   transportType: Exclude<SessionTransportType, 'external'>
   permissionMode: ClaudePermissionMode
   model: string | null
+  effort?: ClaudeEffortLevel
+  adaptiveThinking?: ClaudeAdaptiveThinkingMode
+  maxThinkingTokens?: ClaudeMaxThinkingTokens
 }
 
 export interface ProviderRegistryEntry {

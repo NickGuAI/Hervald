@@ -1,11 +1,38 @@
 import { getApiBase } from './api-base'
 
 type AccessTokenResolver = () => Promise<string | null>
-type UnauthorizedHandler = () => void
+export type AuthMode = 'anonymous' | 'api-key' | 'auth0'
+
+export interface UnauthorizedEvent {
+  authMode: AuthMode
+  phase: 'token' | 'response'
+  path?: string
+  status?: number
+  error?: unknown
+}
+
+type UnauthorizedHandler = (event: UnauthorizedEvent) => void
 
 let accessTokenResolver: AccessTokenResolver | null = null
 let unauthorizedHandler: UnauthorizedHandler | null = null
+let authMode: AuthMode = 'anonymous'
 const API_KEY_STORAGE = 'hammurabi_api_key'
+
+export class AuthRecoveryRequiredError extends Error {
+  readonly authMode: AuthMode
+  readonly cause?: unknown
+
+  constructor(message: string, options: { authMode?: AuthMode; cause?: unknown } = {}) {
+    super(message)
+    this.name = 'AuthRecoveryRequiredError'
+    this.authMode = options.authMode ?? authMode
+    this.cause = options.cause
+  }
+}
+
+export function isAuthRecoveryRequiredError(error: unknown): error is AuthRecoveryRequiredError {
+  return error instanceof AuthRecoveryRequiredError
+}
 
 export function setAccessTokenResolver(resolver: AccessTokenResolver | null): void {
   accessTokenResolver = resolver
@@ -15,9 +42,24 @@ export function setUnauthorizedHandler(handler: UnauthorizedHandler | null): voi
   unauthorizedHandler = handler
 }
 
-function handleUnauthorized(): void {
+export function setAuthMode(mode: AuthMode): void {
+  authMode = mode
+}
+
+function currentAuthMode(): AuthMode {
+  if (authMode !== 'anonymous') {
+    return authMode
+  }
+
+  return getStoredApiKey() ? 'api-key' : 'anonymous'
+}
+
+function handleUnauthorized(event: Omit<UnauthorizedEvent, 'authMode'> & { authMode?: AuthMode }): void {
   if (unauthorizedHandler) {
-    unauthorizedHandler()
+    unauthorizedHandler({
+      ...event,
+      authMode: event.authMode ?? currentAuthMode(),
+    })
   }
 }
 
@@ -44,15 +86,11 @@ export async function buildRequestHeaders(headersInit?: HeadersInit): Promise<He
     return headers
   }
 
-  try {
-    const token = accessTokenResolver
-      ? await accessTokenResolver()
-      : getStoredApiKey()
-    if (token) {
-      headers.set('authorization', `Bearer ${token}`)
-    }
-  } catch {
-    // If token retrieval fails we still allow explicit API key requests.
+  const token = accessTokenResolver
+    ? await accessTokenResolver()
+    : getStoredApiKey()
+  if (token) {
+    headers.set('authorization', `Bearer ${token}`)
   }
 
   return headers
@@ -64,13 +102,33 @@ export async function getAccessToken(): Promise<string | null> {
       return await accessTokenResolver()
     }
     return getStoredApiKey()
-  } catch {
-    return null
+  } catch (error) {
+    if (isAuthRecoveryRequiredError(error)) {
+      handleUnauthorized({
+        authMode: error.authMode,
+        phase: 'token',
+        error,
+      })
+    }
+    throw error
   }
 }
 
 export async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
-  const headers = await buildRequestHeaders(init?.headers)
+  let headers: Headers
+  try {
+    headers = await buildRequestHeaders(init?.headers)
+  } catch (error) {
+    if (isAuthRecoveryRequiredError(error)) {
+      handleUnauthorized({
+        authMode: error.authMode,
+        phase: 'token',
+        path,
+        error,
+      })
+    }
+    throw error
+  }
   const url = path.startsWith('http') ? path : `${getApiBase()}${path}`
   const response = await fetch(url, {
     ...init,
@@ -78,7 +136,11 @@ export async function fetchJson<T>(path: string, init?: RequestInit): Promise<T>
   })
   if (!response.ok) {
     if (response.status === 401) {
-      handleUnauthorized()
+      handleUnauthorized({
+        phase: 'response',
+        path,
+        status: response.status,
+      })
     }
     const body = await response.text()
     throw new Error(`Request failed (${response.status}): ${body}`)
@@ -87,7 +149,20 @@ export async function fetchJson<T>(path: string, init?: RequestInit): Promise<T>
 }
 
 export async function fetchVoid(path: string, init?: RequestInit): Promise<void> {
-  const headers = await buildRequestHeaders(init?.headers)
+  let headers: Headers
+  try {
+    headers = await buildRequestHeaders(init?.headers)
+  } catch (error) {
+    if (isAuthRecoveryRequiredError(error)) {
+      handleUnauthorized({
+        authMode: error.authMode,
+        phase: 'token',
+        path,
+        error,
+      })
+    }
+    throw error
+  }
   const url = path.startsWith('http') ? path : `${getApiBase()}${path}`
   const response = await fetch(url, {
     ...init,
@@ -95,7 +170,11 @@ export async function fetchVoid(path: string, init?: RequestInit): Promise<void>
   })
   if (!response.ok) {
     if (response.status === 401) {
-      handleUnauthorized()
+      handleUnauthorized({
+        phase: 'response',
+        path,
+        status: response.status,
+      })
     }
     const body = await response.text()
     throw new Error(`Request failed (${response.status}): ${body}`)

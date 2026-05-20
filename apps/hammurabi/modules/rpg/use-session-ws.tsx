@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { getAccessToken } from '@/lib/api'
+import { getAccessToken, isAuthRecoveryRequiredError } from '@/lib/api'
 import { getWsBase } from '@/lib/api-base'
 import type { AskQuestion, StreamEvent } from '@/types'
 
@@ -209,7 +209,18 @@ export function useSessionWs({
     setPendingAsks([])
 
     const connect = async () => {
-      const token = await getAccessToken()
+      let token: string | null
+      try {
+        token = await getAccessToken()
+      } catch (error) {
+        if (isAuthRecoveryRequiredError(error)) {
+          if (!disposed) {
+            setStatus('disconnected')
+          }
+          return
+        }
+        throw error
+      }
       if (disposed) {
         return
       }

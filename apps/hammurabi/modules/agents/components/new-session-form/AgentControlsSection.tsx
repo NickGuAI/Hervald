@@ -43,6 +43,10 @@ export function AgentControlsSection({
   setMaxThinkingTokens,
 }: AgentControlsSectionProps) {
   const currentProvider = providers.find((provider) => provider.id === agentType) ?? null
+  const providerDefaults = currentProvider?.defaults
+  const defaultEffort = providerDefaults?.effort ?? 'high'
+  const defaultAdaptiveThinking = providerDefaults?.adaptiveThinking ?? 'disabled'
+  const defaultMaxThinkingTokens = providerDefaults?.maxThinkingTokens ?? 128000
   const sessionTypeOptions = currentProvider?.uiCapabilities.forcedTransport === 'stream'
     ? [{ value: 'stream', label: 'Stream', description: 'ACP chat UI, supports resume' }]
     : [
@@ -143,7 +147,7 @@ export function AgentControlsSection({
               ))}
             </select>
             <p className="mt-1 text-whisper text-[color:var(--hv-fg-faint)]">
-              Default is `max`. Resume reuses the selected session’s Claude effort.
+              Default is `{defaultEffort}`. Resume reuses the selected session’s Claude effort.
             </p>
           </div>
 
@@ -163,7 +167,7 @@ export function AgentControlsSection({
               ))}
             </select>
             <p className="mt-1 text-whisper text-[color:var(--hv-fg-faint)]">
-              Default is `disabled` for fixed `MAX_THINKING_TOKENS`; enable only when the smaller adaptive budget is wanted.
+              Default is `{defaultAdaptiveThinking}` for fixed `MAX_THINKING_TOKENS`; enable only when the smaller adaptive budget is wanted.
             </p>
           </div>
 
@@ -185,7 +189,7 @@ export function AgentControlsSection({
                 )}
               />
               <p className="mt-1 text-whisper text-[color:var(--hv-fg-faint)]">
-                Default is `128000`. Valid range is 1024-256000.
+                Default is `{defaultMaxThinkingTokens}`. Valid range is 1024-256000.
               </p>
             </div>
           ) : null}

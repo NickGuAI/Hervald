@@ -83,6 +83,47 @@ function validateWhatsAppConfig(config: Record<string, unknown>): void {
   validateSelectField(descriptor, config, 'groupPolicy')
 }
 
+function hasGoogleChatCredential(config: Record<string, unknown> | undefined): boolean {
+  if (!config) {
+    return false
+  }
+  return Boolean(
+    trimString(config.serviceAccountJson)
+    ?? (isObject(config.serviceAccountJson) ? 'json-object' : undefined)
+    ?? trimString(config.serviceAccountKey)
+    ?? (isObject(config.serviceAccountKey) ? 'json-object' : undefined)
+    ?? trimString(config.credential)
+    ?? (isObject(config.credential) ? 'json-object' : undefined)
+    ?? trimString(config.credentialRef)
+    ?? (config.credentialConfigured === true ? 'configured' : undefined),
+  )
+}
+
+function validateGoogleChatConfig(input: {
+  incomingConfig: Record<string, unknown>
+  existingConfig?: CommanderChannelBindingConfig
+}): void {
+  const descriptor = getChannelProviderDescriptor('googlechat')
+  const mergedConfig = {
+    ...(isObject(input.existingConfig) ? input.existingConfig : {}),
+    ...input.incomingConfig,
+  }
+  const credentialField = fieldByKey(descriptor, 'serviceAccountJson')
+  if (!hasGoogleChatCredential(input.incomingConfig) && !hasGoogleChatCredential(input.existingConfig)) {
+    throw new CommanderChannelValidationError(`${credentialField.label} is required for an enabled Google Chat channel.`)
+  }
+  if (!trimString(mergedConfig.webhookAudience)) {
+    throw new CommanderChannelValidationError('Webhook Audience is required for an enabled Google Chat channel.')
+  }
+  validateSelectField(descriptor, mergedConfig, 'webhookAudienceType')
+  validateSelectField(descriptor, mergedConfig, 'dmPolicy')
+  validateSelectField(descriptor, mergedConfig, 'groupPolicy')
+  parseStringList(mergedConfig.dmAllowlist, fieldByKey(descriptor, 'dmAllowlist').label)
+  parseStringList(mergedConfig.groupAllowlist, fieldByKey(descriptor, 'groupAllowlist').label)
+  parseStringList(mergedConfig.globalAllowlist, fieldByKey(descriptor, 'globalAllowlist').label)
+  parseStringList(mergedConfig.allowlist, 'Allowlist')
+}
+
 export function validateChannelConfigForDescriptor(input: {
   provider: ChannelProvider
   incomingConfig: unknown
@@ -104,5 +145,12 @@ export function validateChannelConfigForDescriptor(input: {
   }
   if (input.provider === 'whatsapp') {
     validateWhatsAppConfig(input.incomingConfig)
+    return
+  }
+  if (input.provider === 'googlechat') {
+    validateGoogleChatConfig({
+      incomingConfig: input.incomingConfig,
+      existingConfig: input.existingConfig,
+    })
   }
 }

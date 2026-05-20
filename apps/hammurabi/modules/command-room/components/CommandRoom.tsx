@@ -154,6 +154,7 @@ const RIGHT_PANEL_TABS = [
   { id: 'automation', label: 'Automations' },
   { id: 'identity', label: 'Identity' },
 ] as const
+const SUMI_BUTTON_RADIUS = '2px 12px 2px 12px'
 const WORKSPACE_OPEN_STORAGE_KEY = 'hervald.command-room.workspace-open'
 type WorkspacePanelDefault = 'open' | 'closed' | 'last-used'
 type SessionGroup = 'workers' | 'automation'
@@ -174,20 +175,56 @@ function resolvePanelTab(panel: string | null): string {
   return panel && COMMAND_ROOM_TABS.has(panel) ? panel : 'chat'
 }
 
-function rightPanelButtonStyle(active: boolean): CSSProperties {
+function rightPanelActionsStyle(expanded: boolean): CSSProperties {
   return {
-    flex: '0 0 auto',
-    border: '1px solid var(--hv-border-firm)',
-    borderRadius: '2px 12px 2px 12px',
-    background: active ? 'var(--hv-fg)' : 'var(--hv-surface-card)',
-    color: active ? 'var(--hv-fg-inverse)' : 'var(--hv-fg-muted)',
-    boxShadow: 'var(--hv-shadow-block)',
-    padding: '9px 12px',
-    fontSize: 11,
-    letterSpacing: '0.08em',
-    lineHeight: 1,
+    display: expanded ? 'flex' : 'grid',
+    gridTemplateColumns: expanded ? undefined : 'repeat(2, minmax(0, 1fr))',
+    gap: expanded ? 10 : '10px 8px',
+    padding: expanded ? '16px 18px 14px' : '14px 14px 12px',
+    borderBottom: '1px solid var(--hv-border-hair)',
+    overflowX: expanded ? 'auto' : 'visible',
+    alignItems: 'stretch',
+  }
+}
+
+function rightPanelButtonStyle(active: boolean, compact: boolean): CSSProperties {
+  return {
+    flex: compact ? '1 1 auto' : '0 0 auto',
+    minWidth: 0,
+    width: compact ? '100%' : undefined,
+    minHeight: compact ? 38 : 42,
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderStyle: 'solid',
+    borderColor: active ? 'var(--hv-fg)' : 'var(--hv-border-firm)',
+    borderRadius: SUMI_BUTTON_RADIUS,
+    background: active ? 'var(--hv-fg)' : 'var(--hv-bg)',
+    color: active ? 'var(--hv-fg-inverse)' : 'var(--hv-fg)',
+    boxShadow: active ? 'var(--hv-shadow-block)' : '2px 2px 0 var(--hv-ink-wash-03)',
+    padding: compact ? '9px 4px' : '10px 14px',
+    fontSize: compact ? 10 : 11,
+    letterSpacing: compact ? '0.06em' : '0.1em',
+    lineHeight: 1.1,
     textTransform: 'uppercase',
     whiteSpace: 'nowrap',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    transition: 'background 160ms var(--hv-ease-gentle), color 160ms var(--hv-ease-gentle), box-shadow 160ms var(--hv-ease-gentle)',
+  }
+}
+
+function workspaceHiddenOpenButtonStyle(): CSSProperties {
+  return {
+    marginTop: 12,
+    borderWidth: 1,
+    borderStyle: 'solid',
+    borderColor: 'var(--hv-border-firm)',
+    borderRadius: SUMI_BUTTON_RADIUS,
+    background: 'var(--hv-bg)',
+    color: 'var(--hv-fg)',
+    boxShadow: '2px 2px 0 var(--hv-ink-wash-03)',
   }
 }
 
@@ -1930,7 +1967,7 @@ export function CommandRoom() {
             data-testid="workspace-hidden-open-button"
             data-test-id="workspace-hidden-open-button"
             className="btn-ghost"
-            style={{ marginTop: 12 }}
+            style={workspaceHiddenOpenButtonStyle()}
             onClick={() => setWorkspaceOpenPreference(true)}
           >
             Open workspace
@@ -2152,13 +2189,7 @@ export function CommandRoom() {
             <div
               data-testid="right-panel-actions"
               data-test-id="right-panel-actions"
-              style={{
-                display: 'flex',
-                gap: 10,
-                padding: '16px 18px 14px',
-                borderBottom: '1px solid var(--hv-border-hair)',
-                overflowX: 'auto',
-              }}
+              style={rightPanelActionsStyle(workspaceOpen)}
             >
               {RIGHT_PANEL_TABS.map((tab) => (
                 <button
@@ -2168,7 +2199,7 @@ export function CommandRoom() {
                   data-test-id={`right-panel-tab-${tab.id}`}
                   aria-pressed={activeTab === tab.id}
                   className="font-mono"
-                  style={rightPanelButtonStyle(activeTab === tab.id)}
+                  style={rightPanelButtonStyle(activeTab === tab.id, !workspaceOpen)}
                   onClick={() => {
                     handleActiveTabChange(tab.id)
                     if (tab.id === 'chat') {

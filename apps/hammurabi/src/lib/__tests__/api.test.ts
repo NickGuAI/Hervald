@@ -2,10 +2,12 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  AuthRecoveryRequiredError,
   buildRequestHeaders,
   fetchJson,
   fetchVoid,
   getAccessToken,
+  setAuthMode,
   setAccessTokenResolver,
   setUnauthorizedHandler,
 } from '../api'
@@ -16,6 +18,7 @@ describe('api auth helpers', () => {
   afterEach(() => {
     localStorage.removeItem(API_KEY_STORAGE)
     setAccessTokenResolver(null)
+    setAuthMode('anonymous')
     setUnauthorizedHandler(null)
     vi.unstubAllGlobals()
   })
@@ -42,6 +45,7 @@ describe('api auth helpers', () => {
 
   it('invokes the unauthorized handler on 401 from fetchJson', async () => {
     const handler = vi.fn()
+    setAuthMode('api-key')
     setUnauthorizedHandler(handler)
     vi.stubGlobal(
       'fetch',
@@ -51,7 +55,12 @@ describe('api auth helpers', () => {
     )
 
     await expect(fetchJson('/api/agents/directories')).rejects.toThrow(/401/)
-    expect(handler).toHaveBeenCalledTimes(1)
+    expect(handler).toHaveBeenCalledWith(expect.objectContaining({
+      authMode: 'api-key',
+      path: '/api/agents/directories',
+      phase: 'response',
+      status: 401,
+    }))
   })
 
   it('invokes the unauthorized handler on 401 from fetchVoid', async () => {
@@ -64,6 +73,28 @@ describe('api auth helpers', () => {
 
     await expect(fetchVoid('/api/foo', { method: 'DELETE' })).rejects.toThrow(/401/)
     expect(handler).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not send an unauthenticated request when Auth0 token recovery is required', async () => {
+    const handler = vi.fn()
+    const fetchMock = vi.fn()
+    setAuthMode('auth0')
+    setUnauthorizedHandler(handler)
+    setAccessTokenResolver(async () => {
+      throw new AuthRecoveryRequiredError('Auth0 session expired; sign in again.', {
+        authMode: 'auth0',
+      })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(fetchJson('/api/modules')).rejects.toThrow(AuthRecoveryRequiredError)
+
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(handler).toHaveBeenCalledWith(expect.objectContaining({
+      authMode: 'auth0',
+      path: '/api/modules',
+      phase: 'token',
+    }))
   })
 
   it('does not invoke the unauthorized handler on 200', async () => {

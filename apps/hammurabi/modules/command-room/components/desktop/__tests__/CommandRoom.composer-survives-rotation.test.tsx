@@ -528,8 +528,9 @@ describe('CommandRoom composer draft survives surface flips', () => {
     await settle()
     await settle()
 
-    const desktopComposer = expectComposer('desktop-composer')
-    expect(desktopComposer.value).toBe('draft survives rotation')
+    await vi.waitFor(() => {
+      expect(expectComposer('desktop-composer').value).toBe('draft survives rotation')
+    })
     expect(window.localStorage.getItem('hammurabi:draft:commander-cmd-1-conv-1-claude-stream')).toBeNull()
   })
 

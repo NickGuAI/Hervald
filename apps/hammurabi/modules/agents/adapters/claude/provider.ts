@@ -205,6 +205,11 @@ export const claudeProvider: ProviderAdapter = registerProvider({
     supportsMessageImages: true,
   },
   availableModels,
+  defaults: {
+    effort: DEFAULT_CLAUDE_EFFORT_LEVEL,
+    adaptiveThinking: DEFAULT_CLAUDE_ADAPTIVE_THINKING_MODE,
+    maxThinkingTokens: DEFAULT_CLAUDE_MAX_THINKING_TOKENS,
+  },
   machineAuth: claudeMachineProvider,
   uiCapabilities: {
     supportsEffort: true,

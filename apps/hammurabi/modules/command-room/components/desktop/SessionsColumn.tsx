@@ -109,6 +109,8 @@ const modalInputStyle: React.CSSProperties = {
   background: 'var(--hv-bg-raised)',
 }
 
+const SUMI_BUTTON_RADIUS = '2px 12px 2px 12px'
+
 const modalActionsStyle: React.CSSProperties = {
   display: 'flex',
   justifyContent: 'flex-end',
@@ -160,17 +162,21 @@ const chatSettingsSelectStyle: React.CSSProperties = {
 
 const chatLifecycleButtonStyle: React.CSSProperties = {
   background: 'var(--hv-bg)',
-  border: '1px solid var(--hv-border-firm)',
-  borderRadius: 999,
+  borderWidth: 1,
+  borderStyle: 'solid',
+  borderColor: 'var(--hv-border-firm)',
+  borderRadius: SUMI_BUTTON_RADIUS,
+  boxShadow: '2px 2px 0 var(--hv-ink-wash-03)',
   color: 'var(--hv-fg)',
   cursor: 'pointer',
-  padding: '3px 8px',
+  padding: '4px 9px',
   fontSize: 'calc(10.5px * var(--hv-font-scale, 1))',
   letterSpacing: '0.04em',
   flexShrink: 0,
   display: 'inline-flex',
   alignItems: 'center',
   justifyContent: 'center',
+  transition: 'background 160ms var(--hv-ease-gentle), box-shadow 160ms var(--hv-ease-gentle)',
 }
 const COLLAPSE_STORAGE_KEY = 'hervald-sessions-collapsed'
 const SHOW_EXITED_STORAGE_KEY = 'hervald-sessions-show-exited'
@@ -496,6 +502,7 @@ function CommanderNewChatRow({
           borderColor: 'var(--hv-fg)',
           borderRadius: 'var(--hv-radius-sharp)',
           color: 'var(--hv-fg)',
+          boxShadow: '2px 2px 0 var(--hv-ink-wash-03)',
           cursor: 'pointer',
           padding: '8px 10px',
           fontSize: 'calc(12px * var(--hv-font-scale, 1))',
@@ -873,11 +880,15 @@ function ConversationChatRow({
                 justifyContent: 'center',
                 width: 28,
                 height: 28,
-                borderRadius: 999,
-                border: '1px solid var(--hv-border-hair)',
-                background: 'transparent',
-                color: 'var(--hv-fg-subtle)',
+                borderRadius: SUMI_BUTTON_RADIUS,
+                borderWidth: 1,
+                borderStyle: 'solid',
+                borderColor: 'var(--hv-border-firm)',
+                background: 'var(--hv-bg)',
+                color: 'var(--hv-fg)',
+                boxShadow: '2px 2px 0 var(--hv-ink-wash-03)',
                 cursor: 'pointer',
+                transition: 'background 160ms var(--hv-ease-gentle), box-shadow 160ms var(--hv-ease-gentle)',
               }}
             >
               <Icon name="more" size={12} />

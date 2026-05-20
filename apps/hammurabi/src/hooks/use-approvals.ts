@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { fetchJson, getAccessToken } from '@/lib/api'
+import { fetchJson, getAccessToken, isAuthRecoveryRequiredError } from '@/lib/api'
 import { getWsBase } from '@/lib/api-base'
 import { createReconnectBackoff, shouldReconnectWebSocketClose } from '../../modules/agents/ws-reconnect'
 
@@ -574,7 +574,18 @@ export function useApprovalStream(options?: {
 
     async function connect(): Promise<void> {
       setStatus('connecting')
-      const token = await getAccessToken()
+      let token: string | null
+      try {
+        token = await getAccessToken()
+      } catch (error) {
+        if (isAuthRecoveryRequiredError(error)) {
+          if (!cancelled) {
+            setStatus('disconnected')
+          }
+          return
+        }
+        throw error
+      }
       if (cancelled) {
         return
       }

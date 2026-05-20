@@ -11,6 +11,7 @@ import type {
 
 const SEEDED_PROVIDERS: readonly SeededChannelProvider[] = [
   'whatsapp',
+  'googlechat',
   'slack',
   'discord',
   'email',

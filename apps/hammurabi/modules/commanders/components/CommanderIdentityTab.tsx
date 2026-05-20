@@ -414,7 +414,7 @@ export function CommanderIdentityTab({
               </select>
             </label>
             <p className={NOTE_CLASS}>
-              Used whenever this commander launches a Claude session. Default is `max`.
+              Used whenever this commander launches a Claude session. Default is `{DEFAULT_CLAUDE_EFFORT_LEVEL}`.
             </p>
             {commander.agentType !== 'claude' && (
               <p className={SUBTLE_NOTE_CLASS}>

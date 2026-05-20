@@ -367,14 +367,21 @@ describe('CommandRoom context file wiring', () => {
     expect(rightColumn?.style.display).toBe('flex')
     expect(rightColumn?.style.width).toBe('232px')
 
-    const actions = document.body.querySelector('[data-testid="right-panel-actions"]')
+    const actions = document.body.querySelector<HTMLElement>('[data-testid="right-panel-actions"]')
     expect(actions?.textContent).toContain('Workspace')
     expect(actions?.textContent).toContain('Quests')
     expect(actions?.textContent).toContain('Automations')
     expect(actions?.textContent).toContain('Identity')
+    expect(actions?.style.display).toBe('grid')
+    expect(actions?.style.gridTemplateColumns).toBe('repeat(2, minmax(0, 1fr))')
+    expect(actions?.style.overflowX).toBe('visible')
 
     const workspaceButton = document.body.querySelector<HTMLButtonElement>('[data-testid="right-panel-tab-chat"]')
     expect(workspaceButton?.getAttribute('data-test-id')).toBe('right-panel-tab-chat')
+    expect(workspaceButton?.style.borderStyle).toBe('solid')
+    expect(workspaceButton?.style.borderWidth).toBe('1px')
+    expect(workspaceButton?.style.borderRadius).toBe('2px 12px 2px 12px')
+    expect(workspaceButton?.style.width).toBe('100%')
 
     const identityButton = document.body.querySelector<HTMLButtonElement>('[data-testid="right-panel-tab-identity"]')
     expect(identityButton?.style.boxShadow).toBe('var(--hv-shadow-block)')
@@ -389,6 +396,15 @@ describe('CommandRoom context file wiring', () => {
 
     await vi.waitFor(() => {
       expect(document.body.querySelector<HTMLElement>('[data-testid="workspace-right-column"]')?.style.width).toBe('520px')
+    })
+
+    await vi.waitFor(() => {
+      expect(actions?.style.display).toBe('flex')
+      expect(actions?.style.overflowX).toBe('auto')
+    })
+
+    await vi.waitFor(() => {
+      expect(workspaceButton?.getAttribute('aria-pressed')).toBe('true')
     })
 
     await vi.waitFor(() => {

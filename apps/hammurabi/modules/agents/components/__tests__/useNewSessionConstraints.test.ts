@@ -60,7 +60,7 @@ describe('useNewSessionConstraints helpers', () => {
     expect(getForcedTransportType(providers, 'gemini', 'pty')).toBe('stream')
     expect(getForcedTransportType(providers, 'claude', 'pty')).toBeNull()
 
-    expect(getNormalizedEffort(providers, 'gemini', 'high')).toBe('max')
+    expect(getNormalizedEffort(providers, 'gemini', 'medium')).toBe('high')
     expect(getNormalizedEffort(providers, 'claude', 'high')).toBeNull()
 
     expect(getNormalizedAdaptiveThinking(providers, 'codex', 'enabled')).toBe('disabled')

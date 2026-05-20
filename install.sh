@@ -975,6 +975,7 @@ print_install_receipt() {
     print_receipt_line "Bootstrap API key" "not found; inspect $INSTALL_LOG_FILE"
   fi
   print_receipt_line "CLI" "$SHIM_PATH"
+  print_receipt_line "Doctor" "hammurabi doctor"
   print_receipt_line "App directory" "$APP_DIR"
   print_receipt_line "Data directory" "$DATA_DIR"
   print_receipt_line "Autostart" "$INSTALL_AUTOSTART_STATUS"
@@ -1055,11 +1056,13 @@ if [[ "$(uname -s)" == "Darwin" && "${HAMMURABI_INSTALL_AUTOSTART:-1}" != "0" ]]
   printf "  3. Hervald now auto-starts at login via launchd.\n"
   printf "     Reload after config changes with:\n"
   printf "       ${CYAN}launchctl kickstart -k gui/%s/io.gehirn.hervald${NC}\n" "$(id -u)"
-  printf "  4. Optional: run ${CYAN}hammurabi onboard${NC} to seed CLI integrations.\n"
+  printf "  4. Run ${CYAN}hammurabi doctor${NC} after provider authentication.\n"
+  printf "  5. Optional: run ${CYAN}hammurabi onboard${NC} to seed CLI integrations.\n"
 else
   printf "  1. Sign in with the bootstrap key shown above.\n"
   printf "  2. Create a permanent API key in Settings, then rotate or revoke the bootstrap key.\n"
   printf "  3. The server is already running in the background.\n"
   printf "     Restart later with ${CYAN}hammurabi up${NC} (or ${CYAN}hammurabi up --dev${NC} for hot reload).\n"
-  printf "  4. Optional: run ${CYAN}hammurabi onboard${NC} to seed CLI integrations.\n"
+  printf "  4. Run ${CYAN}hammurabi doctor${NC} after provider authentication.\n"
+  printf "  5. Optional: run ${CYAN}hammurabi onboard${NC} to seed CLI integrations.\n"
 fi

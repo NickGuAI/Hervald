@@ -113,13 +113,14 @@ import {
   parseWsKeepAliveIntervalMs,
   parseCodexTurnWatchdogTimeoutMs,
 } from './session/input.js'
+import {
+  resolveProviderDefaults,
+  type ProviderAdapterDeps,
+  type ProviderCreateOptions,
+} from './providers/provider-adapter.js'
 import type {
   PlanApprovalDecision,
 } from '../../src/types/hammurabi-events.js'
-import type {
-  ProviderAdapterDeps,
-  ProviderCreateOptions,
-} from './providers/provider-adapter.js'
 import {
   getProvider,
   listProviders,
@@ -2167,6 +2168,7 @@ export function createAgentsRouter(options: AgentsRouterOptions = {}): AgentsRou
       res.status(400).json({ error: `Unknown provider: ${agentType}` })
       return
     }
+    const providerDefaults = resolveProviderDefaults(provider)
     const effectiveModel = resumeSource?.source.model ?? model ?? null
     const modelValidation = validateModelForAgentType(agentType, effectiveModel)
     if (!modelValidation.ok) {
@@ -2174,12 +2176,18 @@ export function createAgentsRouter(options: AgentsRouterOptions = {}): AgentsRou
       return
     }
     const effort = provider.uiCapabilities.supportsEffort
-      ? (resumeSource?.source.effort ?? parsedEffort ?? DEFAULT_CLAUDE_EFFORT_LEVEL)
+      ? (
+        resumeSource?.source.effort
+        ?? parsedEffort
+        ?? providerDefaults.effort
+        ?? DEFAULT_CLAUDE_EFFORT_LEVEL
+      )
       : undefined
     const adaptiveThinking = provider.uiCapabilities.supportsAdaptiveThinking
       ? (
         resumeSource?.source.adaptiveThinking
         ?? parsedAdaptiveThinking
+        ?? providerDefaults.adaptiveThinking
         ?? DEFAULT_CLAUDE_ADAPTIVE_THINKING_MODE
       )
       : undefined
@@ -2187,6 +2195,7 @@ export function createAgentsRouter(options: AgentsRouterOptions = {}): AgentsRou
       ? (
         resumeSource?.source.maxThinkingTokens
         ?? parsedMaxThinkingTokens
+        ?? providerDefaults.maxThinkingTokens
         ?? DEFAULT_CLAUDE_MAX_THINKING_TOKENS
       )
       : undefined
@@ -2292,7 +2301,7 @@ export function createAgentsRouter(options: AgentsRouterOptions = {}): AgentsRou
 
     // PTY session (default)
     try {
-      const claudeEffort = effort ?? DEFAULT_CLAUDE_EFFORT_LEVEL
+      const claudeEffort = effort ?? providerDefaults.effort ?? DEFAULT_CLAUDE_EFFORT_LEVEL
       const ptySpawner = daemonMachine ? null : await getSpawner()
       const localSpawnCwd = process.env.HOME || '/tmp'
       const preparedLaunch = prepareMachineLaunchEnvironment(machine, process.env)
@@ -2594,6 +2603,7 @@ export function createAgentsRouter(options: AgentsRouterOptions = {}): AgentsRou
         body: { error: `Provider ${agentType} cannot dispatch worker sessions` },
       }
     }
+    const providerDefaults = resolveProviderDefaults(provider)
     const modelValidation = validateModelForAgentType(agentType, model ?? null)
     if (!modelValidation.ok) {
       return {
@@ -2602,13 +2612,25 @@ export function createAgentsRouter(options: AgentsRouterOptions = {}): AgentsRou
       }
     }
     const effort = provider.uiCapabilities.supportsEffort
-      ? (parsedEffort ?? DEFAULT_CLAUDE_EFFORT_LEVEL)
+      ? (
+        parsedEffort
+        ?? providerDefaults.effort
+        ?? DEFAULT_CLAUDE_EFFORT_LEVEL
+      )
       : undefined
     const adaptiveThinking = provider.uiCapabilities.supportsAdaptiveThinking
-      ? (parsedAdaptiveThinking ?? DEFAULT_CLAUDE_ADAPTIVE_THINKING_MODE)
+      ? (
+        parsedAdaptiveThinking
+        ?? providerDefaults.adaptiveThinking
+        ?? DEFAULT_CLAUDE_ADAPTIVE_THINKING_MODE
+      )
       : undefined
     const maxThinkingTokens = provider.uiCapabilities.supportsMaxThinkingTokens
-      ? (parsedMaxThinkingTokens ?? DEFAULT_CLAUDE_MAX_THINKING_TOKENS)
+      ? (
+        parsedMaxThinkingTokens
+        ?? providerDefaults.maxThinkingTokens
+        ?? DEFAULT_CLAUDE_MAX_THINKING_TOKENS
+      )
       : undefined
 
     const requestedHost = parseOptionalHost(body.host)

@@ -17,6 +17,7 @@ import {
 } from '../modules/commanders/runtime.js'
 import { createConversationRuntime } from '../modules/conversation/runtime.js'
 import { createModuleGraphRuntime } from '../modules/module-graph/runtime.js'
+import { createOnboardingRuntime } from '../modules/onboarding/runtime.js'
 import { createOperatorsRuntime } from '../modules/operators/runtime.js'
 import { createOrgRuntime } from '../modules/org/runtime.js'
 import {
@@ -57,6 +58,7 @@ const RUNTIME_SETUP_FACTORIES: readonly ModuleRuntimeFactory[] = [
   createChannelsRuntime,
   createConversationRuntime,
   createOrgRuntime,
+  createOnboardingRuntime,
   createSettingsRuntime,
   createAutomationsRuntime,
   createRealtimeRuntime,
@@ -77,6 +79,7 @@ const RUNTIME_MOUNT_ORDER = [
   'conversation',
   'operators',
   'org',
+  'onboarding',
   'settings',
   'automations',
   'telemetry',

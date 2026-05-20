@@ -4,7 +4,12 @@ import {
   useApprovalDecision,
   usePendingApprovals,
 } from '@/hooks/use-approvals'
-import { fetchJson, fetchVoid, getAccessToken } from '../../../src/lib/api'
+import {
+  fetchJson,
+  fetchVoid,
+  getAccessToken,
+  isAuthRecoveryRequiredError,
+} from '../../../src/lib/api'
 import { getWsBase } from '../../../src/lib/api-base'
 import Transcript from '../../agents/components/Transcript'
 import type { MsgItem } from '../../agents/messages/model'
@@ -96,10 +101,11 @@ function parseIncomingLines(data: unknown): WizardLine[] {
   }
 
   if (typeof parsed === 'string') {
+    const rawText = parsed
     try {
-      parsed = JSON.parse(parsed) as unknown
+      parsed = JSON.parse(rawText) as unknown
     } catch {
-      return splitLines(parsed).map((text) => ({ id: 0, role: 'system', text }))
+      return splitLines(rawText).map((text) => ({ id: 0, role: 'system', text }))
     }
   }
 
@@ -347,7 +353,18 @@ export function WizardChatPanel({
     const connect = async () => {
       clearReconnectTimer()
       setConnectionStatus('connecting')
-      const token = await getAccessToken()
+      let token: string | null
+      try {
+        token = await getAccessToken()
+      } catch (error) {
+        if (isAuthRecoveryRequiredError(error)) {
+          if (!disposed) {
+            setConnectionStatus('disconnected')
+          }
+          return
+        }
+        throw error
+      }
       if (disposed) {
         return
       }

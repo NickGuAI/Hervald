@@ -2,7 +2,7 @@ import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } fro
 import { useQuery } from '@tanstack/react-query'
 import { ChevronRight, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { fetchJson, getAccessToken } from '@/lib/api'
+import { fetchJson, getAccessToken, isAuthRecoveryRequiredError } from '@/lib/api'
 import { getWsBase } from '@/lib/api-base'
 import { useIsMobile } from '@/hooks/use-is-mobile'
 import { postInputViaHttpFallback } from '@/hooks/use-agent-session-stream'
@@ -310,7 +310,18 @@ export function MobileSessionView({
       clearReconnectTimer()
       setWsStatus('connecting')
 
-      const token = await getAccessToken()
+      let token: string | null
+      try {
+        token = await getAccessToken()
+      } catch (error) {
+        if (isAuthRecoveryRequiredError(error)) {
+          if (!disposed) {
+            setWsStatus('disconnected')
+          }
+          return
+        }
+        throw error
+      }
       if (disposed) {
         return
       }

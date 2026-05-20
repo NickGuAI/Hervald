@@ -11,6 +11,7 @@ import { runSessionCli } from './session.js'
 import { runConversationsCli } from './conversations.js'
 import { listWorkerDispatchProviderIds, loadProviderRegistry } from './providers.js'
 import { runDaemonCli } from './daemon.js'
+import { runDoctorCli } from './doctor.js'
 import {
   buildCommanderSessionName,
   isOwnedByCommander,
@@ -84,6 +85,7 @@ async function readErrorDetail(response: Response): Promise<string | null> {
 function printRootUsage(stdout: Writable): void {
   stdout.write('Usage:\n')
   stdout.write('  hammurabi onboard\n')
+  stdout.write('  hammurabi doctor\n')
   stdout.write('  hammurabi machine <command>\n')
   stdout.write('  hammurabi quests <command>\n')
   stdout.write('  hammurabi workers <command>\n')
@@ -99,6 +101,7 @@ function printRootUsage(stdout: Writable): void {
   stdout.write('  hammurabi session <command>\n')
   stdout.write('  hammurabi sessions <command>\n')
   stdout.write('  hammurabi up [--dev] [--port <port>]\n')
+  stdout.write('  hammurabi run [--dev] [--port <port>]\n')
 }
 
 function printCommandersUsage(stdout: Writable): void {
@@ -289,6 +292,9 @@ export async function runCli(args: readonly string[]): Promise<number> {
   if (!command || command === 'onboard') {
     return runOnboardCli(command ? args : [])
   }
+  if (command === 'doctor') {
+    return runDoctorCli(args.slice(1))
+  }
   if (command === 'machine') {
     return runMachinesCli(args.slice(1))
   }
@@ -319,7 +325,7 @@ export async function runCli(args: readonly string[]): Promise<number> {
   if (command === 'session' || command === 'sessions') {
     return runSessionCli(args.slice(1))
   }
-  if (command === 'up') {
+  if (command === 'up' || command === 'run') {
     return runUpCli(args.slice(1))
   }
 

@@ -2,6 +2,7 @@ import { ArrowLeft, MessageSquare, Pencil, Square, Triangle, Zap } from 'lucide-
 import type { AgentType } from '@/types'
 import { cn } from '@/lib/utils'
 import { fetchVoid } from '@/lib/api'
+import { DEFAULT_CLAUDE_EFFORT_LEVEL } from '../../claude-effort.js'
 import type {
   CommanderCronCreateInput,
   CommanderSession,
@@ -172,7 +173,7 @@ export function CommanderDetailPanel({
             <p className="text-whisper text-sumi-diluted mt-1 pl-4">
               agent: {commander.agentType ?? 'claude'}
               {commander.model ? ` · model: ${commander.model}` : ''}
-              · effort: {commander.effort ?? 'max'}
+              · effort: {commander.effort ?? DEFAULT_CLAUDE_EFFORT_LEVEL}
             </p>
           </div>
 

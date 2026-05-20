@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { ExternalLink, FileCode2, FileImage, FileWarning, Loader2, Pencil, Save, Trash2 } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { getAccessToken } from '@/lib/api'
+import { getAccessToken, isAuthRecoveryRequiredError } from '@/lib/api'
 import { cn } from '@/lib/utils'
 import type {
   WorkspaceFilePreview as WorkspaceFilePreviewData,
@@ -96,8 +96,12 @@ export function WorkspaceFilePreview({
           token,
         ))
       })
-      .catch(() => {
+      .catch((error) => {
         if (cancelled) {
+          return
+        }
+        if (isAuthRecoveryRequiredError(error)) {
+          setRawFileUrl(null)
           return
         }
         setRawFileUrl(buildWorkspaceRawUrl(

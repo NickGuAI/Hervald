@@ -2,7 +2,7 @@ export const CLAUDE_EFFORT_LEVELS = ['low', 'medium', 'high', 'max'] as const
 
 export type ClaudeEffortLevel = (typeof CLAUDE_EFFORT_LEVELS)[number]
 
-export const DEFAULT_CLAUDE_EFFORT_LEVEL: ClaudeEffortLevel = 'max'
+export const DEFAULT_CLAUDE_EFFORT_LEVEL: ClaudeEffortLevel = 'high'
 
 export function isClaudeEffortLevel(value: unknown): value is ClaudeEffortLevel {
   return CLAUDE_EFFORT_LEVELS.includes(value as ClaudeEffortLevel)

@@ -55,7 +55,14 @@ describe('provider registry router', () => {
         id: string
         capabilities?: { supportsMessageImages?: boolean }
         supportedTransports?: string[]
-        defaults?: { transportType?: string; permissionMode?: string; model?: string | null }
+        defaults?: {
+          transportType?: string
+          permissionMode?: string
+          model?: string | null
+          effort?: string
+          adaptiveThinking?: string
+          maxThinkingTokens?: number
+        }
         disabledReason?: string | null
       }>
     }
@@ -70,6 +77,9 @@ describe('provider registry router', () => {
         transportType: 'stream',
         permissionMode: 'default',
         model: 'claude-sonnet-4-6',
+        effort: 'high',
+        adaptiveThinking: 'disabled',
+        maxThinkingTokens: 128000,
       }),
       disabledReason: null,
     }))
@@ -78,6 +88,10 @@ describe('provider registry router', () => {
       supportedTransports: ['stream', 'pty'],
       defaults: expect.objectContaining({ model: 'gpt-5.5' }),
       disabledReason: null,
+    }))
+    expect(byId.get('codex')?.defaults).not.toEqual(expect.objectContaining({
+      effort: expect.any(String),
+      adaptiveThinking: expect.any(String),
     }))
     expect(byId.get('gemini')).toEqual(expect.objectContaining({
       capabilities: expect.objectContaining({ supportsMessageImages: false }),

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { getAccessToken } from '@/lib/api'
+import { getAccessToken, isAuthRecoveryRequiredError } from '@/lib/api'
 import { getWsBase } from '@/lib/api-base'
 import type { SessionQueueSnapshot, StreamEvent } from '@/types'
 import {
@@ -169,7 +169,18 @@ export function useAgentSessionStream(sessionName?: string, options: AgentSessio
       clearReconnectTimer()
       setStatus('connecting')
 
-      const token = await getAccessToken()
+      let token: string | null
+      try {
+        token = await getAccessToken()
+      } catch (error) {
+        if (isAuthRecoveryRequiredError(error)) {
+          if (!disposed) {
+            setStatus('disconnected')
+          }
+          return
+        }
+        throw error
+      }
       if (disposed) {
         return
       }

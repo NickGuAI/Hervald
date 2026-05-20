@@ -857,7 +857,100 @@ describe("stream sessions", () => {
           input: [{ type: 'image', url: `data:image/png;base64,${image.data}` }],
         })
 
+        const session = server.agents.sessionsInterface.getSession('codex-image-send')
+        const storedImageUserEvents = (session?.events ?? []).filter((event) => {
+          if (event.type !== 'user') {
+            return false
+          }
+          const content = (event as { message?: { content?: unknown } }).message?.content
+          return Array.isArray(content)
+            && content.some((item) => (
+              typeof item === 'object'
+              && item !== null
+              && (item as { source?: { data?: unknown } }).source?.data === image.data
+            ))
+        })
+        expect(storedImageUserEvents).toHaveLength(1)
+
         ws.close()
+      } finally {
+        await sidecar.closeServer()
+        await server.close()
+      }
+    })
+
+  it('routes Codex image follow-ups through the app-server turn steer input', async () => {
+      const sidecar = installMockCodexSidecar()
+      const server = await startServer()
+
+      try {
+        const createResponse = await fetch(`${server.baseUrl}/api/agents/sessions`, {
+          method: 'POST',
+          headers: {
+            ...AUTH_HEADERS,
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify({
+            name: 'codex-image-steer',
+            mode: 'default',
+            transportType: 'stream',
+            agentType: 'codex',
+          }),
+        })
+        expect(createResponse.status).toBe(201)
+
+        const initialResponse = await fetch(`${server.baseUrl}/api/agents/sessions/codex-image-steer/message`, {
+          method: 'POST',
+          headers: {
+            ...AUTH_HEADERS,
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify({ text: 'initial turn' }),
+        })
+        expect(initialResponse.status).toBe(200)
+
+        await vi.waitFor(() => {
+          const turnRequests = sidecar.getRequests('turn/start')
+          expect(turnRequests).toHaveLength(1)
+          expect(turnRequests[0].params).toEqual({
+            threadId: 'thread-1',
+            effort: 'xhigh',
+            input: [{ type: 'text', text: 'initial turn' }],
+          })
+        })
+
+        sidecar.emitNotification('turn/started', {
+          threadId: 'thread-1',
+          turn: { id: 'turn-image-steer', status: 'inProgress' },
+        })
+
+        const image = {
+          mediaType: 'image/webp',
+          data: 'c3RlZXItaW1hZ2U=',
+        }
+        const steerResponse = await fetch(`${server.baseUrl}/api/agents/sessions/codex-image-steer/message`, {
+          method: 'POST',
+          headers: {
+            ...AUTH_HEADERS,
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify({ text: 'inspect follow-up', images: [image] }),
+        })
+        expect(steerResponse.status).toBe(200)
+        expect(await steerResponse.json()).toMatchObject({ sent: true, queued: false })
+
+        await vi.waitFor(() => {
+          const steerRequests = sidecar.getRequests('turn/steer')
+          expect(steerRequests).toHaveLength(1)
+          expect(steerRequests[0].params).toEqual({
+            threadId: 'thread-1',
+            expectedTurnId: 'turn-image-steer',
+            input: [
+              { type: 'text', text: 'inspect follow-up' },
+              { type: 'image', url: `data:image/webp;base64,${image.data}` },
+            ],
+          })
+        })
       } finally {
         await sidecar.closeServer()
         await server.close()

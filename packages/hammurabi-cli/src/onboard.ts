@@ -471,6 +471,13 @@ function printProviderRuntimeInstructions(providers: readonly ProviderRegistryEn
   process.stdout.write('- Detailed auth recipes live in the Hervald provider docs.\n')
 }
 
+function printOnboardHeader(): void {
+  process.stdout.write('╔════════════════════════════════════════════════════════════════════╗\n')
+  process.stdout.write('║ Hervald Onboarding                                                ║\n')
+  process.stdout.write('║ configure telemetry, local operator, providers, and machines      ║\n')
+  process.stdout.write('╚════════════════════════════════════════════════════════════════════╝\n\n')
+}
+
 export async function runCli(
   args: readonly string[],
   dependencies: OnboardCliDependencies = {},
@@ -482,6 +489,7 @@ export async function runCli(
       return 1
     }
 
+    printOnboardHeader()
     process.stdout.write('Hammurabi onboard\n')
     process.stdout.write('Configure agents to send telemetry to your Hammurabi instance.\n\n')
 
@@ -553,7 +561,10 @@ export async function runCli(
       process.stdout.write('- Provider registry unavailable right now. Open Hervald docs after the server is reachable for provider-specific auth steps.\n')
     }
     await runTailscaleSetup(dependencies)
-    process.stdout.write('\nOnboarding complete.\n')
+    process.stdout.write('\n╔════════════════════════════════════════════════════════════════════╗\n')
+    process.stdout.write('║ Onboarding complete                                               ║\n')
+    process.stdout.write('╚════════════════════════════════════════════════════════════════════╝\n')
+    process.stdout.write('Next: run `hammurabi doctor`, then open the browser onboarding guide.\n')
 
     return 0
   } finally {

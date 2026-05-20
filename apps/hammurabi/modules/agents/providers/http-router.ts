@@ -3,10 +3,10 @@ import { Router } from 'express'
 import type { ApiKeyStoreLike } from '../../../server/api-keys/store.js'
 import { combinedAuth } from '../../../server/middleware/combined-auth.js'
 import { listProviders } from './registry.js'
-import type {
-  ProviderAdapter,
-  ProviderDefaults,
-  ProviderRegistryEntry,
+import {
+  resolveProviderDefaults,
+  type ProviderAdapter,
+  type ProviderRegistryEntry,
 } from './provider-adapter.js'
 
 const DEFAULT_PROVIDER_ID = 'claude'
@@ -28,15 +28,6 @@ function providerSupportedTransports(
     : ['stream', 'pty']
 }
 
-function providerDefaults(provider: ProviderAdapter): ProviderDefaults {
-  const availableModels = Array.isArray(provider.availableModels) ? provider.availableModels : []
-  return {
-    transportType: 'stream',
-    permissionMode: 'default',
-    model: availableModels.find((model) => model.default)?.id ?? null,
-  }
-}
-
 function toRegistryEntry(provider: ProviderAdapter): ProviderRegistryEntry {
   const availableModels = Array.isArray(provider.availableModels) ? provider.availableModels : []
   return {
@@ -55,7 +46,7 @@ function toRegistryEntry(provider: ProviderAdapter): ProviderRegistryEntry {
     },
     availableModels: availableModels as ProviderRegistryEntry['availableModels'],
     supportedTransports: providerSupportedTransports(provider),
-    defaults: providerDefaults(provider),
+    defaults: resolveProviderDefaults(provider),
     disabledReason: null,
     ...(provider.machineAuth
       ? {

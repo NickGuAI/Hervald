@@ -232,6 +232,12 @@ describe('SessionsColumn conversations', () => {
     expect(stopButton?.querySelector('svg')).not.toBeNull()
     expect(startButtons[0]?.textContent).toBe('')
     expect(stopButton?.textContent).toBe('')
+    expect(startButtons[0]?.style.borderStyle).toBe('solid')
+    expect(startButtons[0]?.style.borderWidth).toBe('1px')
+    expect(startButtons[0]?.style.borderRadius).toBe('2px 12px 2px 12px')
+    expect(stopButton?.style.borderStyle).toBe('solid')
+    expect(stopButton?.style.borderWidth).toBe('1px')
+    expect(stopButton?.style.borderRadius).toBe('2px 12px 2px 12px')
 
     flushSync(() => {
       startButtons[0]?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
@@ -288,6 +294,9 @@ describe('SessionsColumn conversations', () => {
       '[data-testid="commander-chat-actions-button"]',
     )
     expect(actionsButton).toBeInstanceOf(HTMLButtonElement)
+    expect(actionsButton?.style.borderStyle).toBe('solid')
+    expect(actionsButton?.style.borderWidth).toBe('1px')
+    expect(actionsButton?.style.borderRadius).toBe('2px 12px 2px 12px')
 
     flushSync(() => {
       actionsButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))

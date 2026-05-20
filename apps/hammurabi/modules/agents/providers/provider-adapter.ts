@@ -80,6 +80,9 @@ export interface ProviderDefaults {
   transportType: Exclude<SessionTransportType, 'external'>
   permissionMode: ClaudePermissionMode
   model: string | null
+  effort?: ClaudeEffortLevel
+  adaptiveThinking?: ClaudeAdaptiveThinkingMode
+  maxThinkingTokens?: ClaudeMaxThinkingTokens
 }
 
 export interface ProviderRegistryEntry {
@@ -143,6 +146,7 @@ export interface ProviderAdapter {
   readonly capabilities: ProviderCapabilities
   readonly uiCapabilities: ProviderUiCapabilities
   readonly availableModels: readonly ProviderModelOption[]
+  readonly defaults?: Partial<ProviderDefaults>
   readonly machineAuth?: MachineProviderAdapter
   /** Provider-specific PTY env overrides. Route-managed env still wins. */
   preparePtyEnv?(args: {
@@ -176,4 +180,36 @@ export interface ProviderAdapter {
   transcriptId(session: StreamSession, event?: StreamJsonEvent): string | undefined
   teardown(session: StreamSession, reason: string): Promise<void> | void
   shutdownFleet?(sessions: Iterable<StreamSession>, reason?: string): Promise<void> | void
+}
+
+export function resolveProviderDefaults(provider: ProviderAdapter): ProviderDefaults {
+  const availableModels = Array.isArray(provider.availableModels) ? provider.availableModels : []
+  const configured = provider.defaults ?? {}
+  const hasConfiguredModel = Object.prototype.hasOwnProperty.call(configured, 'model')
+
+  const defaults: ProviderDefaults = {
+    transportType: configured.transportType ?? 'stream',
+    permissionMode: configured.permissionMode ?? 'default',
+    model: hasConfiguredModel
+      ? configured.model ?? null
+      : availableModels.find((model) => model.default)?.id ?? null,
+  }
+
+  if (provider.uiCapabilities.supportsEffort && configured.effort !== undefined) {
+    defaults.effort = configured.effort
+  }
+  if (
+    provider.uiCapabilities.supportsAdaptiveThinking
+    && configured.adaptiveThinking !== undefined
+  ) {
+    defaults.adaptiveThinking = configured.adaptiveThinking
+  }
+  if (
+    provider.uiCapabilities.supportsMaxThinkingTokens
+    && configured.maxThinkingTokens !== undefined
+  ) {
+    defaults.maxThinkingTokens = configured.maxThinkingTokens
+  }
+
+  return defaults
 }

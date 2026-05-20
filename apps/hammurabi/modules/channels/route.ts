@@ -13,6 +13,10 @@ import {
 import {
   prepareWhatsAppChannelConfigForStorage,
 } from './whatsapp/config.js'
+import {
+  prepareGoogleChatChannelConfigForStorage,
+} from './googlechat/config.js'
+import { isGoogleChatChannelAdapter } from './googlechat/adapter.js'
 import { getChannelAdapter } from './registry.js'
 import {
   CommanderChannelBindingConflictError,
@@ -66,6 +70,22 @@ export function createCommanderChannelsRouter(options: CommanderChannelsRouterOp
     clientId: options.auth0ClientId,
     verifyToken: options.verifyAuth0Token,
     internalToken: options.internalToken,
+  })
+
+  router.post('/channels/googlechat/events', async (req, res) => {
+    const adapter = getChannelAdapter('googlechat')
+    if (!isGoogleChatChannelAdapter(adapter)) {
+      res.status(503).json({ error: 'Google Chat channel adapter is not registered' })
+      return
+    }
+
+    const result = await adapter.handleInteractionEvent({
+      authorization: req.header('authorization') ?? undefined,
+      body: req.body,
+      accountId: parseId(req.query.accountId) ?? undefined,
+      commanderId: parseId(req.query.commanderId) ?? undefined,
+    })
+    res.status(result.status).json(result.body)
   })
 
   router.get('/channels/providers', requireReadAccess, async (_req, res) => {
@@ -435,6 +455,20 @@ async function prepareChannelConfigForStorage(input: {
         existingConfig: input.existingConfig,
         secretsStore: input.secretsStore,
         dataDir: input.dataDir,
+        deferCredentialWrite: input.deferCredentialWrite,
+      })
+      return {
+        config: prepared.config,
+        ...(prepared.commitCredential ? { commitCredential: prepared.commitCredential } : {}),
+      }
+    }
+    if (provider === 'googlechat') {
+      const prepared = await prepareGoogleChatChannelConfigForStorage({
+        commanderId: input.commanderId,
+        accountId,
+        incomingConfig: input.incomingConfig,
+        existingConfig: input.existingConfig,
+        secretsStore: input.secretsStore,
         deferCredentialWrite: input.deferCredentialWrite,
       })
       return {

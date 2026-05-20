@@ -2381,7 +2381,7 @@ describe('conversation routes', () => {
       expect(createResponse.status).toBe(201)
 
       const startResponse = await startConversation(server.baseUrl, CONVERSATION_A, {
-        agentType: 'claude',
+        agentType: 'codex',
       })
       expect(startResponse.status).toBe(200)
 

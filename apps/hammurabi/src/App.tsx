@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { BrowserRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Auth0Provider, useAuth0 } from '@auth0/auth0-react'
@@ -7,8 +7,14 @@ import { ApiKeyLandingPage } from '@/components/ApiKeyLandingPage'
 import { AuthProvider } from '@/contexts/AuthContext'
 import { AuthenticatedAppRouter } from '@/app/AuthenticatedAppRouter'
 import { moduleComponentBindings } from '@/module-registry'
-import { setAccessTokenResolver, setUnauthorizedHandler } from '@/lib/api'
+import {
+  AuthRecoveryRequiredError,
+  setAccessTokenResolver,
+  setAuthMode,
+  setUnauthorizedHandler,
+} from '@/lib/api'
 import { isCapacitorNative } from '@/lib/api-base'
+import { resolveAuthReturnTo } from '@/lib/auth-build-guard'
 import { ThemeProvider } from '@/lib/theme-context'
 import { useFontScale } from '@/hooks/use-font-scale'
 
@@ -63,25 +69,53 @@ function FontScaleRoot() {
 }
 
 function AuthTokenBridge() {
-  const { getAccessTokenSilently, isAuthenticated } = useAuth0()
+  const { getAccessTokenSilently, isAuthenticated, loginWithRedirect } = useAuth0()
+  const authRecoveryInFlightRef = useRef(false)
+
+  const recoverAuthSession = useCallback(() => {
+    if (!isAuthenticated || authRecoveryInFlightRef.current) {
+      return
+    }
+
+    authRecoveryInFlightRef.current = true
+    const returnTo = resolveAuthReturnTo()
+    void loginWithRedirect({ appState: { returnTo } })
+      .catch(() => {
+        authRecoveryInFlightRef.current = false
+      })
+  }, [isAuthenticated, loginWithRedirect])
 
   useEffect(() => {
-    setAccessTokenResolver(async () => {
-      if (!isAuthenticated) {
-        return null
-      }
+    if (!isAuthenticated) {
+      setAccessTokenResolver(null)
+      setUnauthorizedHandler(null)
+      setAuthMode('anonymous')
+      return
+    }
 
+    setAuthMode('auth0')
+    setAccessTokenResolver(async () => {
       try {
         return await getAccessTokenSilently()
-      } catch {
-        return null
+      } catch (error) {
+        throw new AuthRecoveryRequiredError('Auth0 session expired; sign in again.', {
+          authMode: 'auth0',
+          cause: error,
+        })
+      }
+    })
+    setUnauthorizedHandler((event) => {
+      if (event.authMode === 'auth0') {
+        recoverAuthSession()
       }
     })
 
     return () => {
       setAccessTokenResolver(null)
+      setUnauthorizedHandler(null)
+      setAuthMode('anonymous')
     }
-  }, [getAccessTokenSilently, isAuthenticated])
+  }, [getAccessTokenSilently, isAuthenticated, recoverAuthSession])
 
   return null
 }
@@ -121,6 +155,7 @@ export default function App() {
   const [apiKey, setApiKeyState] = useState<string | null>(() => {
     const storedKey = typeof localStorage !== 'undefined' ? localStorage.getItem(API_KEY_STORAGE) : null
     if (storedKey) {
+      setAuthMode('api-key')
       setAccessTokenResolver(() => Promise.resolve(storedKey))
     }
     return storedKey
@@ -130,6 +165,7 @@ export default function App() {
     const trimmed = key.trim()
     if (!trimmed) return
     localStorage.setItem(API_KEY_STORAGE, trimmed)
+    setAuthMode('api-key')
     setAccessTokenResolver(() => Promise.resolve(trimmed))
     if (typeof window !== 'undefined') {
       const { pathname } = window.location
@@ -144,22 +180,28 @@ export default function App() {
   const handleSignOut = useCallback(() => {
     localStorage.removeItem(API_KEY_STORAGE)
     setAccessTokenResolver(null)
+    setAuthMode('anonymous')
     setApiKeyState(null)
   }, [])
 
   useEffect(() => {
-    if (apiKey) {
-      setAccessTokenResolver(() => Promise.resolve(apiKey))
-      return () => setAccessTokenResolver(null)
+    if (!apiKey) {
+      return
     }
-  }, [apiKey])
 
-  useEffect(() => {
-    setUnauthorizedHandler(() => {
-      handleSignOut()
+    setAuthMode('api-key')
+    setAccessTokenResolver(() => Promise.resolve(apiKey))
+    setUnauthorizedHandler((event) => {
+      if (event.authMode === 'api-key') {
+        handleSignOut()
+      }
     })
-    return () => setUnauthorizedHandler(null)
-  }, [handleSignOut])
+    return () => {
+      setAccessTokenResolver(null)
+      setUnauthorizedHandler(null)
+      setAuthMode('anonymous')
+    }
+  }, [apiKey, handleSignOut])
 
   // API key auth: bypass Auth0, use stored key for all requests
   if (apiKey) {
@@ -185,6 +227,13 @@ export default function App() {
     <Auth0Provider
       domain={domain}
       clientId={clientId}
+      // Hammurabi is an operations console expected to survive idle tabs and
+      // reloads. Refresh-token rotation plus explicit local cache gives the
+      // Auth0 SDK a durable recovery path instead of relying only on iframe
+      // silent auth, which browsers can block after inactivity.
+      cacheLocation="localstorage"
+      useRefreshTokens
+      useRefreshTokensFallback
       onRedirectCallback={(appState) => {
         const returnTo = typeof appState?.returnTo === 'string'
           ? appState.returnTo
@@ -193,6 +242,7 @@ export default function App() {
       }}
       authorizationParams={{
         audience,
+        scope: 'openid profile email offline_access',
         // Auth0 callback URL must match the dashboard whitelist exactly.
         // Keep this static at the origin; post-login routing to a specific
         // app path is handled by `onRedirectCallback` reading

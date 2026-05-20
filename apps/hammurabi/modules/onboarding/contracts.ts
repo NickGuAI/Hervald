@@ -44,6 +44,85 @@ export interface FounderSetupStatus {
   nextRoute: string
 }
 
+export type OnboardingStepId =
+  | 'instance'
+  | 'founder-org'
+  | 'gaia'
+  | 'providers-machines'
+  | 'launch'
+
+export type OnboardingStepState = 'complete' | 'current' | 'pending' | 'warning'
+
+export interface OnboardingStep {
+  id: OnboardingStepId
+  label: string
+  state: OnboardingStepState
+  summary: string
+}
+
+export type OnboardingReadinessState =
+  | 'ready'
+  | 'warning'
+  | 'missing'
+  | 'skipped'
+
+export interface ProviderOnboardingReadiness {
+  id: string
+  label: string
+  cliBinaryName: string | null
+  installed: boolean | null
+  authConfigured: boolean | null
+  authMode: 'env' | 'login' | 'not-required' | 'missing' | 'unknown'
+  state: OnboardingReadinessState
+  shortAction: string
+  verificationCommand: string | null
+  envSourceKey: string | null
+}
+
+export interface MachineOnboardingReadiness {
+  id: string
+  label: string
+  transport: 'local' | 'ssh' | 'daemon'
+  state: OnboardingReadinessState
+  envFile: string | null
+  cwd: string | null
+  summary: string
+}
+
+export interface GaiaOnboardingStatus {
+  commanderId: string | null
+  displayName: string
+  exists: boolean
+  conversationId: string | null
+  defaultProviderId: string | null
+}
+
+export interface OnboardingReceipt {
+  url: string
+  account: string
+  organization: string | null
+  founder: string | null
+  commander: string | null
+  machine: string | null
+  providerSummary: string
+}
+
+export interface OnboardingStatus {
+  currentStepId: OnboardingStepId
+  steps: OnboardingStep[]
+  founderSetup: FounderSetupStatus
+  gaia: GaiaOnboardingStatus
+  providers: ProviderOnboardingReadiness[]
+  machines: MachineOnboardingReadiness[]
+  receipt: OnboardingReceipt
+  launchTarget: string
+}
+
+export interface SeedGaiaOnboardingResponse {
+  gaia: GaiaOnboardingStatus
+  status: OnboardingStatus
+}
+
 export function validateFounderOrgSetupFormValues(
   state: FounderOrgSetupFormValues,
 ): FounderOrgSetupValidationErrors {

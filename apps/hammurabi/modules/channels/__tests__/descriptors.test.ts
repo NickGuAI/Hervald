@@ -81,6 +81,39 @@ describe('channel provider descriptors', () => {
     ])
   })
 
+  it('describes the Google Chat service-account webhook defaults and policy schema', () => {
+    const descriptor = getChannelProviderDescriptor('googlechat')
+
+    expect(descriptor).toMatchObject({
+      provider: 'googlechat',
+      label: 'Google Chat',
+      credentialFields: ['serviceAccountJson'],
+      policyFields: ['dmPolicy', 'groupPolicy', 'dmAllowlist', 'groupAllowlist', 'globalAllowlist', 'requireMention'],
+      pairing: { mode: 'none' },
+      formDefaults: {
+        webhookAudienceType: 'url',
+        dmPolicy: 'allowlist',
+        groupPolicy: 'disabled',
+        requireMention: true,
+        maxMessageBytes: '30000',
+      },
+      configDefaults: {
+        provider: 'googlechat',
+        webhookAudienceType: 'url',
+        dmPolicy: 'allowlist',
+        groupPolicy: 'disabled',
+        requireMention: true,
+        maxMessageBytes: 30_000,
+      },
+    })
+    expect(descriptor?.fields.map((field) => [field.key, field.label])).toContainEqual(['serviceAccountJson', 'Service Account JSON'])
+    expect(descriptor?.fields.map((field) => [field.key, field.label])).toContainEqual(['webhookAudience', 'Webhook Audience'])
+    expect(descriptor?.fields.find((field) => field.key === 'webhookAudienceType')?.options).toEqual([
+      { value: 'url', label: 'Endpoint URL' },
+      { value: 'project-number', label: 'Project Number' },
+    ])
+  })
+
   it('projects commander binding state without changing stored binding config shape', () => {
     const binding: CommanderChannelBinding = {
       id: 'binding-1',

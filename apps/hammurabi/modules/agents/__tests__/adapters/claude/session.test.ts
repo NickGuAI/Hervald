@@ -68,6 +68,7 @@ describe('agents/adapters/claude/session', () => {
     ])
     expect(args[1]).toContain('. "$HOME/.zshrc" >/dev/null 2>&1 || true')
     expect(args[1]).toContain(`cd '/tmp/project alpha' && export CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING=1 MAX_THINKING_TOKENS=128000; ${UNSET_CLAUDE_CHILD_ENV}; claude`)
+    expect(args[1].replace(/'/g, '')).toContain('--effort high')
     expect(options).toMatchObject({
       cwd: '/tmp/project alpha',
       stdio: ['pipe', 'pipe', 'pipe'],

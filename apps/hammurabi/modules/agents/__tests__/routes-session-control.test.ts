@@ -515,7 +515,7 @@ describe("agents routes", () => {
         rows: 40,
       }))
       expect(lastHandle()!.write).toHaveBeenCalledWith(
-        'export CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING=1 MAX_THINKING_TOKENS=128000 && unset CLAUDECODE ANTHROPIC_MODEL ANTHROPIC_DEFAULT_OPUS_MODEL ANTHROPIC_DEFAULT_SONNET_MODEL && claude --effort max\r',
+        'export CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING=1 MAX_THINKING_TOKENS=128000 && unset CLAUDECODE ANTHROPIC_MODEL ANTHROPIC_DEFAULT_OPUS_MODEL ANTHROPIC_DEFAULT_SONNET_MODEL && claude --effort high\r',
       )
 
       await server.close()
@@ -559,7 +559,7 @@ describe("agents routes", () => {
           }),
         )
         expect(handle.write).toHaveBeenCalledWith(
-          'export CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING=1 MAX_THINKING_TOKENS=128000 && unset CLAUDECODE ANTHROPIC_MODEL ANTHROPIC_DEFAULT_OPUS_MODEL ANTHROPIC_DEFAULT_SONNET_MODEL && claude --effort max\r',
+          'export CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING=1 MAX_THINKING_TOKENS=128000 && unset CLAUDECODE ANTHROPIC_MODEL ANTHROPIC_DEFAULT_OPUS_MODEL ANTHROPIC_DEFAULT_SONNET_MODEL && claude --effort high\r',
         )
       } finally {
         await server.close()
@@ -613,7 +613,7 @@ describe("agents routes", () => {
 
         expect(response.status).toBe(201)
         expect(lastHandle()!.write).toHaveBeenCalledWith(
-          'export CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING=1 MAX_THINKING_TOKENS=128000 && unset CLAUDECODE ANTHROPIC_MODEL ANTHROPIC_DEFAULT_OPUS_MODEL ANTHROPIC_DEFAULT_SONNET_MODEL && claude --effort max\r',
+          'export CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING=1 MAX_THINKING_TOKENS=128000 && unset CLAUDECODE ANTHROPIC_MODEL ANTHROPIC_DEFAULT_OPUS_MODEL ANTHROPIC_DEFAULT_SONNET_MODEL && claude --effort high\r',
         )
       } finally {
         await server.close()
@@ -814,7 +814,7 @@ describe("agents routes", () => {
       })
       expect(lastHandle()!.write).toHaveBeenNthCalledWith(
         1,
-        'export CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING=1 MAX_THINKING_TOKENS=128000 && unset CLAUDECODE ANTHROPIC_MODEL ANTHROPIC_DEFAULT_OPUS_MODEL ANTHROPIC_DEFAULT_SONNET_MODEL && claude --effort max\r',
+        'export CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING=1 MAX_THINKING_TOKENS=128000 && unset CLAUDECODE ANTHROPIC_MODEL ANTHROPIC_DEFAULT_OPUS_MODEL ANTHROPIC_DEFAULT_SONNET_MODEL && claude --effort high\r',
       )
       expect(lastHandle()!.write).toHaveBeenNthCalledWith(
         2,

@@ -6,7 +6,13 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AuthProvider } from '@/contexts/AuthContext'
-import type { FounderOrgSetupResponse, FounderSetupStatus } from '../contracts'
+import type {
+  FounderOrgSetupResponse,
+  FounderSetupStatus,
+  OnboardingStatus,
+  OnboardingStepId,
+  SeedGaiaOnboardingResponse,
+} from '../contracts'
 
 const mocks = vi.hoisted(() => ({
   fetchJson: vi.fn(),
@@ -39,6 +45,69 @@ function setupStatus(overrides: Partial<FounderSetupStatus> = {}): FounderSetupS
   }
 }
 
+function onboardingStatus(overrides: Partial<OnboardingStatus> = {}): OnboardingStatus {
+  const founderSetup = overrides.founderSetup ?? setupStatus()
+  const gaia = overrides.gaia ?? {
+    commanderId: null,
+    displayName: 'Gaia',
+    exists: false,
+    conversationId: null,
+    defaultProviderId: 'claude',
+  }
+  const providers = overrides.providers ?? [
+    {
+      id: 'claude',
+      label: 'Claude Code',
+      cliBinaryName: 'claude',
+      installed: true,
+      authConfigured: true,
+      authMode: 'login' as const,
+      state: 'ready' as const,
+      shortAction: 'Ready for local machine execution.',
+      verificationCommand: 'claude --version',
+      envSourceKey: null,
+    },
+  ]
+  const machines = overrides.machines ?? [
+    {
+      id: 'local',
+      label: 'Local (this server)',
+      transport: 'local' as const,
+      state: 'ready' as const,
+      envFile: '/tmp/.hammurabi-env',
+      cwd: null,
+      summary: 'This server can run provider CLIs directly.',
+    },
+  ]
+  const currentStepId: OnboardingStepId = overrides.currentStepId ?? (founderSetup.setupComplete ? (gaia.exists ? 'launch' : 'gaia') : 'founder-org')
+
+  return {
+    currentStepId,
+    steps: [
+      { id: 'instance', label: 'Instance ready', state: 'complete', summary: 'Local Hervald app and bootstrap admin are available.' },
+      { id: 'founder-org', label: 'Founder + organization', state: founderSetup.setupComplete ? 'complete' : 'current', summary: 'Create the first local operator and org identity.' },
+      { id: 'gaia', label: 'Gaia commander', state: gaia.exists ? 'complete' : currentStepId === 'gaia' ? 'current' : 'pending', summary: 'Seed Gaia as the default onboarding commander.' },
+      { id: 'providers-machines', label: 'Providers + machines', state: 'complete', summary: 'At least one provider and machine are ready.' },
+      { id: 'launch', label: 'Launch', state: currentStepId === 'launch' ? 'current' : 'pending', summary: 'Open the org page or command room.' },
+    ],
+    founderSetup,
+    gaia,
+    providers,
+    machines,
+    receipt: {
+      url: 'http://localhost:20001/org',
+      account: 'local bootstrap admin',
+      organization: founderSetup.defaultValues.orgDisplayName || null,
+      founder: founderSetup.defaultValues.founderDisplayName || null,
+      commander: gaia.exists ? gaia.displayName : null,
+      machine: 'Local (this server)',
+      providerSummary: 'Claude Code ready',
+    },
+    launchTarget: gaia.commanderId ? `/command-room?commander=${gaia.commanderId}` : '/org',
+    ...overrides,
+  }
+}
+
 function setupResponse(overrides: Partial<FounderOrgSetupResponse> = {}): FounderOrgSetupResponse {
   return {
     operator: {
@@ -61,8 +130,8 @@ function setupResponse(overrides: Partial<FounderOrgSetupResponse> = {}): Founde
 
 function mockSetupPost(response: FounderOrgSetupResponse | Promise<FounderOrgSetupResponse>) {
   mocks.fetchJson.mockImplementation((url: string) => {
-    if (url === '/api/org/setup-status') {
-      return Promise.resolve(setupStatus())
+    if (url === '/api/onboarding/status') {
+      return Promise.resolve(onboardingStatus())
     }
     if (url === '/api/org') {
       return Promise.resolve(response)
@@ -103,6 +172,7 @@ async function renderPage() {
             <Routes>
               <Route path="/welcome" element={<FounderOrgSetupPage />} />
               <Route path="/org" element={<LocationProbe />} />
+              <Route path="/command-room" element={<LocationProbe />} />
             </Routes>
           </AuthProvider>
         </MemoryRouter>
@@ -120,8 +190,15 @@ function getInput(testId: string): HTMLInputElement {
   return input
 }
 
+async function waitForInput(testId: string): Promise<HTMLInputElement> {
+  await vi.waitFor(() => {
+    expect(document.body.querySelector<HTMLInputElement>(`[data-testid="${testId}"]`)).not.toBeNull()
+  })
+  return getInput(testId)
+}
+
 async function setInputValue(testId: string, value: string) {
-  const input = getInput(testId)
+  const input = await waitForInput(testId)
   await act(async () => {
     const valueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set
     valueSetter?.call(input, value)
@@ -132,6 +209,9 @@ async function setInputValue(testId: string, value: string) {
 }
 
 async function clickSubmit(times: number = 1) {
+  await vi.waitFor(() => {
+    expect(document.body.querySelector<HTMLFormElement>('[data-testid="founder-org-setup-form"]')).not.toBeNull()
+  })
   const form = document.body.querySelector<HTMLFormElement>('[data-testid="founder-org-setup-form"]')
   if (!form) {
     throw new Error('Missing setup form')
@@ -149,8 +229,8 @@ describe('FounderOrgSetupPage', () => {
   beforeEach(() => {
     mocks.fetchJson.mockReset()
     mocks.fetchJson.mockImplementation((url: string) => {
-      if (url === '/api/org/setup-status') {
-        return Promise.resolve(setupStatus())
+      if (url === '/api/onboarding/status') {
+        return Promise.resolve(onboardingStatus())
       }
       return Promise.reject(new Error(`Unexpected fetchJson URL: ${url}`))
     })
@@ -170,7 +250,7 @@ describe('FounderOrgSetupPage', () => {
     vi.clearAllMocks()
   })
 
-  it('submits founder and org setup, then routes to the org page', async () => {
+  it('submits founder and org setup, then advances to Gaia setup', async () => {
     mockSetupPost(setupResponse())
 
     await renderPage()
@@ -200,7 +280,75 @@ describe('FounderOrgSetupPage', () => {
     })
 
     await vi.waitFor(() => {
-      expect(document.body.querySelector('[data-testid="location"]')?.textContent).toBe('/org')
+      expect(document.body.textContent).toContain('Gaia, mother of commanders')
+    })
+  })
+
+  it('seeds Gaia through the backend onboarding action and launches the command room', async () => {
+    const completedFounder = setupStatus({
+      setupComplete: true,
+      defaultValues: {
+        orgDisplayName: 'Gehirn Inc.',
+        founderDisplayName: 'Nick Gu',
+        founderEmail: 'nick@example.com',
+      },
+      validationErrors: {},
+      nextRoute: '/org',
+    })
+    const seeded = onboardingStatus({
+      currentStepId: 'launch',
+      founderSetup: completedFounder,
+      gaia: {
+        commanderId: 'commander-gaia',
+        displayName: 'Gaia',
+        exists: true,
+        conversationId: 'conversation-gaia',
+        defaultProviderId: 'claude',
+      },
+      launchTarget: '/command-room?commander=commander-gaia',
+    })
+    let statusResponse = onboardingStatus({
+      currentStepId: 'gaia',
+      founderSetup: completedFounder,
+    })
+    mocks.fetchJson.mockImplementation((url: string) => {
+      if (url === '/api/onboarding/status') {
+        return Promise.resolve(statusResponse)
+      }
+      if (url === '/api/onboarding/actions/seed-gaia') {
+        statusResponse = seeded
+        return Promise.resolve({
+          gaia: seeded.gaia,
+          status: seeded,
+        } satisfies SeedGaiaOnboardingResponse)
+      }
+      return Promise.reject(new Error(`Unexpected fetchJson URL: ${url}`))
+    })
+
+    await renderPage()
+    await vi.waitFor(() => {
+      expect(document.body.querySelector<HTMLButtonElement>('[data-testid="seed-gaia-submit"]')).not.toBeNull()
+    })
+    await act(async () => {
+      document.body.querySelector<HTMLButtonElement>('[data-testid="seed-gaia-submit"]')?.click()
+    })
+    await flushReact()
+
+    await vi.waitFor(() => {
+      expect(document.body.textContent).toContain('Providers and machines')
+    })
+
+    await act(async () => {
+      document.body.querySelector<HTMLButtonElement>('[data-testid="onboarding-step-launch"]')?.click()
+    })
+    await flushReact()
+    await act(async () => {
+      document.body.querySelector<HTMLButtonElement>('[data-testid="onboarding-launch-submit"]')?.click()
+    })
+    await flushReact()
+
+    await vi.waitFor(() => {
+      expect(document.body.querySelector('[data-testid="location"]')?.textContent).toBe('/command-room?commander=commander-gaia')
     })
   })
 
@@ -217,13 +365,15 @@ describe('FounderOrgSetupPage', () => {
 
   it('seeds founder defaults from the backend setup status contract', async () => {
     mocks.fetchJson.mockImplementation((url: string) => {
-      if (url === '/api/org/setup-status') {
-        return Promise.resolve(setupStatus({
-          defaultValues: {
-            orgDisplayName: '',
-            founderDisplayName: 'Auth0 Founder',
-            founderEmail: 'founder@example.com',
-          },
+      if (url === '/api/onboarding/status') {
+        return Promise.resolve(onboardingStatus({
+          founderSetup: setupStatus({
+            defaultValues: {
+              orgDisplayName: '',
+              founderDisplayName: 'Auth0 Founder',
+              founderEmail: 'founder@example.com',
+            },
+          }),
         }))
       }
       return Promise.reject(new Error(`Unexpected fetchJson URL: ${url}`))
@@ -238,7 +388,9 @@ describe('FounderOrgSetupPage', () => {
   })
 
   it('locks duplicate clicks so double-submit only issues one POST', async () => {
-    let resolveRequest: ((value: FounderOrgSetupResponse) => void) | null = null
+    let resolveRequest: (value: FounderOrgSetupResponse) => void = () => {
+      throw new Error('pending response resolver was not initialized')
+    }
     const pendingResponse = new Promise<FounderOrgSetupResponse>((resolve) => {
       resolveRequest = resolve
     })
@@ -255,7 +407,7 @@ describe('FounderOrgSetupPage', () => {
     resolveRequest?.(setupResponse())
 
     await vi.waitFor(() => {
-      expect(document.body.querySelector('[data-testid="location"]')?.textContent).toBe('/org')
+      expect(document.body.textContent).toContain('Gaia, mother of commanders')
     })
   })
 })

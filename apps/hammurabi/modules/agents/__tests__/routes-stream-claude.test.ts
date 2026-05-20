@@ -137,7 +137,7 @@ describe("stream sessions", () => {
 
   function expectLocalClaudeScript(
     script: string,
-    effort: 'max' | 'medium' = 'max',
+    effort: 'high' | 'max' | 'medium' = 'high',
     adaptiveThinking: '0' | '1' = '1',
     maxThinkingTokens = '128000',
     options: {
@@ -168,7 +168,7 @@ describe("stream sessions", () => {
     }
 
   function expectDefaultClaudeSpawn(
-    effort: 'max' | 'medium' = 'max',
+    effort: 'high' | 'max' | 'medium' = 'high',
     adaptiveThinking: '0' | '1' = '1',
     maxThinkingTokens = '128000',
   ) {
@@ -1242,7 +1242,7 @@ describe("stream sessions", () => {
         expect(createResumedResponse.status).toBe(201)
 
         const resumeCall = findLocalClaudeLoginShellSpawn((script) => {
-          return script.includes('--effort max') &&
+          return script.includes('--effort high') &&
             script.includes('--resume claude-source-session-id')
         })
         expect(resumeCall).toBeDefined()
@@ -1339,7 +1339,7 @@ describe("stream sessions", () => {
         expect(createResumedResponse.status).toBe(201)
 
         const resumeCall = findLocalClaudeLoginShellSpawn((script) => {
-          return script.includes('--effort max') &&
+          return script.includes('--effort high') &&
             script.includes('--resume claude-killed-source-session-id')
         })
         expect(resumeCall).toBeDefined()
@@ -1454,7 +1454,7 @@ describe("stream sessions", () => {
         })
 
         const resumeCall = findLocalClaudeLoginShellSpawn((script) => {
-          return script.includes('--effort max') &&
+          return script.includes('--effort high') &&
             script.includes('--resume claude-resume-123')
         })
         expect(resumeCall).toBeDefined()
@@ -1566,7 +1566,7 @@ describe("stream sessions", () => {
         })
 
         const transcriptResumeCall = findLocalClaudeLoginShellSpawn((script) => {
-          return script.includes('--effort max') &&
+          return script.includes('--effort high') &&
             script.includes('--resume claude-transcript-123')
         })
         expect(transcriptResumeCall).toBeDefined()
@@ -1653,7 +1653,7 @@ describe("stream sessions", () => {
         })
 
         const fallbackResumeCall = findLocalClaudeLoginShellSpawn((script) => {
-          return script.includes('--effort max') &&
+          return script.includes('--effort high') &&
             script.includes('--resume claude-fallback-123')
         })
         expect(fallbackResumeCall).toBeDefined()
@@ -1732,7 +1732,7 @@ describe("stream sessions", () => {
         })
 
         const resumeCall = findLocalClaudeLoginShellSpawn((script) => {
-          return script.includes('--effort max') &&
+          return script.includes('--effort high') &&
             script.includes('--resume claude-interrupted-123')
         })
         expect(resumeCall).toBeUndefined()
@@ -1826,7 +1826,7 @@ describe("stream sessions", () => {
         expect(remoteCommand).toContain(UNSET_CLAUDE_CHILD_ENV)
         expect(remoteCommand).toContain('claude')
         expect(remoteCommand).toContain('--effort')
-        expect(remoteCommand).toContain('max')
+        expect(remoteCommand).toContain('high')
         expect(remoteCommand).toContain('--settings')
         expect(remoteCommand).toContain('node -e ')
         expect(remoteCommand.indexOf('/Users/builder/.hammurabi-env')).toBeLessThan(
@@ -2002,7 +2002,7 @@ describe("stream sessions", () => {
         }),
       })
 
-      expectDefaultClaudeSpawn('max', '1')
+      expectDefaultClaudeSpawn('high', '1')
 
       await server.close()
     })
@@ -3235,7 +3235,7 @@ describe("stream sessions", () => {
 
       const [command, args, options] = mockedSpawn.mock.calls.at(-1) ?? []
       expect(isLocalClaudeLoginShellSpawn(command, args)).toBe(true)
-      expectLocalClaudeScript(String(args?.[1]), 'max', '1', '128000', {
+      expectLocalClaudeScript(String(args?.[1]), 'high', '1', '128000', {
         cwd: '/home/builder/projects/my-repo',
         includeSettings: true,
       })

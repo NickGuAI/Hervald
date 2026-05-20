@@ -9,7 +9,7 @@ import { Unicode11Addon } from '@xterm/addon-unicode11'
 import { SerializeAddon } from '@xterm/addon-serialize'
 import '@xterm/xterm/css/xterm.css'
 import { cn } from '@/lib/utils'
-import { getAccessToken } from '@/lib/api'
+import { getAccessToken, isAuthRecoveryRequiredError } from '@/lib/api'
 import { getWsBase } from '@/lib/api-base'
 import { readHvTerminalFontFamily, readHvTerminalTheme } from '@/lib/hv-tokens'
 import type { AgentType } from '@/types'
@@ -107,7 +107,18 @@ export function TerminalView({
       clearReconnectTimer()
       setWsStatus('connecting')
 
-      const token = await getAccessToken()
+      let token: string | null
+      try {
+        token = await getAccessToken()
+      } catch (error) {
+        if (isAuthRecoveryRequiredError(error)) {
+          if (!disposed) {
+            setWsStatus('disconnected')
+          }
+          return
+        }
+        throw error
+      }
       if (disposed) {
         return
       }

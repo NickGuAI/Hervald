@@ -2,6 +2,7 @@ import type { Conversation } from '../commanders/conversation-store.js'
 
 export type SeededChannelProvider =
   | 'whatsapp'
+  | 'googlechat'
   | 'slack'
   | 'discord'
   | 'email'

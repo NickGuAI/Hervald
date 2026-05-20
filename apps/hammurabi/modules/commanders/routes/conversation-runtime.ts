@@ -16,7 +16,9 @@ import { resolveCommanderWorkflow } from '../workflow-resolution.js'
 import type { Conversation } from '../conversation-store.js'
 import type { CommanderRoutesContext } from './types.js'
 import { sanitizeProviderContextForPersistence } from '../../agents/providers/provider-context-migration.js'
+import { asClaudeProviderContext } from '../../agents/providers/provider-session-context.js'
 import { getProvider } from '../../agents/providers/registry.js'
+import { resolveProviderDefaults } from '../../agents/providers/provider-adapter.js'
 
 export function buildConversationSessionName(conversation: Conversation): string {
   return `commander-${conversation.commanderId}-conversation-${conversation.id}`
@@ -157,6 +159,10 @@ async function prepareConversationSession(
   const commanderAgentType = commander.agentType ?? 'claude'
   const agentType = spawnOptions?.agentType ?? conversation.agentType ?? commanderAgentType
   const provider = getProvider(agentType)
+  const providerDefaults = provider ? resolveProviderDefaults(provider) : undefined
+  const conversationClaudeContext = conversation.agentType === agentType
+    ? asClaudeProviderContext(conversation.providerContext)
+    : null
   const hasSpawnModel = spawnOptions
     ? Object.prototype.hasOwnProperty.call(spawnOptions, 'model')
     : false
@@ -169,13 +175,17 @@ async function prepareConversationSession(
       ? (commander.model ?? undefined)
       : undefined)
   const effort = provider?.uiCapabilities.supportsEffort
-    ? commander.effort
+    ? commander.effort ?? conversationClaudeContext?.effort ?? providerDefaults?.effort
     : undefined
   const adaptiveThinking = provider?.uiCapabilities.supportsAdaptiveThinking
     ? spawnOptions?.adaptiveThinking
+      ?? conversationClaudeContext?.adaptiveThinking
+      ?? providerDefaults?.adaptiveThinking
     : undefined
   const maxThinkingTokens = provider?.uiCapabilities.supportsMaxThinkingTokens
     ? spawnOptions?.maxThinkingTokens
+      ?? conversationClaudeContext?.maxThinkingTokens
+      ?? providerDefaults?.maxThinkingTokens
     : undefined
   const cwd = commander.cwd ?? undefined
   const host = commander.host ?? undefined

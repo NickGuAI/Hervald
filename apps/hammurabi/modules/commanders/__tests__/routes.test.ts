@@ -1543,22 +1543,6 @@ describe('commanders routes', () => {
       expect(createResponse.status).toBe(201)
       const created = (await createResponse.json()) as { id: string }
 
-      const patchResponse = await fetch(
-        `${server.baseUrl}/api/commanders/${created.id}/heartbeat`,
-        {
-          method: 'PATCH',
-          headers: {
-            ...AUTH_HEADERS,
-            'content-type': 'application/json',
-          },
-          body: JSON.stringify({
-            intervalMs: 10,
-            messageTemplate: '[HEARTBEAT QUICK {{timestamp}}]',
-          }),
-        },
-      )
-      expect(patchResponse.status).toBe(200)
-
       const startResponse = await fetch(`${server.baseUrl}/api/commanders/${created.id}/start`, {
         method: 'POST',
         headers: {
@@ -1568,19 +1552,32 @@ describe('commanders routes', () => {
       })
       expect(startResponse.status).toBe(200)
 
+      const patchResponse = await fetch(
+        `${server.baseUrl}/api/commanders/${created.id}/heartbeat`,
+        {
+          method: 'PATCH',
+          headers: {
+            ...AUTH_HEADERS,
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify({
+            intervalMs: 100,
+            messageTemplate: '[HEARTBEAT QUICK {{timestamp}}]',
+          }),
+        },
+      )
+      expect(patchResponse.status).toBe(200)
+
       // Simulate the commander's session being stopped externally before the
       // next periodic tick. The heartbeat loop should record the stopped-state
       // error without requiring a successful heartbeat first.
-      const sessions = await sessionStore.list()
-      const session = sessions[0]
-      if (session) {
-        await sessionStore.update(session.id, (current) => ({
-          ...current,
-          state: 'stopped',
-          pid: null,
-          currentTask: null,
-        }))
-      }
+      const stopped = await sessionStore.update(created.id, (current) => ({
+        ...current,
+        state: 'stopped',
+        pid: null,
+        currentTask: null,
+      }))
+      expect(stopped?.state).toBe('stopped')
 
       // Wait for the heartbeat log to record an error after detecting non-running state
       await vi.waitFor(async () => {
@@ -2719,7 +2716,7 @@ describe('commanders routes', () => {
     }
   })
 
-  it('defaults commander Claude effort to max and lets profile updates change the launched effort', async () => {
+  it('defaults commander Claude effort to high and preserves explicit profile updates', async () => {
     const dir = await createTempDir('hammurabi-commanders-effort-')
     const storePath = join(dir, 'sessions.json')
     const memoryBasePath = join(dir, 'memory')
@@ -2744,7 +2741,7 @@ describe('commanders routes', () => {
       })
       expect(createResponse.status).toBe(201)
       const created = (await createResponse.json()) as { id: string; effort?: string }
-      expect(created.effort).toBe('max')
+      expect(created.effort).toBe('high')
 
       const patchResponse = await fetch(`${server.baseUrl}/api/commanders/${created.id}/profile`, {
         method: 'PATCH',
@@ -2753,7 +2750,7 @@ describe('commanders routes', () => {
           'content-type': 'application/json',
         },
         body: JSON.stringify({
-          effort: 'high',
+          effort: 'max',
         }),
       })
       expect(patchResponse.status).toBe(200)
@@ -2769,13 +2766,13 @@ describe('commanders routes', () => {
 
       expect(mock.createCalls[0]).toEqual(expect.objectContaining({
         agentType: 'claude',
-        effort: 'high',
+        effort: 'max',
       }))
 
       const persisted = JSON.parse(await readFile(storePath, 'utf8')) as {
         sessions: Array<{ effort?: string }>
       }
-      expect(persisted.sessions[0]?.effort).toBe('high')
+      expect(persisted.sessions[0]?.effort).toBe('max')
     } finally {
       await server.close()
     }
@@ -3933,22 +3930,6 @@ describe('commanders routes', () => {
         expect(createQuestResponse.status).toBe(201)
       }
 
-      const patchHeartbeatResponse = await fetch(
-        `${server.baseUrl}/api/commanders/${commander.id}/heartbeat`,
-        {
-          method: 'PATCH',
-          headers: {
-            ...AUTH_HEADERS,
-            'content-type': 'application/json',
-          },
-          body: JSON.stringify({
-            intervalMs: 25,
-            messageTemplate: '[HB {{timestamp}}]',
-          }),
-        },
-      )
-      expect(patchHeartbeatResponse.status).toBe(200)
-
       const startResponse = await fetch(`${server.baseUrl}/api/commanders/${commander.id}/start`, {
         method: 'POST',
         headers: {
@@ -3958,7 +3939,31 @@ describe('commanders routes', () => {
       })
       expect(startResponse.status).toBe(200)
 
-      // Wait for at least a startup send + one heartbeat with quest board
+      const patchHeartbeatResponse = await fetch(
+        `${server.baseUrl}/api/commanders/${commander.id}/heartbeat`,
+        {
+          method: 'PATCH',
+          headers: {
+            ...AUTH_HEADERS,
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify({
+            intervalMs: 5_000,
+            messageTemplate: '[HB {{timestamp}}]',
+          }),
+        },
+      )
+      expect(patchHeartbeatResponse.status).toBe(200)
+
+      const triggerResponse = await fetch(
+        `${server.baseUrl}/api/commanders/${commander.id}/heartbeat/trigger`,
+        {
+          method: 'POST',
+          headers: AUTH_HEADERS,
+        },
+      )
+      expect(triggerResponse.status).toBe(200)
+
       await vi.waitFor(() => {
         expect(
           mock.sendCalls.some((call) => call.text.includes('[QUEST BOARD] Top pending quests:')),
@@ -4086,22 +4091,6 @@ describe('commanders routes', () => {
       )
       expect(claimResponse.status).toBe(200)
 
-      const patchHeartbeatResponse = await fetch(
-        `${server.baseUrl}/api/commanders/${commander.id}/heartbeat`,
-        {
-          method: 'PATCH',
-          headers: {
-            ...AUTH_HEADERS,
-            'content-type': 'application/json',
-          },
-          body: JSON.stringify({
-            intervalMs: 25,
-            messageTemplate: '[HB {{timestamp}}]',
-          }),
-        },
-      )
-      expect(patchHeartbeatResponse.status).toBe(200)
-
       const startResponse = await fetch(`${server.baseUrl}/api/commanders/${commander.id}/start`, {
         method: 'POST',
         headers: {
@@ -4111,11 +4100,30 @@ describe('commanders routes', () => {
       })
       expect(startResponse.status).toBe(200)
 
-      await vi.waitFor(() => {
-        expect(
-          mock.sendCalls.some((call) => call.text.includes('[QUEST BOARD] Top pending quests:')),
-        ).toBe(true)
-      })
+      const patchHeartbeatResponse = await fetch(
+        `${server.baseUrl}/api/commanders/${commander.id}/heartbeat`,
+        {
+          method: 'PATCH',
+          headers: {
+            ...AUTH_HEADERS,
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify({
+            intervalMs: 5_000,
+            messageTemplate: '[HB {{timestamp}}]',
+          }),
+        },
+      )
+      expect(patchHeartbeatResponse.status).toBe(200)
+
+      const triggerResponse = await fetch(
+        `${server.baseUrl}/api/commanders/${commander.id}/heartbeat/trigger`,
+        {
+          method: 'POST',
+          headers: AUTH_HEADERS,
+        },
+      )
+      expect(triggerResponse.status).toBe(200)
 
       await vi.waitFor(async () => {
         const entries = await heartbeatLog.read(commander.id, 5)

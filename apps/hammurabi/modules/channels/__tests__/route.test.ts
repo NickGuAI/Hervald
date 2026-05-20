@@ -184,6 +184,7 @@ describe('commander channels route', () => {
     expect(body.providers.map((provider) => [provider.provider, provider.label])).toEqual([
       ['email', 'Email'],
       ['whatsapp', 'WhatsApp'],
+      ['googlechat', 'Google Chat'],
       ['telegram', 'Telegram'],
       ['discord', 'Discord'],
     ])

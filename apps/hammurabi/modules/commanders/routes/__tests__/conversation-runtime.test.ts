@@ -17,6 +17,7 @@ import { startConversationSession } from '../conversation-runtime.js'
 import type { Conversation } from '../../conversation-store.js'
 import type { CommanderRoutesContext } from '../types.js'
 import type { StreamSession } from '../../../agents/types.js'
+import '../../../agents/adapters/claude/provider'
 
 function buildLiveSession(name: string, overrides: Partial<StreamSession> = {}): StreamSession {
   return {
@@ -237,5 +238,191 @@ describe('conversation-runtime quick wins', () => {
       },
     }))
     expect(started.conversation.model).toBe('gpt-5.5')
+  })
+
+  it('passes backend-owned Claude defaults when no commander or conversation overrides exist', async () => {
+    const commanderId = '00000000-0000-4000-a000-0000000000aa'
+    let currentConversation: Conversation = {
+      id: '77777777-7777-4777-8777-777777777777',
+      commanderId,
+      surface: 'ui',
+      agentType: 'claude',
+      name: 'default-claude-session',
+      status: 'idle',
+      currentTask: null,
+      lastHeartbeat: null,
+      heartbeatTickCount: 0,
+      completedTasks: 0,
+      totalCostUsd: 0,
+      creationSource: 'ui',
+      createdByKind: 'human',
+      createdAt: '2026-05-04T00:00:00.000Z',
+      lastMessageAt: '2026-05-04T00:00:00.000Z',
+    }
+    const createdLiveSession = buildLiveSession(
+      `commander-${commanderId}-conversation-${currentConversation.id}`,
+      {
+        effort: 'high',
+        adaptiveThinking: 'disabled',
+        maxThinkingTokens: 128000,
+        providerContext: {
+          providerId: 'claude',
+          effort: 'high',
+          adaptiveThinking: 'disabled',
+          maxThinkingTokens: 128000,
+        },
+      },
+    )
+
+    const sessionsInterface = {
+      getSession: vi.fn(() => undefined),
+      deleteSession: vi.fn(),
+      createCommanderSession: vi.fn(async () => createdLiveSession),
+      sendToSession: vi.fn(async () => true),
+    }
+    const context = {
+      commanderBasePath: '/tmp/commanders',
+      now: () => new Date('2026-05-04T00:00:00.000Z'),
+      sessionStore: {
+        get: vi.fn(async () => ({
+          id: commanderId,
+          name: 'Commander',
+          created: '2026-05-04T00:00:00.000Z',
+          heartbeat: { intervalSeconds: 30 },
+          agentType: 'claude',
+          cwd: '/tmp/workspace',
+          host: undefined,
+          currentTask: null,
+          taskSource: null,
+          maxTurns: 12,
+        })),
+        update: vi.fn(async (_id, updater) => updater({
+          id: commanderId,
+          state: 'idle',
+        })),
+      },
+      conversationStore: {
+        update: vi.fn(async (_id, updater) => {
+          currentConversation = updater(currentConversation)
+          return currentConversation
+        }),
+        listByCommander: vi.fn(async () => [{ ...currentConversation, status: 'active' }]),
+      },
+      sessionsInterface,
+      heartbeatManager: {
+        start: vi.fn(),
+        stop: vi.fn(),
+      },
+      runtimes: new Map(),
+      activeCommanderSessions: new Map(),
+      channelReplyForwarders: new Map(),
+    } as unknown as CommanderRoutesContext
+
+    await startConversationSession(context, commanderId, currentConversation)
+
+    expect(sessionsInterface.createCommanderSession).toHaveBeenCalledWith(expect.objectContaining({
+      agentType: 'claude',
+      effort: 'high',
+      adaptiveThinking: 'disabled',
+      maxThinkingTokens: 128000,
+    }))
+  })
+
+  it('preserves explicit Claude thinking values from persisted conversation provider context', async () => {
+    const commanderId = '00000000-0000-4000-a000-0000000000aa'
+    let currentConversation: Conversation = {
+      id: '88888888-8888-4888-8888-888888888888',
+      commanderId,
+      surface: 'ui',
+      agentType: 'claude',
+      name: 'persisted-thinking-session',
+      status: 'idle',
+      currentTask: null,
+      providerContext: {
+        providerId: 'claude',
+        sessionId: 'claude-session-explicit',
+        adaptiveThinking: 'enabled',
+        maxThinkingTokens: 64000,
+      },
+      lastHeartbeat: null,
+      heartbeatTickCount: 0,
+      completedTasks: 0,
+      totalCostUsd: 0,
+      creationSource: 'ui',
+      createdByKind: 'human',
+      createdAt: '2026-05-04T00:00:00.000Z',
+      lastMessageAt: '2026-05-04T00:00:00.000Z',
+    }
+    const createdLiveSession = buildLiveSession(
+      `commander-${commanderId}-conversation-${currentConversation.id}`,
+      {
+        effort: 'high',
+        adaptiveThinking: 'enabled',
+        maxThinkingTokens: 64000,
+        providerContext: {
+          providerId: 'claude',
+          sessionId: 'claude-session-explicit',
+          effort: 'high',
+          adaptiveThinking: 'enabled',
+          maxThinkingTokens: 64000,
+        },
+      },
+    )
+
+    const sessionsInterface = {
+      getSession: vi.fn(() => undefined),
+      deleteSession: vi.fn(),
+      createCommanderSession: vi.fn(async () => createdLiveSession),
+      sendToSession: vi.fn(async () => true),
+    }
+    const context = {
+      commanderBasePath: '/tmp/commanders',
+      now: () => new Date('2026-05-04T00:00:00.000Z'),
+      sessionStore: {
+        get: vi.fn(async () => ({
+          id: commanderId,
+          name: 'Commander',
+          created: '2026-05-04T00:00:00.000Z',
+          heartbeat: { intervalSeconds: 30 },
+          agentType: 'claude',
+          cwd: '/tmp/workspace',
+          host: undefined,
+          currentTask: null,
+          taskSource: null,
+          maxTurns: 12,
+        })),
+        update: vi.fn(async (_id, updater) => updater({
+          id: commanderId,
+          state: 'idle',
+        })),
+      },
+      conversationStore: {
+        update: vi.fn(async (_id, updater) => {
+          currentConversation = updater(currentConversation)
+          return currentConversation
+        }),
+        listByCommander: vi.fn(async () => [{ ...currentConversation, status: 'active' }]),
+      },
+      sessionsInterface,
+      heartbeatManager: {
+        start: vi.fn(),
+        stop: vi.fn(),
+      },
+      runtimes: new Map(),
+      activeCommanderSessions: new Map(),
+      channelReplyForwarders: new Map(),
+    } as unknown as CommanderRoutesContext
+
+    await startConversationSession(context, commanderId, currentConversation)
+
+    expect(sessionsInterface.createCommanderSession).toHaveBeenCalledWith(expect.objectContaining({
+      agentType: 'claude',
+      effort: 'high',
+      adaptiveThinking: 'enabled',
+      maxThinkingTokens: 64000,
+      resumeProviderContext: expect.objectContaining({
+        sessionId: 'claude-session-explicit',
+      }),
+    }))
   })
 })
