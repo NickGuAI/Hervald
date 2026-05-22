@@ -215,6 +215,13 @@ importers:
       '@openai/codex-sdk':
         specifier: ^0.90.0
         version: 0.90.0
+    devDependencies:
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.19.13
+      typescript:
+        specifier: ^5.7.2
+        version: 5.9.3
 
   packages/auth-providers:
     dependencies:

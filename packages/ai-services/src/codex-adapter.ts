@@ -1,4 +1,4 @@
-import type { AgentCallSettings, AgentEvent } from './types'
+import type { AgentCallSettings, AgentEvent } from './types.js'
 
 /**
  * Adapter for OpenAI Codex CLI via @openai/codex-sdk.

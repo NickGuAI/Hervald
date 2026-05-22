@@ -4,20 +4,20 @@ import {
   createUserMessage,
   SUBAGENT_WORKING_LABEL,
   type MsgItem,
-} from './model'
+} from './model.js'
 import {
   extractAgentMessageText,
   extractSubagentDescription,
   extractToolDetails,
   extractToolResultOutput,
-} from './extractors'
+} from './extractors.js'
 import {
   isPlanningToolName,
   parsePlanningPayload,
   parsePlanningToolResult,
   toPlanningMessage,
   type PlanningToolName,
-} from './planning'
+} from './planning.js'
 
 export type CurrentBlock = {
   type: 'text' | 'thinking' | 'tool_use' | 'planning_tool_use'

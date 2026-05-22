@@ -9,7 +9,7 @@
   "scripts": {
     "generate:provider-registry": "node ./modules/agents/providers/generate-registry.mjs",
     "docs:check": "tsx tools/check-docs.ts",
-    "build:deps": "pnpm run generate:provider-registry && pnpm --filter @gehirn/hammurabi-cli build && pnpm --filter @gehirn/auth-providers build && pnpm --filter @gehirn/telemetry build && pnpm --filter @gehirn/sse-streaming build && pnpm --filter @gehirn/transcription build",
+    "build:deps": "pnpm run generate:provider-registry && pnpm --filter @gehirn/ai-services build && pnpm --filter @gehirn/hammurabi-cli build && pnpm --filter @gehirn/auth-providers build && pnpm --filter @gehirn/telemetry build && pnpm --filter @gehirn/sse-streaming build && pnpm --filter @gehirn/transcription build",
     "dev": "pnpm run build:deps && concurrently \"vite\" \"tsx watch server/index.ts\"",
     "dev:client": "vite",
     "dev:server": "tsx watch server/index.ts",

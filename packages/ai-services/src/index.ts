@@ -4,10 +4,10 @@ export type {
   AgentEvent,
   AgentUsage,
   McpServerConfig,
-} from './types'
+} from './types.js'
 
-export { runClaude } from './claude-adapter'
-export { runCodex } from './codex-adapter'
+export { runClaude } from './claude-adapter.js'
+export { runCodex } from './codex-adapter.js'
 
 export type {
   AgentSessionTransportMode,
@@ -24,12 +24,12 @@ export type {
   AgentSessionProgress,
   AgentSessionMonitorOptions,
   AgentSessionClientOptions,
-} from './agent-session-client'
-export { AgentSessionClient } from './agent-session-client'
+} from './agent-session-client.js'
+export { AgentSessionClient } from './agent-session-client.js'
 
-import type { AgentProvider, AgentCallSettings, AgentEvent } from './types'
-import { runClaude } from './claude-adapter'
-import { runCodex } from './codex-adapter'
+import type { AgentProvider, AgentCallSettings, AgentEvent } from './types.js'
+import { runClaude } from './claude-adapter.js'
+import { runCodex } from './codex-adapter.js'
 
 /**
  * Unified agent call that routes to the appropriate provider.

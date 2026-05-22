@@ -1,4 +1,4 @@
-import type { AgentCallSettings, AgentEvent } from './types'
+import type { AgentCallSettings, AgentEvent } from './types.js'
 
 /**
  * Adapter for Claude Code CLI via @anthropic-ai/claude-agent-sdk.
