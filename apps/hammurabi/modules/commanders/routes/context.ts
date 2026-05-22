@@ -83,7 +83,6 @@ import type {
 const STARTUP_PROMPT = 'Commander runtime started. Acknowledge readiness and await instructions.'
 const COMMANDER_SESSION_NAME_PREFIX = 'commander-'
 const COLLECT_MODE_DEBOUNCE_MS = 1_000
-const CONVERSATION_CREATE_SCOPE = 'commanders:conversations:create'
 const CHANNEL_INGEST_SCOPE = 'commanders:channels:write'
 
 export { BASE_SYSTEM_PROMPT, STARTUP_PROMPT }
@@ -796,10 +795,7 @@ export function buildCommandersContext(
     verifyToken: options.verifyAuth0Token,
   })
 
-  const requireConversationCreateAccess = composeRequestHandlers(
-    requireWorkerDispatchAccess,
-    requireAdditionalApiKeyScope(CONVERSATION_CREATE_SCOPE),
-  )
+  const requireConversationCreateAccess = requireWorkerDispatchAccess
 
   const requireChannelIngestAccess = composeRequestHandlers(
     requireWriteAccess,

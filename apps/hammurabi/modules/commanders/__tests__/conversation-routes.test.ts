@@ -47,8 +47,8 @@ const WRITE_ONLY_AUTH_HEADERS = {
   'x-hammurabi-api-key': 'write-only-key',
 }
 
-const AGENT_RUNTIME_AUTH_HEADERS = {
-  'x-hammurabi-api-key': 'agent-runtime-key',
+const FRESH_OPERATOR_AUTH_HEADERS = {
+  'x-hammurabi-api-key': 'fresh-operator-key',
 }
 
 function assistantTextEvent(index: number, text: string) {
@@ -141,7 +141,6 @@ function createTestApiKeyStore(): ApiKeyStoreLike {
         'agents:write',
         'commanders:read',
         'commanders:write',
-        'commanders:conversations:create',
         'commanders:channels:write',
       ],
     },
@@ -165,11 +164,11 @@ function createTestApiKeyStore(): ApiKeyStoreLike {
       lastUsedAt: null,
       scopes: ['commanders:write'],
     },
-    'agent-runtime-key': {
-      id: 'agent-runtime-key-id',
-      name: 'Agent Runtime Key',
-      keyHash: 'hash-agent-runtime',
-      prefix: 'hmrb_agent',
+    'fresh-operator-key': {
+      id: 'fresh-operator-key-id',
+      name: 'Fresh Operator Key',
+      keyHash: 'hash-fresh-operator',
+      prefix: 'hmrb_fresh',
       createdBy: 'test',
       createdAt: '2026-02-16T00:00:00.000Z',
       lastUsedAt: null,
@@ -547,7 +546,7 @@ async function startConversation(
 }
 
 describe('conversation routes', () => {
-  it('requires the conversation-create API-key scope for raw conversation creation', async () => {
+  it('allows fresh operator write scopes to create conversations', async () => {
     const dir = await createTempDir('hammurabi-commanders-conversation-create-auth-')
     const storePath = join(dir, 'sessions.json')
     await seedCommander(storePath, COMMANDER_A)
@@ -558,7 +557,7 @@ describe('conversation routes', () => {
       const response = await fetch(`${server.baseUrl}/api/commanders/${COMMANDER_A}/conversations`, {
         method: 'POST',
         headers: {
-          ...AGENT_RUNTIME_AUTH_HEADERS,
+          ...FRESH_OPERATOR_AUTH_HEADERS,
           'content-type': 'application/json',
         },
         body: JSON.stringify({
@@ -567,8 +566,12 @@ describe('conversation routes', () => {
         }),
       })
 
-      expect(response.status).toBe(403)
-      expect(await response.json()).toEqual({ error: 'Insufficient API key scope' })
+      expect(response.status).toBe(201)
+      expect(await response.json()).toEqual(expect.objectContaining({
+        id: CONVERSATION_A,
+        commanderId: COMMANDER_A,
+        surface: 'cli',
+      }))
     } finally {
       await server.close()
     }

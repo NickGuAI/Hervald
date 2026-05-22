@@ -30,9 +30,12 @@ const AVAILABLE_SCOPES = [
   },
   { value: 'commanders:read', label: 'Commanders read' },
   { value: 'commanders:write', label: 'Commanders write' },
+  { value: 'commanders:channels:write', label: 'Channel bindings write' },
   { value: 'org:write', label: 'Org write' },
   { value: 'services:read', label: 'Services read' },
   { value: 'services:write', label: 'Services write' },
+  { value: 'skills:read', label: 'Skills read' },
+  { value: 'skills:write', label: 'Skills write' },
 ] as const
 
 const ALL_SCOPE_VALUES = AVAILABLE_SCOPES.map((s) => s.value)

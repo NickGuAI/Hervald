@@ -58,7 +58,6 @@ function createTestApiKeyStore(): ApiKeyStoreLike {
         'agents:write',
         'commanders:read',
         'commanders:write',
-        'commanders:conversations:create',
       ],
     },
   } satisfies Record<string, import('../../../../server/api-keys/store').ApiKeyRecord>

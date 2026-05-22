@@ -210,7 +210,8 @@ export interface CommanderRoutesContext {
   requireChannelIngestAccess: RequestHandler
   /**
    * Auth gate for commander-scoped writes where the `:id` path segment is the
-   * authority boundary, such as `POST /:id/workers` and quest claim routes.
+   * authority boundary, such as conversation creation, `POST /:id/workers`,
+   * and quest claim routes.
    * Requires both `agents:write` (creates an agent session) and
    * `commanders:write` (acts on behalf of a commander). See issue #1223.
    */

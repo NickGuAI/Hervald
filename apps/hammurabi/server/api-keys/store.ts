@@ -11,7 +11,6 @@ export const API_KEY_SCOPES = [
   'agents:admin',
   'commanders:read',
   'commanders:write',
-  'commanders:conversations:create',
   'commanders:channels:write',
   'org:write',
   'services:read',
