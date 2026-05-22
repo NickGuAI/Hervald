@@ -29,7 +29,14 @@ warn() { printf "${YELLOW}!${NC} %s\n" "$*"; }
 fail() { printf "${RED}✗${NC} %s\n" "$*" >&2; exit 1; }
 
 prompt_available() {
-  [[ -r /dev/tty && -w /dev/tty ]]
+  # Actually attempt to open /dev/tty in both directions. The naive `[[ -r /dev/tty && -w /dev/tty ]]`
+  # check walks access(2) on the inode mode bits — which are crw-rw-rw- on macOS/Linux — so it always
+  # returns true regardless of whether the process has a controlling tty. The real
+  # printf > /dev/tty / read < /dev/tty calls go through open(2) and fail with ENXIO
+  # ("Device not configured") in any no-ctty process (curl|bash, CI, nohup, setsid,
+  # SSH `exec`, container entrypoints). The mismatch sends the provider-auth loop into
+  # an unbreakable spin. Test the real capability instead.
+  { exec 9>/dev/tty; } 2>/dev/null && { exec 9<&-; } 2>/dev/null
 }
 
 prompt_line() {
