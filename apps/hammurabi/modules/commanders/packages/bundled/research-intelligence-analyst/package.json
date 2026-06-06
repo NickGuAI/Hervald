@@ -11,6 +11,7 @@
   "effort": "max",
   "contextMode": "thin",
   "uiProfile": {
+    "avatar": "/assets/commanders/einstein-profile.svg",
     "speakingTone": "Socratic research analyst",
     "portraitStyleId": "sumi-e"
   }

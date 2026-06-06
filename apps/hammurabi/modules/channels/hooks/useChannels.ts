@@ -91,7 +91,10 @@ export function useCreateChannelBinding() {
       )
     ),
     onSuccess: async (_binding, input) => {
-      await queryClient.invalidateQueries({ queryKey: [...CHANNELS_QUERY_KEY, input.commanderId] })
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: [...CHANNELS_QUERY_KEY, input.commanderId] }),
+        queryClient.invalidateQueries({ queryKey: [...CHANNEL_PROVIDER_DESCRIPTORS_QUERY_KEY, input.commanderId] }),
+      ])
     },
   })
 }
@@ -146,7 +149,10 @@ export function useCompleteChannelPairing() {
       },
     ),
     onSuccess: async (_binding, input) => {
-      await queryClient.invalidateQueries({ queryKey: [...CHANNELS_QUERY_KEY, input.commanderId] })
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: [...CHANNELS_QUERY_KEY, input.commanderId] }),
+        queryClient.invalidateQueries({ queryKey: [...CHANNEL_PROVIDER_DESCRIPTORS_QUERY_KEY, input.commanderId] }),
+      ])
     },
   })
 }
@@ -175,7 +181,10 @@ export function useUpdateChannelBinding() {
       },
     ),
     onSuccess: async (_binding, input) => {
-      await queryClient.invalidateQueries({ queryKey: [...CHANNELS_QUERY_KEY, input.commanderId] })
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: [...CHANNELS_QUERY_KEY, input.commanderId] }),
+        queryClient.invalidateQueries({ queryKey: [...CHANNEL_PROVIDER_DESCRIPTORS_QUERY_KEY, input.commanderId] }),
+      ])
     },
   })
 }
@@ -191,7 +200,10 @@ export function useDeleteChannelBinding() {
       return input
     },
     onSuccess: async (input) => {
-      await queryClient.invalidateQueries({ queryKey: [...CHANNELS_QUERY_KEY, input.commanderId] })
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: [...CHANNELS_QUERY_KEY, input.commanderId] }),
+        queryClient.invalidateQueries({ queryKey: [...CHANNEL_PROVIDER_DESCRIPTORS_QUERY_KEY, input.commanderId] }),
+      ])
     },
   })
 }

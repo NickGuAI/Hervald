@@ -8,9 +8,11 @@ interface WorkspaceFilesTabProps {
   loadingPaths: Set<string>
   addedPaths: Set<string>
   selectedPath: string | null
+  downloadingPath?: string | null
   onSelectPath: (path: string) => void
   onToggleDirectory: (path: string) => void
   onAddPath: (path: string, knownType?: WorkspaceTreeNode['type']) => void
+  onDownloadPath?: (path: string, knownType?: WorkspaceTreeNode['type']) => void
 }
 
 export function WorkspaceFilesTab({
@@ -19,9 +21,11 @@ export function WorkspaceFilesTab({
   loadingPaths,
   addedPaths,
   selectedPath,
+  downloadingPath = null,
   onSelectPath,
   onToggleDirectory,
   onAddPath,
+  onDownloadPath,
 }: WorkspaceFilesTabProps) {
   return (
     <div className="flex h-full min-h-[200px] flex-col gap-3 overflow-y-auto">
@@ -36,6 +40,8 @@ export function WorkspaceFilesTab({
             onSelectPath={onSelectPath}
             onToggleDirectory={onToggleDirectory}
             onAddPath={onAddPath}
+            onDownloadPath={onDownloadPath}
+            downloadingPath={downloadingPath}
             selectDirectoriesOnClick={false}
           />
         </div>

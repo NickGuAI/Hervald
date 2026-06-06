@@ -118,4 +118,65 @@ describe('handleProviderApproval', () => {
       session,
     )
   })
+
+  it('preserves cancellation decisions from real pending approval resolution', async () => {
+    const rootDir = await mkdtemp(path.join(tmpdir(), 'hammurabi-provider-approval-cancel-'))
+    tempDirectories.push(rootDir)
+
+    const approvalCoordinator = new ApprovalCoordinator({
+      snapshotFilePath: path.join(rootDir, 'pending.json'),
+      auditFilePath: path.join(rootDir, 'audit.jsonl'),
+    })
+    const policyStore = new PolicyStore({
+      filePath: path.join(rootDir, 'policies.json'),
+    })
+    const actionPolicyGate = new ActionPolicyGate({
+      approvalCoordinator,
+      policyStore,
+      getApprovalSessionsInterface: () => null,
+    })
+
+    const sendReply = vi.fn<ProviderApprovalAdapter<{ kind: string }, void>['sendReply']>()
+    const adapter: ProviderApprovalAdapter<{ kind: string }, void> = {
+      source: 'mock-provider',
+      toUnifiedRequest(): ActionPolicyGateRequest {
+        return {
+          source: 'mock-provider',
+          toolName: 'Bash',
+          toolInput: {
+            command: 'gog gmail send --to matt.feroz@example.com --subject "Need approval"',
+          },
+          sessionName: 'mock-session-1',
+          fallbackSessionName: 'mock-session-1',
+        }
+      },
+      sendReply,
+    }
+
+    const session = buildFallbackClaudeApprovalSession('mock-session-1')
+    const rawEvent = { kind: 'approval-request' }
+    const handlingPromise = handleProviderApproval(adapter, rawEvent, session, {
+      actionPolicyGate,
+    })
+
+    let pendingApprovalId = ''
+    await vi.waitFor(async () => {
+      const approvals = await approvalCoordinator.listPending()
+      expect(approvals).toHaveLength(1)
+      pendingApprovalId = approvals[0].id
+    })
+
+    await approvalCoordinator.resolve(pendingApprovalId, 'cancel')
+    await handlingPromise
+
+    expect(sendReply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        actionId: 'send-email',
+        decision: 'cancel',
+        approvalId: pendingApprovalId,
+      }),
+      rawEvent,
+      session,
+    )
+  })
 })

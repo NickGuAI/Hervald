@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title desc">
+  <title id="title">Alfred default avatar</title>
+  <desc id="desc">Minimal portrait of Alfred with a warm jacket, tie, and composed silhouette.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#f6f1e4" />
+      <stop offset="100%" stop-color="#d5dfd2" />
+    </linearGradient>
+  </defs>
+  <rect width="128" height="128" rx="28" fill="url(#bg)" />
+  <circle cx="64" cy="47" r="22" fill="#efd0ad" />
+  <path d="M44 41c3-14 12-22 20-22s17 8 20 22c-5-4-12-6-20-6s-15 2-20 6Z" fill="#5a4636" />
+  <path d="M48 40c5 10 15 16 16 16s11-6 16-16" fill="#5a4636" />
+  <path d="M54 47h6v4h-6Zm14 0h6v4h-6Z" fill="#352a21" />
+  <path d="M59 59c3 2 7 2 10 0" stroke="#8f614e" stroke-linecap="round" stroke-width="3" fill="none" />
+  <path d="M36 112c1-22 12-35 28-35s27 13 28 35" fill="#6d7d52" />
+  <path d="M64 77 58 90l6 7 6-7Z" fill="#f7f2eb" />
+  <path d="m58 90 6 8 6-8-6-4Z" fill="#3c4e68" />
+</svg>

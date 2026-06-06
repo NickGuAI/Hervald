@@ -5,10 +5,10 @@
  */
 
 import { randomUUID } from 'node:crypto'
-import type { NormalizedCall } from './normalizer.js'
+import type { NormalizedCall, TelemetryMetadata } from './normalizer.js'
 import { normalizeLogRecord, normalizeMetricDataPoint } from './normalizer.js'
 import {
-  TelemetryJsonlStore,
+  type TelemetryJsonlStore,
   type OtelLogPayload,
   type OtelMetricPayload,
   type TelemetryHeartbeatRecord,
@@ -46,6 +46,8 @@ export interface TelemetryCallView {
   outputTokens: number
   cost: number
   durationMs: number
+  callCount?: number
+  metadata?: TelemetryMetadata
 }
 
 export interface TelemetrySummaryView {
@@ -92,6 +94,7 @@ export interface IngestInput {
   durationMs: number
   currentTask: string
   timestamp: Date
+  metadata?: TelemetryMetadata
 }
 
 export interface TelemetryHubOptions {
@@ -106,6 +109,14 @@ export interface TelemetrySummaryOptions {
   endKey?: string
   period?: string
   retentionDays?: number
+}
+
+export interface TelemetryMetadataFilters {
+  source?: string
+  run_id?: string
+  bench?: string
+  task_id?: string
+  runner_mode?: string
 }
 
 // ---------------------------------------------------------------------------
@@ -127,6 +138,13 @@ interface SessionState {
   callCount: number
 }
 
+interface IngestAggregate {
+  record: TelemetryIngestRecord
+  startedAt: string
+  lastTimestamp: string
+  callCount: number
+}
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -145,6 +163,89 @@ function roundToMicros(value: number): number {
 
 function toUtcDayKey(date: Date): string {
   return date.toISOString().slice(0, 10)
+}
+
+function isLocalIngestRecord(record: TelemetryIngestRecord): boolean {
+  const agentName = record.agentName.trim().toLowerCase()
+  return agentName === 'claude-local' || agentName === 'codex-local'
+}
+
+function localIngestAggregateKey(record: TelemetryIngestRecord): string {
+  return [
+    toUtcDayKey(new Date(record.timestamp)),
+    record.sessionId,
+    record.agentName,
+    record.model,
+    record.provider,
+  ].join('\u0000')
+}
+
+function buildLocalAggregateId(record: TelemetryIngestRecord): string {
+  return `local-rollup:${toUtcDayKey(new Date(record.timestamp))}:${record.sessionId}:${record.agentName}:${record.model}:${record.provider}`
+}
+
+function addLocalIngestAggregate(
+  aggregates: Map<string, IngestAggregate>,
+  record: TelemetryIngestRecord,
+): void {
+  const key = localIngestAggregateKey(record)
+  const existing = aggregates.get(key)
+  if (!existing) {
+    aggregates.set(key, {
+      record: {
+        ...record,
+        id: buildLocalAggregateId(record),
+      },
+      startedAt: record.timestamp,
+      lastTimestamp: record.timestamp,
+      callCount: 1,
+    })
+    return
+  }
+
+  if (record.timestamp < existing.startedAt) {
+    existing.startedAt = record.timestamp
+  }
+  if (record.timestamp >= existing.lastTimestamp) {
+    existing.lastTimestamp = record.timestamp
+    existing.record.timestamp = record.timestamp
+    existing.record.currentTask = record.currentTask || existing.record.currentTask
+  }
+
+  existing.record.inputTokens += record.inputTokens
+  existing.record.outputTokens += record.outputTokens
+  existing.record.cost += record.cost
+  existing.record.durationMs += record.durationMs
+  existing.record.metadata = record.metadata ?? existing.record.metadata
+  existing.callCount += 1
+}
+
+function normalizedHasUsage(normalized: NormalizedCall): boolean {
+  return normalized.cost > 0 || normalized.inputTokens > 0 || normalized.outputTokens > 0
+}
+
+function hasMetadataFilters(filters: TelemetryMetadataFilters): boolean {
+  return Object.values(filters).some((value) => value !== undefined && value.trim().length > 0)
+}
+
+function metadataMatches(
+  metadata: TelemetryMetadata | undefined,
+  filters: TelemetryMetadataFilters,
+): boolean {
+  if (!hasMetadataFilters(filters)) {
+    return true
+  }
+  if (!metadata) {
+    return false
+  }
+
+  return (
+    (!filters.source || metadata.source === filters.source) &&
+    (!filters.run_id || metadata.run_id === filters.run_id) &&
+    (!filters.bench || metadata.bench === filters.bench) &&
+    (!filters.task_id || metadata.task_id === filters.task_id) &&
+    (!filters.runner_mode || metadata.runner_mode === filters.runner_mode)
+  )
 }
 
 function getSessionStatus(session: SessionState, now: Date): SessionStatus {
@@ -258,6 +359,7 @@ export class TelemetryHub {
       durationMs: input.durationMs,
       currentTask: input.currentTask,
       timestamp: input.timestamp.toISOString(),
+      metadata: input.metadata,
     }
 
     const entry: TelemetryStoreEntry = {
@@ -311,13 +413,35 @@ export class TelemetryHub {
   // Reads
   // -----------------------------------------------------------------------
 
-  getSessions(now = this.now()): TelemetrySessionView[] {
+  getSessions(
+    now = this.now(),
+    filters: TelemetryMetadataFilters = {},
+  ): TelemetrySessionView[] {
+    const shouldFilter = hasMetadataFilters(filters)
     return [...this.sessions.values()]
+      .filter((session) => {
+        if (!shouldFilter) {
+          return true
+        }
+        return (this.callsBySession.get(session.id) ?? []).some((call) =>
+          metadataMatches(call.metadata, filters),
+        )
+      })
       .map((session) => toSessionView(session, now))
       .sort(
         (left, right) =>
           new Date(right.lastHeartbeat).getTime() -
           new Date(left.lastHeartbeat).getTime(),
+      )
+  }
+
+  getCalls(filters: TelemetryMetadataFilters = {}): TelemetryCallView[] {
+    return [...this.callsBySession.values()]
+      .flat()
+      .filter((call) => metadataMatches(call.metadata, filters))
+      .sort(
+        (left, right) =>
+          new Date(right.timestamp).getTime() - new Date(left.timestamp).getTime(),
       )
   }
 
@@ -450,7 +574,7 @@ export class TelemetryHub {
       }
 
       currentModel.cost += call.cost
-      currentModel.calls += 1
+      currentModel.calls += call.callCount ?? 1
       modelTotals.set(call.model, currentModel)
     }
 
@@ -578,9 +702,19 @@ export class TelemetryHub {
   }
 
   private applyIngestRecord(record: TelemetryIngestRecord): void {
+    this.applyIngestAggregate({
+      record,
+      startedAt: record.timestamp,
+      lastTimestamp: record.timestamp,
+      callCount: 1,
+    })
+  }
+
+  private applyIngestAggregate(aggregate: IngestAggregate): void {
+    const { record } = aggregate
     const session = this.getOrCreateSession({
       sessionId: record.sessionId,
-      timestamp: record.timestamp,
+      timestamp: aggregate.startedAt,
       agentName: record.agentName,
       model: record.model,
     })
@@ -588,23 +722,25 @@ export class TelemetryHub {
     session.agentName = record.agentName
     session.model = record.model
     session.currentTask = record.currentTask || session.currentTask
-    session.lastHeartbeat = record.timestamp
+    session.lastHeartbeat = aggregate.lastTimestamp
     session.completedAt = undefined
     session.totalCost += record.cost
     session.inputTokens += record.inputTokens
     session.outputTokens += record.outputTokens
     session.totalTokens += record.inputTokens + record.outputTokens
-    session.callCount += 1
+    session.callCount += aggregate.callCount
 
     const call: TelemetryCallView = {
       id: record.id,
       sessionId: record.sessionId,
-      timestamp: record.timestamp,
+      timestamp: aggregate.lastTimestamp,
       model: record.model,
       inputTokens: record.inputTokens,
       outputTokens: record.outputTokens,
       cost: record.cost,
       durationMs: record.durationMs,
+      callCount: aggregate.callCount,
+      metadata: record.metadata,
     }
 
     const calls = this.callsBySession.get(record.sessionId) ?? []
@@ -678,6 +814,7 @@ export class TelemetryHub {
         outputTokens: normalized.outputTokens,
         cost: normalized.cost,
         durationMs: normalized.durationMs,
+        metadata: normalized.metadata,
       }
 
       const calls = this.callsBySession.get(normalized.sessionId) ?? []
@@ -699,8 +836,13 @@ export class TelemetryHub {
   // -----------------------------------------------------------------------
 
   private async restoreFromStore(): Promise<void> {
-    for await (const entry of this.options.store.stream()) {
+    const localAggregates = new Map<string, IngestAggregate>()
+    for await (const entry of this.options.store.stream({ maxBytes: 0 })) {
       if (entry.type === 'ingest') {
+        if (isLocalIngestRecord(entry.payload)) {
+          addLocalIngestAggregate(localAggregates, entry.payload)
+          continue
+        }
         this.applyIngestRecord(entry.payload)
       } else if (entry.type === 'heartbeat') {
         this.applyHeartbeatRecord(entry.payload)
@@ -716,7 +858,10 @@ export class TelemetryHub {
           },
           new Date(entry.recordedAt),
         )
-        this.applyNormalizedCall(reNormalized ?? entry.payload.normalized)
+        const normalized = reNormalized ?? entry.payload.normalized
+        if (normalizedHasUsage(normalized)) {
+          this.applyNormalizedCall(normalized)
+        }
       } else if (entry.type === 'otel_metric') {
         // Re-normalize from raw fields so normalizer improvements apply to historical data
         const reNormalized = normalizeMetricDataPoint(
@@ -729,8 +874,15 @@ export class TelemetryHub {
           },
           new Date(entry.recordedAt),
         )
-        this.applyNormalizedCall(reNormalized ?? entry.payload.normalized)
+        const normalized = reNormalized ?? entry.payload.normalized
+        if (normalizedHasUsage(normalized)) {
+          this.applyNormalizedCall(normalized)
+        }
       }
+    }
+
+    for (const aggregate of localAggregates.values()) {
+      this.applyIngestAggregate(aggregate)
     }
   }
 }

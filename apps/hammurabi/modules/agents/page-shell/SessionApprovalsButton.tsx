@@ -1,11 +1,11 @@
-import { useState } from 'react'
+import { useId, useState } from 'react'
 import { Check, Loader2, ShieldAlert, X } from 'lucide-react'
 import { DismissibleOverlay } from '@/components/DismissibleOverlay'
 import { getProviderLabel, useProviderRegistry } from '@/hooks/use-providers'
 import {
   type PendingApproval,
   useApprovalDecision,
-  useApprovalNotifications,
+  useApprovalNotificationSuppression,
   usePendingApprovals,
 } from '@/hooks/use-approvals'
 import { cn, timeAgo } from '@/lib/utils'
@@ -62,6 +62,8 @@ function SessionApprovalsButtonView({
   buttonClassName,
 }: SessionApprovalsButtonViewProps) {
   const { data: providers = [] } = useProviderRegistry()
+  const notificationSuppressionId = useId()
+  useApprovalNotificationSuppression(`session-approvals:${notificationSuppressionId}`, open)
   const pendingCount = approvals.length
   const hasPending = pendingCount > 0
   const countLabel = pendingCount > 9 ? '9+' : String(pendingCount)
@@ -203,7 +205,6 @@ function HookedSessionApprovalsButton() {
   const pendingApprovalsQuery = usePendingApprovals()
   const decisionMutation = useApprovalDecision()
   const pending = pendingApprovalsQuery.data ?? []
-  useApprovalNotifications({ suppressNotifications: open })
 
   return (
     <SessionApprovalsButtonView

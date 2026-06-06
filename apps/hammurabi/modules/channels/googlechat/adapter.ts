@@ -361,7 +361,7 @@ export class GoogleChatChannelAdapter implements ChannelAdapter<GoogleChatChanne
 
     const eventType = googleChatEventType(input.body)
     if (eventType === 'ADDED_TO_SPACE') {
-      return { status: 200, body: { text: 'Hammurabi is connected to this Google Chat space.' } }
+      return { status: 200, body: { text: 'Hervald is connected to this Google Chat space.' } }
     }
     if (eventType !== 'MESSAGE' && eventType !== 'APP_COMMAND') {
       return { status: 200, body: { accepted: true, ignored: true, eventType } }

@@ -5,6 +5,7 @@ import { combinedAuth } from '../../server/middleware/combined-auth.js'
 import { AppSettingsStore, normalizeAppFontScale, normalizeAppTheme } from './store.js'
 import { buildMobileSettingsDto } from './mobile-settings-dtos.js'
 import { normalizeComposerAbilitySettingsPatch } from './composer-abilities.js'
+import { normalizeComposerSkillSlotSettingsPatch } from './composer-skill-slots.js'
 
 export interface SettingsRouterOptions {
   store?: AppSettingsStore
@@ -54,6 +55,7 @@ export function createSettingsRouter(options: SettingsRouterOptions = {}): Route
     const hasTheme = Object.prototype.hasOwnProperty.call(body, 'theme')
     const hasFontScale = Object.prototype.hasOwnProperty.call(body, 'fontScale')
     const hasComposerAbilities = Object.prototype.hasOwnProperty.call(body, 'composerAbilities')
+    const hasComposerSkillSlots = Object.prototype.hasOwnProperty.call(body, 'composerSkillSlots')
 
     if (hasTheme) {
       const theme = normalizeAppTheme(body.theme)
@@ -82,8 +84,19 @@ export function createSettingsRouter(options: SettingsRouterOptions = {}): Route
       patch.composerAbilities = composerAbilities.patch
     }
 
-    if (!hasTheme && !hasFontScale && !hasComposerAbilities) {
-      res.status(400).json({ error: 'settings patch must include theme, fontScale, or composerAbilities' })
+    if (hasComposerSkillSlots) {
+      const composerSkillSlots = normalizeComposerSkillSlotSettingsPatch(body.composerSkillSlots)
+      if (!composerSkillSlots.ok) {
+        res.status(400).json({ error: composerSkillSlots.error })
+        return
+      }
+      patch.composerSkillSlots = composerSkillSlots.patch
+    }
+
+    if (!hasTheme && !hasFontScale && !hasComposerAbilities && !hasComposerSkillSlots) {
+      res.status(400).json({
+        error: 'settings patch must include theme, fontScale, composerAbilities, or composerSkillSlots',
+      })
       return
     }
 

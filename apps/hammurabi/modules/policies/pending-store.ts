@@ -228,8 +228,11 @@ function normalizePendingApproval(entry: unknown): PendingApproval | null {
     approval.deliveredAt = entry.deliveredAt.trim()
   }
   if (isRecord(entry.resolution)) {
+    const decision = entry.resolution.decision === 'approve' || entry.resolution.decision === 'cancel'
+      ? entry.resolution.decision
+      : 'reject'
     approval.resolution = {
-      decision: entry.resolution.decision === 'approve' ? 'approve' : 'reject',
+      decision,
       allowed: entry.resolution.allowed === true,
       reason: typeof entry.resolution.reason === 'string' ? entry.resolution.reason : undefined,
       timedOut: entry.resolution.timedOut === true,
@@ -315,15 +318,18 @@ function normalizeHistoryEntry(entry: unknown): ApprovalHistoryEntry | null {
   if (typeof entry.summary === 'string' && entry.summary.trim().length > 0) {
     normalized.summary = entry.summary.trim()
   }
-  if (entry.decision === 'approve' || entry.decision === 'reject') {
+  if (entry.decision === 'approve' || entry.decision === 'reject' || entry.decision === 'cancel') {
     normalized.decision = entry.decision
   }
   if (typeof entry.delivered === 'boolean') {
     normalized.delivered = entry.delivered
   }
   if (isRecord(entry.outcome)) {
+    const decision = entry.outcome.decision === 'approve' || entry.outcome.decision === 'cancel'
+      ? entry.outcome.decision
+      : 'reject'
     normalized.outcome = {
-      decision: entry.outcome.decision === 'approve' ? 'approve' : 'reject',
+      decision,
       allowed: entry.outcome.allowed === true,
       reason: typeof entry.outcome.reason === 'string' ? entry.outcome.reason : undefined,
       timedOut: entry.outcome.timedOut === true,

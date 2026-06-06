@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type SetStateAction } from 'react'
 
 const DRAFT_STORAGE_PREFIX = 'hammurabi:draft:'
 const DRAFT_MAX_BYTES = 50 * 1024
@@ -6,7 +6,7 @@ const DRAFT_SAVE_DEBOUNCE_MS = 500
 const DRAFT_SAVED_LABEL_MS = 2000
 
 export function useSessionDraft(sessionName: string) {
-  const [inputText, setInputText] = useState('')
+  const [inputText, setInputTextState] = useState('')
   const [showDraftSaved, setShowDraftSaved] = useState(false)
 
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -16,6 +16,15 @@ export function useSessionDraft(sessionName: string) {
   const skipDraftSaveCountRef = useRef(1)
 
   const draftStorageKey = useMemo(() => `${DRAFT_STORAGE_PREFIX}${sessionName}`, [sessionName])
+
+  const setInputText = useCallback((nextInputText: SetStateAction<string>) => {
+    const resolvedInputText = typeof nextInputText === 'function'
+      ? (nextInputText as (previousInputText: string) => string)(latestInputTextRef.current)
+      : nextInputText
+
+    latestInputTextRef.current = resolvedInputText
+    setInputTextState(resolvedInputText)
+  }, [])
 
   const resizeTextarea = useCallback(() => {
     const textarea = textareaRef.current
@@ -91,7 +100,7 @@ export function useSessionDraft(sessionName: string) {
     } catch {
       // Ignore localStorage errors.
     }
-    setInputText('')
+    setInputTextState('')
     setShowDraftSaved(false)
     requestAnimationFrame(() => {
       resizeTextarea()
@@ -101,10 +110,6 @@ export function useSessionDraft(sessionName: string) {
   useEffect(() => {
     resizeTextarea()
   }, [inputText, resizeTextarea])
-
-  useEffect(() => {
-    latestInputTextRef.current = inputText
-  }, [inputText])
 
   useEffect(() => {
     const previousInput = latestInputTextRef.current
@@ -118,7 +123,8 @@ export function useSessionDraft(sessionName: string) {
     }
 
     skipDraftSaveCountRef.current = restoredDraft === previousInput ? 1 : 2
-    setInputText(restoredDraft)
+    latestInputTextRef.current = restoredDraft
+    setInputTextState(restoredDraft)
     requestAnimationFrame(() => {
       resizeTextarea()
     })
@@ -141,25 +147,26 @@ export function useSessionDraft(sessionName: string) {
     }
   }, [clearDraftSaveTimer, inputText, persistDraft])
 
-  useEffect(() => {
-    const flushDraftBeforeUnload = () => {
-      clearDraftSaveTimer()
-      persistDraft(latestInputTextRef.current, false)
-    }
-
-    window.addEventListener('beforeunload', flushDraftBeforeUnload)
-    return () => {
-      window.removeEventListener('beforeunload', flushDraftBeforeUnload)
-    }
+  const flushLatestDraft = useCallback(() => {
+    clearDraftSaveTimer()
+    persistDraft(latestInputTextRef.current, false)
   }, [clearDraftSaveTimer, persistDraft])
 
   useEffect(() => {
+    window.addEventListener('beforeunload', flushLatestDraft)
+    window.addEventListener('pagehide', flushLatestDraft)
     return () => {
-      clearDraftSaveTimer()
-      clearDraftSavedIndicatorTimer()
-      persistDraft(latestInputTextRef.current, false)
+      window.removeEventListener('beforeunload', flushLatestDraft)
+      window.removeEventListener('pagehide', flushLatestDraft)
     }
-  }, [clearDraftSaveTimer, clearDraftSavedIndicatorTimer, persistDraft])
+  }, [flushLatestDraft])
+
+  useEffect(() => {
+    return () => {
+      clearDraftSavedIndicatorTimer()
+      flushLatestDraft()
+    }
+  }, [clearDraftSavedIndicatorTimer, flushLatestDraft])
 
   return {
     inputText,

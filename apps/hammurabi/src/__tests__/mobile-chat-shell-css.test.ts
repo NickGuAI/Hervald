@@ -73,4 +73,15 @@ describe('mobile chat shell CSS contracts', () => {
     expect(css).not.toContain('#f0ede5')
     expect(css).not.toContain('font-weight: 600;')
   })
+
+  it('keeps user chat bubbles inside a definite wide column', () => {
+    const userStackBlock = getBlock('.hervald-chat-pane .msg-user-stack')
+    const userBubbleBlock = getBlock('.hervald-chat-pane .msg-user')
+
+    expect(userStackBlock).toContain('width: 85%;')
+    expect(userStackBlock).toContain('min-width: 0;')
+    expect(userBubbleBlock).toContain('width: fit-content;')
+    expect(userBubbleBlock).toContain('max-width: 100%;')
+    expect(userBubbleBlock).not.toContain('max-width: min(62%, 100%);')
+  })
 })

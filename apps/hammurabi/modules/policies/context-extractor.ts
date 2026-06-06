@@ -41,6 +41,28 @@ function readStringField(
   return undefined
 }
 
+function readStringArrayField(
+  candidates: Array<Record<string, unknown>>,
+  keys: string[],
+): string[] {
+  for (const candidate of candidates) {
+    for (const key of keys) {
+      const value = candidate[key]
+      if (!Array.isArray(value)) {
+        continue
+      }
+      const collected = value
+        .filter((entry): entry is string => typeof entry === 'string' && entry.trim().length > 0)
+        .map((entry) => entry.trim())
+      if (collected.length > 0) {
+        return collected
+      }
+    }
+  }
+
+  return []
+}
+
 function readObjectStringField(
   candidates: Array<Record<string, unknown>>,
   keys: string[],
@@ -107,12 +129,22 @@ function extractEmailContext(
   const subject = readStringField(candidates, ['subject', 'title'])
     ?? readFlag(command, ['--subject', '--title'])
   const body = readStringField(candidates, ['body', 'message', 'text', 'content'])
+  const attachmentFiles = readStringArrayField(candidates, ['attachments', 'attachment', 'files', 'filePaths', 'paths'])
+  const attachments = attachmentFiles.length > 0
+    ? attachmentFiles.join(', ')
+    : readStringField(candidates, ['attachments', 'attachment', 'files', 'filePaths', 'paths'])
   const details: Record<string, string> = {}
   if (recipient) {
     details.To = recipient
   }
   if (subject) {
     details.Subject = subject
+  }
+  if (attachments) {
+    details.Attachments = attachments
+  }
+  if (attachmentFiles.length > 0) {
+    details['Attachment Count'] = String(attachmentFiles.length)
   }
   if (command) {
     details.Command = command

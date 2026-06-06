@@ -791,14 +791,6 @@ const observations: SourceObservation[] = [
     recommendation: 'Treat modules/org-identity/store.ts as the runtime source of truth until the manifest metadata is reconciled.',
   },
   {
-    id: 'ios-domain-doc-drift',
-    kind: 'drift',
-    summary: 'iOS README references hervald.gehirn.ai while Capacitor config and native API base target hervald.gehirn.ai.',
-    userEffect: 'Mobile/iOS setup readers may use the wrong production host if they follow the stale README text.',
-    evidence: ['ios/README.md', 'capacitor.config.ts', 'src/lib/api-base.ts'],
-    recommendation: 'Use capacitor.config.ts and src/lib/api-base.ts as current runtime truth; update prose docs separately before mobile release work.',
-  },
-  {
     id: 'skills-page-unbound',
     kind: 'current-state',
     summary: 'modules/skills/page.tsx exists, but skills are not a direct top-level route; skills are primarily consumed through /api/skills and the session composer picker.',

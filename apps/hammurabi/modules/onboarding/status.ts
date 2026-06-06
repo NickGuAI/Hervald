@@ -8,6 +8,8 @@ import type { AuthUser } from '@gehirn/auth-providers'
 import { DEFAULT_CLAUDE_EFFORT_LEVEL } from '../claude-effort.js'
 import { createMachineRegistryStore } from '../agents/machines.js'
 import type { ProviderAdapter } from '../agents/providers/provider-adapter.js'
+import type { AutomationScheduler } from '../automations/scheduler.js'
+import type { AutomationStore } from '../automations/store.js'
 import { createDefaultHeartbeatConfig } from '../commanders/heartbeat.js'
 import {
   readCommanderDisplayNames,
@@ -99,6 +101,9 @@ export interface SeedGaiaOptions extends BuildOnboardingStatusOptions {
 export interface SeedStarterWorkforceOptions extends BuildOnboardingStatusOptions {
   sessionStore: Pick<CommanderSessionStore, 'list' | 'create' | 'delete'>
   conversationStore?: Pick<ConversationStore, 'listByCommander' | 'getActiveChatForCommander' | 'ensureDefaultConversation' | 'delete'>
+  automationStore?: Pick<AutomationStore, 'create' | 'delete'>
+  automationScheduler?: Pick<AutomationScheduler, 'createAutomation' | 'deleteAutomation'>
+  automationSchedulerInitialized?: Promise<void>
 }
 
 interface OnboardingState {
@@ -562,6 +567,9 @@ export async function seedStarterWorkforce(
     await installCommanderPackage(definition, {
       sessionStore: options.sessionStore,
       conversationStore: options.conversationStore,
+      automationStore: options.automationStore,
+      automationScheduler: options.automationScheduler,
+      automationSchedulerInitialized: options.automationSchedulerInitialized,
       commanderDataDir: options.commanderDataDir,
       now: () => new Date(),
     })

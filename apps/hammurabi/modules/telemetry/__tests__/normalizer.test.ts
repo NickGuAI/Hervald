@@ -240,6 +240,41 @@ describe('normalizeLogRecord', () => {
     expect(result!.cost).toBeCloseTo(0.00812, 10)
   })
 
+  it('preserves benchmark metadata on normalized calls', () => {
+    const record: ParsedLogRecord = {
+      resource: {
+        'service.name': 'codex-cli',
+        'session.id': 'benchmark-session',
+      },
+      eventName: 'codex.sse_event',
+      attributes: {
+        'event.name': 'codex.sse_event',
+        model: 'gpt-5.3-codex',
+        input_token_count: 100,
+        output_token_count: 50,
+        'metadata.source': 'terminal-bench',
+        'metadata.run_id': 'tb-smoke-1',
+        'metadata.bench': 'terminal-bench',
+        'metadata.task_id': 'hello-world',
+        'metadata.turn': 2,
+        'metadata.runner_mode': 'subscription-host-cli',
+      },
+      timestampNano: '1739872800000000000',
+      severityText: '',
+    }
+
+    const result = normalizeLogRecord(record, now)
+    expect(result).not.toBeNull()
+    expect(result!.metadata).toEqual({
+      source: 'terminal-bench',
+      run_id: 'tb-smoke-1',
+      bench: 'terminal-bench',
+      task_id: 'hello-world',
+      turn: 2,
+      runner_mode: 'subscription-host-cli',
+    })
+  })
+
   it('returns null for records without session.id or conversation.id', () => {
     const record: ParsedLogRecord = {
       resource: {

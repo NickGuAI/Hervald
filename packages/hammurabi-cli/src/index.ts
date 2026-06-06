@@ -9,6 +9,7 @@ import { runAutomationCli } from './automation.js'
 import { runMemoryCli } from './memory.js'
 import { runSessionCli } from './session.js'
 import { runConversationsCli } from './conversations.js'
+import { runEvalCli } from './eval.js'
 import { listWorkerDispatchProviderIds, loadProviderRegistry } from './providers.js'
 import { runDaemonCli } from './daemon.js'
 import { runDoctorCli } from './doctor.js'
@@ -98,6 +99,7 @@ function printRootUsage(stdout: Writable): void {
     '  hammurabi commanders workers dispatch --commander <id> --host <machine-id> --agent <provider> [--task <text>] [--cwd <path>] [--name <session-name>] [--skip-validation]\n',
   )
   stdout.write('  hammurabi memory <command>\n')
+  stdout.write('  hammurabi eval <command>\n')
   stdout.write('  hammurabi session <command>\n')
   stdout.write('  hammurabi sessions <command>\n')
   stdout.write('  hammurabi up [--dev] [--port <port>]\n')
@@ -322,6 +324,9 @@ export async function runCli(args: readonly string[]): Promise<number> {
   if (command === 'memory') {
     return runMemoryCli(args.slice(1))
   }
+  if (command === 'eval') {
+    return runEvalCli(args.slice(1))
+  }
   if (command === 'session' || command === 'sessions') {
     return runSessionCli(args.slice(1))
   }
@@ -342,6 +347,7 @@ export { runDaemonCli } from './daemon.js'
 export { runCommanderCli } from './commander.js'
 export { runAutomationCli } from './automation.js'
 export { runMemoryCli } from './memory.js'
+export { runEvalCli } from './eval.js'
 export { runSessionCli } from './session.js'
 export { runTranscriptsCli } from './transcripts.js'
 export { buildCommanderSessionName, isOwnedByCommander, workerLifecycle }

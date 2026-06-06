@@ -3,6 +3,7 @@ import { EventEmitter } from 'node:events'
 import { PassThrough } from 'node:stream'
 import { describe, expect, it, vi } from 'vitest'
 import { deliverPlanApprovalDecision, type PlanApprovalEvent } from '../../../plan-approval'
+import { isTranscriptEnvelope } from '../../../../../src/types/transcript-envelope'
 import { createOpenCodeAcpSession } from '../session'
 
 function createMockProcess(): ChildProcess {
@@ -104,15 +105,25 @@ describe('createOpenCodeAcpSession', () => {
       },
     })
 
-    const planEvent = session.events.find((event) => event.type === 'plan_approval') as PlanApprovalEvent | undefined
+    const planEvent = session.events.find((event) =>
+      isTranscriptEnvelope(event) &&
+      event.ev.type === 'approval.request' &&
+      event.ev.interactionKind === 'plan_approval',
+    ) as PlanApprovalEvent | undefined
     expect(planEvent).toEqual(expect.objectContaining({
-      type: 'plan_approval',
-      toolId: 'opencode-plan-1',
-      providerContext: expect.objectContaining({
-        provider: 'opencode',
-        backend: 'acp',
-        requestId: 17,
-        answerFormat: 'opencode.plan_decision',
+      schemaVersion: 2,
+      ev: expect.objectContaining({
+        type: 'approval.request',
+        toolCallId: 'opencode-plan-1',
+        interactionKind: 'plan_approval',
+        request: expect.objectContaining({
+          providerContext: expect.objectContaining({
+            provider: 'opencode',
+            backend: 'acp',
+            requestId: 17,
+            answerFormat: 'opencode.plan_decision',
+          }),
+        }),
       }),
     }))
 

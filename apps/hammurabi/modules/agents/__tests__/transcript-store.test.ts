@@ -16,6 +16,7 @@ import {
   appendTranscriptEvent,
   readSessionMeta,
   readTranscriptTail,
+  readTranscriptTailPage,
   resetTranscriptStoreRoot,
   setTranscriptStoreRoot,
   writeSessionMeta,
@@ -129,6 +130,27 @@ describe('transcript-store', () => {
       events[4],
       events[5],
     ])
+    expect(readFileMock).not.toHaveBeenCalled()
+  })
+
+  it('bounds tail pages by event count even when turn markers are absent', async () => {
+    const sessionName = 'event-bounded-tail-session'
+    const events = Array.from({ length: 20 }, (_, index) => ({ type: 'message', marker: index }))
+
+    for (const event of events) {
+      await appendTranscriptEvent(sessionName, event)
+    }
+
+    readFileMock.mockClear()
+    const tail = await readTranscriptTailPage(sessionName, {
+      maxTurns: 20,
+      maxEvents: 5,
+    })
+
+    expect(tail).toEqual({
+      events: events.slice(-5),
+      hasMore: true,
+    })
     expect(readFileMock).not.toHaveBeenCalled()
   })
 })

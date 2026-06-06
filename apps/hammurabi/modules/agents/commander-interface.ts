@@ -16,6 +16,7 @@
  * stays focused on what's actually router-local.
  */
 import type { QueuedMessage, QueuedMessageImage, QueuedMessagePriority } from './message-queue.js'
+import { WebSocket } from 'ws'
 import type { ProviderCreateOptions } from './providers/provider-adapter.js'
 import { getProvider } from './providers/registry.js'
 import type {
@@ -285,6 +286,34 @@ export function createCommanderSessionsInterface(
         ? await sendImmediateTextToStreamSession(session, text, images, displayText)
         : await sendImmediateTextToStreamSession(session, text, images)
       return result.ok
+    },
+
+    recordSessionEvent(name, event) {
+      const session = sessions.get(name)
+      if (!session || session.kind !== 'stream') {
+        return false
+      }
+
+      session.lastEventAt = new Date().toISOString()
+      session.events.push(event)
+      const handlers = sessionEventHandlers.get(name)
+      if (handlers) {
+        for (const handler of handlers) {
+          try {
+            handler(event)
+          } catch {
+            // Session event observers must not interrupt commander routing.
+          }
+        }
+      }
+      const payload = JSON.stringify(event)
+      for (const client of session.clients) {
+        if (client.readyState === WebSocket.OPEN) {
+          client.send(payload)
+        }
+      }
+      schedulePersistedSessionsWrite()
+      return true
     },
 
     deleteSession(name) {

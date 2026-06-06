@@ -14,6 +14,13 @@ interface RealtimeProxyMessage {
   code?: unknown
 }
 
+interface RealtimeTranscriptionUrlOptions {
+  language: string
+  model?: string
+  prompt?: string
+  terms?: readonly string[]
+}
+
 const PCM16_SAMPLE_RATE = 24_000
 const PCM16_BYTES_PER_SAMPLE = 2
 const MIN_AUDIO_DURATION_MS = 100
@@ -44,6 +51,9 @@ type AudioWindow = Window & {
 export interface UseOpenAITranscriptionOptions {
   enabled?: boolean
   language?: string
+  model?: string
+  prompt?: string
+  terms?: readonly string[]
   onShortAudio?: () => void
   onError?: (message: string) => void
 }
@@ -90,12 +100,29 @@ function browserSupportsOpenAITranscription(): boolean {
   )
 }
 
-function buildRealtimeTranscriptionUrl(token: string | null, language: string): string {
+function buildRealtimeTranscriptionUrl(
+  token: string | null,
+  options: RealtimeTranscriptionUrlOptions,
+): string {
   const params = new URLSearchParams()
   if (token) {
     params.set('access_token', token)
   }
-  params.set('language', normalizeLanguage(language))
+  params.set('language', normalizeLanguage(options.language))
+  const model = asNonEmptyString(options.model)
+  if (model) {
+    params.set('model', model)
+  }
+  const prompt = asNonEmptyString(options.prompt)
+  if (prompt) {
+    params.set('prompt', prompt)
+  }
+  for (const term of options.terms ?? []) {
+    const normalizedTerm = asNonEmptyString(term)
+    if (normalizedTerm) {
+      params.append('term', normalizedTerm)
+    }
+  }
   const query = params.toString()
   const querySuffix = query.length > 0 ? `?${query}` : ''
   const wsBase = getWsBase()
@@ -191,7 +218,7 @@ interface StopTranscriptionSessionOptions {
   releaseAudioCapture: (session: ActiveTranscriptionSession) => void
   setIsListening: (listening: boolean) => void
   scheduleFinalization: (callback: () => void, delayMs: number) => number
-  finalizeTranscript: () => void
+  onFinalizeTimeout?: () => void
 }
 
 export function stopTranscriptionSession({
@@ -201,7 +228,7 @@ export function stopTranscriptionSession({
   releaseAudioCapture,
   setIsListening,
   scheduleFinalization,
-  finalizeTranscript,
+  onFinalizeTimeout,
 }: StopTranscriptionSessionOptions): { stopped: boolean; tooShort: boolean } {
   if (!session) {
     return { stopped: false, tooShort: false }
@@ -219,13 +246,13 @@ export function stopTranscriptionSession({
   flushPendingAudioChunks(session)
 
   if (isSocketOpen(session.ws)) {
-    session.ws.send(JSON.stringify({ type: 'stop' }))
+    session.ws.send(JSON.stringify({ type: 'commit' }))
   }
 
   session.finalizationTimer = scheduleFinalization(() => {
-    finalizeTranscript()
+    onFinalizeTimeout?.()
     closeSession()
-  }, 2500)
+  }, 10000)
 
   return { stopped: true, tooShort: false }
 }
@@ -247,6 +274,9 @@ export function useOpenAITranscription(
 ): UseOpenAITranscriptionResult {
   const enabled = options.enabled ?? true
   const language = options.language ?? 'en'
+  const model = options.model
+  const prompt = options.prompt
+  const terms = options.terms
   const onShortAudio = options.onShortAudio
   const onError = options.onError
   const [isListening, setIsListening] = useState(false)
@@ -364,7 +394,12 @@ export function useOpenAITranscription(
       sourceNode.connect(workletNode)
 
       const token = await getAccessToken()
-      ws = new WebSocket(buildRealtimeTranscriptionUrl(token, language))
+      ws = new WebSocket(buildRealtimeTranscriptionUrl(token, {
+        language,
+        model,
+        prompt,
+        terms,
+      }))
       ws.binaryType = 'arraybuffer'
 
       const activeSession: ActiveTranscriptionSession = {
@@ -394,6 +429,7 @@ export function useOpenAITranscription(
         if (sessionRef.current !== activeSession) {
           return
         }
+        ws?.send(JSON.stringify({ type: 'start' }))
         setIsListening(true)
       }
 
@@ -421,6 +457,9 @@ export function useOpenAITranscription(
         }
 
         if (messageType === 'partial') {
+          if (!activeSession.pendingStop) {
+            return
+          }
           const partialText = asNonEmptyString(message.text)
           if (partialText) {
             partialTranscriptRef.current = partialText
@@ -429,6 +468,9 @@ export function useOpenAITranscription(
         }
 
         if (messageType === 'final') {
+          if (!activeSession.pendingStop) {
+            return
+          }
           const finalText = asNonEmptyString(message.text)
           const fallback = partialTranscriptRef.current.trim()
           const segment = finalText ?? (fallback.length > 0 ? fallback : null)
@@ -437,8 +479,6 @@ export function useOpenAITranscription(
           }
           partialTranscriptRef.current = ''
 
-          // With server_vad, multiple finals arrive per recording session.
-          // Only tear down once the user has pressed stop.
           if (activeSession.pendingStop) {
             finalizeTranscript()
             closeSession({ closeSocket: false })
@@ -455,7 +495,10 @@ export function useOpenAITranscription(
           }
 
           const proxyMessage = asNonEmptyString(message.message)
-          if (hasBufferedTranscript(transcriptSegmentsRef.current, partialTranscriptRef.current)) {
+          if (
+            activeSession.pendingStop &&
+            hasBufferedTranscript(transcriptSegmentsRef.current, partialTranscriptRef.current)
+          ) {
             finalizeTranscript()
           }
           if (proxyMessage) {
@@ -469,7 +512,10 @@ export function useOpenAITranscription(
         if (sessionRef.current !== activeSession) {
           return
         }
-        if (hasBufferedTranscript(transcriptSegmentsRef.current, partialTranscriptRef.current)) {
+        if (
+          activeSession.pendingStop &&
+          hasBufferedTranscript(transcriptSegmentsRef.current, partialTranscriptRef.current)
+        ) {
           finalizeTranscript()
         }
         closeSession({ closeSocket: false })
@@ -514,7 +560,7 @@ export function useOpenAITranscription(
       ws?.close()
       setIsListening(false)
     })
-  }, [closeSession, finalizeTranscript, isSupported, language, onError, onShortAudio])
+  }, [closeSession, finalizeTranscript, isSupported, language, model, onError, onShortAudio, prompt, terms])
 
   const stopListening = useCallback(() => {
     void stopTranscriptionSession({
@@ -524,9 +570,11 @@ export function useOpenAITranscription(
       releaseAudioCapture,
       setIsListening,
       scheduleFinalization: (callback, delayMs) => window.setTimeout(callback, delayMs),
-      finalizeTranscript,
+      onFinalizeTimeout: () => {
+        onError?.('Realtime transcription timed out')
+      },
     })
-  }, [closeSession, finalizeTranscript, onShortAudio, releaseAudioCapture])
+  }, [closeSession, onError, onShortAudio, releaseAudioCapture])
 
   return {
     isListening,

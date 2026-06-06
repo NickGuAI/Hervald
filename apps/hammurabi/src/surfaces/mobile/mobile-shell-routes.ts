@@ -2,9 +2,10 @@ import {
   COMMAND_ROOM_ROUTE_METADATA,
   type CommandRoomRouteMetadata,
 } from '@modules/command-room/route-metadata'
-
-export const MOBILE_SHELL_BOTTOM_PADDING_CLASS =
-  'pb-[calc(4rem+env(safe-area-inset-bottom,0px))]'
+export {
+  MOBILE_SHELL_BOTTOM_PADDING_CLASS,
+  MOBILE_SHELL_FLOATING_BOTTOM_OFFSET_CLASS,
+} from '@/styles/mobile-shell'
 
 export function isImmersiveMobileChatRoute(
   pathname: string,

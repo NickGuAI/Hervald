@@ -1,0 +1,32 @@
+{
+  "automations": [
+    {
+      "id": "issue-triage-sweep",
+      "label": "Issue triage sweep",
+      "purpose": "Review open engineering issues and identify stale, blocked, duplicate, or under-specified work.",
+      "trigger": "schedule",
+      "schedule": "0 15 * * 1-5",
+      "status": "paused",
+      "instruction": "Review the active engineering issue queue. Identify stale, blocked, duplicate, under-specified, or ready-to-implement issues. Produce a concise triage report with issue links, recommended next action, and any scope-drift risk. Do not edit issues or code unless explicitly instructed.",
+      "skills": [
+        "legion-investigate",
+        "engineering-review"
+      ],
+      "seedMemory": "This automation is a paused marketplace preset for engineering commanders. Enable it only after confirming the repository and issue queue it should inspect."
+    },
+    {
+      "id": "release-drift-review",
+      "label": "Release drift review",
+      "purpose": "Compare open release PR scope against linked issues and flag omissions, additions, and shortcuts.",
+      "trigger": "schedule",
+      "schedule": "0 20 * * 5",
+      "status": "paused",
+      "instruction": "Review the active release PRs and their linked issues. Compare requested issue scope with implementation summaries and changed files. Flag omissions, unrelated additions, hotfix-only behavior, deferred work, and missing verification. Produce a drift report; do not create follow-up issues unless explicitly instructed.",
+      "skills": [
+        "engineering-review",
+        "debrief"
+      ],
+      "seedMemory": "This automation is a paused marketplace preset for release review. It should protect issue scope rather than expand or shrink it."
+    }
+  ]
+}

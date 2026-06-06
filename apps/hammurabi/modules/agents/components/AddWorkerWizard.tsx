@@ -228,7 +228,7 @@ export function AddWorkerWizard({
 
       {mode === 'same-machine' && (
         <div className="rounded-lg border border-[color:var(--hv-border-hair)] bg-[var(--hv-bg-raised)] p-4 text-sm text-[color:var(--hv-fg)]">
-          The Hammurabi host already exposes the local machine as <span className="font-mono">local</span>.
+          The Hervald host already exposes the local machine as <span className="font-mono">local</span>.
           Use that machine entry when you want to run workers on this server.
         </div>
       )}

@@ -4,6 +4,7 @@ import { resolveActionPolicy } from './resolver.js'
 import { PolicyStore } from './store.js'
 import {
   FALLBACK_ACTION_POLICY_ID,
+  type ApprovalContext,
   type PendingApprovalSource,
 } from './types.js'
 
@@ -27,7 +28,7 @@ export interface ActionPolicyGateResult {
   actionId: string
   actionLabel: string
   approvalId?: string
-  decision: 'allow' | 'deny'
+  decision: 'allow' | 'deny' | 'cancel'
   policyDecision: 'auto' | 'review' | 'block'
   reason?: string
   sessionContext: ApprovalSessionContext | null
@@ -63,6 +64,50 @@ function getCurrentSkillPolicy(
 function toDeniedReason(reason: string | undefined, fallback: string): string {
   const trimmed = reason?.trim()
   return trimmed && trimmed.length > 0 ? trimmed : fallback
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null
+}
+
+function addDetail(details: Record<string, string>, key: string, value: unknown): void {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    details[key] = String(value)
+    return
+  }
+  if (typeof value !== 'string') {
+    return
+  }
+  const trimmed = value.trim()
+  if (trimmed) {
+    details[key] = trimmed
+  }
+}
+
+function enrichApprovalContext(
+  context: ApprovalContext,
+  request: ActionPolicyGateRequest,
+  sessionContext: ApprovalSessionContext | null,
+): ApprovalContext {
+  const providerContext = asRecord(request.providerContext)
+  const details = { ...context.details }
+
+  addDetail(details, 'Provider', providerContext?.provider ?? request.source)
+  addDetail(details, 'Connector', providerContext?.serverName ?? providerContext?.connector)
+  addDetail(details, 'Tool', providerContext?.tool ?? request.toolName)
+  addDetail(details, 'Request ID', providerContext?.requestId)
+  addDetail(details, 'Thread ID', providerContext?.threadId)
+  addDetail(details, 'Item ID', providerContext?.itemId)
+  addDetail(details, 'Turn ID', providerContext?.turnId)
+  addDetail(details, 'Session', sessionContext?.sessionName ?? request.fallbackSessionName)
+  addDetail(details, 'CWD', sessionContext?.cwd)
+
+  return {
+    ...context,
+    details,
+  }
 }
 
 export class ActionPolicyGate {
@@ -109,6 +154,7 @@ export class ActionPolicyGate {
 
     const actionId = resolved.action?.id ?? FALLBACK_ACTION_POLICY_ID
     const actionLabel = resolved.action?.label ?? request.toolName
+    const context = enrichApprovalContext(resolved.context, request, sessionContext)
 
     if (resolved.decision === 'auto') {
       return {
@@ -127,7 +173,7 @@ export class ActionPolicyGate {
         decision: 'deny',
         policyDecision: resolved.decision,
         reason: toDeniedReason(
-          resolved.context.summary || `${actionLabel} is blocked by policy.`,
+          context.summary || `${actionLabel} is blocked by policy.`,
           `${actionLabel} is blocked by policy.`,
         ),
         sessionContext,
@@ -144,7 +190,7 @@ export class ActionPolicyGate {
         actionLabel,
         toolName: request.toolName,
         toolInput: request.toolInput,
-        context: resolved.context,
+        context,
         currentSkillId: sessionContext?.currentSkillInvocation?.skillId,
         currentSkillName: sessionContext?.currentSkillInvocation?.displayName,
       },
@@ -175,7 +221,7 @@ export class ActionPolicyGate {
       actionId,
       actionLabel,
       approvalId: approval.id,
-      decision: outcome.allowed ? 'allow' : 'deny',
+      decision: outcome.decision === 'cancel' ? 'cancel' : outcome.allowed ? 'allow' : 'deny',
       policyDecision: resolved.decision,
       reason: outcome.reason,
       sessionContext,

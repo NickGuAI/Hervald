@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title desc">
+  <title id="title">Einstein default avatar</title>
+  <desc id="desc">Minimal portrait of Einstein with bright hair, spectacles, and a teal coat.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#edf1e6" />
+      <stop offset="100%" stop-color="#d4e3e8" />
+    </linearGradient>
+  </defs>
+  <rect width="128" height="128" rx="28" fill="url(#bg)" />
+  <circle cx="64" cy="49" r="22" fill="#f0d5b7" />
+  <path d="M39 44c5-16 13-24 25-24s20 8 25 24c-8-5-16-8-25-8s-17 3-25 8Z" fill="#f7f4ec" />
+  <path d="M32 50c8-10 17-14 24-14-4 7-4 15-4 19-7 0-14-2-20-5Zm64 0c-6 3-13 5-20 5 0-4 0-12-4-19 7 0 16 4 24 14Z" fill="#f7f4ec" />
+  <path d="M50 49a7 7 0 1 1 0 1Zm21 0a7 7 0 1 1 0 1Z" fill="none" stroke="#43515a" stroke-width="3" />
+  <path d="M57 50h14" stroke="#43515a" stroke-width="3" stroke-linecap="round" />
+  <path d="M54 61c3 3 17 3 20 0-1 9-19 9-20 0Z" fill="#f7f4ec" />
+  <path d="M36 112c3-22 15-35 28-35s25 13 28 35" fill="#496d77" />
+  <path d="M52 111h24l-4-12H56Z" fill="#9ca8ac" />
+</svg>

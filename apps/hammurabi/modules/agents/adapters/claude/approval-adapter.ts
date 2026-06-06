@@ -34,7 +34,7 @@ export const claudeApprovalAdapter = registerApprovalAdapter<ProviderApprovalAda
 
   async sendReply(result: ActionPolicyGateResult, rawEvent: ClaudeApprovalHookEvent): Promise<void> {
     rawEvent.respond({
-      decision: result.decision,
+      decision: result.decision === 'allow' ? 'allow' : 'deny',
       reason: result.reason,
     })
   },

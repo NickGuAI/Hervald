@@ -66,6 +66,8 @@ import type {
   WorldAgentStatus,
 } from '../types.js'
 import type { TranscriptMeta } from '../transcript-store.js'
+import { isTranscriptTurnEndRecord } from '../transcript-records.js'
+import { isTranscriptEnvelope } from '../../../src/types/transcript-envelope.js'
 
 export function asObject(value: unknown): Record<string, unknown> | null {
   return typeof value === 'object' && value !== null
@@ -125,7 +127,7 @@ export function parseFrontmatter(content: string): Record<string, string | boole
 
 export function countCompletedTurnEntries(events: StreamJsonEvent[]): number {
   return events.reduce((count, event) => (
-    event.type === 'result' ? count + 1 : count
+    isTranscriptTurnEndRecord(event) ? count + 1 : count
   ), 0)
 }
 
@@ -533,6 +535,13 @@ export function toCommanderWorldAgent(
 }
 
 export function extractClaudeSessionId(event: StreamJsonEvent): string | undefined {
+  if (isTranscriptEnvelope(event)) {
+    const sessionId = event.source.sessionId
+    if (typeof sessionId === 'string' && sessionId.trim().length > 0) {
+      return sessionId.trim()
+    }
+    return undefined
+  }
   const direct = typeof (event as Record<string, unknown>).session_id === 'string'
     ? (event as Record<string, unknown>).session_id as string
     : undefined
@@ -559,6 +568,39 @@ export function toCompletedSession(
   metadata?: CompletedSessionMetadata,
 ): CompletedSession {
   const sessionType = parseSessionType(metadata?.sessionType) ?? 'worker'
+  if (isTranscriptEnvelope(event) && event.ev.type === 'turn.end') {
+    const normalizedStatus = event.ev.status?.trim().toLowerCase()
+    const subtype = normalizedStatus === 'failed' || normalizedStatus === 'error' || normalizedStatus === 'cancelled'
+      ? 'failed'
+      : 'success'
+    const finalComment = typeof event.ev.result === 'string'
+      ? event.ev.result
+      : (typeof event.ev.error === 'string' ? event.ev.error : '')
+    return {
+      name: sessionName,
+      createdAt: metadata?.createdAt,
+      completedAt,
+      subtype,
+      finalComment,
+      costUsd,
+      sessionType,
+      creator: metadata?.creator ?? { kind: 'human' },
+      spawnedBy: metadata?.spawnedBy,
+    }
+  }
+  if (isTranscriptEnvelope(event)) {
+    return {
+      name: sessionName,
+      createdAt: metadata?.createdAt,
+      completedAt,
+      subtype: 'success',
+      finalComment: '',
+      costUsd,
+      sessionType,
+      creator: metadata?.creator ?? { kind: 'human' },
+      spawnedBy: metadata?.spawnedBy,
+    }
+  }
   return {
     name: sessionName,
     createdAt: metadata?.createdAt,
@@ -751,6 +793,26 @@ export function resolveLastUpdatedAt(session: AnySession): string {
 
 export function getToolUses(event: StreamJsonEvent): Array<{ id: string | null; name: string }> {
   const uses: Array<{ id: string | null; name: string }> = []
+  if (isTranscriptEnvelope(event)) {
+    if (event.ev.type === 'tool.start') {
+      uses.push({
+        id: event.ev.toolCallId.trim().length > 0 ? event.ev.toolCallId.trim() : null,
+        name: event.ev.name.trim().length > 0 ? event.ev.name.trim() : 'Tool',
+      })
+    } else if (event.ev.type === 'approval.request') {
+      const request = asObject(event.ev.request)
+      const toolName = typeof request?.toolName === 'string' && request.toolName.trim().length > 0
+        ? request.toolName.trim()
+        : 'PlanApproval'
+      uses.push({
+        id: typeof event.ev.toolCallId === 'string' && event.ev.toolCallId.trim().length > 0
+          ? event.ev.toolCallId.trim()
+          : null,
+        name: toolName,
+      })
+    }
+    return uses
+  }
   const addToolUse = (rawBlock: unknown) => {
     const block = asObject(rawBlock)
     if (!block || block.type !== 'tool_use') {
@@ -796,6 +858,16 @@ export function getToolUses(event: StreamJsonEvent): Array<{ id: string | null; 
 
 export function getToolResultIds(event: StreamJsonEvent): string[] {
   const ids: string[] = []
+  if (isTranscriptEnvelope(event)) {
+    if (
+      (event.ev.type === 'tool.end' || event.ev.type === 'approval.resolved')
+      && typeof event.ev.toolCallId === 'string'
+      && event.ev.toolCallId.trim().length > 0
+    ) {
+      ids.push(event.ev.toolCallId.trim())
+    }
+    return ids
+  }
   const addToolResult = (rawBlock: unknown) => {
     const block = asObject(rawBlock)
     if (!block || block.type !== 'tool_result') {
@@ -881,6 +953,14 @@ export function hasPendingUserInteraction(session: StreamSession | AnySession): 
 
     if (event.type === 'plan_approval') {
       if (!event.toolId || !answeredToolIds.has(event.toolId)) {
+        return true
+      }
+      continue
+    }
+
+    if (isTranscriptEnvelope(event) && event.ev.type === 'approval.request') {
+      const toolId = typeof event.ev.toolCallId === 'string' ? event.ev.toolCallId.trim() : ''
+      if (!toolId || !answeredToolIds.has(toolId)) {
         return true
       }
       continue
@@ -991,6 +1071,22 @@ export function getWorldAgentPhase(session: AnySession, nowMs: number): WorldAge
 
   for (let i = session.events.length - 1; i >= 0; i -= 1) {
     const event = session.events[i]
+    if (isTranscriptEnvelope(event)) {
+      if (event.ev.type === 'approval.request') {
+        return 'blocked'
+      }
+      if (event.ev.type === 'tool.start' || event.ev.type === 'tool.delta') {
+        return 'tool_use'
+      }
+      if (
+        event.ev.type === 'message.start' ||
+        event.ev.type === 'message.delta' ||
+        event.ev.type === 'thinking.delta' ||
+        event.ev.type === 'plan.update'
+      ) {
+        return 'thinking'
+      }
+    }
     if (getToolUses(event).length > 0) {
       return 'tool_use'
     }

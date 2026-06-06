@@ -72,6 +72,7 @@ describe('createGeminiAcpSession', () => {
       'gemini-worker-model',
       undefined,
       'gemini-3.1-pro-preview',
+      undefined,
     )
     expect(session.model).toBe('gemini-3.1-pro-preview')
   })

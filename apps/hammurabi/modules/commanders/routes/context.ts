@@ -7,7 +7,11 @@ import { generateGeminiImage } from '../../../server/image-generation/gemini-cli
 import { combinedAuth } from '../../../server/middleware/combined-auth.js'
 import { authUserHasRequiredPermissions } from '../../../server/middleware/auth0.js'
 import { appendClaudeReasoningPolicy } from '../../agents/adapters/claude/reasoning-policy.js'
-import { findExpiredPendingPlanApproval } from '../../agents/plan-approval.js'
+import {
+  findExpiredPendingPlanApproval,
+  readPlanApprovalDefaultDecision,
+  readPlanApprovalToolId,
+} from '../../agents/plan-approval.js'
 import type { CommanderSessionsInterface } from '../../agents/routes.js'
 import { AutomationStore } from '../../automations/store.js'
 import {
@@ -22,9 +26,10 @@ import {
   resolveFatPinInterval,
 } from '../choose-heartbeat-mode.js'
 import {
-  profileForApiResponse,
   GAIA_COMMANDER_AVATAR_URL,
+  profileForApiResponse,
   readCommanderUiProfile,
+  resolveDefaultCommanderAvatarUrl,
   resolveCommanderAvatarUrl,
 } from '../commander-profile.js'
 import {
@@ -80,6 +85,7 @@ import type {
   ContextPressureBridge,
   StreamEvent,
 } from './types.js'
+import { isTranscriptEnvelope } from '../../../src/types/transcript-envelope.js'
 
 const STARTUP_PROMPT = 'Commander runtime started. Acknowledge readiness and await instructions.'
 const COMMANDER_SESSION_NAME_PREFIX = 'commander-'
@@ -261,13 +267,42 @@ export function resolveEffectiveHeartbeat(
 }
 
 export function isContextPressureSubtypeEvent(event: StreamEvent): boolean {
-  const type = typeof event.type === 'string' ? event.type : ''
-  const subtype = typeof event.subtype === 'string' ? event.subtype : ''
+  const record = event as Record<string, unknown>
+  const type = typeof record.type === 'string' ? record.type : ''
+  const subtype = typeof record.subtype === 'string' ? record.subtype : ''
   return type === 'context_pressure' || subtype === 'context_pressure'
 }
 
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null
+}
+
+function hasTranscriptUsageBearingContextPressureData(event: StreamEvent): boolean {
+  if (!isTranscriptEnvelope(event)) {
+    return false
+  }
+
+  if (event.ev.type === 'turn.end') {
+    return true
+  }
+
+  if (event.ev.type !== 'provider.activity') {
+    return false
+  }
+
+  const data = asRecord(event.ev.data)
+  return Boolean(data && ('usage' in data || 'tokenUsage' in data))
+}
+
 function isUsageBearingContextPressureEvent(event: StreamEvent): boolean {
-  const type = typeof event.type === 'string' ? event.type : ''
+  if (hasTranscriptUsageBearingContextPressureData(event)) {
+    return true
+  }
+
+  const record = event as Record<string, unknown>
+  const type = typeof record.type === 'string' ? record.type : ''
   return type === 'message_delta' || type === 'result'
 }
 
@@ -659,15 +694,61 @@ function normalizeEventErrors(raw: unknown): string[] {
 export function resolveCommanderTerminalState(
   event: StreamEvent,
 ): CommanderRuntime['terminalState'] {
-  if (event.type !== 'result') {
+  if (isTranscriptEnvelope(event)) {
+    if (event.ev.type !== 'turn.end') {
+      return null
+    }
+
+    const resultRecord = asRecord(event.ev.result)
+    const errorRecord = asRecord(event.ev.error)
+    const subtype = parseMessage(resultRecord?.subtype ?? errorRecord?.subtype) ?? undefined
+    const terminalReason = parseMessage(
+      resultRecord?.terminal_reason
+      ?? resultRecord?.terminalReason
+      ?? errorRecord?.terminal_reason
+      ?? errorRecord?.terminalReason,
+    ) ?? undefined
+    const message = parseMessage(event.ev.result)
+      ?? parseMessage(resultRecord?.message ?? resultRecord?.result ?? resultRecord?.error)
+      ?? parseMessage(event.ev.error)
+      ?? parseMessage(errorRecord?.message ?? errorRecord?.result ?? errorRecord?.error)
+      ?? 'Commander session ended.'
+    const errors = [
+      ...normalizeEventErrors(resultRecord?.errors),
+      ...normalizeEventErrors(errorRecord?.errors),
+    ]
+    const resultStatus = parseMessage(event.ev.status ?? resultRecord?.status ?? errorRecord?.status) ?? undefined
+    const reachedMaxTurns = (
+      subtype === 'error_max_turns'
+      || terminalReason === 'max_turns'
+      || resultStatus === 'max_turns'
+      || /maximum number of turns/i.test(message)
+      || errors.some((entry) => /maximum number of turns/i.test(entry))
+    )
+
+    if (!reachedMaxTurns) {
+      return null
+    }
+
+    return {
+      kind: 'max_turns',
+      subtype,
+      terminalReason,
+      message,
+      errors,
+    }
+  }
+
+  const record = event as Record<string, unknown>
+  if (record.type !== 'result') {
     return null
   }
 
-  const subtype = parseMessage(event.subtype) ?? undefined
-  const terminalReason = parseMessage(event.terminal_reason ?? event.terminalReason) ?? undefined
-  const message = parseMessage(event.result ?? event.text)
+  const subtype = parseMessage(record.subtype) ?? undefined
+  const terminalReason = parseMessage(record.terminal_reason ?? record.terminalReason) ?? undefined
+  const message = parseMessage(record.result ?? record.text)
     ?? 'Commander session ended.'
-  const errors = normalizeEventErrors(event.errors)
+  const errors = normalizeEventErrors(record.errors)
   const reachedMaxTurns = (
     subtype === 'error_max_turns'
     || terminalReason === 'max_turns'
@@ -993,7 +1074,7 @@ export function buildCommandersContext(
         )
         : null
       if (expiredPlanApproval) {
-        const decision = expiredPlanApproval.defaultDecision
+        const decision = readPlanApprovalDefaultDecision(expiredPlanApproval)
         if (!decision) {
           await appendHeartbeatLog(
             {
@@ -1023,7 +1104,7 @@ export function buildCommandersContext(
         const message = `Auto-resolved on heartbeat: ${decision}`
         const resolved = await sessionsInterface.autoResolvePlanApproval(
           sessionName,
-          expiredPlanApproval.toolId,
+          readPlanApprovalToolId(expiredPlanApproval) ?? '',
           decision,
           message,
         )
@@ -1425,7 +1506,12 @@ export function buildCommandersContext(
       ...payload,
       ui: profileForApiResponse(commanderId, profile),
       avatarUrl: await resolveCommanderAvatarUrl(commanderId, commanderBasePath, profile, {
-        defaultAvatarUrl: payload.host === 'gaia' ? GAIA_COMMANDER_AVATAR_URL : undefined,
+        defaultAvatarUrl: payload.host === 'gaia'
+          ? GAIA_COMMANDER_AVATAR_URL
+          : resolveDefaultCommanderAvatarUrl({
+            host: payload.host,
+            templateId: payload.templateId,
+          }),
       }),
     }
   }

@@ -521,6 +521,82 @@ describe('telemetry routes', () => {
     await server.close()
   })
 
+  it('ingests and filters eval telemetry metadata', async () => {
+    const filePath = await createTempStoreFilePath()
+    const server = await startServer({
+      apiKeyStore: createTestApiKeyStore(),
+      storeFilePath: filePath,
+      now: () => new Date('2026-06-02T12:00:00.000Z'),
+    })
+
+    const ingestResponse = await fetch(`${server.baseUrl}/api/telemetry/ingest`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-hammurabi-api-key': 'test-key',
+      },
+      body: JSON.stringify({
+        sessionId: 'eval-session',
+        agentName: 'benchmark-runner',
+        model: 'gpt-5.3-codex',
+        provider: 'openai',
+        inputTokens: 100,
+        outputTokens: 50,
+        costUsd: 0.004,
+        durationMs: 300,
+        currentTask: 'terminal-bench smoke',
+        timestamp: '2026-06-02T12:00:00.000Z',
+        metadata: {
+          source: 'terminal-bench',
+          run_id: 'tb-smoke-1',
+          bench: 'terminal-bench',
+          task_id: 'hello-world',
+          turn: 1,
+          runner_mode: 'subscription-host-cli',
+        },
+      }),
+    })
+    expect(ingestResponse.status).toBe(201)
+    const ingested = await ingestResponse.json() as { metadata: { run_id: string } }
+    expect(ingested.metadata.run_id).toBe('tb-smoke-1')
+
+    const callsResponse = await fetch(`${server.baseUrl}/api/telemetry/calls?bench=terminal-bench&runner_mode=subscription-host-cli`, {
+      headers: {
+        'x-hammurabi-api-key': 'test-key',
+      },
+    })
+    expect(callsResponse.status).toBe(200)
+    const calls = await callsResponse.json() as Array<{ sessionId: string; metadata: { task_id: string } }>
+    expect(calls).toHaveLength(1)
+    expect(calls[0]).toMatchObject({
+      sessionId: 'eval-session',
+      metadata: {
+        task_id: 'hello-world',
+      },
+    })
+
+    const sessionsResponse = await fetch(`${server.baseUrl}/api/telemetry/sessions?run_id=tb-smoke-1`, {
+      headers: {
+        'x-hammurabi-api-key': 'test-key',
+      },
+    })
+    const sessions = await sessionsResponse.json() as Array<{ id: string }>
+    expect(sessions).toEqual([
+      expect.objectContaining({
+        id: 'eval-session',
+      }),
+    ])
+
+    const emptyResponse = await fetch(`${server.baseUrl}/api/telemetry/calls?bench=locomo`, {
+      headers: {
+        'x-hammurabi-api-key': 'test-key',
+      },
+    })
+    expect(await emptyResponse.json()).toEqual([])
+
+    await server.close()
+  })
+
   it('POST /compact runs compaction and returns ok', async () => {
     const filePath = await createTempStoreFilePath()
     const server = await startServer({

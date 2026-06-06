@@ -13,7 +13,11 @@ import {
   setAuthMode,
   setUnauthorizedHandler,
 } from '@/lib/api'
-import { isCapacitorNative } from '@/lib/api-base'
+import {
+  clearStoredInstanceUrl,
+  getStoredInstanceUrl,
+  isCapacitorNative,
+} from '@/lib/api-base'
 import { isAuthGatewayHealthy, resolveAuthReturnTo } from '@/lib/auth-build-guard'
 import { ThemeProvider } from '@/lib/theme-context'
 import { useFontScale } from '@/hooks/use-font-scale'
@@ -158,7 +162,7 @@ function AuthTokenBridge() {
     >
       <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
         <p style={{ margin: 0, flex: 1, fontSize: 13, lineHeight: 1.45 }}>
-          Hammurabi is reconnecting. Sign-in recovery will resume after the gateway is healthy.
+          Hervald is reconnecting. Sign-in recovery will resume after the gateway is healthy.
         </p>
         <button
           type="button"
@@ -214,6 +218,13 @@ export default function App() {
 
   const [apiKey, setApiKeyState] = useState<string | null>(() => {
     const storedKey = typeof localStorage !== 'undefined' ? localStorage.getItem(API_KEY_STORAGE) : null
+    // On native we need both an API key AND a stored instance URL. A key without
+    // a URL is a stale upgrade artifact from the hardcoded-backend build; drop it
+    // so the Connect screen takes over.
+    if (storedKey && isCapacitorNative() && getStoredInstanceUrl() === null) {
+      localStorage.removeItem(API_KEY_STORAGE)
+      return null
+    }
     if (storedKey) {
       setAuthMode('api-key')
       setAccessTokenResolver(() => Promise.resolve(storedKey))
@@ -239,6 +250,7 @@ export default function App() {
 
   const handleSignOut = useCallback(() => {
     localStorage.removeItem(API_KEY_STORAGE)
+    clearStoredInstanceUrl()
     setAccessTokenResolver(null)
     setAuthMode('anonymous')
     setApiKeyState(null)
@@ -287,7 +299,7 @@ export default function App() {
     <Auth0Provider
       domain={domain}
       clientId={clientId}
-      // Hammurabi is an operations console expected to survive idle tabs and
+      // Hervald is an operations console expected to survive idle tabs and
       // reloads. Refresh-token rotation plus explicit local cache gives the
       // Auth0 SDK a durable recovery path instead of relying only on iframe
       // silent auth, which browsers can block after inactivity.

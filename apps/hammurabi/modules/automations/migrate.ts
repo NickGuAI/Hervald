@@ -1,4 +1,5 @@
 import { copyFile, mkdir, readFile, readdir, rename, writeFile } from 'node:fs/promises'
+import type { Dirent } from 'node:fs'
 import path from 'node:path'
 import { parseProviderId } from '../agents/providers/registry.js'
 import type { AgentType } from '../agents/types.js'
@@ -17,6 +18,12 @@ import type {
 
 const AUTOMATION_BOOT_MIGRATION_VERSION = 1
 const MANIFEST_FILE = 'manifest.json'
+const ATHENA_HYGIENE_AUTOMATION_PARENT_COMMANDER_ID = 'd66a5217-ace6-4f00-b2ac-bbd64a9a7e7e'
+const ATHENA_HYGIENE_AUTOMATION_NAMES = new Set([
+  'context-hygiene',
+  'daily-review',
+  'domain-distill',
+])
 
 interface LegacyCronTask {
   id: string
@@ -91,6 +98,7 @@ interface AutomationBootMigrationManifest {
   cronRunsMerged: boolean
   sentinelsImported: boolean
   commandRoomBackedUp: boolean
+  athenaHygieneAutomationsGlobalized: boolean
 }
 
 interface MigrationRoots {
@@ -205,6 +213,7 @@ function defaultManifest(): AutomationBootMigrationManifest {
     cronRunsMerged: false,
     sentinelsImported: false,
     commandRoomBackedUp: false,
+    athenaHygieneAutomationsGlobalized: false,
   }
 }
 
@@ -223,6 +232,7 @@ async function readManifest(filePath: string): Promise<AutomationBootMigrationMa
     cronRunsMerged: parsed.cronRunsMerged === true,
     sentinelsImported: parsed.sentinelsImported === true,
     commandRoomBackedUp: parsed.commandRoomBackedUp === true,
+    athenaHygieneAutomationsGlobalized: parsed.athenaHygieneAutomationsGlobalized === true,
   }
 }
 
@@ -574,6 +584,47 @@ function asAutomationRecord(payload: unknown): Automation | null {
   return payload as unknown as Automation
 }
 
+async function globalizeAthenaHygieneAutomations(
+  automationsDir: string,
+): Promise<string[]> {
+  const migratedIds: string[] = []
+  let entries: Dirent[]
+  try {
+    entries = await readdir(automationsDir, { withFileTypes: true })
+  } catch (error) {
+    if (isObject(error) && 'code' in error && error.code === 'ENOENT') {
+      return migratedIds
+    }
+    throw error
+  }
+
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith('.json') || entry.name === MANIFEST_FILE) {
+      continue
+    }
+
+    const filePath = path.join(automationsDir, entry.name)
+    const automation = asAutomationRecord(await readJsonFile(filePath))
+    if (!automation) {
+      continue
+    }
+
+    const isAthenaOwned = automation.parentCommanderId === ATHENA_HYGIENE_AUTOMATION_PARENT_COMMANDER_ID
+    const isHygieneAutomation = ATHENA_HYGIENE_AUTOMATION_NAMES.has(automation.name.trim().toLowerCase())
+    if (!isAthenaOwned || !isHygieneAutomation) {
+      continue
+    }
+
+    await writeJsonFileAtomic(filePath, {
+      ...automation,
+      parentCommanderId: null,
+    })
+    migratedIds.push(automation.id)
+  }
+
+  return migratedIds.sort((left, right) => left.localeCompare(right))
+}
+
 async function ensureAutomationArtifacts(
   automationDir: string,
   automation: Pick<Automation, 'name' | 'seedMemory' | 'memoryPath' | 'outputDir'>,
@@ -713,6 +764,13 @@ export async function migrateLegacyAutomations(
 
   const manifest = await readManifest(roots.manifestPath)
   const migratedIds = new Set<string>()
+  if (!manifest.athenaHygieneAutomationsGlobalized) {
+    for (const automationId of await globalizeAthenaHygieneAutomations(automationsDir)) {
+      migratedIds.add(automationId)
+    }
+    manifest.athenaHygieneAutomationsGlobalized = true
+    await writeJsonFileAtomic(roots.manifestPath, manifest)
+  }
   const now = new Date().toISOString()
   const shouldLoadCronData = !manifest.cronTasksImported || !manifest.cronRunsMerged
   const tasks = shouldLoadCronData
@@ -737,7 +795,7 @@ export async function migrateLegacyAutomations(
 
   if (needsFounderForMigration && !operatorId) {
     return {
-      migratedIds: [],
+      migratedIds: [...migratedIds].sort((left, right) => left.localeCompare(right)),
       deferred: true,
     }
   }

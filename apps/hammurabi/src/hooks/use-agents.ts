@@ -10,12 +10,15 @@ import type {
   MachineAuthSetupInput,
   MachineAuthStatusReport,
   Machine,
+  ProviderAuthSnapshotsResponse,
+  ProviderReauthStartResponse,
   SessionTransportType,
   SessionType,
   WorldAgent,
 } from '@/types'
 
 const AGENT_SESSIONS_REFETCH_INTERVAL_MS = 5000
+const PROVIDER_AUTH_SNAPSHOTS_REFETCH_INTERVAL_MS = 5000
 
 export interface DirectoryListing {
   parent: string
@@ -104,6 +107,41 @@ export async function setupMachineAuth(
   )
 }
 
+export async function fetchProviderAuthSnapshots(): Promise<ProviderAuthSnapshotsResponse> {
+  return fetchJson<ProviderAuthSnapshotsResponse>('/api/agents/provider-auth/snapshots')
+}
+
+export async function probeProviderAuthSnapshots(): Promise<ProviderAuthSnapshotsResponse> {
+  return fetchJson<ProviderAuthSnapshotsResponse>('/api/agents/provider-auth/probe', {
+    method: 'POST',
+  })
+}
+
+export async function startProviderReauth(input: {
+  provider: string
+  scopeId?: string
+  host?: string
+}): Promise<ProviderReauthStartResponse> {
+  const body: Record<string, string> = {}
+  if (input.scopeId?.trim()) {
+    body.scopeId = input.scopeId.trim()
+  }
+  if (input.host?.trim()) {
+    body.host = input.host.trim()
+  }
+
+  return fetchJson<ProviderReauthStartResponse>(
+    `/api/agents/provider-auth/${encodeURIComponent(input.provider)}/reauth/start`,
+    {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    },
+  )
+}
+
 export async function fetchWorldAgents(): Promise<WorldAgent[]> {
   return fetchJson<WorldAgent[]>('/api/agents/world')
 }
@@ -149,6 +187,14 @@ export function useMachineDaemonStatus(machineId?: string, enabled = true) {
     queryFn: () => fetchMachineDaemonStatus(machineId ?? ''),
     enabled: enabled && typeof machineId === 'string' && machineId.trim().length > 0,
     refetchInterval: enabled ? 5000 : false,
+  })
+}
+
+export function useProviderAuthSnapshots() {
+  return useQuery({
+    queryKey: ['agents', 'provider-auth', 'snapshots'],
+    queryFn: fetchProviderAuthSnapshots,
+    refetchInterval: PROVIDER_AUTH_SNAPSHOTS_REFETCH_INTERVAL_MS,
   })
 }
 

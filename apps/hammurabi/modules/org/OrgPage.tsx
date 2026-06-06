@@ -216,6 +216,9 @@ export function OrgPage() {
 
   const operatorAutomations = data.automations.filter((automation) => automation.parentId === data.operator.id)
   const commanderCards = data.commanders
+  const commanderAutomationCountsById = Object.fromEntries(
+    commanderCards.map((commander) => [commander.id, findCommanderAutomations(data, commander.id).length]),
+  )
   const commanderSummaries = commanderCards.map((commander) => ({
     id: commander.id,
     displayName: commander.displayName,
@@ -330,6 +333,7 @@ export function OrgPage() {
         <section data-testid="org-commander-grid-section" className="space-y-8">
           <CommanderProfileCardGrid
             commanders={commanderCards}
+            automationCountsByCommanderId={commanderAutomationCountsById}
             expandedId={expandedCommanderId}
             onSelect={setExpandedCommanderId}
           />

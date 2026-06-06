@@ -2,11 +2,21 @@ import type {
   PlanApprovalDecision,
   PlanApprovalStreamEvent,
 } from '../../src/types/hammurabi-events.js'
-import { readCodexRuntime, readOpenCodeRuntime } from './providers/provider-session-context.js'
+import {
+  isTranscriptEnvelope,
+  type TranscriptEnvelope,
+} from '../../src/types/transcript-envelope.js'
+import { readOpenCodeRuntime } from './providers/provider-session-context.js'
 import { getToolResultIds } from './session/state.js'
 import type { StreamJsonEvent, StreamSession } from './types.js'
 
-export type PlanApprovalEvent = Extract<StreamJsonEvent, { type: 'plan_approval' }>
+type TranscriptPlanApprovalEvent = TranscriptEnvelope & {
+  ev: Extract<TranscriptEnvelope['ev'], { type: 'approval.request' }>
+}
+
+export type PlanApprovalEvent =
+  | Extract<StreamJsonEvent, { type: 'plan_approval' }>
+  | TranscriptPlanApprovalEvent
 export type ToolAnswerMap = Record<string, string | string[]>
 
 function parseIsoMs(value: unknown): number | null {
@@ -15,6 +25,112 @@ function parseIsoMs(value: unknown): number | null {
   }
   const parsed = Date.parse(value)
   return Number.isFinite(parsed) ? parsed : null
+}
+
+function isLegacyPlanApprovalEvent(event: StreamJsonEvent): event is Extract<StreamJsonEvent, { type: 'plan_approval' }> {
+  return !isTranscriptEnvelope(event) && event.type === 'plan_approval'
+}
+
+function isTranscriptPlanApprovalEvent(event: StreamJsonEvent): event is TranscriptPlanApprovalEvent {
+  if (!isTranscriptEnvelope(event) || event.ev.type !== 'approval.request') {
+    return false
+  }
+  const request = asRecord(event.ev.request)
+  return event.ev.interactionKind === 'plan_approval' || request?.interactionKind === 'plan_approval'
+}
+
+function asPlanApprovalEvent(event: StreamJsonEvent): PlanApprovalEvent | null {
+  if (isLegacyPlanApprovalEvent(event)) {
+    return event
+  }
+  if (isTranscriptPlanApprovalEvent(event)) {
+    return event
+  }
+  return null
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null
+}
+
+export function readPlanApprovalToolId(event: StreamJsonEvent): string | undefined {
+  if (isLegacyPlanApprovalEvent(event)) {
+    return typeof event.toolId === 'string' && event.toolId.trim().length > 0
+      ? event.toolId.trim()
+      : undefined
+  }
+  if (isTranscriptPlanApprovalEvent(event)) {
+    return typeof event.ev.toolCallId === 'string' && event.ev.toolCallId.trim().length > 0
+      ? event.ev.toolCallId.trim()
+      : undefined
+  }
+  return undefined
+}
+
+function readPlanApprovalProviderContext(event: PlanApprovalEvent): Record<string, unknown> | null {
+  if (isLegacyPlanApprovalEvent(event)) {
+    return asRecord(event.providerContext)
+  }
+  if (isTranscriptPlanApprovalEvent(event)) {
+    const request = asRecord(event.ev.request)
+    return asRecord(request?.providerContext)
+  }
+  return null
+}
+
+export function readPlanApprovalDefaultDecision(event: PlanApprovalEvent): PlanApprovalDecision | undefined {
+  if (isLegacyPlanApprovalEvent(event)) {
+    return event.defaultDecision
+  }
+  if (isTranscriptPlanApprovalEvent(event)) {
+    const request = asRecord(event.ev.request)
+    const value = event.ev.defaultDecision ?? request?.defaultDecision
+    return value === 'approve' || value === 'reject' ? value : undefined
+  }
+  return undefined
+}
+
+function readPlanApprovalToolName(event: PlanApprovalEvent): string | undefined {
+  if (isLegacyPlanApprovalEvent(event)) {
+    return typeof event.toolName === 'string' && event.toolName.trim().length > 0
+      ? event.toolName.trim()
+      : undefined
+  }
+  if (isTranscriptPlanApprovalEvent(event)) {
+    const request = asRecord(event.ev.request)
+    return typeof request?.toolName === 'string' && request.toolName.trim().length > 0
+      ? request.toolName.trim()
+      : undefined
+  }
+  return undefined
+}
+
+function readPlanApprovalExpiryInput(
+  event: PlanApprovalEvent,
+): (Pick<PlanApprovalStreamEvent, 'expiresAt' | 'autoResolveAfterMs' | 'source'> & Record<string, unknown>) {
+  if (isLegacyPlanApprovalEvent(event)) {
+    return event
+  }
+  const request = asRecord(event.ev.request)
+  return {
+    expiresAt: event.ev.expiresAt ?? (typeof request?.expiresAt === 'string' ? request.expiresAt : undefined),
+    autoResolveAfterMs: typeof event.ev.autoResolveAfterMs === 'number'
+      ? event.ev.autoResolveAfterMs
+      : (typeof request?.autoResolveAfterMs === 'number' ? request.autoResolveAfterMs : undefined),
+    source: {
+      provider: event.source.provider,
+      backend: (
+        event.source.backend === 'stream-json' ||
+        event.source.backend === 'acp' ||
+        event.source.backend === 'rpc'
+      )
+        ? event.source.backend
+        : 'cli',
+      normalizedAt: event.time,
+    },
+  }
 }
 
 export function firstToolAnswerValue(
@@ -57,8 +173,9 @@ export function findPlanApprovalEvent(
 ): PlanApprovalEvent | null {
   for (let i = session.events.length - 1; i >= 0; i -= 1) {
     const event = session.events[i]
-    if (event.type === 'plan_approval' && event.toolId === toolId) {
-      return event
+    const approvalEvent = asPlanApprovalEvent(event)
+    if (approvalEvent && readPlanApprovalToolId(approvalEvent) === toolId) {
+      return approvalEvent
     }
   }
   return null
@@ -99,13 +216,15 @@ export function findExpiredPendingPlanApproval(
       answeredToolIds.add(toolResultId)
     }
 
-    if (event.type !== 'plan_approval') {
+    const approvalEvent = asPlanApprovalEvent(event)
+    if (!approvalEvent) {
       continue
     }
-    if (!event.toolId || answeredToolIds.has(event.toolId)) {
+    const toolId = readPlanApprovalToolId(approvalEvent)
+    if (!toolId || answeredToolIds.has(toolId)) {
       continue
     }
-    return isPlanApprovalExpired(event, nowMs) ? event : null
+    return isPlanApprovalExpired(readPlanApprovalExpiryInput(approvalEvent), nowMs) ? approvalEvent : null
   }
   return null
 }
@@ -115,9 +234,11 @@ export function buildPlanApprovalToolResultPayload(
   decision: PlanApprovalDecision,
   message?: string,
 ): StreamJsonEvent {
+  const providerContext = readPlanApprovalProviderContext(event)
+  const toolId = readPlanApprovalToolId(event) ?? ''
   const approved = decision === 'approve'
   const trimmedMessage = message?.trim()
-  const content = event.providerContext.answerFormat === 'opencode.plan_decision'
+  const content = providerContext?.answerFormat === 'opencode.plan_decision'
     ? {
         decision,
         approved,
@@ -134,7 +255,7 @@ export function buildPlanApprovalToolResultPayload(
       role: 'user',
       content: [{
         type: 'tool_result',
-        tool_use_id: event.toolId,
+        tool_use_id: toolId,
         content: JSON.stringify(content),
       }],
     },
@@ -146,10 +267,11 @@ export function buildOpenCodePlanApprovalResult(
   decision: PlanApprovalDecision,
   message?: string,
 ): { requestId: number | string; result: Record<string, unknown> } | null {
-  if (event.providerContext.answerFormat !== 'opencode.plan_decision') {
+  const providerContext = readPlanApprovalProviderContext(event)
+  if (!providerContext || providerContext.answerFormat !== 'opencode.plan_decision') {
     return null
   }
-  const requestId = event.providerContext.requestId
+  const requestId = providerContext.requestId
   if (typeof requestId !== 'number' && typeof requestId !== 'string') {
     return null
   }
@@ -164,113 +286,6 @@ export function buildOpenCodePlanApprovalResult(
   }
 }
 
-function asRecord(value: unknown): Record<string, unknown> | null {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : null
-}
-
-function readFirstSchemaField(schema: unknown): {
-  name: string
-  property: Record<string, unknown> | null
-} | null {
-  const record = asRecord(schema)
-  const properties = asRecord(record?.properties)
-  if (!properties) {
-    return null
-  }
-
-  const required = Array.isArray(record?.required)
-    ? record.required.find((value): value is string => typeof value === 'string' && value.trim().length > 0)
-    : undefined
-  const fieldName = required ?? Object.keys(properties).find((key) => key.trim().length > 0)
-  if (!fieldName) {
-    return null
-  }
-
-  return {
-    name: fieldName,
-    property: asRecord(properties[fieldName]),
-  }
-}
-
-function coerceElicitationValue(property: Record<string, unknown> | null, message: string | undefined): unknown {
-  const type = typeof property?.type === 'string' ? property.type : 'string'
-  const enumValues = Array.isArray(property?.enum) ? property.enum : []
-
-  if (enumValues.length > 0) {
-    if (message) {
-      const matched = enumValues.find((value) => String(value) === message)
-      if (matched !== undefined) {
-        return matched
-      }
-    }
-    return enumValues[0]
-  }
-
-  if (type === 'boolean') {
-    if (!message) {
-      return true
-    }
-    const normalized = message.trim().toLowerCase()
-    if (['false', 'no', 'reject', 'rejected', 'decline', 'declined'].includes(normalized)) {
-      return false
-    }
-    return true
-  }
-
-  if (type === 'number' || type === 'integer') {
-    const parsed = message ? Number(message) : Number.NaN
-    if (Number.isFinite(parsed)) {
-      return type === 'integer' ? Math.trunc(parsed) : parsed
-    }
-    return 0
-  }
-
-  return message ?? 'Approved'
-}
-
-function buildCodexElicitationAcceptContent(
-  event: PlanApprovalEvent,
-  message: string | undefined,
-): Record<string, unknown> {
-  const field = readFirstSchemaField(event.providerContext.requestedSchema)
-  if (!field) {
-    return message ? { message } : {}
-  }
-  return {
-    [field.name]: coerceElicitationValue(field.property, message),
-  }
-}
-
-export function buildCodexMcpElicitationResult(
-  event: PlanApprovalEvent,
-  decision: PlanApprovalDecision,
-  message?: string,
-): { requestId: number; result: Record<string, unknown> } | null {
-  if (event.providerContext.answerFormat !== 'codex.mcp_elicitation') {
-    return null
-  }
-  const requestId = event.providerContext.requestId
-  if (typeof requestId !== 'number') {
-    return null
-  }
-  if (decision === 'reject') {
-    return {
-      requestId,
-      result: { action: 'decline' },
-    }
-  }
-  const trimmedMessage = message?.trim()
-  return {
-    requestId,
-    result: {
-      action: 'accept',
-      content: buildCodexElicitationAcceptContent(event, trimmedMessage || undefined),
-    },
-  }
-}
-
 export function deliverPlanApprovalDecision(
   session: StreamSession,
   event: PlanApprovalEvent,
@@ -279,16 +294,6 @@ export function deliverPlanApprovalDecision(
   writeToStdin: (session: StreamSession, data: string) => boolean,
 ): { ok: true; payload: StreamJsonEvent } | { ok: false; reason: string } {
   const payload = buildPlanApprovalToolResultPayload(event, decision, message)
-  const codexResult = buildCodexMcpElicitationResult(event, decision, message)
-  if (codexResult) {
-    const runtime = readCodexRuntime(session)
-    if (!runtime) {
-      return { ok: false, reason: 'Codex runtime is unavailable' }
-    }
-    runtime.sendResponse(codexResult.requestId, codexResult.result)
-    return { ok: true, payload }
-  }
-
   const openCodeResult = buildOpenCodePlanApprovalResult(event, decision, message)
   if (openCodeResult) {
     const runtime = readOpenCodeRuntime(session)
@@ -314,7 +319,7 @@ export function buildPlanApprovalAutoResolvedSystemEvent(
     type: 'system',
     subtype: 'plan_approval_auto_resolved',
     text: `Auto-resolved on heartbeat: ${decision}`,
-    last_tool_name: event.toolName,
+    last_tool_name: readPlanApprovalToolName(event),
   }
 }
 

@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
+import { HAMMURABI_MODULE_SERVER_METADATA } from '../module-manifest'
 
 const serverRoot = path.resolve(__dirname, '..')
 const indexSource = readFileSync(path.join(serverRoot, 'index.ts'), 'utf8')
@@ -94,5 +95,24 @@ describe('server app shell boundaries', () => {
       .filter((importPath) => !importPath.endsWith('/runtime.js'))
 
     expect(nonRuntimeModuleImports).toEqual([])
+  })
+
+  it('allows split-shell deployments to bind the API runtime to an explicit host', () => {
+    expect(indexSource).toContain("const host = process.env.HAMMURABI_HOST?.trim() || undefined")
+    expect(indexSource).toContain('server.listen(port, host, () => {')
+  })
+
+  it('keeps websocket upgrades under the proxy-owned API roots', () => {
+    const websocketPaths = HAMMURABI_MODULE_SERVER_METADATA.flatMap((manifest) => (
+      manifest.websockets.map((socket) => socket.path)
+    ))
+
+    expect(websocketPaths.length).toBeGreaterThan(0)
+    for (const websocketPath of websocketPaths) {
+      expect(
+        websocketPath.startsWith('/api/') || websocketPath.startsWith('/v1/'),
+        `WebSocket path ${websocketPath} must stay under a proxy-owned root`,
+      ).toBe(true)
+    }
   })
 })

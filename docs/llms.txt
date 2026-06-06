@@ -1,0 +1,37 @@
+# Hervald
+
+> Hervald is an operator-controlled agent fleet runtime. It coordinates
+> commanders, workers, provider CLIs, channels, workspace files, approvals,
+> telemetry, onboarding, and persistent memory.
+
+Use this file as the concise agent-readable map. Prefer setup and operation
+pages first.
+
+## Setup
+
+- [Docs home](index.md)
+- [Quickstart](getting-started/quickstart.md)
+- [Troubleshooting](troubleshoot.md)
+- [Provider auth](operate/provider-auth.md)
+- [Machines and workers](operate/machines.md)
+
+## Concepts
+
+- [Commanders](concepts/commanders.md)
+- [Workers](concepts/workers.md)
+- [Command Room](concepts/command-room.md)
+- [Approvals](concepts/approvals.md)
+
+## Operations
+
+- [Workspace](operate/workspace.md)
+- [Channels](operate/channels.md)
+- [Provider auth](operate/provider-auth.md)
+- [Machines and workers](operate/machines.md)
+
+## Reference
+
+- [CLI reference](reference/cli.md)
+- [API reference](reference/api.md)
+- [Naming policy](reference/naming.md)
+- [Full docs directory](docs-directory.md)

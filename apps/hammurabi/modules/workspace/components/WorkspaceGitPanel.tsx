@@ -69,9 +69,9 @@ export function WorkspaceGitPanel({
   }
 
   return (
-    <div className="grid h-full min-h-0 grid-cols-1 gap-3 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
-      <section className="min-h-0 overflow-hidden rounded-lg border border-[color:var(--hv-border-hair)] bg-[var(--hv-surface-card)]">
-        <header className="border-b border-[color:var(--hv-border-hair)] bg-[var(--hv-bg-raised)] px-3 py-2">
+    <div className="flex h-full min-h-0 flex-col gap-3">
+      <section className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border border-[color:var(--hv-border-hair)] bg-[var(--hv-surface-card)]">
+        <header className="shrink-0 border-b border-[color:var(--hv-border-hair)] bg-[var(--hv-bg-raised)] px-3 py-2">
           <p className="section-title flex items-center gap-2">
             <GitBranch size={13} />
             Pending Changes
@@ -80,7 +80,7 @@ export function WorkspaceGitPanel({
             {status.branch ?? 'detached'} • +{status.ahead} / -{status.behind}
           </p>
         </header>
-        <div className="max-h-[20rem] overflow-auto p-3 space-y-2">
+        <div className="min-h-0 flex-1 overflow-auto p-3 space-y-2">
           {status.entries.length === 0 ? (
             <p className="text-sm text-[color:var(--hv-fg-subtle)]">Working tree is clean.</p>
           ) : (
@@ -94,14 +94,14 @@ export function WorkspaceGitPanel({
         </div>
       </section>
 
-      <section className="min-h-0 overflow-hidden rounded-lg border border-[color:var(--hv-border-hair)] bg-[var(--hv-surface-card)]">
-        <header className="border-b border-[color:var(--hv-border-hair)] bg-[var(--hv-bg-raised)] px-3 py-2">
+      <section className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border border-[color:var(--hv-border-hair)] bg-[var(--hv-surface-card)]">
+        <header className="shrink-0 border-b border-[color:var(--hv-border-hair)] bg-[var(--hv-bg-raised)] px-3 py-2">
           <p className="section-title flex items-center gap-2">
             <GitCommitHorizontal size={13} />
             Recent Commits
           </p>
         </header>
-        <div className="max-h-[20rem] overflow-auto p-3 space-y-2">
+        <div className="min-h-0 flex-1 overflow-auto p-3 space-y-2">
           {log.commits.length === 0 ? (
             <p className="text-sm text-[color:var(--hv-fg-subtle)]">No commits yet.</p>
           ) : (

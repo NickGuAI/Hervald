@@ -32,6 +32,22 @@ function isWithinRoot(rootPath: string, targetPath: string, usePosix = false): b
   return relative === '' || (!relative.startsWith('..') && !pathApi.isAbsolute(relative))
 }
 
+function normalizeLocalAbsolutePathForRoot(rootPath: string, targetPath: string): string {
+  const normalizedTarget = path.normalize(targetPath)
+  if (isWithinRoot(rootPath, normalizedTarget)) {
+    return normalizedTarget
+  }
+
+  const privateVariant = normalizedTarget.startsWith('/private/')
+    ? normalizedTarget.slice('/private'.length)
+    : `/private${normalizedTarget}`
+  if (isWithinRoot(rootPath, privateVariant)) {
+    return privateVariant
+  }
+
+  return normalizedTarget
+}
+
 function normalizeRelativePath(input: string | undefined | null): string {
   if (!input) {
     return ''
@@ -77,7 +93,9 @@ function normalizeWorkspacePathInput(
       ? path.posix.isAbsolute(slashPrefixedCandidate)
       : path.isAbsolute(slashPrefixedCandidate)
     if (slashPrefixedIsAbsolute) {
-      const normalizedSlashPrefixed = pathApi.normalize(slashPrefixedCandidate)
+      const normalizedSlashPrefixed = workspace.isRemote
+        ? pathApi.normalize(slashPrefixedCandidate)
+        : normalizeLocalAbsolutePathForRoot(workspace.rootPath, slashPrefixedCandidate)
       if (isWithinRoot(workspace.rootPath, normalizedSlashPrefixed, workspace.isRemote)) {
         return pathApi.relative(workspace.rootPath, normalizedSlashPrefixed).split(pathApi.sep).join('/')
       }
@@ -85,7 +103,9 @@ function normalizeWorkspacePathInput(
     return normalizeRelativePath(expandedRaw)
   }
 
-  const normalizedAbsolute = pathApi.normalize(candidate)
+  const normalizedAbsolute = workspace.isRemote
+    ? pathApi.normalize(candidate)
+    : normalizeLocalAbsolutePathForRoot(workspace.rootPath, candidate)
   if (!isWithinRoot(workspace.rootPath, normalizedAbsolute, workspace.isRemote)) {
     throw new WorkspaceError(403, 'Workspace path escapes the workspace root')
   }

@@ -22,6 +22,10 @@ import {
   parsePlanApprovalDecision,
   type ToolAnswerMap,
 } from './plan-approval.js'
+import {
+  deliverCodexMcpElicitationQuestionAnswer,
+  findCodexMcpElicitationQuestionEvent,
+} from './adapters/codex/elicitation.js'
 import { attachWebSocketKeepAlive } from './session/helpers.js'
 import type {
   AnySession,
@@ -137,6 +141,7 @@ export function createAgentsWebSocket(ctx: AgentsWebSocketContext): {
             ws.send(JSON.stringify({
               type: 'replay',
               events: replayEvents,
+              ...(projection.envelopes ? { envelopes: projection.envelopes } : {}),
               messages: projection.messages,
               projection,
               more: replayMore,
@@ -246,6 +251,27 @@ export function createAgentsWebSocket(ctx: AgentsWebSocketContext): {
                     return
                   }
 
+                  appendStreamEvent(liveSession, result.payload)
+                  broadcastStreamEvent(liveSession, result.payload)
+                  if (readCodexThreadId(liveSession) && !liveSession.lastTurnCompleted) {
+                    scheduleTurnWatchdog?.(liveSession)
+                  }
+                  schedulePersistedSessionsWrite()
+                  ws.send(JSON.stringify({ type: 'tool_answer_ack', toolId: msg.toolId }))
+                  return
+                }
+
+                const codexElicitationQuestion = findCodexMcpElicitationQuestionEvent(liveSession, msg.toolId)
+                if (codexElicitationQuestion) {
+                  const result = deliverCodexMcpElicitationQuestionAnswer(
+                    liveSession,
+                    codexElicitationQuestion,
+                    msg.answers as ToolAnswerMap,
+                  )
+                  if (!result.ok) {
+                    ws.send(JSON.stringify({ type: 'tool_answer_error', toolId: msg.toolId }))
+                    return
+                  }
                   appendStreamEvent(liveSession, result.payload)
                   broadcastStreamEvent(liveSession, result.payload)
                   if (readCodexThreadId(liveSession) && !liveSession.lastTurnCompleted) {

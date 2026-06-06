@@ -100,7 +100,11 @@ export interface SessionPruneCandidate {
   creator: SessionCreator
   lifecycle: SessionPruneLifecycle
   ageMs: number
-  reason: 'cron-completed-ttl' | 'stale-non-human-ttl' | 'exited-non-human-ttl'
+  reason:
+    | 'cron-completed-ttl'
+    | 'stale-non-human-ttl'
+    | 'exited-non-human-ttl'
+    | 'exited-commander-worker-ttl'
 }
 
 export interface PersistenceHelpers {
@@ -276,6 +280,10 @@ export function createPersistenceHelpers(
     return Number.isFinite(createdAtMs) ? createdAtMs : null
   }
 
+  function isCommanderWorkerSession(session: Pick<StreamSession | ExitedStreamSessionState, 'creator' | 'sessionType'>): boolean {
+    return session.sessionType === 'worker' && session.creator.kind === 'commander'
+  }
+
   async function getStaleNonHumanSessionCandidates(
     config: SessionPrunerConfig,
     nowMs: number = Date.now(),
@@ -290,10 +298,11 @@ export function createPersistenceHelpers(
       if (session.kind !== 'stream') continue
       if (session.creator.kind === 'human') continue
       if (session.clients.size > 0) continue
-      if (await isLiveSessionResumeAvailable(session)) continue
 
       const lifecycle = getWorldAgentStatus(session, nowMs)
       if (lifecycle === 'stale') {
+        if (await isLiveSessionResumeAvailable(session)) continue
+
         const staleAtMs = Date.parse(session.lastEventAt ?? session.createdAt)
         if (!Number.isFinite(staleAtMs)) continue
         const ageMs = nowMs - staleAtMs
@@ -315,6 +324,8 @@ export function createPersistenceHelpers(
         if (!Number.isFinite(completedAtMs)) continue
         const ageMs = nowMs - completedAtMs
         if (ageMs <= config.exitedSessionTtlMs) continue
+        const isTeamWorker = isCommanderWorkerSession(session)
+        if (!isTeamWorker && await isLiveSessionResumeAvailable(session)) continue
 
         candidates.push({
           name: sessionName,
@@ -322,20 +333,23 @@ export function createPersistenceHelpers(
           creator: session.creator,
           lifecycle: 'exited',
           ageMs,
-          reason: 'exited-non-human-ttl',
+          reason: isTeamWorker ? 'exited-commander-worker-ttl' : 'exited-non-human-ttl',
         })
       }
     }
 
     for (const [sessionName, session] of exitedStreamSessions) {
       if (session.creator.kind === 'human') continue
-      const persistedEntry = buildPersistedEntryFromExitedSession(sessionName, session)
-      if (await isExitedSessionResumeAvailable(persistedEntry)) continue
 
       const exitedAtMs = resolveExitedSessionAgeStartAt(sessionName, session)
       if (exitedAtMs === null || !Number.isFinite(exitedAtMs)) continue
       const ageMs = nowMs - exitedAtMs
       if (ageMs <= config.exitedSessionTtlMs) continue
+      const isTeamWorker = isCommanderWorkerSession(session)
+      if (!isTeamWorker) {
+        const persistedEntry = buildPersistedEntryFromExitedSession(sessionName, session)
+        if (await isExitedSessionResumeAvailable(persistedEntry)) continue
+      }
 
       candidates.push({
         name: sessionName,
@@ -343,7 +357,7 @@ export function createPersistenceHelpers(
         creator: session.creator,
         lifecycle: 'exited',
         ageMs,
-        reason: 'exited-non-human-ttl',
+        reason: isTeamWorker ? 'exited-commander-worker-ttl' : 'exited-non-human-ttl',
       })
     }
 

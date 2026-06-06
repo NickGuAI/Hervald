@@ -8,6 +8,7 @@ import type { ApiKeyStoreLike } from '../../../server/api-keys/store'
 import { createSettingsRouter } from '../routes'
 import { AppSettingsStore } from '../store'
 import { DEFAULT_COMPOSER_ABILITIES } from '../composer-abilities'
+import { getDefaultComposerSkillSlotSettings } from '../composer-skill-slots'
 
 const API_KEY_HEADERS = {
   'x-hammurabi-api-key': 'test-key',
@@ -20,6 +21,7 @@ const expectedDefaultComposerAbilities = {
   customAbilities: [],
   customAbilitiesEnabled: false,
 }
+const expectedDefaultComposerSkillSlots = getDefaultComposerSkillSlotSettings()
 
 interface RunningServer {
   baseUrl: string
@@ -125,6 +127,7 @@ describe('settings routes', () => {
           theme: 'light',
           fontScale: 1,
           composerAbilities: expectedDefaultComposerAbilities,
+          composerSkillSlots: expectedDefaultComposerSkillSlots,
           updatedAt: '2026-05-03T00:00:00.000Z',
         },
       })
@@ -232,6 +235,7 @@ describe('settings routes', () => {
           theme: 'dark',
           fontScale: 1,
           composerAbilities: expectedDefaultComposerAbilities,
+          composerSkillSlots: expectedDefaultComposerSkillSlots,
           updatedAt: '2026-05-03T01:00:00.000Z',
         },
       })
@@ -240,6 +244,7 @@ describe('settings routes', () => {
         theme: 'dark',
         fontScale: 1,
         composerAbilities: expectedDefaultComposerAbilities,
+        composerSkillSlots: expectedDefaultComposerSkillSlots,
         updatedAt: '2026-05-03T01:00:00.000Z',
       })
     } finally {
@@ -299,6 +304,7 @@ describe('settings routes', () => {
           theme: 'light',
           fontScale: 1.2,
           composerAbilities: expectedDefaultComposerAbilities,
+          composerSkillSlots: expectedDefaultComposerSkillSlots,
           updatedAt: '2026-05-03T02:00:00.000Z',
         },
       })
@@ -307,6 +313,7 @@ describe('settings routes', () => {
         theme: 'light',
         fontScale: 1.2,
         composerAbilities: expectedDefaultComposerAbilities,
+        composerSkillSlots: expectedDefaultComposerSkillSlots,
         updatedAt: '2026-05-03T02:00:00.000Z',
       })
     } finally {
@@ -381,9 +388,8 @@ describe('settings routes', () => {
           fontScale: 1,
           composerAbilities: {
             defaultAbilities: [
-              DEFAULT_COMPOSER_ABILITIES[0],
               {
-                ...DEFAULT_COMPOSER_ABILITIES[1],
+                ...DEFAULT_COMPOSER_ABILITIES[0],
                 enabled: false,
               },
             ],
@@ -395,6 +401,7 @@ describe('settings routes', () => {
             }],
             customAbilitiesEnabled: true,
           },
+          composerSkillSlots: expectedDefaultComposerSkillSlots,
           updatedAt: '2026-05-03T03:00:00.000Z',
         },
       })
@@ -407,6 +414,61 @@ describe('settings routes', () => {
             label: 'Summarize',
             prompt: 'Summarize the requested context before answering.',
             enabled: true,
+          }],
+        },
+      })
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('updates and persists composer quick skill slots separately from abilities', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'hammurabi-settings-route-'))
+    tempDirs.push(dir)
+    const store = new AppSettingsStore({
+      filePath: path.join(dir, 'settings.json'),
+      now: () => new Date('2026-05-03T04:00:00.000Z'),
+    })
+    const server = await startServer(store)
+
+    try {
+      const updateResponse = await fetch(`${server.baseUrl}/api/settings`, {
+        method: 'PATCH',
+        headers: {
+          ...API_KEY_HEADERS,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          composerSkillSlots: {
+            slots: [{
+              id: 'primary',
+              skillName: '/create-quests',
+            }],
+          },
+        }),
+      })
+
+      expect(updateResponse.status).toBe(200)
+      expect(await updateResponse.json()).toEqual({
+        settings: {
+          theme: 'light',
+          fontScale: 1,
+          composerAbilities: expectedDefaultComposerAbilities,
+          composerSkillSlots: {
+            slots: [{
+              id: 'primary',
+              skillName: 'create-quests',
+            }],
+          },
+          updatedAt: '2026-05-03T04:00:00.000Z',
+        },
+      })
+
+      await expect(store.get()).resolves.toMatchObject({
+        composerSkillSlots: {
+          slots: [{
+            id: 'primary',
+            skillName: 'create-quests',
           }],
         },
       })
@@ -440,6 +502,40 @@ describe('settings routes', () => {
       expect(response.status).toBe(400)
       expect(await response.json()).toEqual({
         error: 'composerAbilities.customAbilitiesEnabled must be a boolean',
+      })
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('rejects malformed composer quick skill slot payloads', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'hammurabi-settings-route-'))
+    tempDirs.push(dir)
+    const store = new AppSettingsStore({
+      filePath: path.join(dir, 'settings.json'),
+    })
+    const server = await startServer(store)
+
+    try {
+      const response = await fetch(`${server.baseUrl}/api/settings`, {
+        method: 'PATCH',
+        headers: {
+          ...API_KEY_HEADERS,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          composerSkillSlots: {
+            slots: [{
+              id: 'primary',
+              skillName: '../not-a-skill',
+            }],
+          },
+        }),
+      })
+
+      expect(response.status).toBe(400)
+      expect(await response.json()).toEqual({
+        error: 'composer skill slot skillName must be a valid skill name',
       })
     } finally {
       await server.close()

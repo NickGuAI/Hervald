@@ -5,6 +5,7 @@ import type { Duplex } from 'node:stream'
 import type { ApiKeyStoreLike } from '../../../server/api-keys/store.js'
 import type { ProviderSecretsStoreLike } from '../../../server/api-keys/provider-secrets-store.js'
 import type { CommanderSessionsInterface } from '../../agents/routes.js'
+import type { TranscriptEnvelope } from '../../../src/types/transcript-envelope.js'
 import type { AutomationStore } from '../../automations/store.js'
 import type { AutomationScheduler } from '../../automations/scheduler.js'
 import type { ChannelSurfaceBindingStore } from '../../channels/surface-binding-store.js'
@@ -107,7 +108,7 @@ export interface GitHubIssueUrlParts {
   normalizedUrl: string
 }
 
-export type StreamEvent = Record<string, unknown>
+export type StreamEvent = Record<string, unknown> | TranscriptEnvelope
 
 export interface ContextPressureBridge {
   onContextPressure(handler: () => Promise<void> | void): void

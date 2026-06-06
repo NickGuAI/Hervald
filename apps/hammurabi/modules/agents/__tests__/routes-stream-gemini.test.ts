@@ -61,10 +61,10 @@ describe("stream sessions", () => {
         expect(geminiAcp.requests.some((request) => request.method === 'session/set_mode')).toBe(false)
 
         const ws = await connectWs(server.baseUrl, 'gemini-ws-input')
-        const received: Array<{ type: string; source?: { provider?: string; backend?: string } }> = []
+        const received: Array<Record<string, unknown>> = []
 
         ws.on('message', (data) => {
-          const parsed = JSON.parse(data.toString()) as { type: string; source?: { provider?: string; backend?: string } }
+          const parsed = JSON.parse(data.toString()) as Record<string, unknown>
           if (parsed.type !== 'replay') {
             received.push(parsed)
           }
@@ -78,21 +78,47 @@ describe("stream sessions", () => {
         })
 
         await vi.waitFor(() => {
-          expect(received
-            .filter((message) => message.type !== 'queue_update')
-            .map((message) => message.type)).toEqual([
-            'user',
-            'message_start',
-            'content_block_start',
-            'content_block_delta',
-            'content_block_stop',
-            'content_block_start',
-            'content_block_delta',
-            'content_block_stop',
-            'message_delta',
-            'message_stop',
-            'result',
-          ])
+          const visible = received.filter((message) => message.type !== 'queue_update')
+          expect(visible).toEqual(expect.arrayContaining([
+            expect.objectContaining({
+              type: 'user',
+            }),
+            expect.objectContaining({
+              type: 'message_start',
+              source: { provider: 'gemini', backend: 'acp' },
+            }),
+            expect.objectContaining({
+              schemaVersion: 2,
+              source: expect.objectContaining({ provider: 'gemini', backend: 'acp' }),
+              ev: { type: 'thinking.delta', text: 'pondering...' },
+            }),
+            expect.objectContaining({
+              schemaVersion: 2,
+              source: expect.objectContaining({ provider: 'gemini', backend: 'acp' }),
+              ev: { type: 'message.delta', text: 'reply 1', channel: 'final' },
+            }),
+            expect.objectContaining({
+              schemaVersion: 2,
+              source: expect.objectContaining({ provider: 'gemini', backend: 'acp' }),
+              ev: {
+                type: 'provider.activity',
+                title: 'Usage updated',
+                data: expect.objectContaining({
+                  usage: { input_tokens: 5, output_tokens: 7 },
+                }),
+              },
+            }),
+            expect.objectContaining({
+              schemaVersion: 2,
+              source: expect.objectContaining({ provider: 'gemini', backend: 'acp' }),
+              ev: {
+                type: 'turn.end',
+                status: 'ok',
+                result: 'Turn completed',
+                usage: { input_tokens: 5, output_tokens: 7 },
+              },
+            }),
+          ]))
         })
 
         expect(received).toEqual(expect.arrayContaining([
@@ -101,12 +127,14 @@ describe("stream sessions", () => {
             source: { provider: 'gemini', backend: 'acp' },
           }),
           expect.objectContaining({
-            type: 'content_block_delta',
-            source: { provider: 'gemini', backend: 'acp' },
+            schemaVersion: 2,
+            ev: { type: 'message.delta', text: 'reply 1', channel: 'final' },
+            source: expect.objectContaining({ provider: 'gemini', backend: 'acp' }),
           }),
           expect.objectContaining({
-            type: 'result',
-            source: { provider: 'gemini', backend: 'acp' },
+            schemaVersion: 2,
+            ev: { type: 'turn.end', status: 'ok', result: 'Turn completed', usage: { input_tokens: 5, output_tokens: 7 } },
+            source: expect.objectContaining({ provider: 'gemini', backend: 'acp' }),
           }),
         ]))
 
@@ -269,24 +297,35 @@ describe("stream sessions", () => {
             source: { provider: 'gemini', backend: 'acp' },
           }),
           expect.objectContaining({
-            type: 'content_block_delta',
-            delta: { type: 'thinking_delta', thinking: 'pondering...' },
-            source: { provider: 'gemini', backend: 'acp' },
+            schemaVersion: 2,
+            ev: { type: 'thinking.delta', text: 'pondering...' },
+            source: expect.objectContaining({ provider: 'gemini', backend: 'acp' }),
           }),
           expect.objectContaining({
-            type: 'content_block_delta',
-            delta: { type: 'text_delta', text: 'reply 1' },
-            source: { provider: 'gemini', backend: 'acp' },
+            schemaVersion: 2,
+            ev: { type: 'message.delta', text: 'reply 1', channel: 'final' },
+            source: expect.objectContaining({ provider: 'gemini', backend: 'acp' }),
           }),
           expect.objectContaining({
-            type: 'message_delta',
-            usage: { input_tokens: 5, output_tokens: 7 },
-            source: { provider: 'gemini', backend: 'acp' },
+            schemaVersion: 2,
+            ev: {
+              type: 'provider.activity',
+              title: 'Usage updated',
+              data: expect.objectContaining({
+                usage: { input_tokens: 5, output_tokens: 7 },
+              }),
+            },
+            source: expect.objectContaining({ provider: 'gemini', backend: 'acp' }),
           }),
           expect.objectContaining({
-            type: 'result',
-            result: 'Turn completed',
-            source: { provider: 'gemini', backend: 'acp' },
+            schemaVersion: 2,
+            ev: {
+              type: 'turn.end',
+              status: 'ok',
+              result: 'Turn completed',
+              usage: { input_tokens: 5, output_tokens: 7 },
+            },
+            source: expect.objectContaining({ provider: 'gemini', backend: 'acp' }),
           }),
         ]))
 

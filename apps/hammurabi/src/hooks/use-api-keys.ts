@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { buildRequestHeaders, fetchJson } from '@/lib/api'
-import { getFullUrl } from '@/lib/api-base'
+import { getFullUrl, getStoredInstanceUrl } from '@/lib/api-base'
 
 export interface ApiKeyView {
   id: string
@@ -8,6 +8,7 @@ export interface ApiKeyView {
   prefix: string
   createdBy: string
   createdAt: string
+  expiresAt: string | null
   lastUsedAt: string | null
   scopes: string[]
 }
@@ -19,6 +20,33 @@ export interface CreateApiKeyInput {
 
 export interface CreatedApiKey extends ApiKeyView {
   key: string
+}
+
+export interface CreateMobileAccessInviteInput {
+  expiresInSeconds: number
+  scopes?: string[]
+}
+
+interface MobileAccessInviteResponse {
+  id?: string
+  name?: string
+  prefix?: string
+  key?: string
+  invite?: string
+  qrPayload?: string
+  payload?: string | Record<string, unknown>
+  expiresAt?: string | null
+  scopes?: string[]
+  instanceUrl?: string
+}
+
+export interface MobileAccessInvite {
+  invite: string
+  qrPayload: string
+  expiresAt: string
+  scopes: string[]
+  instanceUrl?: string
+  keyPrefix?: string
 }
 
 export interface OpenAITranscriptionSettings {
@@ -43,6 +71,90 @@ async function createApiKey(input: CreateApiKeyInput): Promise<CreatedApiKey> {
     },
     body: JSON.stringify(input),
   })
+}
+
+function getCurrentInstanceUrl(): string | null {
+  const storedInstanceUrl = getStoredInstanceUrl()
+  if (storedInstanceUrl) {
+    return storedInstanceUrl
+  }
+
+  if (typeof window === 'undefined') {
+    return null
+  }
+
+  const origin = window.location?.origin?.trim()
+  if (!origin || origin === 'null' || origin.startsWith('capacitor:')) {
+    return null
+  }
+
+  return origin.replace(/\/+$/, '')
+}
+
+function buildMobileInvitePayload(response: MobileAccessInviteResponse): string | null {
+  if (typeof response.invite === 'string' && response.invite.trim().length > 0) {
+    return response.invite
+  }
+  if (typeof response.payload === 'string' && response.payload.trim().length > 0) {
+    return response.payload
+  }
+  if (response.payload) {
+    return JSON.stringify(response.payload)
+  }
+  if (typeof response.key !== 'string' || response.key.trim().length === 0) {
+    return null
+  }
+
+  const instanceUrl = response.instanceUrl ?? getCurrentInstanceUrl()
+  if (!instanceUrl) {
+    return response.key
+  }
+
+  return JSON.stringify({
+    instanceUrl,
+    apiKey: response.key,
+    expiresAt: response.expiresAt,
+    scopes: response.scopes ?? [],
+  })
+}
+
+function normalizeMobileAccessInvite(response: MobileAccessInviteResponse): MobileAccessInvite {
+  const invite = buildMobileInvitePayload(response)
+
+  if (!invite) {
+    throw new Error('Mobile access invite response did not include invite payload')
+  }
+
+  const expiresAt = typeof response.expiresAt === 'string' ? response.expiresAt : null
+  if (!expiresAt) {
+    throw new Error('Mobile access invite response did not include expiry')
+  }
+  const instanceUrl = response.instanceUrl ?? getCurrentInstanceUrl()
+
+  return {
+    invite,
+    qrPayload:
+      typeof response.qrPayload === 'string' && response.qrPayload.trim().length > 0
+        ? response.qrPayload
+        : invite,
+    expiresAt,
+    scopes: response.scopes ?? [],
+    ...(instanceUrl ? { instanceUrl } : {}),
+    ...(response.prefix ? { keyPrefix: response.prefix } : {}),
+  }
+}
+
+async function createMobileAccessInvite(
+  input: CreateMobileAccessInviteInput,
+): Promise<MobileAccessInvite> {
+  const response = await fetchJson<MobileAccessInviteResponse>('/api/auth/mobile/pairing', {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify(input),
+  })
+  return normalizeMobileAccessInvite(response)
 }
 
 async function revokeApiKey(id: string): Promise<void> {
@@ -132,6 +244,17 @@ export function useCreateApiKey() {
 
   return useMutation({
     mutationFn: createApiKey,
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['auth', 'api-keys'] })
+    },
+  })
+}
+
+export function useCreateMobileAccessInvite() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: createMobileAccessInvite,
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['auth', 'api-keys'] })
     },

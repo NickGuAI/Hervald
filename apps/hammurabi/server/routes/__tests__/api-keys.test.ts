@@ -24,7 +24,12 @@ import { createTelemetryRouterWithHub } from '../../../modules/telemetry/routes'
 
 interface RunningServer {
   baseUrl: string
+  apiKeyStore: ApiKeyJsonStore
   close: () => Promise<void>
+}
+
+interface StartServerOptions {
+  now?: () => Date
 }
 
 const testDirectories: string[] = []
@@ -54,7 +59,7 @@ async function removeDirectoryWithRetry(directory: string): Promise<void> {
   }
 }
 
-async function startServer(): Promise<RunningServer> {
+async function startServer(options: StartServerOptions = {}): Promise<RunningServer> {
   const directory = await createTestDirectory()
   const apiKeyStore = new ApiKeyJsonStore(path.join(directory, 'api-keys.json'))
   const providerSecretsStore = new ProviderSecretsStore({
@@ -132,6 +137,7 @@ async function startServer(): Promise<RunningServer> {
       store: apiKeyStore,
       providerSecretsStore,
       verifyToken: verifyAuth0Token,
+      now: options.now,
     }),
   )
   app.use(
@@ -140,6 +146,7 @@ async function startServer(): Promise<RunningServer> {
       dataFilePath: telemetryStorePath,
       apiKeyStore,
       verifyAuth0Token,
+      now: options.now,
     }).router,
   )
 
@@ -154,6 +161,7 @@ async function startServer(): Promise<RunningServer> {
 
   return {
     baseUrl: `http://127.0.0.1:${address.port}`,
+    apiKeyStore,
     close: async () => {
       await new Promise<void>((resolve, reject) => {
         server.close((error) => {
@@ -256,6 +264,279 @@ describe('api key auth routes', () => {
       body: JSON.stringify({ retentionDays: 30 }),
     })
     expect(ingestAfterRevoke.status).toBe(401)
+
+    await server.close()
+  })
+
+  it('creates mobile pairing credentials with narrow scopes and one-time key visibility', async () => {
+    const server = await startServer()
+
+    const denied = await fetch(`${server.baseUrl}/api/auth/mobile/pairing`, {
+      method: 'POST',
+      headers: {
+        authorization: 'Bearer valid-auth0-telemetry-write-token',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ name: 'Should Fail' }),
+    })
+    expect(denied.status).toBe(403)
+
+    const response = await fetch(`${server.baseUrl}/api/auth/mobile/pairing`, {
+      method: 'POST',
+      headers: {
+        authorization: 'Bearer valid-auth0-admin-token',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        name: 'iPhone Pairing',
+        expiresInSeconds: 300,
+      }),
+    })
+    expect(response.status).toBe(201)
+    const created = (await response.json()) as {
+      id: string
+      key: string
+      scopes: string[]
+      expiresAt: string
+    }
+    expect(created.key.startsWith('hmrb_')).toBe(true)
+    expect(typeof created.expiresAt).toBe('string')
+    expect(created.scopes).toEqual([
+      'agents:read',
+      'agents:write',
+      'commanders:read',
+      'commanders:write',
+      'services:read',
+      'services:write',
+      'skills:read',
+      'telemetry:read',
+    ])
+    expect(created.scopes).not.toContain('agents:admin')
+    expect(created.scopes).not.toContain('skills:write')
+
+    const listResponse = await fetch(`${server.baseUrl}/api/auth/keys`, {
+      headers: {
+        authorization: 'Bearer valid-auth0-admin-token',
+      },
+    })
+    expect(listResponse.status).toBe(200)
+    const listed = (await listResponse.json()) as Array<{
+      id: string
+      key?: string
+      expiresAt: string | null
+    }>
+    expect(listed).toHaveLength(1)
+    expect(listed[0]?.id).toBe(created.id)
+    expect(listed[0]?.expiresAt).toBe(created.expiresAt)
+    expect(listed[0]).not.toHaveProperty('key')
+
+    const manageKeysWithMobileCredential = await fetch(`${server.baseUrl}/api/auth/keys`, {
+      headers: {
+        authorization: `Bearer ${created.key}`,
+      },
+    })
+    expect(manageKeysWithMobileCredential.status).toBe(403)
+
+    const verifyMobileCredential = await fetch(`${server.baseUrl}/api/auth/mobile/verify`, {
+      headers: {
+        authorization: `Bearer ${created.key}`,
+      },
+    })
+    expect(verifyMobileCredential.status).toBe(200)
+    expect(await verifyMobileCredential.json()).toEqual({
+      ok: true,
+      requiredScopes: [
+        'agents:read',
+        'agents:write',
+        'commanders:read',
+        'commanders:write',
+        'services:read',
+        'services:write',
+        'skills:read',
+        'telemetry:read',
+      ],
+    })
+
+    const revokeResponse = await fetch(
+      `${server.baseUrl}/api/auth/keys/${encodeURIComponent(created.id)}`,
+      {
+        method: 'DELETE',
+        headers: {
+          authorization: 'Bearer valid-auth0-admin-token',
+        },
+      },
+    )
+    expect(revokeResponse.status).toBe(204)
+
+    const verificationAfterRevoke = await server.apiKeyStore.verifyKey(created.key, {
+      requiredScopes: ['agents:read'],
+    })
+    expect(verificationAfterRevoke).toEqual({
+      ok: false,
+      reason: 'not_found',
+    })
+
+    await server.close()
+  })
+
+  it('rejects valid API keys that are missing mobile access scopes before native storage', async () => {
+    const server = await startServer()
+
+    const createResponse = await fetch(`${server.baseUrl}/api/auth/keys`, {
+      method: 'POST',
+      headers: {
+        authorization: 'Bearer valid-auth0-admin-token',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        name: 'Telemetry Only',
+        scopes: ['telemetry:write'],
+      }),
+    })
+    expect(createResponse.status).toBe(201)
+    const created = (await createResponse.json()) as { key: string }
+
+    const verifyResponse = await fetch(`${server.baseUrl}/api/auth/mobile/verify`, {
+      headers: {
+        authorization: `Bearer ${created.key}`,
+      },
+    })
+    expect(verifyResponse.status).toBe(403)
+    expect(await verifyResponse.json()).toEqual({
+      error: 'Insufficient API key scope',
+    })
+
+    await server.close()
+  })
+
+  it('verifies narrowed mobile pairing credentials created by the pairing route', async () => {
+    const server = await startServer()
+
+    const response = await fetch(`${server.baseUrl}/api/auth/mobile/pairing`, {
+      method: 'POST',
+      headers: {
+        authorization: 'Bearer valid-auth0-admin-token',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        name: 'Narrow iPhone Pairing',
+        scopes: ['agents:read'],
+      }),
+    })
+    expect(response.status).toBe(201)
+    const created = (await response.json()) as {
+      key: string
+      scopes: string[]
+    }
+    expect(created.scopes).toEqual(['agents:read'])
+
+    const verifyResponse = await fetch(`${server.baseUrl}/api/auth/mobile/verify`, {
+      headers: {
+        authorization: `Bearer ${created.key}`,
+      },
+    })
+
+    expect(verifyResponse.status).toBe(200)
+    expect(await verifyResponse.json()).toEqual({
+      ok: true,
+      requiredScopes: ['agents:read'],
+    })
+
+    await server.close()
+  })
+
+  it('rejects mobile pairing scope escalation', async () => {
+    const server = await startServer()
+
+    const response = await fetch(`${server.baseUrl}/api/auth/mobile/pairing`, {
+      method: 'POST',
+      headers: {
+        authorization: 'Bearer valid-auth0-admin-token',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        scopes: ['agents:read', 'agents:admin'],
+      }),
+    })
+
+    expect(response.status).toBe(400)
+    const payload = (await response.json()) as { error: string }
+    expect(payload.error).toContain('mobile pairing scopes')
+    expect(await server.apiKeyStore.listKeys()).toEqual([])
+
+    await server.close()
+  })
+
+  it('expires mobile pairing credentials during store and route verification', async () => {
+    let currentNow = new Date('2026-06-01T00:00:00.000Z')
+    const server = await startServer({
+      now: () => currentNow,
+    })
+
+    const response = await fetch(`${server.baseUrl}/api/auth/mobile/pairing`, {
+      method: 'POST',
+      headers: {
+        authorization: 'Bearer valid-auth0-admin-token',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        expiresInSeconds: 1,
+      }),
+    })
+    expect(response.status).toBe(201)
+    const created = (await response.json()) as {
+      key: string
+      expiresAt: string
+    }
+    expect(created.expiresAt).toBe('2026-06-01T00:00:01.000Z')
+
+    const storeBeforeExpiry = await server.apiKeyStore.verifyKey(created.key, {
+      requiredScopes: ['services:read'],
+      now: currentNow,
+    })
+    expect(storeBeforeExpiry).toMatchObject({ ok: true })
+
+    const routeBeforeExpiry = await fetch(`${server.baseUrl}/api/auth/transcription/openai`, {
+      headers: {
+        authorization: `Bearer ${created.key}`,
+      },
+    })
+    expect(routeBeforeExpiry.status).toBe(200)
+
+    const mobileVerifyBeforeExpiry = await fetch(`${server.baseUrl}/api/auth/mobile/verify`, {
+      headers: {
+        authorization: `Bearer ${created.key}`,
+      },
+    })
+    expect(mobileVerifyBeforeExpiry.status).toBe(200)
+
+    currentNow = new Date('2026-06-01T00:00:02.000Z')
+
+    const storeAfterExpiry = await server.apiKeyStore.verifyKey(created.key, {
+      requiredScopes: ['services:read'],
+      now: currentNow,
+    })
+    expect(storeAfterExpiry).toEqual({
+      ok: false,
+      reason: 'expired',
+    })
+
+    const routeAfterExpiry = await fetch(`${server.baseUrl}/api/auth/transcription/openai`, {
+      headers: {
+        authorization: `Bearer ${created.key}`,
+      },
+    })
+    expect(routeAfterExpiry.status).toBe(401)
+    expect(await routeAfterExpiry.json()).toEqual({
+      error: 'Unauthorized',
+    })
+
+    const mobileVerifyAfterExpiry = await fetch(`${server.baseUrl}/api/auth/mobile/verify`, {
+      headers: {
+        authorization: `Bearer ${created.key}`,
+      },
+    })
+    expect(mobileVerifyAfterExpiry.status).toBe(401)
 
     await server.close()
   })

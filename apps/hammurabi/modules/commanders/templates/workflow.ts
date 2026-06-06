@@ -2,7 +2,10 @@ import { access, mkdir, readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { resolveCommanderPaths } from '../paths.js'
-import { COMMANDER_WORKFLOW_FILE } from '../workflow.js'
+import {
+  COMMANDER_WORKFLOW_FILE,
+  REMOVED_COMMANDER_FRONTMATTER_KEYS,
+} from '../workflow.js'
 
 export const COMMANDER_WORKFLOW_TEMPLATE_FILE = 'COMMANDER.template.md'
 export const COMMANDER_WORKFLOW_SOURCE_TEMPLATE_FILE = 'workflow.md.template'
@@ -48,10 +51,35 @@ async function loadCommanderWorkflowTemplate(): Promise<string> {
   throw new Error(`Commander workflow template not found: ${candidates.join(', ')}`)
 }
 
+function cachedTemplateContainsRemovedRuntimeConfig(template: string): boolean {
+  const normalized = template.replace(/\r\n/g, '\n')
+  const frontMatterMatch = normalized.match(/^---\n([\s\S]*?)\n---(?:\n|$)/)
+  if (!frontMatterMatch) {
+    return false
+  }
+
+  const [, frontMatter] = frontMatterMatch
+  for (const rawLine of frontMatter.split('\n')) {
+    const uncommented = rawLine.trim().replace(/^#\s*/, '').trim()
+    const match = uncommented.match(/^([a-zA-Z0-9_.-]+)\s*:/)
+    if (match && REMOVED_COMMANDER_FRONTMATTER_KEYS.has(match[1])) {
+      return true
+    }
+  }
+  return false
+}
+
 export async function ensureCommanderWorkflowTemplate(dataDir: string): Promise<string> {
   const templatePath = path.join(dataDir, COMMANDER_WORKFLOW_TEMPLATE_FILE)
   try {
-    return await readFile(templatePath, 'utf8')
+    const cachedTemplate = await readFile(templatePath, 'utf8')
+    if (!cachedTemplateContainsRemovedRuntimeConfig(cachedTemplate)) {
+      return cachedTemplate
+    }
+
+    const template = await loadCommanderWorkflowTemplate()
+    await writeFile(templatePath, template, 'utf8')
+    return template
   } catch {
     const template = await loadCommanderWorkflowTemplate()
     await mkdir(dataDir, { recursive: true })

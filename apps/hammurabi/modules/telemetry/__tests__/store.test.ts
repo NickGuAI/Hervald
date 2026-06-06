@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { TelemetryJsonlStore, type TelemetryStoreEntry } from '../store'
@@ -13,6 +13,8 @@ async function createTempStoreFilePath(): Promise<string> {
 }
 
 afterEach(async () => {
+  vi.useRealTimers()
+  vi.restoreAllMocks()
   await Promise.all(
     testDirectories.splice(0).map((directory) =>
       rm(directory, { recursive: true, force: true }),
@@ -172,6 +174,144 @@ describe('TelemetryJsonlStore.compact()', () => {
     const kept = await store.load()
     expect(kept).toHaveLength(1)
   })
+
+  it('rolls up retained local ingest entries during compaction', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-05-29T12:00:00.000Z'))
+
+    const filePath = await createTempStoreFilePath()
+    const store = new TelemetryJsonlStore(filePath)
+
+    await store.append({
+      type: 'ingest',
+      recordedAt: '2026-05-29T10:00:00.000Z',
+      payload: {
+        id: 'local-1',
+        sessionId: 'local-session',
+        agentName: 'codex-local',
+        model: 'gpt-5.5',
+        provider: 'codex-local',
+        inputTokens: 100,
+        outputTokens: 25,
+        cost: 0.01,
+        durationMs: 100,
+        currentTask: 'Local scan',
+        timestamp: '2026-05-29T10:00:00.000Z',
+      },
+    })
+    await store.append({
+      type: 'ingest',
+      recordedAt: '2026-05-29T10:01:00.000Z',
+      payload: {
+        id: 'local-2',
+        sessionId: 'local-session',
+        agentName: 'codex-local',
+        model: 'gpt-5.5',
+        provider: 'codex-local',
+        inputTokens: 300,
+        outputTokens: 75,
+        cost: 0.03,
+        durationMs: 300,
+        currentTask: 'Local scan',
+        timestamp: '2026-05-29T10:01:00.000Z',
+      },
+    })
+    await store.append({
+      type: 'ingest',
+      recordedAt: '2026-05-29T10:02:00.000Z',
+      payload: {
+        id: 'remote-1',
+        sessionId: 'remote-session',
+        agentName: 'codex',
+        model: 'o3',
+        provider: 'openai',
+        inputTokens: 10,
+        outputTokens: 5,
+        cost: 0.001,
+        durationMs: 10,
+        currentTask: 'Remote call',
+        timestamp: '2026-05-29T10:02:00.000Z',
+      },
+    })
+    await store.append({
+      type: 'otel_log',
+      recordedAt: '2026-05-29T10:03:00.000Z',
+      payload: {
+        signal: 'logs',
+        resource: {},
+        eventName: 'codex.user_prompt',
+        attributes: {},
+        normalized: {
+          id: 'zero-otel',
+          sessionId: 'prompt-only',
+          agentName: 'codex',
+          model: 'gpt-5.5',
+          provider: 'openai',
+          signal: 'logs',
+          inputTokens: 0,
+          outputTokens: 0,
+          cost: 0,
+          durationMs: 0,
+          currentTask: 'Working',
+          timestamp: '2026-05-29T10:03:00.000Z',
+          eventName: 'codex.user_prompt',
+        },
+      },
+    })
+
+    await store.compact(90)
+
+    const kept = await store.load()
+    expect(kept).toHaveLength(2)
+    const local = kept.find((entry) =>
+      entry.type === 'ingest' && entry.payload.agentName === 'codex-local',
+    )
+    const remote = kept.find((entry) =>
+      entry.type === 'ingest' && entry.payload.agentName === 'codex',
+    )
+    expect(local).toMatchObject({
+      type: 'ingest',
+      payload: {
+        id: 'local-rollup:2026-05-29:local-session:codex-local:gpt-5.5:codex-local',
+        sessionId: 'local-session',
+        inputTokens: 400,
+        outputTokens: 100,
+        cost: 0.04,
+        durationMs: 400,
+        timestamp: '2026-05-29T10:01:00.000Z',
+      },
+    })
+    expect(remote).toMatchObject({
+      type: 'ingest',
+      payload: {
+        id: 'remote-1',
+      },
+    })
+  })
+
+  it('skips compaction when the file exceeds maxBytes', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-03-04T00:00:00.000Z'))
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+
+    const filePath = await createTempStoreFilePath()
+    const store = new TelemetryJsonlStore(filePath)
+    const oldRecordedAt = '2026-01-01T00:00:00.000Z'
+
+    await store.append({
+      type: 'heartbeat',
+      recordedAt: oldRecordedAt,
+      payload: { sessionId: 'oversized', completed: false, timestamp: oldRecordedAt },
+    })
+
+    await store.compact(14, { maxBytes: 1 })
+
+    const kept = await store.load()
+    expect(kept).toHaveLength(1)
+    expect(kept[0]?.payload).toMatchObject({ sessionId: 'oversized' })
+    await expect(stat(`${filePath}.tmp`)).rejects.toMatchObject({ code: 'ENOENT' })
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('Skipping compact'))
+  })
 })
 
 describe('TelemetryJsonlStore.stream()', () => {
@@ -250,5 +390,52 @@ describe('TelemetryJsonlStore.stream()', () => {
 
     expect(entries).toHaveLength(2)
     expect(entries.map((e) => e.type)).toEqual(['ingest', 'heartbeat'])
+  })
+
+  it('skips streaming when the file exceeds maxBytes', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const filePath = await createTempStoreFilePath()
+    const store = new TelemetryJsonlStore(filePath)
+
+    await store.append({
+      type: 'heartbeat',
+      recordedAt: '2026-02-10T10:00:05.000Z',
+      payload: {
+        sessionId: 'session-1',
+        completed: false,
+        timestamp: '2026-02-10T10:00:05.000Z',
+      },
+    })
+
+    const entries: TelemetryStoreEntry[] = []
+    for await (const entry of store.stream({ maxBytes: 1 })) {
+      entries.push(entry)
+    }
+
+    expect(entries).toEqual([])
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('Skipping stream'))
+  })
+
+  it('allows callers to disable the stream size guard', async () => {
+    const filePath = await createTempStoreFilePath()
+    const store = new TelemetryJsonlStore(filePath)
+
+    await store.append({
+      type: 'heartbeat',
+      recordedAt: '2026-02-10T10:00:05.000Z',
+      payload: {
+        sessionId: 'session-1',
+        completed: false,
+        timestamp: '2026-02-10T10:00:05.000Z',
+      },
+    })
+
+    const entries: TelemetryStoreEntry[] = []
+    for await (const entry of store.stream({ maxBytes: 0 })) {
+      entries.push(entry)
+    }
+
+    expect(entries).toHaveLength(1)
+    expect(entries[0]?.type).toBe('heartbeat')
   })
 })

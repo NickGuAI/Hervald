@@ -58,6 +58,10 @@ export const BUILT_IN_ACTIONS: ActionCategoryDefinition[] = [
     primaryTargetKey: 'recipient',
     matchers: {
       mcpServers: ['gmail', 'superhuman', 'mail_n_notion', 'ses'],
+      mcpTools: [
+        'mcp__codex_apps__gmail_send_email',
+        'codex_apps/gmail_send_email',
+      ],
       bashPatterns: [
         /^gog\s+gmail\s+send\b/i,
         /^gog\s+email\s+send\b/i,

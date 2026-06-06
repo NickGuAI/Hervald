@@ -11,6 +11,11 @@ import {
   OPENAI_REALTIME_TRANSCRIPTION_PROVIDER_ID,
   type ProviderSecretsStoreLike,
 } from '../api-keys/provider-secrets-store.js'
+import {
+  buildVoiceTranscriptionContext,
+  DEFAULT_TRANSCRIPTION_MODEL,
+  type VoiceTranscriptionContext,
+} from './transcription-context.js'
 
 export class TranscriptionError extends Error {
   readonly cause?: unknown
@@ -27,7 +32,15 @@ interface OpenAITranscriptionClientOptions {
   fetchImpl?: typeof fetch
 }
 
-class OpenAIWhisperTranscriptionClient {
+interface PreservedVoiceAudio {
+  buffer: Buffer
+  mimeType: string
+  durationMs?: number
+}
+
+type PreservedAudioTranscriptionOptions = TranscriptionOptions & Partial<VoiceTranscriptionContext>
+
+class OpenAIBulkTranscriptionClient {
   private readonly apiKeyProvider: () => Promise<string | null>
   private readonly fetchImpl: typeof fetch
 
@@ -47,14 +60,16 @@ class OpenAIWhisperTranscriptionClient {
 
     const body = new FormData()
     const audio = await import('node:fs/promises').then((fs) => fs.readFile(audioPath))
+    const context = buildVoiceTranscriptionContext({
+      model: options.model,
+      language: options.language,
+      prompt: options.prompt,
+      terms: options.terms,
+    })
     body.set('file', new Blob([audio]), path.basename(audioPath))
-    body.set('model', options.model ?? 'whisper-1')
-    if (options.language) {
-      body.set('language', options.language)
-    }
-    if (options.prompt) {
-      body.set('prompt', options.prompt)
-    }
+    body.set('model', context.model)
+    body.set('language', context.language)
+    body.set('prompt', context.prompt)
     body.set('response_format', 'json')
 
     const response = await this.fetchImpl('https://api.openai.com/v1/audio/transcriptions', {
@@ -84,14 +99,21 @@ class OpenAIWhisperTranscriptionClient {
 
 let transcriptionProvider: TranscriptionProvider | null = null
 
+export function createOpenAIBulkTranscriptionProvider(options: {
+  apiKeyProvider: () => Promise<string | null>
+  fetchImpl?: typeof fetch
+}): TranscriptionProvider {
+  return new OpenAITranscriptionProvider(new OpenAIBulkTranscriptionClient(options))
+}
+
 export function initializeInboundTranscriptionProvider(options: {
   providerSecretsStore: ProviderSecretsStoreLike
   fetchImpl?: typeof fetch
 }): void {
-  transcriptionProvider = new OpenAITranscriptionProvider(new OpenAIWhisperTranscriptionClient({
+  transcriptionProvider = createOpenAIBulkTranscriptionProvider({
     apiKeyProvider: () => options.providerSecretsStore.getSecret(OPENAI_REALTIME_TRANSCRIPTION_PROVIDER_ID),
     fetchImpl: options.fetchImpl,
-  }))
+  })
 }
 
 export function setInboundTranscriptionProviderForTests(provider: TranscriptionProvider | null): void {
@@ -103,18 +125,48 @@ export async function transcribeInboundAudio(
   mimeType: string,
   options: TranscriptionOptions = {},
 ): Promise<string> {
-  if (!transcriptionProvider) {
+  const context = buildVoiceTranscriptionContext({
+    model: options.model,
+    language: options.language,
+    prompt: options.prompt,
+    terms: options.terms,
+  })
+  return transcribePreservedAudio(
+    { buffer, mimeType },
+    {
+      ...context,
+      metadata: options.metadata,
+    },
+  )
+}
+
+export async function transcribePreservedAudio(
+  audio: PreservedVoiceAudio,
+  options: PreservedAudioTranscriptionOptions = {},
+  provider: TranscriptionProvider | null = transcriptionProvider,
+): Promise<string> {
+  if (!provider) {
     throw new TranscriptionError('Inbound transcription provider is not initialized')
   }
-  if (buffer.length === 0) {
+  if (audio.buffer.length === 0) {
     throw new TranscriptionError('Inbound audio buffer is empty')
   }
 
   const tempDir = await mkdtemp(path.join(tmpdir(), 'hammurabi-channel-audio-'))
-  const audioPath = path.join(tempDir, `voice-note${extensionForMimeType(mimeType)}`)
+  const audioPath = path.join(tempDir, `voice-note${extensionForMimeType(audio.mimeType)}`)
   try {
-    await writeFile(audioPath, buffer)
-    const result = await transcriptionProvider.transcribe(audioPath, options)
+    await writeFile(audioPath, audio.buffer)
+    const result = await provider.transcribe(audioPath, {
+      model: options.model ?? DEFAULT_TRANSCRIPTION_MODEL,
+      language: options.language,
+      prompt: options.prompt,
+      terms: options.terms,
+      metadata: {
+        ...(options.metadata ?? {}),
+        mimeType: audio.mimeType,
+        ...(audio.durationMs !== undefined ? { durationMs: audio.durationMs } : {}),
+      },
+    })
     const text = extractTranscriptText(result)
     if (!text) {
       throw new TranscriptionError('Transcription produced empty text')

@@ -3,11 +3,9 @@ import type { FrontendNavItem } from '@/types'
 import { findModuleGraphUiRouteMetadata } from '@/module-graph-bindings'
 import { useModuleGraphContext } from '@/module-graph-context'
 import { normalizeCommandRoomRouteMetadata } from '@modules/command-room/route-metadata'
+import { MOBILE_SHELL_BOTTOM_PADDING_CLASS } from '@/styles/mobile-shell'
 import { MobileBottomTabs } from './MobileBottomTabs'
-import {
-  MOBILE_SHELL_BOTTOM_PADDING_CLASS,
-  isImmersiveMobileChatRoute,
-} from './mobile-shell-routes'
+import { isImmersiveMobileChatRoute } from './mobile-shell-routes'
 
 interface MobileShellChromeState {
   shouldRenderMobileChrome: boolean

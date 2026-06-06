@@ -317,7 +317,7 @@ export function prepareMachineLaunchEnvironment(
 
   // Remote machines with a non-`.enc` envFile path: the file lives on the
   // remote host. Do NOT read it locally — that either reads nothing (the path
-  // doesn't exist on the Hammurabi host) or, worse, reads unrelated local
+  // doesn't exist on the Hervald host) or, worse, reads unrelated local
   // content if the same path coincidentally exists locally and forwards it
   // via SSH SendEnv, silently bypassing the remote's actual env file.
   // Encrypted (`.enc`) is the explicit local-managed-credentials channel and
@@ -472,7 +472,7 @@ async function readMachineEnvEntries(
  * expect to decrypt the file. See codex-review on PR #1269.
  *
  * Note: this helper is for **local** machine env files only — it operates on the
- * Hammurabi server's local filesystem where the master key lives. Remote machine
+ * Hervald server's local filesystem where the master key lives. Remote machine
  * env files (plaintext-on-the-remote) should be edited via the existing SSH
  * cat/write helpers in `machine-auth.ts`.
  */

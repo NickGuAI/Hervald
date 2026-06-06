@@ -1,17 +1,16 @@
 import type { AuthUser } from '@gehirn/auth-providers'
 import type { Operator } from './types.js'
+import {
+  asNonEmptyFounderAvatarString,
+  resolveFounderAvatarSrc,
+} from './founder-avatar.js'
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
 }
 
 function asNonEmptyString(value: unknown): string | null {
-  if (typeof value !== 'string') {
-    return null
-  }
-
-  const normalized = value.trim()
-  return normalized.length > 0 ? normalized : null
+  return asNonEmptyFounderAvatarString(value)
 }
 
 function isSyntheticAuth0LocalEmail(value: string | null): boolean {
@@ -46,12 +45,7 @@ export function humanizeFounderDisplayName(value: string): string {
 }
 
 export function resolveFounderBootstrapAvatarUrl(user: AuthUser | undefined): string | null {
-  if (!user) {
-    return null
-  }
-
-  return readUserMetadataString(user, 'picture')
-    ?? readUserMetadataString(user, 'avatarUrl')
+  return resolveFounderAvatarSrc(null, user)
 }
 
 export function isFounderAuthUser(founder: Operator, user: AuthUser | undefined): boolean {
@@ -78,11 +72,11 @@ export function resolveFounderAvatarBackfillUrl(
   founder: Operator,
   user: AuthUser | undefined,
 ): string | null {
-  if (founder.avatarUrl?.trim() || !isFounderAuthUser(founder, user)) {
+  if (resolveFounderAvatarSrc(founder, null) || !isFounderAuthUser(founder, user)) {
     return null
   }
 
-  return resolveFounderBootstrapAvatarUrl(user)
+  return resolveFounderAvatarSrc(null, user)
 }
 
 export function createFounderBootstrapCandidate(user: AuthUser | undefined): Operator | null {

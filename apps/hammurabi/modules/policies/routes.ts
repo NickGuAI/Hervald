@@ -154,7 +154,7 @@ function toPolicyResponse(
 }
 
 function toApprovalDecisionResponse(result: {
-  decision: 'allow' | 'deny' | 'pending'
+  decision: 'allow' | 'deny' | 'cancel' | 'pending'
   approvalId?: string
   retryAfterMs?: number
   reason?: string

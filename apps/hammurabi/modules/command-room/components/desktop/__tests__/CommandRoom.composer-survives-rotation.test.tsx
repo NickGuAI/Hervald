@@ -7,6 +7,7 @@ import { BrowserRouter, Route, Routes } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ConversationRecord } from '@modules/conversation/hooks/use-conversations'
+import { ensureLocalStorage } from '../../../__tests__/ensureLocalStorage'
 
 const NARROW_QUERY = '(max-width: 767px)'
 const COARSE_PHONE_QUERY = '(pointer: coarse) and (max-width: 932px)'
@@ -388,13 +389,6 @@ async function settle(rounds = 4) {
   })
 }
 
-async function advanceTime(milliseconds: number) {
-  await act(async () => {
-    vi.advanceTimersByTime(milliseconds)
-    await flushMicrotasks()
-  })
-}
-
 async function setComposerText(composer: HTMLTextAreaElement, value: string) {
   await act(async () => {
     flushSync(() => {
@@ -478,7 +472,7 @@ describe('CommandRoom composer draft survives surface flips', () => {
     mocks.useUpdateConversation.mockReturnValue({ mutateAsync: vi.fn(async () => conversation) })
     mocks.useDeleteConversation.mockReturnValue({ mutateAsync: vi.fn(async () => undefined) })
     mocks.useConversationMessage.mockReturnValue({ mutateAsync: vi.fn(async () => ({ accepted: true })) })
-    window.localStorage.clear()
+    ensureLocalStorage().clear()
   })
 
   afterEach(() => {
@@ -494,7 +488,7 @@ describe('CommandRoom composer draft survives surface flips', () => {
     container?.remove()
     container = null
     document.body.innerHTML = ''
-    window.localStorage.clear()
+    ensureLocalStorage().clear()
     window.matchMedia = originalMatchMedia as typeof window.matchMedia
     reactActEnvironment.IS_REACT_ACT_ENVIRONMENT = originalActEnvironment
     vi.useRealTimers()
@@ -516,8 +510,7 @@ describe('CommandRoom composer draft survives surface flips', () => {
 
     await setComposerText(mobileComposer, 'draft survives rotation')
     expect(mobileComposer.value).toBe('draft survives rotation')
-    await advanceTime(500)
-    expect(window.localStorage.getItem(`hammurabi:draft:${CONVERSATION_SESSION_NAME}`)).toBe('draft survives rotation')
+    expect(window.localStorage.getItem(`hammurabi:draft:${CONVERSATION_SESSION_NAME}`)).toBeNull()
 
     act(() => {
       matchMediaController.setMatches({

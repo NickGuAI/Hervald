@@ -15,7 +15,7 @@ import {
   type QuestSource,
 } from './QuestCreateForm'
 
-type QuestStatus = 'pending' | 'active' | 'done' | 'failed'
+type QuestStatus = 'pending' | 'active' | 'blocked' | 'done' | 'failed'
 type QuestDisplayStatus = QuestStatus | 'unknown'
 
 interface QuestContract {
@@ -42,6 +42,8 @@ interface CommanderQuest {
   commanderId?: string | null
   createdAt?: string | null
   completedAt?: string | null
+  blockedAt?: string | null
+  blockedReason?: string | null
   githubIssueUrl?: string | null
   artifacts?: QuestArtifact[] | null
   contract?: QuestContract | null
@@ -95,6 +97,11 @@ const STATUS_META: Record<
     label: 'failed',
     badgeClassName: 'badge-error',
   },
+  blocked: {
+    symbol: '!',
+    label: 'blocked',
+    badgeClassName: 'badge-stale',
+  },
   unknown: {
     symbol: '•',
     label: 'unknown',
@@ -117,6 +124,7 @@ function normalizeStatus(rawStatus: string): QuestDisplayStatus {
   if (
     normalized === 'pending' ||
     normalized === 'active' ||
+    normalized === 'blocked' ||
     normalized === 'done' ||
     normalized === 'failed'
   ) {
@@ -344,6 +352,10 @@ function questTimeLabel(quest: CommanderQuest, status: QuestDisplayStatus): stri
   if (status === 'failed') {
     return completed ? `failed ${completed}` : 'failed'
   }
+  if (status === 'blocked') {
+    const blocked = formatRelativeTime(quest.blockedAt) ?? created
+    return blocked ? `blocked ${blocked}` : 'blocked'
+  }
   if (status === 'active') {
     return created ? `claimed ${created}` : 'claimed'
   }
@@ -444,7 +456,7 @@ function QuestCard({
 
       {expanded && note && (
         <p className="text-whisper text-sumi-mist mt-2 whitespace-pre-wrap">
-          {status === 'done' ? 'Completed:' : status === 'failed' ? 'Failed:' : 'Note:'} {note}
+          {status === 'done' ? 'Completed:' : status === 'failed' ? 'Failed:' : status === 'blocked' ? 'Blocked:' : 'Note:'} {note}
         </p>
       )}
 
@@ -713,6 +725,7 @@ export function QuestBoard({
   const kanbanColumns: Array<{ key: QuestStatus; title: string; emptyLabel: string }> = [
     { key: 'pending', title: 'Pending (unclaimed)', emptyLabel: 'No pending quests.' },
     { key: 'active', title: 'Active', emptyLabel: 'No active quests.' },
+    { key: 'blocked', title: 'Blocked', emptyLabel: 'No blocked quests.' },
     { key: 'failed', title: 'Failed', emptyLabel: 'No failed quests.' },
     { key: 'done', title: 'Done', emptyLabel: 'No completed quests.' },
   ]

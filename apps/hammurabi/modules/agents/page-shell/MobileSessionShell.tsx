@@ -10,6 +10,8 @@ import {
   ChevronLeft,
   Cpu,
   DollarSign,
+  AlertTriangle,
+  Loader2,
   Moon,
   MoreVertical,
   Play,
@@ -235,11 +237,39 @@ export function MobileSessionShell({
     [conversation?.agentType, providers],
   )
   const conversationName = conversation?.name?.trim() || (conversation ? `chat ${conversation.id.slice(0, 8)}` : '')
-  const canStartConversation = hasConversationAction(conversation, 'start')
-    || hasConversationAction(conversation, 'resume')
+  const canResumeConversation = hasConversationAction(conversation, 'resume')
+  const canStartConversation = hasConversationAction(conversation, 'start') || canResumeConversation
   const canStopConversation = hasConversationAction(conversation, 'pause')
   const canEditConversationProviderModel =
     hasConversationAction(conversation, 'updateProvider') && Boolean(onSwapConversationProvider)
+  const conversationStartState = conversation?.runtimeState ?? conversation?.displayState?.runtimeState ?? null
+  const conversationStartError = conversation?.runtimeError ?? conversation?.displayState?.runtimeError ?? null
+  const conversationReady = composerEnabled && composerSendReady
+  const conversationFailedToStart = Boolean(
+    conversation
+    && !conversationReady
+    && (conversationStartState === 'failed' || conversationStartError),
+  )
+  const conversationIsStarting = Boolean(
+    conversation
+    && onStartConversation
+    && !conversationReady
+    && !conversationFailedToStart
+    && (
+      conversationActionBusy === 'start'
+      || conversationStartState === 'starting'
+      || conversation.status === 'active'
+    ),
+  )
+  const showStoppedConversationPanel = Boolean(
+    conversation
+    && canStartConversation
+    && onStartConversation
+    && !conversationReady
+    && !conversationIsStarting
+    && !conversationFailedToStart
+  )
+  const startConversationLabel = canResumeConversation ? 'Resume chat' : 'Start chat'
   const activeConversationProvider = providerOptions.find(
     (provider) => provider.id === conversationProviderDraft,
   ) ?? null
@@ -773,7 +803,7 @@ export function MobileSessionShell({
                         disabled={conversationActionBusy !== null}
                       >
                         <Play size={13} className="shrink-0" />
-                        {conversationActionBusy === 'start' ? 'Starting…' : 'Start chat'}
+                        {conversationActionBusy === 'start' ? 'Starting...' : startConversationLabel}
                       </button>
                     )}
 
@@ -943,6 +973,83 @@ export function MobileSessionShell({
         <div className="flex min-h-0 flex-1 flex-col">
           {emptyState}
         </div>
+      ) : conversationFailedToStart && conversation ? (
+        <div
+          className="flex min-h-0 flex-1 items-center justify-center px-6 py-10"
+          data-testid="mobile-conversation-start-failed-panel"
+        >
+          <div className="w-full max-w-sm rounded-[6px_22px_6px_22px] border border-accent-vermillion/30 bg-washi-aged/70 p-5 text-center shadow-ink-sm">
+            <div className="mx-auto flex h-10 w-10 items-center justify-center rounded-full bg-accent-vermillion/10 text-accent-vermillion">
+              <AlertTriangle size={18} />
+            </div>
+            <div className="mt-4 font-mono text-[11px] uppercase tracking-[0.14em] text-sumi-diluted">
+              {conversationName}
+            </div>
+            <div className="mt-2 text-sm font-medium text-sumi-black">
+              Chat failed to start
+            </div>
+            <div className="mt-2 text-xs leading-5 text-sumi-diluted">
+              {conversationStartError || 'The provider session did not become ready.'}
+            </div>
+            {canStartConversation && onStartConversation && (
+              <button
+                type="button"
+                className="mt-4 inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-[3px_14px_3px_14px] bg-sumi-black px-5 text-sm font-medium text-washi-white shadow-ink-md transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                onClick={() => {
+                  void handleStart()
+                }}
+                disabled={conversationActionBusy !== null}
+                data-testid="mobile-conversation-start-retry-button"
+              >
+                <Play size={15} />
+                {conversationActionBusy === 'start' ? 'Retrying...' : 'Retry chat'}
+              </button>
+            )}
+          </div>
+        </div>
+      ) : conversationIsStarting && conversation ? (
+        <div
+          className="flex min-h-0 flex-1 items-center justify-center px-6 py-10"
+          data-testid="mobile-conversation-starting-panel"
+        >
+          <div className="w-full max-w-sm rounded-[6px_22px_6px_22px] border border-ink-border bg-washi-aged/70 p-5 text-center shadow-ink-sm">
+            <div className="mx-auto flex h-10 w-10 items-center justify-center rounded-full bg-ink-wash text-sumi-diluted">
+              <Loader2 size={18} className="animate-spin" />
+            </div>
+            <div className="mt-4 font-mono text-[11px] uppercase tracking-[0.14em] text-sumi-diluted">
+              {conversationName}
+            </div>
+            <div className="mt-2 text-sm font-medium text-sumi-black">
+              Preparing chat...
+            </div>
+            <div className="mt-2 text-xs leading-5 text-sumi-diluted">
+              Connecting the provider session and restoring the composer.
+            </div>
+          </div>
+        </div>
+      ) : showStoppedConversationPanel && conversation ? (
+        <div
+          className="flex min-h-0 flex-1 items-center justify-center px-6 py-10"
+          data-testid="mobile-stopped-conversation-panel"
+        >
+          <div className="w-full max-w-sm rounded-[6px_22px_6px_22px] border border-ink-border bg-washi-aged/70 p-5 text-center shadow-ink-sm">
+            <div className="font-mono text-[11px] uppercase tracking-[0.14em] text-sumi-diluted">
+              {conversationName}
+            </div>
+            <button
+              type="button"
+              className="mt-4 inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-[3px_14px_3px_14px] bg-sumi-black px-5 text-sm font-medium text-washi-white shadow-ink-md transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+              onClick={() => {
+                void handleStart()
+              }}
+              disabled={conversationActionBusy !== null}
+              data-testid="mobile-stopped-conversation-start-button"
+            >
+              <Play size={16} />
+              {conversationActionBusy === 'start' ? 'Starting...' : startConversationLabel}
+            </button>
+          </div>
+        </div>
       ) : (
         <>
           <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
@@ -976,12 +1083,7 @@ export function MobileSessionShell({
               </div>
             )}
           </div>
-          <div
-            className={cn(
-              'border-t px-3 py-2',
-              'border-ink-border bg-washi-white',
-            )}
-          >
+          <div className="bg-washi-white">
             <SessionComposer
               ref={composerRef}
               sessionName={sessionName}

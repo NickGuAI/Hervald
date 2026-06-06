@@ -6,6 +6,7 @@ import type { Router } from 'express'
 import type { WebSocket } from 'ws'
 import type { ApiKeyStoreLike } from '../../server/api-keys/store.js'
 import type { HammurabiEvent, PlanApprovalDecision } from '../../src/types/hammurabi-events.js'
+import type { TranscriptEnvelope } from '../../src/types/transcript-envelope.js'
 import type { ActionPolicyGate } from '../policies/action-policy-gate.js'
 import type { WorkspaceResolverCapability } from '../workspace/capability.js'
 import type { QueuedMessage, QueuedMessageImage, SessionMessageQueue } from './message-queue.js'
@@ -19,6 +20,7 @@ import type { GeminiTurnState } from './event-normalizers/gemini.js'
 import type { OpenCodeTurnState } from './event-normalizers/opencode.js'
 import type { ProviderId } from './adapters/provider-registry-types.js'
 import type { ProviderSessionContext } from './providers/provider-session-context.js'
+import type { ProviderAuthSnapshot, ProviderAuthStore, ProviderSpawnAuth } from './provider-auth.js'
 
 // Session execution now runs in a single approval-on mode.
 export type ClaudePermissionMode = 'default'
@@ -120,7 +122,7 @@ export interface PtySession {
   lastEventAt: string
 }
 
-export type StreamJsonEvent = HammurabiEvent
+export type StreamJsonEvent = HammurabiEvent | TranscriptEnvelope
 
 export type CodexApprovalMethod =
   | 'item/commandExecution/requestApproval'
@@ -129,7 +131,7 @@ export type CodexApprovalMethod =
   | 'item/mcpToolCall/requestApproval'
   | 'item/rules/requestApproval'
   | 'item/skill/requestApproval'
-export type CodexApprovalDecision = 'accept' | 'decline'
+export type CodexApprovalDecision = 'accept' | 'decline' | 'cancel'
 
 export interface CodexPendingApprovalRequest {
   requestId: number
@@ -283,6 +285,7 @@ export interface StreamSession {
   lastTurnCompleted: boolean
   completedTurnAt?: string
   providerContext: ProviderSessionContext
+  providerAuthSnapshot?: ProviderAuthSnapshot
   activeTurnId?: string
   resumedFrom?: string
   finalResultEvent?: StreamJsonEvent
@@ -412,6 +415,7 @@ export interface StreamSessionCreateOptions {
   conversationId?: string
   currentSkillInvocation?: ActiveSkillInvocation
   daemonProcess?: PersistedDaemonProcess
+  providerAuth?: ProviderSpawnAuth
 }
 
 export interface CodexSessionCreateOptions {
@@ -427,6 +431,7 @@ export interface CodexSessionCreateOptions {
   creator?: SessionCreator
   conversationId?: string
   currentSkillInvocation?: ActiveSkillInvocation
+  providerAuth?: ProviderSpawnAuth
 }
 
 export interface GeminiSessionCreateOptions {
@@ -443,6 +448,7 @@ export interface GeminiSessionCreateOptions {
   creator?: SessionCreator
   conversationId?: string
   currentSkillInvocation?: ActiveSkillInvocation
+  providerAuth?: ProviderSpawnAuth
 }
 
 export interface OpenCodeSessionCreateOptions {
@@ -459,6 +465,7 @@ export interface OpenCodeSessionCreateOptions {
   creator?: SessionCreator
   conversationId?: string
   currentSkillInvocation?: ActiveSkillInvocation
+  providerAuth?: ProviderSpawnAuth
 }
 
 export interface PersistedDaemonProcess {
@@ -489,6 +496,7 @@ export interface AgentsRouterOptions {
   getWorkspaceResolver?: () => WorkspaceResolverCapability | undefined
   commanderSessionStorePath?: string
   questStore?: QuestStore
+  providerAuthStore?: ProviderAuthStore
 }
 
 export interface AgentsRouterResult {
@@ -537,7 +545,7 @@ export interface PendingCodexApprovalView {
 export interface CodexApprovalQueueEvent {
   type: 'enqueued' | 'resolved'
   approval: PendingCodexApprovalView
-  decision?: 'approve' | 'reject'
+  decision?: 'approve' | 'reject' | 'cancel'
   delivered?: boolean
 }
 
@@ -610,6 +618,7 @@ export interface CommanderSessionsInterface {
    */
   dispatchWorkerForCommander(input: {
     commanderId: string
+    abortSignal?: AbortSignal
     rawBody: unknown
   }): Promise<DispatchWorkerForCommanderResult>
   sendToSession(
@@ -620,6 +629,7 @@ export interface CommanderSessionsInterface {
       priority?: 'high' | 'normal' | 'low'
     },
   ): Promise<boolean>
+  recordSessionEvent?(name: string, event: StreamJsonEvent): boolean
   autoResolvePlanApproval?(
     name: string,
     toolId: string,

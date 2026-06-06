@@ -114,6 +114,11 @@ async function waitForClose(ws: WebSocket): Promise<void> {
   })
 }
 
+function readStreamEventKind(event: unknown): string | undefined {
+  const record = event as { type?: string; ev?: { type?: string } }
+  return record.type ?? record.ev?.type
+}
+
 async function pollJson<T>(url: string): Promise<T> {
   let last: T | null = null
   for (let attempt = 0; attempt < 20; attempt += 1) {
@@ -564,9 +569,9 @@ describe('daemon machine routes', () => {
       expect(stdinMessage.data).toContain('say hello')
 
       const browserWs = await connectWs(server.baseUrl, 'daemon-stream-1')
-      const eventPromise = waitForMessage<{ type: string; message?: { role?: string } }>(
+      const eventPromise = waitForMessage<unknown>(
         browserWs,
-        (message) => message.type === 'message_start',
+        (message) => readStreamEventKind(message) === 'message.start',
       )
 
       daemonWs.send(JSON.stringify({
@@ -584,7 +589,10 @@ describe('daemon machine routes', () => {
         })}\n`,
       }))
       await expect(eventPromise).resolves.toMatchObject({
-        type: 'message_start',
+        ev: {
+          type: 'message.start',
+          role: 'assistant',
+        },
       })
 
       browserWs.close()
@@ -643,9 +651,9 @@ describe('daemon machine routes', () => {
       await expect(noExitPromise).resolves.toBeUndefined()
 
       const reconnectedDaemonWs = await connectDaemon(server, pairing)
-      const eventPromise = waitForMessage<{ type: string; message?: { role?: string } }>(
+      const eventPromise = waitForMessage<unknown>(
         browserWs,
-        (message) => message.type === 'message_start',
+        (message) => readStreamEventKind(message) === 'message.start',
       )
 
       reconnectedDaemonWs.send(JSON.stringify({
@@ -657,7 +665,10 @@ describe('daemon machine routes', () => {
         })}\n`,
       }))
       await expect(eventPromise).resolves.toMatchObject({
-        type: 'message_start',
+        ev: {
+          type: 'message.start',
+          role: 'assistant',
+        },
       })
 
       browserWs.close()
@@ -748,9 +759,9 @@ describe('daemon machine routes', () => {
         )).resolves.toBeUndefined()
 
         const browserWs = await connectWs(restartedServer.baseUrl, 'daemon-stream-server-restart')
-        const eventPromise = waitForMessage<{ type: string; message?: { role?: string } }>(
+        const eventPromise = waitForMessage<unknown>(
           browserWs,
-          (message) => message.type === 'message_start',
+          (message) => readStreamEventKind(message) === 'message.start',
         )
         reconnectedDaemonWs.send(JSON.stringify({
           type: 'stdout',
@@ -761,7 +772,10 @@ describe('daemon machine routes', () => {
           })}\n`,
         }))
         await expect(eventPromise).resolves.toMatchObject({
-          type: 'message_start',
+          ev: {
+            type: 'message.start',
+            role: 'assistant',
+          },
         })
 
         browserWs.close()

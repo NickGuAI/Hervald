@@ -5,8 +5,10 @@ import {
   fetchWorkspacePathResolution,
   fetchWorkspaceTree,
   getWorkspaceSourceKey,
+  isWorkspaceTargetNotFoundError,
   useWorkspaceFilePreview,
   type WorkspaceSource,
+  type WorkspaceSourceRecovery,
 } from '../../../workspace/use-workspace'
 
 function findNodeByPath(
@@ -35,6 +37,8 @@ interface UseWorkspaceOverlayTreeOptions {
   onSelectFile: (filePath: string, type: WorkspaceTreeNode['type']) => void
   requestedPath?: string | null
   requestedPathToken?: number
+  onRequestedPathConsumed?: (token: number) => void
+  onRecoverStaleTarget?: WorkspaceSourceRecovery
 }
 
 export function useWorkspaceOverlayTree({
@@ -45,6 +49,8 @@ export function useWorkspaceOverlayTree({
   onSelectFile,
   requestedPath,
   requestedPathToken = 0,
+  onRequestedPathConsumed,
+  onRecoverStaleTarget,
 }: UseWorkspaceOverlayTreeOptions) {
   const sourceKey = getWorkspaceSourceKey(source)
   const [nodesByParent, setNodesByParent] = useState<Record<string, WorkspaceTreeNode[]>>({})
@@ -53,6 +59,7 @@ export function useWorkspaceOverlayTree({
   const [addedPaths, setAddedPaths] = useState<Set<string>>(new Set())
   const [selectedPath, setSelectedPath] = useState<string | null>(null)
   const addFeedbackTimersRef = useRef<number[]>([])
+  const handledRequestedPathRef = useRef<{ path: string; token: number } | null>(null)
 
   const selectedNode = useMemo(
     () => findNodeByPath(nodesByParent, selectedPath),
@@ -63,6 +70,7 @@ export function useWorkspaceOverlayTree({
     source,
     selectedNode?.type === 'file' ? selectedNode.path : null,
     open && filesTabActive,
+    onRecoverStaleTarget,
   )
 
   const clearAddFeedbackTimers = useCallback(() => {
@@ -92,12 +100,43 @@ export function useWorkspaceOverlayTree({
 
   useEffect(() => () => clearAddFeedbackTimers(), [clearAddFeedbackTimers])
 
-  const loadDirectory = useCallback(async (parentPath = '', expand = false): Promise<void> => {
+  const readWorkspaceWithRecovery = useCallback(async <T,>(
+    read: (readSource: WorkspaceSource) => Promise<T>,
+  ): Promise<{ result: T; source: WorkspaceSource }> => {
+    try {
+      return { result: await read(source), source }
+    } catch (error) {
+      if (!onRecoverStaleTarget || !isWorkspaceTargetNotFoundError(error)) {
+        throw error
+      }
+      const recoveredSource = await onRecoverStaleTarget(source)
+      if (!recoveredSource) {
+        throw error
+      }
+      return { result: await read(recoveredSource), source: recoveredSource }
+    }
+  }, [onRecoverStaleTarget, source])
+
+  const loadDirectory = useCallback(async (
+    parentPath = '',
+    expand = false,
+    sourceOverride?: WorkspaceSource,
+  ): Promise<void> => {
     setLoadingPaths((prev) => new Set(prev).add(parentPath))
     try {
-      const response = expand
-        ? await fetchWorkspaceExpandedTree(source, parentPath)
-        : await fetchWorkspaceTree(source, parentPath)
+      const response = sourceOverride
+        ? (
+            expand
+              ? await fetchWorkspaceExpandedTree(sourceOverride, parentPath)
+              : await fetchWorkspaceTree(sourceOverride, parentPath)
+          )
+        : (
+            await readWorkspaceWithRecovery((readSource) => (
+              expand
+                ? fetchWorkspaceExpandedTree(readSource, parentPath)
+                : fetchWorkspaceTree(readSource, parentPath)
+            ))
+          ).result
       setNodesByParent((prev) => ({
         ...prev,
         [response.parentPath]: response.nodes,
@@ -111,7 +150,7 @@ export function useWorkspaceOverlayTree({
         return next
       })
     }
-  }, [source])
+  }, [readWorkspaceWithRecovery])
 
   useEffect(() => {
     if (!open || nodesByParent['']) {
@@ -125,27 +164,55 @@ export function useWorkspaceOverlayTree({
     if (!open || !rawRequestedPath) {
       return
     }
+    const handledRequestedPath = handledRequestedPathRef.current
+    if (
+      handledRequestedPath?.path === rawRequestedPath
+      && handledRequestedPath.token === requestedPathToken
+    ) {
+      return
+    }
 
     let cancelled = false
+    const markRequestedPathConsumed = () => {
+      handledRequestedPathRef.current = {
+        path: rawRequestedPath,
+        token: requestedPathToken,
+      }
+      onRequestedPathConsumed?.(requestedPathToken)
+    }
     void (async () => {
       try {
-        const resolvedPath = await fetchWorkspacePathResolution(source, rawRequestedPath)
+        const { result: resolvedPath, source: resolvedSource } = await readWorkspaceWithRecovery(
+          (readSource) => fetchWorkspacePathResolution(readSource, rawRequestedPath),
+        )
         if (cancelled) {
           return
         }
         setSelectedPath(resolvedPath.path)
-        if (resolvedPath.treePath && !nodesByParent[resolvedPath.treePath]) {
-          void loadDirectory(resolvedPath.treePath, true)
+        if (resolvedPath.treePath) {
+          void loadDirectory(resolvedPath.treePath, true, resolvedSource)
         }
+        markRequestedPathConsumed()
       } catch {
         // Silently fail — user can open the workspace tree manually.
+        if (!cancelled) {
+          markRequestedPathConsumed()
+        }
       }
     })()
 
     return () => {
       cancelled = true
     }
-  }, [loadDirectory, nodesByParent, open, requestedPath, requestedPathToken, source])
+  }, [
+    loadDirectory,
+    onRequestedPathConsumed,
+    open,
+    readWorkspaceWithRecovery,
+    requestedPath,
+    requestedPathToken,
+    sourceKey,
+  ])
 
   const handleToggleDirectory = useCallback(async (relativePath: string): Promise<void> => {
     const isExpanded = expandedPaths.has(relativePath)

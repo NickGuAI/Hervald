@@ -1,3 +1,5 @@
+// @vitest-environment jsdom
+
 /**
  * Regression tests for apps/hammurabi/src/hooks/use-agent-session-stream.ts
  *
@@ -18,6 +20,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { postInputViaHttpFallback } from '@/hooks/use-agent-session-stream'
 
+const INSTANCE_URL_STORAGE = 'hammurabi_instance_url'
+
+function installNativeCapacitorShim() {
+  ;(window as unknown as { Capacitor?: { isNativePlatform: () => boolean } }).Capacitor = {
+    isNativePlatform: () => true,
+  }
+}
+
 describe('postInputViaHttpFallback', () => {
   let fetchSpy: ReturnType<typeof vi.fn>
 
@@ -26,6 +36,8 @@ describe('postInputViaHttpFallback', () => {
   })
 
   afterEach(() => {
+    delete (window as unknown as { Capacitor?: unknown }).Capacitor
+    localStorage.clear()
     vi.clearAllMocks()
   })
 
@@ -87,6 +99,22 @@ describe('postInputViaHttpFallback', () => {
 
     const [url] = fetchSpy.mock.calls[0] ?? []
     expect(url).toBe('/api/agents/sessions/weird%20name%2Fslash/message')
+  })
+
+  it('routes native HTTP fallback sends through the stored instance URL', async () => {
+    installNativeCapacitorShim()
+    localStorage.setItem(INSTANCE_URL_STORAGE, 'https://self-hosted.example.com')
+
+    const ok = await postInputViaHttpFallback(
+      'commander-test',
+      { text: 'hi' },
+      async () => 'tok',
+      fetchSpy as unknown as typeof fetch,
+    )
+
+    expect(ok).toBe(true)
+    const [url] = fetchSpy.mock.calls[0] ?? []
+    expect(url).toBe('https://self-hosted.example.com/api/agents/sessions/commander-test/message')
   })
 
   it('returns false on non-ok response', async () => {

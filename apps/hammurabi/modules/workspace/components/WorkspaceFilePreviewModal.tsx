@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Loader2, MessageSquarePlus, RefreshCw, Save, X } from 'lucide-react'
+import { Download, Loader2, MessageSquarePlus, RefreshCw, Save, X } from 'lucide-react'
 import { DismissibleOverlay } from '@/components/DismissibleOverlay'
 import type { WorkspaceFilePreview as WorkspaceFilePreviewData } from '../types'
 import type { WorkspacePendingFileAnnotation } from '../use-workspace'
@@ -15,8 +15,11 @@ interface WorkspaceFilePreviewModalProps {
   error: string | null
   readOnly?: boolean
   saving?: boolean
+  downloading?: boolean
+  downloadError?: string | null
   onClose: () => void
   onRefresh?: () => void
+  onDownload?: () => void
   onInsertPath?: (path: string, type: 'file') => void
   onAddAnnotationContext?: (annotation: WorkspacePendingFileAnnotation) => void
   onDraftChange?: (value: string) => void
@@ -33,8 +36,11 @@ export function WorkspaceFilePreviewModal({
   error,
   readOnly = false,
   saving = false,
+  downloading = false,
+  downloadError = null,
   onClose,
   onRefresh,
+  onDownload,
   onInsertPath,
   onAddAnnotationContext,
   onDraftChange,
@@ -110,6 +116,18 @@ export function WorkspaceFilePreviewModal({
             )}
           </div>
           <div className="flex items-center gap-1">
+            {onDownload && (
+              <button
+                type="button"
+                className="inline-flex items-center gap-1.5 rounded-md border border-[color:var(--hv-border-hair)] px-2 py-1.5 text-xs text-[color:var(--hv-fg)] hover:bg-[var(--hv-surface-hover)] disabled:cursor-not-allowed disabled:opacity-60"
+                onClick={onDownload}
+                disabled={downloading || loading}
+                aria-label={`Download ${selectedPath}`}
+              >
+                {downloading ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
+                Download
+              </button>
+            )}
             {preview && onInsertPath && (
               <button
                 type="button"
@@ -169,6 +187,11 @@ export function WorkspaceFilePreviewModal({
             </button>
           </div>
         </div>
+        {downloadError && (
+          <div className="border-b border-[color:var(--hv-accent-danger)] bg-[var(--hv-accent-danger-wash)] px-4 py-2 text-sm text-[color:var(--hv-accent-danger)]">
+            {downloadError}
+          </div>
+        )}
         <div className="flex min-h-0 flex-1 flex-col gap-4 p-4 lg:flex-row">
           <div className="min-h-0 flex-1">
             <WorkspaceFilePreview

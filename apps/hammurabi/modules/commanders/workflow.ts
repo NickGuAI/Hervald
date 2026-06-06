@@ -2,7 +2,7 @@ import { readFile } from 'node:fs/promises'
 import path from 'node:path'
 
 export const COMMANDER_WORKFLOW_FILE = 'COMMANDER.md'
-const REMOVED_COMMANDER_FRONTMATTER_KEYS = new Set([
+export const REMOVED_COMMANDER_FRONTMATTER_KEYS = new Set([
   'heartbeat.interval',
   'heartbeat.message',
   'maxTurns',

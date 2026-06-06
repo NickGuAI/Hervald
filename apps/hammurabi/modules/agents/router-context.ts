@@ -15,6 +15,7 @@ import type {
   PersistedSessionsState,
   PersistedStreamSession,
   PtySession,
+  CodexApprovalDecision,
   StreamJsonEvent,
   StreamSession,
 } from './types.js'
@@ -53,7 +54,7 @@ export interface AgentsSessionCallbacks {
   applyCodexApprovalDecision(
     session: StreamSession,
     requestId: number,
-    decision: 'accept' | 'decline',
+    decision: CodexApprovalDecision,
   ): { ok: true } | { ok: false; code: string; reason: string }
   clearCodexTurnWatchdog(session: StreamSession): void
   markCodexTurnHealthy(session: StreamSession): void

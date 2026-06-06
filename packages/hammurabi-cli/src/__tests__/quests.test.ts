@@ -87,6 +87,143 @@ describe('runQuestsCli', () => {
     )
   })
 
+  it('accepts --commander for list without HAMMURABI_COMMANDER_ID', async () => {
+    vi.stubEnv('HAMMURABI_COMMANDER_ID', '')
+
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ quests: [] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    )
+    const stdout = createBufferWriter()
+    const stderr = createBufferWriter()
+
+    try {
+      const exitCode = await runQuestsCli(['list', '--commander', 'cmdr-cli'], {
+        fetchImpl,
+        readConfig: async () => config,
+        stdout: stdout.writer,
+        stderr: stderr.writer,
+      })
+
+      expect(exitCode).toBe(0)
+      expect(stderr.read()).toBe('')
+      expect(stdout.read()).toContain('No pending or active quests.')
+      expect(fetchImpl).toHaveBeenCalledWith(
+        'https://hervald.gehirn.ai/api/commanders/cmdr-cli/quests',
+        expect.objectContaining({ method: 'GET' }),
+      )
+    } finally {
+      vi.unstubAllEnvs()
+    }
+  })
+
+  it('documents commander identity in usage text', async () => {
+    const stdout = createBufferWriter()
+
+    const exitCode = await runQuestsCli([], {
+      stdout: stdout.writer,
+    })
+
+    expect(exitCode).toBe(1)
+    expect(stdout.read()).toContain('--commander <id>')
+    expect(stdout.read()).toContain('HAMMURABI_COMMANDER_ID')
+  })
+
+  it('accepts generated prompt --commander placement for mutating commands', async () => {
+    vi.stubEnv('HAMMURABI_COMMANDER_ID', '')
+    vi.stubEnv('HAMMURABI_CONVERSATION_ID', 'conv-generated')
+
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    )
+    const stdout = createBufferWriter()
+    const stderr = createBufferWriter()
+
+    try {
+      expect(
+        await runQuestsCli(['claim', 'quest-claim', '--commander', 'cmdr-prompt'], {
+          fetchImpl,
+          readConfig: async () => config,
+          stdout: stdout.writer,
+          stderr: stderr.writer,
+        }),
+      ).toBe(0)
+
+      expect(
+        await runQuestsCli(['note', 'quest-note', '--commander', 'cmdr-prompt', 'Progress made'], {
+          fetchImpl,
+          readConfig: async () => config,
+          stdout: stdout.writer,
+          stderr: stderr.writer,
+        }),
+      ).toBe(0)
+
+      expect(
+        await runQuestsCli(
+          ['done', 'quest-done', '--commander', 'cmdr-prompt', '--note', 'Completed rollout'],
+          {
+            fetchImpl,
+            readConfig: async () => config,
+            stdout: stdout.writer,
+            stderr: stderr.writer,
+          },
+        ),
+      ).toBe(0)
+
+      expect(
+        await runQuestsCli(
+          ['fail', 'quest-fail', '--commander', 'cmdr-prompt', '--note', 'Blocked by API outage'],
+          {
+            fetchImpl,
+            readConfig: async () => config,
+            stdout: stdout.writer,
+            stderr: stderr.writer,
+          },
+        ),
+      ).toBe(0)
+
+      expect(stderr.read()).toBe('')
+      expect(fetchImpl).toHaveBeenCalledTimes(4)
+
+      expect(fetchImpl.mock.calls[0]?.[0]).toBe(
+        'https://hervald.gehirn.ai/api/commanders/cmdr-prompt/quests/quest-claim/claim',
+      )
+      expect(JSON.parse((fetchImpl.mock.calls[0]?.[1]?.body as string) ?? '{}')).toEqual({
+        conversationId: 'conv-generated',
+      })
+
+      expect(fetchImpl.mock.calls[1]?.[0]).toBe(
+        'https://hervald.gehirn.ai/api/commanders/cmdr-prompt/quests/quest-note/notes',
+      )
+      expect(JSON.parse((fetchImpl.mock.calls[1]?.[1]?.body as string) ?? '{}')).toEqual({
+        note: 'Progress made',
+      })
+
+      expect(fetchImpl.mock.calls[2]?.[0]).toBe(
+        'https://hervald.gehirn.ai/api/commanders/cmdr-prompt/quests/quest-done',
+      )
+      expect(JSON.parse((fetchImpl.mock.calls[2]?.[1]?.body as string) ?? '{}')).toEqual({
+        status: 'done',
+        note: 'Completed rollout',
+      })
+
+      expect(fetchImpl.mock.calls[3]?.[0]).toBe(
+        'https://hervald.gehirn.ai/api/commanders/cmdr-prompt/quests/quest-fail',
+      )
+      expect(JSON.parse((fetchImpl.mock.calls[3]?.[1]?.body as string) ?? '{}')).toEqual({
+        status: 'failed',
+        note: 'Blocked by API outage',
+      })
+    } finally {
+      vi.unstubAllEnvs()
+    }
+  })
+
   it('marks caller-owned quests as mine in list output', async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(

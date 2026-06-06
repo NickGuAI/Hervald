@@ -1,22 +1,26 @@
-import { FormEvent, useMemo, useState } from 'react'
-import { AlertTriangle, Copy, KeyRound, LogOut, Trash2 } from 'lucide-react'
+import { FormEvent, useEffect, useMemo, useState } from 'react'
+import QRCode from 'qrcode'
+import { AlertTriangle, Copy, KeyRound, LogOut, QrCode, Smartphone, Trash2 } from 'lucide-react'
 import {
   useApiKeys,
   useClearGeminiImageGenerationKey,
   useClearOpenAITranscriptionKey,
   useCreateApiKey,
+  useCreateMobileAccessInvite,
   useGeminiImageGenerationSettings,
   useOpenAITranscriptionSettings,
   useRevokeApiKey,
   useSetGeminiImageGenerationKey,
   useSetOpenAITranscriptionKey,
   type CreatedApiKey,
+  type MobileAccessInvite,
 } from '@/hooks/use-api-keys'
 import { useAuth } from '@/contexts/AuthContext'
 import { timeAgo } from '@/lib/utils'
 import { MagicBento, MagicBentoCard } from '@/components/MagicBento'
 import { AccountProfileCard } from './components/AccountProfileCard'
 import { OrgIdentityCard } from '@modules/org-identity/components/OrgIdentityCard'
+import { ProviderAuthPanel } from '@modules/agents/components/ProviderAuthPanel'
 
 const AVAILABLE_SCOPES = [
   { value: 'telemetry:read', label: 'Telemetry read' },
@@ -40,11 +44,43 @@ const AVAILABLE_SCOPES = [
 
 const ALL_SCOPE_VALUES = AVAILABLE_SCOPES.map((s) => s.value)
 
+const MOBILE_ACCESS_SCOPES = [
+  'agents:read',
+  'agents:write',
+  'commanders:read',
+  'commanders:write',
+  'services:read',
+  'services:write',
+  'skills:read',
+  'telemetry:read',
+] as const
+
+const MOBILE_INVITE_EXPIRY_OPTIONS = [
+  { value: '900', label: '15 minutes' },
+  { value: '3600', label: '1 hour' },
+  { value: '21600', label: '6 hours' },
+  { value: '86400', label: '24 hours' },
+] as const
+
+type MobileInviteExpiryOption = (typeof MOBILE_INVITE_EXPIRY_OPTIONS)[number]['value']
+
 const FIELD_CLASS =
   'w-full rounded-lg border border-[var(--hv-field-border)] bg-[var(--hv-field-bg)] px-3 py-2 text-[16px] text-[color:var(--hv-fg)] placeholder:text-[color:var(--hv-field-placeholder)] focus:outline-none focus:border-[var(--hv-field-focus-border)] md:text-sm'
 
 const ERROR_CLASS =
   'flex items-start gap-2 rounded-lg bg-[var(--hv-accent-danger-wash)] px-3 py-2 text-sm text-[color:var(--hv-accent-danger)]'
+
+function formatExpiry(expiresAt: string): string {
+  const date = new Date(expiresAt)
+  if (Number.isNaN(date.getTime())) {
+    return expiresAt
+  }
+
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+  }).format(date)
+}
 
 export default function ApiKeysPage() {
   const auth = useAuth()
@@ -58,6 +94,12 @@ export default function ApiKeysPage() {
   const [geminiApiKey, setGeminiApiKey] = useState('')
   const [createdKey, setCreatedKey] = useState<CreatedApiKey | null>(null)
   const [copyState, setCopyState] = useState<'idle' | 'copied'>('idle')
+  const [mobileInviteExpiry, setMobileInviteExpiry] =
+    useState<MobileInviteExpiryOption>('3600')
+  const [mobileInvite, setMobileInvite] = useState<MobileAccessInvite | null>(null)
+  const [mobileInviteQrDataUrl, setMobileInviteQrDataUrl] = useState<string | null>(null)
+  const [mobileInviteCopyState, setMobileInviteCopyState] =
+    useState<'idle' | 'copied'>('idle')
 
   const {
     data: keys = [],
@@ -65,6 +107,7 @@ export default function ApiKeysPage() {
     error,
   } = useApiKeys()
   const createMutation = useCreateApiKey()
+  const createMobileInviteMutation = useCreateMobileAccessInvite()
   const revokeMutation = useRevokeApiKey()
   const { data: transcriptionSettings, error: transcriptionSettingsError } =
     useOpenAITranscriptionSettings()
@@ -83,9 +126,15 @@ export default function ApiKeysPage() {
       ),
     [keys],
   )
+  const mobileInvitePayload = mobileInvite?.qrPayload ?? mobileInvite?.invite ?? null
+  const mobileScopes = mobileInvite?.scopes.length ? mobileInvite.scopes : MOBILE_ACCESS_SCOPES
 
   const createError =
     createMutation.error instanceof Error ? createMutation.error.message : null
+  const mobileInviteError =
+    createMobileInviteMutation.error instanceof Error
+      ? createMobileInviteMutation.error.message
+      : null
   const revokeError =
     revokeMutation.error instanceof Error ? revokeMutation.error.message : null
   const transcriptionError =
@@ -109,6 +158,37 @@ export default function ApiKeysPage() {
       ? geminiImageSettingsError.message
       : null)
   const listError = error instanceof Error ? error.message : null
+
+  useEffect(() => {
+    let cancelled = false
+    setMobileInviteQrDataUrl(null)
+
+    if (!mobileInvitePayload) {
+      return () => {
+        cancelled = true
+      }
+    }
+
+    void QRCode.toDataURL(mobileInvitePayload, {
+      errorCorrectionLevel: 'M',
+      margin: 1,
+      width: 192,
+    })
+      .then((dataUrl) => {
+        if (!cancelled) {
+          setMobileInviteQrDataUrl(dataUrl)
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setMobileInviteQrDataUrl(null)
+        }
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [mobileInvitePayload])
 
   async function handleCreateKey(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -134,6 +214,26 @@ export default function ApiKeysPage() {
 
     await navigator.clipboard.writeText(createdKey.key)
     setCopyState('copied')
+  }
+
+  async function handleCreateMobileInvite(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+
+    const created = await createMobileInviteMutation.mutateAsync({
+      expiresInSeconds: Number(mobileInviteExpiry),
+      scopes: [...MOBILE_ACCESS_SCOPES],
+    })
+    setMobileInvite(created)
+    setMobileInviteCopyState('idle')
+  }
+
+  async function handleCopyMobileInvite() {
+    if (!mobileInvitePayload) {
+      return
+    }
+
+    await navigator.clipboard.writeText(mobileInvitePayload)
+    setMobileInviteCopyState('copied')
   }
 
   async function handleSaveOpenAIKey(event: FormEvent<HTMLFormElement>) {
@@ -194,6 +294,10 @@ export default function ApiKeysPage() {
 
           <MagicBentoCard span={6} data-testid="settings-bento-account">
             <AccountProfileCard />
+          </MagicBentoCard>
+
+          <MagicBentoCard span={6} data-testid="settings-bento-provider-auth">
+            <ProviderAuthPanel />
           </MagicBentoCard>
 
           <MagicBentoCard span={3} data-testid="settings-bento-transcription">
@@ -323,6 +427,133 @@ export default function ApiKeysPage() {
             </div>
           </MagicBentoCard>
 
+          <MagicBentoCard span={6} data-testid="settings-bento-mobile-access">
+            <div className="flex h-full flex-col">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <p className="section-title">Mobile Access</p>
+                  <p className="mt-2 text-sm text-[color:var(--hv-fg-subtle)]">
+                    Generate an expiring pairing invite for the iOS app.
+                  </p>
+                </div>
+                <Smartphone size={20} className="mt-0.5 text-[color:var(--hv-fg-faint)]" />
+              </div>
+
+              <div className="mt-4">
+                <p className="text-whisper text-[color:var(--hv-fg-faint)]">Mobile scopes</p>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {mobileScopes.map((scope) => (
+                    <span key={scope} className="badge-sumi badge-active font-mono">
+                      {scope}
+                    </span>
+                  ))}
+                </div>
+              </div>
+
+              <form
+                className="mt-4 space-y-3"
+                data-testid="mobile-access-form"
+                onSubmit={handleCreateMobileInvite}
+              >
+                <div>
+                  <label htmlFor="mobile-access-expiry" className="section-title block mb-2">
+                    Invite Expiry
+                  </label>
+                  <select
+                    id="mobile-access-expiry"
+                    name="mobile-access-expiry"
+                    value={mobileInviteExpiry}
+                    onChange={(event) =>
+                      setMobileInviteExpiry(event.target.value as MobileInviteExpiryOption)
+                    }
+                    className={FIELD_CLASS}
+                    data-testid="mobile-access-expiry-select"
+                    required
+                  >
+                    <option value="" disabled>
+                      -- Select expiry --
+                    </option>
+                    {MOBILE_INVITE_EXPIRY_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={createMobileInviteMutation.isPending}
+                  className="btn-primary disabled:opacity-60 disabled:cursor-not-allowed inline-flex items-center gap-2"
+                >
+                  <Smartphone size={14} />
+                  {createMobileInviteMutation.isPending ? 'Generating...' : 'Generate Invite'}
+                </button>
+
+                {mobileInviteError && (
+                  <div className={ERROR_CLASS}>
+                    <AlertTriangle size={15} className="mt-0.5" />
+                    <span>{mobileInviteError}</span>
+                  </div>
+                )}
+              </form>
+
+              {mobileInvite && mobileInvitePayload && (
+                <div className="mt-5 rounded-lg border border-[var(--hv-accent-warning)] bg-[var(--hv-accent-warning-wash)] p-4">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="section-title">Pairing Invite</p>
+                      <p className="mt-2 text-sm text-[color:var(--hv-fg-subtle)]">
+                        Expires {formatExpiry(mobileInvite.expiresAt)}
+                      </p>
+                      {mobileInvite.keyPrefix && (
+                        <p className="mt-1 text-whisper font-mono text-[color:var(--hv-fg-faint)]">
+                          {mobileInvite.keyPrefix}...
+                        </p>
+                      )}
+                      {mobileInvite.instanceUrl && (
+                        <p className="mt-1 text-whisper font-mono text-[color:var(--hv-fg-faint)]">
+                          {mobileInvite.instanceUrl}
+                        </p>
+                      )}
+                    </div>
+                    {mobileInviteQrDataUrl ? (
+                      <img
+                        src={mobileInviteQrDataUrl}
+                        alt="Mobile access pairing QR"
+                        className="h-24 w-24 rounded-md border border-[var(--hv-border-hair)] bg-white p-1"
+                      />
+                    ) : (
+                      <div className="flex h-24 w-24 items-center justify-center rounded-md border border-[var(--hv-border-hair)] bg-[var(--hv-bg-raised)] text-[color:var(--hv-fg-faint)]">
+                        <QrCode size={28} />
+                      </div>
+                    )}
+                  </div>
+                  <code className="mt-3 block max-h-32 overflow-y-auto rounded-md bg-[var(--hv-bg-raised)] px-3 py-2 text-xs break-all text-[color:var(--hv-fg)]">
+                    {mobileInvitePayload}
+                  </code>
+                  <div className="mt-3 flex items-center gap-2">
+                    <button
+                      type="button"
+                      className="btn-primary inline-flex items-center gap-2"
+                      onClick={handleCopyMobileInvite}
+                    >
+                      <Copy size={14} />
+                      {mobileInviteCopyState === 'copied' ? 'Copied' : 'Copy invite'}
+                    </button>
+                    <button
+                      type="button"
+                      className="btn-ghost"
+                      onClick={() => setMobileInvite(null)}
+                    >
+                      Dismiss
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          </MagicBentoCard>
+
           <MagicBentoCard span={6} data-testid="settings-bento-managed-keys">
             <div className="flex h-full flex-col">
               <div className="flex items-center justify-between border-b border-[var(--hv-border-hair)] pb-3">
@@ -353,6 +584,11 @@ export default function ApiKeysPage() {
                           <p className="text-whisper text-[color:var(--hv-fg-faint)]">
                             Last used {key.lastUsedAt ? timeAgo(key.lastUsedAt) : 'never'}
                           </p>
+                          {key.expiresAt && (
+                            <p className="text-whisper text-[color:var(--hv-fg-faint)]">
+                              Expires {formatExpiry(key.expiresAt)}
+                            </p>
+                          )}
                           <p className="mt-1 text-whisper text-[color:var(--hv-fg-subtle)]">
                             {key.scopes.length === 0
                               ? 'No scopes'

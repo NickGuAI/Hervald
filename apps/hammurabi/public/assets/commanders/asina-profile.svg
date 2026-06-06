@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title desc">
+  <title id="title">Asina default avatar</title>
+  <desc id="desc">Minimal portrait of Asina with an ink-blue jacket and topknot silhouette.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#f5efe3" />
+      <stop offset="100%" stop-color="#d9dde8" />
+    </linearGradient>
+  </defs>
+  <rect width="128" height="128" rx="28" fill="url(#bg)" />
+  <circle cx="64" cy="48" r="22" fill="#f2d3b1" />
+  <path d="M44 42c2-17 11-26 20-26s18 9 20 26c-5-4-12-7-20-7s-15 3-20 7Z" fill="#1d2430" />
+  <circle cx="64" cy="17" r="9" fill="#1d2430" />
+  <path d="M58 51h12v4H58Z" fill="#6c4f3f" opacity=".35" />
+  <path d="M54 48h6v4h-6Zm14 0h6v4h-6Z" fill="#1d2430" />
+  <path d="M60 58c2 2 6 2 8 0" stroke="#8d5c4b" stroke-linecap="round" stroke-width="3" fill="none" />
+  <path d="M35 112c2-23 15-37 29-37s27 14 29 37" fill="#2b405b" />
+  <path d="M64 76 54 112h20Z" fill="#a24e4d" />
+</svg>

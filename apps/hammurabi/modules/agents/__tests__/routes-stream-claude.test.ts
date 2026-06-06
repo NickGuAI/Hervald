@@ -45,6 +45,11 @@ function withClaudeSource<T extends Record<string, unknown>>(event: T) {
   }
 }
 
+function readStreamEventKind(event: unknown): string | undefined {
+  const record = event as { type?: string; ev?: { type?: string } }
+  return record.type ?? record.ev?.type
+}
+
 describe("stream sessions", () => {
   function installMockProcess() {
       const mock = createMockChildProcess()
@@ -378,8 +383,38 @@ describe("stream sessions", () => {
             .map((line) => JSON.parse(line) as Record<string, unknown>)
 
           expect(events).toHaveLength(2)
-          expect(events[0]).toEqual(withClaudeSource(initEvent))
-          expect(events[1]).toEqual(withClaudeSource(deltaEvent))
+          expect(events[0]).toEqual(expect.objectContaining({
+            schemaVersion: 2,
+            source: expect.objectContaining({
+              provider: 'claude',
+              backend: 'cli',
+              sessionId: 'claude-commander-123',
+              rawEventType: 'system',
+            }),
+            ev: {
+              type: 'provider.activity',
+              title: 'System init',
+              data: withClaudeSource(initEvent),
+            },
+          }))
+          expect(events[1]).toEqual(expect.objectContaining({
+            schemaVersion: 2,
+            source: expect.objectContaining({
+              provider: 'claude',
+              backend: 'cli',
+              rawEventType: 'message_delta',
+            }),
+            ev: {
+              type: 'provider.activity',
+              title: 'Usage updated',
+              data: {
+                usage: { input_tokens: 3, output_tokens: 1 },
+                usage_is_total: undefined,
+                total_cost_usd: undefined,
+                cost_usd: undefined,
+              },
+            },
+          }))
 
           const sharedRaw = await readFile(sharedTranscriptPath, 'utf8')
           const sharedEvents = sharedRaw
@@ -530,7 +565,20 @@ describe("stream sessions", () => {
             .filter((line) => line.trim().length > 0)
             .map((line) => JSON.parse(line) as Record<string, unknown>)
           expect(events).toEqual([
-            withClaudeSource({ type: 'system', subtype: 'init', session_id: 'claude-rotate-new' }),
+            expect.objectContaining({
+              schemaVersion: 2,
+              source: expect.objectContaining({
+                provider: 'claude',
+                backend: 'cli',
+                sessionId: 'claude-rotate-new',
+                rawEventType: 'system',
+              }),
+              ev: {
+                type: 'provider.activity',
+                title: 'System init',
+                data: withClaudeSource({ type: 'system', subtype: 'init', session_id: 'claude-rotate-new' }),
+              },
+            }),
           ])
         })
 
@@ -767,9 +815,51 @@ describe("stream sessions", () => {
             .map((line) => JSON.parse(line) as Record<string, unknown>)
 
           expect(events).toEqual([
-            withClaudeSource(initEvent),
-            withClaudeSource(messageStartEvent),
-            withClaudeSource(resultEvent),
+            expect.objectContaining({
+              schemaVersion: 2,
+              source: expect.objectContaining({
+                provider: 'claude',
+                backend: 'cli',
+                sessionId: 'claude-stream-123',
+                rawEventType: 'system',
+              }),
+              ev: {
+                type: 'provider.activity',
+                title: 'System init',
+                data: withClaudeSource(initEvent),
+              },
+            }),
+            expect.objectContaining({
+              schemaVersion: 2,
+              source: expect.objectContaining({
+                provider: 'claude',
+                backend: 'cli',
+                rawEventType: 'message_start',
+              }),
+              ev: { type: 'turn.start', role: 'assistant' },
+            }),
+            expect.objectContaining({
+              schemaVersion: 2,
+              source: expect.objectContaining({
+                provider: 'claude',
+                backend: 'cli',
+                rawEventType: 'message_start',
+              }),
+              ev: { type: 'message.start', role: 'assistant' },
+            }),
+            expect.objectContaining({
+              schemaVersion: 2,
+              source: expect.objectContaining({
+                provider: 'claude',
+                backend: 'cli',
+                rawEventType: 'result',
+              }),
+              ev: expect.objectContaining({
+                type: 'turn.end',
+                status: 'ok',
+                result: 'done',
+              }),
+            }),
           ])
 
           const meta = JSON.parse(await readFile(metaPath, 'utf8')) as {
@@ -786,11 +876,7 @@ describe("stream sessions", () => {
           const persisted = JSON.parse(await readFile(sessionStorePath, 'utf8')) as {
             sessions: Array<{ name: string; events?: unknown[] }>
           }
-          expect(persisted.sessions.find((session) => session.name === 'stream-transcript-01')?.events).toEqual([
-            withClaudeSource(initEvent),
-            withClaudeSource(messageStartEvent),
-            withClaudeSource(resultEvent),
-          ])
+          expect(persisted.sessions.find((session) => session.name === 'stream-transcript-01')?.events).toEqual(events)
         })
       } finally {
         if (server) {
@@ -2040,7 +2126,7 @@ describe("stream sessions", () => {
           if (parsed.type !== 'replay') {
             received.push(parsed)
           }
-          if (received.length >= 2) {
+          if (received.length >= 3) {
             resolve()
           }
         })
@@ -2053,9 +2139,7 @@ describe("stream sessions", () => {
       )
 
       await messagePromise
-      expect(received).toHaveLength(2)
-      expect((received[0] as { type: string }).type).toBe('message_start')
-      expect((received[1] as { type: string }).type).toBe('content_block_start')
+      expect(received.map(readStreamEventKind)).toEqual(['turn.start', 'message.start', 'message.start'])
 
       ws.close()
       await server.close()
@@ -2087,7 +2171,7 @@ describe("stream sessions", () => {
           if (parsed.type !== 'replay') {
             received.push(parsed)
           }
-          if (received.length >= 1) {
+          if (received.length >= 2) {
             resolve()
           }
         })
@@ -2098,8 +2182,7 @@ describe("stream sessions", () => {
       mock.emitStdout('rt","message":{"id":"m1","role":"assistant"}}\n')
 
       await messagePromise
-      expect(received).toHaveLength(1)
-      expect((received[0] as { type: string }).type).toBe('message_start')
+      expect(received.map(readStreamEventKind)).toEqual(['turn.start', 'message.start'])
 
       ws.close()
       await server.close()
@@ -2151,9 +2234,7 @@ describe("stream sessions", () => {
 
       const replay = messages.find((m) => m.type === 'replay')
       expect(replay).toBeDefined()
-      expect(replay!.events).toHaveLength(2)
-      expect((replay!.events![0] as { type: string }).type).toBe('message_start')
-      expect((replay!.events![1] as { type: string }).type).toBe('content_block_start')
+      expect(replay!.events?.map(readStreamEventKind)).toEqual(['turn.start', 'message.start', 'message.start'])
 
       ws.close()
       await server.close()
@@ -2205,60 +2286,70 @@ describe("stream sessions", () => {
       expect(replay).toBeDefined()
 
       const replayEvents = replay!.events as Array<Record<string, unknown>>
-      expect(replayEvents).toEqual([
-        withClaudeSource({
-          type: 'planning',
-          action: 'enter',
+      expect(replayEvents.map(readStreamEventKind)).toEqual([
+        'plan.update',
+        'plan.update',
+        'approval.request',
+        'tool.start',
+        'plan.update',
+        'approval.resolved',
+      ])
+      expect(replayEvents[2]).toEqual(expect.objectContaining({
+        schemaVersion: 2,
+        itemId: 'plan-exit',
+        source: expect.objectContaining({
+          provider: 'claude',
+          backend: 'cli',
+          rawEventType: 'plan_approval',
+          rawEventId: 'plan-exit',
         }),
-        withClaudeSource({
-          type: 'plan_approval',
+        ev: {
+          type: 'approval.request',
+          toolCallId: 'plan-exit',
           interactionKind: 'plan_approval',
-          toolId: 'plan-exit',
-          toolName: 'ExitPlanMode',
-          plan: '1. Inspect stream handling\n2. Patch replay',
-          approveLabel: 'Approve',
-          rejectLabel: 'Reject',
-          customResponseLabel: 'Add response',
-          providerContext: {
-            provider: 'claude',
-            backend: 'cli',
-            toolUseId: 'plan-exit',
+          prompt: '1. Inspect stream handling\n2. Patch replay',
+          request: expect.objectContaining({
             toolName: 'ExitPlanMode',
-            answerFormat: 'claude.exit_plan_mode',
-          },
-        }),
-        withClaudeSource({
-          type: 'assistant',
-          message: {
-            id: 'm3',
-            role: 'assistant',
-            content: [
+            providerContext: {
+              provider: 'claude',
+              backend: 'cli',
+              toolUseId: 'plan-exit',
+              toolName: 'ExitPlanMode',
+              answerFormat: 'claude.exit_plan_mode',
+            },
+          }),
+        },
+      }))
+      expect(replayEvents[3]).toEqual(expect.objectContaining({
+        schemaVersion: 2,
+        itemId: 'ask-1',
+        parentId: 'm3',
+        ev: {
+          type: 'tool.start',
+          toolCallId: 'ask-1',
+          name: 'AskUserQuestion',
+          input: {
+            questions: [
               {
-                type: 'tool_use',
-                id: 'ask-1',
-                name: 'AskUserQuestion',
-                input: {
-                  questions: [
-                    {
-                      question: 'Proceed?',
-                      header: 'Confirm',
-                      multiSelect: false,
-                      options: [{ label: 'Yes', description: 'Continue' }],
-                    },
-                  ],
-                },
+                question: 'Proceed?',
+                header: 'Confirm',
+                multiSelect: false,
+                options: [{ label: 'Yes', description: 'Continue' }],
               },
             ],
           },
-        }),
-        withClaudeSource({
-          type: 'planning',
-          action: 'decision',
-          toolId: 'plan-exit',
+        },
+      }))
+      expect(replayEvents[5]).toEqual(expect.objectContaining({
+        schemaVersion: 2,
+        itemId: 'plan-exit',
+        ev: expect.objectContaining({
+          type: 'approval.resolved',
+          toolCallId: 'plan-exit',
           approved: true,
-          message: 'Proceeding with the approved plan.',
+          result: 'Proceeding with the approved plan.',
         }),
-      ])
+      }))
 
       ws.close()
       await server.close()
@@ -2315,7 +2406,11 @@ describe("stream sessions", () => {
 
       const replay = messages.find((message) => message.type === 'replay')
       expect(replay).toBeDefined()
-      expect(replay!.events?.map((event) => event.type)).toEqual(['message_delta', 'result'])
+      expect(replay!.events?.map(readStreamEventKind)).toEqual([
+        'provider.activity',
+        'provider.activity',
+        'turn.end',
+      ])
       expect(replay!.usage).toEqual({
         inputTokens: 35,
         outputTokens: 15,
@@ -2825,7 +2920,7 @@ describe("stream sessions", () => {
       const wsUrl = server.baseUrl.replace('http://', 'ws://') +
         '/api/agents/sessions/stream-usage/ws?api_key=test-key'
       const ws = new WebSocket(wsUrl)
-      const messages: Array<{ type: string; events?: Array<{ type: string; usage?: unknown }> }> = []
+      const messages: Array<{ type: string; events?: Array<Record<string, unknown>> }> = []
 
       ws.on('message', (data) => {
         messages.push(JSON.parse(data.toString()))
@@ -2843,9 +2938,11 @@ describe("stream sessions", () => {
 
       const replay = messages.find((m) => m.type === 'replay')
       expect(replay).toBeDefined()
-      const usageEvent = replay!.events!.find((e) => e.type === 'message_delta')
+      const usageEvent = replay!.events!.find((event) => (
+        (event.ev as { type?: string } | undefined)?.type === 'provider.activity'
+      )) as { ev?: { data?: { usage?: unknown } } } | undefined
       expect(usageEvent).toBeDefined()
-      expect(usageEvent?.usage).toEqual({ input_tokens: 100, output_tokens: 50 })
+      expect(usageEvent?.ev?.data?.usage).toEqual({ input_tokens: 100, output_tokens: 50 })
 
       ws.close()
       await server.close()
@@ -2877,7 +2974,7 @@ describe("stream sessions", () => {
           if (parsed.type !== 'replay') {
             received.push(parsed)
           }
-          if (received.length >= 1) {
+          if (received.length >= 2) {
             resolve()
           }
         })
@@ -2889,8 +2986,7 @@ describe("stream sessions", () => {
 
       await messagePromise
       // Only the valid line should come through
-      expect(received).toHaveLength(1)
-      expect((received[0] as { type: string }).type).toBe('message_start')
+      expect(received.map(readStreamEventKind)).toEqual(['turn.start', 'message.start'])
 
       ws.close()
       await server.close()
@@ -2930,8 +3026,8 @@ describe("stream sessions", () => {
       // Should be capped at 1000
       expect(replay.events.length).toBeLessThanOrEqual(1000)
       // The last event should be the most recent (chunk-1009)
-      const lastEvent = replay.events[replay.events.length - 1] as { delta: { text: string } }
-      expect(lastEvent.delta.text).toBe('chunk-1009')
+      const lastEvent = replay.events[replay.events.length - 1] as { ev?: { text?: string } }
+      expect(lastEvent.ev?.text).toBe('chunk-1009')
 
       ws.close()
       await server.close()

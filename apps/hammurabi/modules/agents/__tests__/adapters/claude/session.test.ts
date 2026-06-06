@@ -122,6 +122,101 @@ describe('agents/adapters/claude/session', () => {
     )
   })
 
+  it('injects Hammurabi-managed Claude OAuth tokens into the spawn env', () => {
+    process.env.SHELL = '/bin/bash'
+
+    const child = createFakeChildProcess()
+    const spawnImpl = vi.fn().mockReturnValue(child)
+    const deps = createDeps(spawnImpl)
+
+    const session = createClaudeStreamSession(
+      'local-claude-managed-auth',
+      'default',
+      '',
+      '/tmp/project alpha',
+      undefined,
+      {
+        providerAuth: {
+          provider: 'claude',
+          snapshot: {
+            provider: 'claude',
+            scopeId: 'commander-1',
+            host: 'local',
+            status: 'ready',
+            authMethod: 'oauth',
+            lastCheckedAt: new Date().toISOString(),
+          },
+          env: { CLAUDE_CODE_OAUTH_TOKEN: 'managed-oauth-token' },
+        },
+      },
+      deps,
+    )
+
+    const [, , options] = spawnImpl.mock.calls[0]!
+    expect(options.env).toMatchObject({
+      CLAUDE_CODE_OAUTH_TOKEN: 'managed-oauth-token',
+    })
+    expect(session.providerAuthSnapshot).toMatchObject({
+      provider: 'claude',
+      status: 'ready',
+      authMethod: 'oauth',
+    })
+  })
+
+  it('scrubs inherited Claude OAuth env when no managed spawn token exists', () => {
+    process.env.SHELL = '/bin/bash'
+    const originalToken = process.env.CLAUDE_CODE_OAUTH_TOKEN
+    process.env.CLAUDE_CODE_OAUTH_TOKEN = 'global-token'
+
+    try {
+      const child = createFakeChildProcess()
+      const spawnImpl = vi.fn().mockReturnValue(child)
+      const deps = createDeps(spawnImpl)
+
+      createClaudeStreamSession(
+        'local-claude-scrub-global-auth',
+        'default',
+        '',
+        '/tmp/project alpha',
+        undefined,
+        {},
+        deps,
+      )
+
+      const [, , options] = spawnImpl.mock.calls[0]!
+      expect(options.env?.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined()
+    } finally {
+      if (originalToken === undefined) {
+        delete process.env.CLAUDE_CODE_OAUTH_TOKEN
+      } else {
+        process.env.CLAUDE_CODE_OAUTH_TOKEN = originalToken
+      }
+    }
+  })
+
+  it('marks sessions auth_required when Claude stderr reports expired auth', () => {
+    process.env.SHELL = '/bin/bash'
+
+    const child = createFakeChildProcess()
+    const spawnImpl = vi.fn().mockReturnValue(child)
+    const deps = createDeps(spawnImpl)
+    deps.markProviderAuthRequired = vi.fn()
+
+    const session = createClaudeStreamSession(
+      'local-claude-auth-required',
+      'default',
+      '',
+      '/tmp/project alpha',
+      undefined,
+      {},
+      deps,
+    )
+
+    child.stderr?.emit('data', Buffer.from('401 unauthorized\n'))
+
+    expect(deps.markProviderAuthRequired).toHaveBeenCalledWith(session, '401 unauthorized')
+  })
+
   it('rejects oversized append prompt bundles before spawning Claude', () => {
     expect(() =>
       buildClaudePromptAudit('x'.repeat(20), {

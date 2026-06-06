@@ -9,6 +9,7 @@ export const FALLBACK_ACTION_POLICY_ID = 'everything-else'
 
 export interface ActionCategoryMatcherDefinition {
   mcpServers: string[]
+  mcpTools?: string[]
   bashPatterns: RegExp[]
   skillIds?: string[]
 }
@@ -70,7 +71,7 @@ export interface ApprovalContext {
 }
 
 export type PendingApprovalSource = string
-export type PendingApprovalResolution = 'approve' | 'reject'
+export type PendingApprovalResolution = 'approve' | 'reject' | 'cancel'
 
 export type PendingApprovalResolverRef =
   | {

@@ -93,6 +93,34 @@ describe('ApiKeyJsonStore', () => {
     expect(allowed.record.lastUsedAt).toBe(verifiedAt.toISOString())
   })
 
+  it('rejects expired API keys without updating lastUsedAt', async () => {
+    const filePath = await createTempStoreFilePath()
+    const store = new ApiKeyJsonStore(filePath)
+
+    const created = await store.createKey({
+      name: 'Mobile Pairing',
+      scopes: ['agents:read'],
+      createdBy: 'ops@gehirn.ai',
+      now: new Date('2026-06-01T00:00:00.000Z'),
+      expiresAt: new Date('2026-06-01T00:01:00.000Z'),
+    })
+
+    await expect(store.verifyKey(created.key, {
+      requiredScopes: ['agents:read'],
+      now: new Date('2026-06-01T00:00:59.000Z'),
+    })).resolves.toMatchObject({ ok: true })
+
+    await expect(store.verifyKey(created.key, {
+      requiredScopes: ['agents:read'],
+      now: new Date('2026-06-01T00:01:00.000Z'),
+    })).resolves.toEqual({
+      ok: false,
+      reason: 'expired',
+    })
+
+    expect((await store.listKeys())[0]?.lastUsedAt).toBe('2026-06-01T00:00:59.000Z')
+  })
+
   it('throttles lastUsedAt persistence instead of writing on every verification', async () => {
     const filePath = await createTempStoreFilePath()
     const store = new ApiKeyJsonStore(filePath)

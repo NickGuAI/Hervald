@@ -1,5 +1,6 @@
 import type { StreamJsonEvent } from '../types.js'
 import { normalizeClaudeEvent } from '../event-normalizers/claude.js'
+import { isTranscriptEnvelope } from '../../../src/types/transcript-envelope.js'
 import type { MsgItem } from './model.js'
 import {
   createStreamProcessorState,
@@ -8,6 +9,9 @@ import {
 } from './stream-event-machine.js'
 
 function normalizeProjectionEvent(event: StreamJsonEvent): StreamJsonEvent[] {
+  if (isTranscriptEnvelope(event)) {
+    return [event]
+  }
   if (event.source?.provider !== 'claude') {
     return [event]
   }

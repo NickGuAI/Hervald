@@ -16,6 +16,15 @@ interface CommanderPackageExample {
   body: string
 }
 
+interface CommanderPackageAutomation {
+  id: string
+  label: string
+  purpose: string
+  trigger: 'schedule' | 'quest' | 'manual'
+  schedule?: string
+  status: 'active' | 'paused' | 'completed' | 'cancelled'
+}
+
 interface CommanderPackageResponse {
   id: string
   version: string
@@ -24,8 +33,12 @@ interface CommanderPackageResponse {
   summary: string
   description: string
   skills: CommanderPackageSkill[]
+  automations: CommanderPackageAutomation[]
   examples: CommanderPackageExample[]
   onboarding: string
+  uiProfile: {
+    avatar?: string
+  }
   installState: {
     installed: boolean
     commanderId: string | null
@@ -62,13 +75,23 @@ function PackageCard({
 }) {
   const requiredSkills = pkg.skills.filter((skill) => skill.required)
   const optionalSkills = pkg.skills.filter((skill) => !skill.required)
+  const presetAutomations = pkg.automations ?? []
 
   return (
     <article className="hv-marketplace-card" data-testid={`commander-package-${pkg.id}`}>
       <header>
-        <div>
-          <p className="hv-marketplace-eyebrow">{pkg.role}</p>
-          <h2>{pkg.displayName}</h2>
+        <div className="hv-marketplace-card-title">
+          {pkg.uiProfile.avatar ? (
+            <img
+              className="hv-marketplace-avatar"
+              src={pkg.uiProfile.avatar}
+              alt={`${pkg.displayName} stock avatar`}
+            />
+          ) : null}
+          <div>
+            <p className="hv-marketplace-eyebrow">{pkg.role}</p>
+            <h2>{pkg.displayName}</h2>
+          </div>
         </div>
         <span className={pkg.installState.installed ? 'hv-marketplace-badge-installed' : 'hv-marketplace-badge'}>
           {pkg.installState.installed ? 'Installed' : `v${pkg.version}`}
@@ -98,6 +121,27 @@ function PackageCard({
               <div key={skill.id} className="hv-marketplace-skill hv-marketplace-skill-muted">
                 <strong>{skill.label}</strong>
                 <span>{skill.purpose}</span>
+              </div>
+            ))}
+          </div>
+        </section>
+      ) : null}
+
+      {presetAutomations.length > 0 ? (
+        <section aria-label={`${pkg.displayName} preset automations`}>
+          <h3>Preset Automations</h3>
+          <div className="hv-marketplace-skill-grid">
+            {presetAutomations.map((automation) => (
+              <div key={automation.id} className="hv-marketplace-skill">
+                <div className="hv-marketplace-automation-title">
+                  <strong>{automation.label}</strong>
+                  <span>{automation.status}</span>
+                </div>
+                <span>
+                  {automation.trigger === 'schedule' && automation.schedule
+                    ? `${automation.schedule} - ${automation.purpose}`
+                    : automation.purpose}
+                </span>
               </div>
             ))}
           </div>
@@ -230,9 +274,24 @@ export default function CommanderPackagesPage() {
           align-items: start;
           gap: var(--hv-space-3);
         }
+        .hv-marketplace-card-title {
+          display: flex;
+          align-items: center;
+          gap: var(--hv-space-3);
+          min-width: 0;
+        }
         .hv-marketplace-card footer {
           align-items: center;
           margin-top: auto;
+        }
+        .hv-marketplace-avatar {
+          width: 72px;
+          height: 72px;
+          flex: 0 0 auto;
+          border-radius: 20px;
+          border: 1px solid var(--hv-border-firm);
+          background: var(--hv-bg-raised);
+          object-fit: cover;
         }
         .hv-marketplace-card h2 {
           font-size: clamp(28px, 3vw, 38px);
@@ -284,8 +343,24 @@ export default function CommanderPackagesPage() {
         .hv-marketplace-skill span {
           display: block;
         }
+        .hv-marketplace-automation-title {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: var(--hv-space-2);
+        }
         .hv-marketplace-skill strong {
           font-weight: 500;
+        }
+        .hv-marketplace-automation-title span {
+          flex: 0 0 auto;
+          border: 1px solid var(--hv-border-hair);
+          border-radius: var(--hv-radius-carved-sm);
+          padding: 2px 6px;
+          color: var(--hv-fg-subtle);
+          font-size: var(--hv-text-whisper);
+          letter-spacing: var(--hv-track-whisper);
+          text-transform: uppercase;
         }
         .hv-marketplace-skill span {
           margin-top: 3px;

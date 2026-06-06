@@ -113,7 +113,7 @@ export function LandingPage({ onApiKeySubmit }: LandingPageProps) {
                 void loginWithRedirect({ appState: { returnTo } })
                 return
               }
-              setSignInError('Hammurabi is reconnecting. Try sign-in again after the gateway is healthy.')
+              setSignInError('Hervald is reconnecting. Try sign-in again after the gateway is healthy.')
             })
           }}
           disabled={isLoading}

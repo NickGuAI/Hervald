@@ -9,6 +9,13 @@ import {
   normalizePersistedComposerAbilitySettings,
   type ComposerAbilitySettingsPatch,
 } from './composer-abilities.js'
+import {
+  cloneComposerSkillSlotSettings,
+  getDefaultComposerSkillSlotSettings,
+  mergeComposerSkillSlotSettingsPatch,
+  normalizePersistedComposerSkillSlotSettings,
+  type ComposerSkillSlotSettingsPatch,
+} from './composer-skill-slots.js'
 
 export const APP_FONT_SCALE_MIN = 0.8
 export const APP_FONT_SCALE_MAX = 1.6
@@ -23,6 +30,7 @@ function cloneSettings(settings: AppSettings): AppSettings {
   return {
     ...settings,
     composerAbilities: cloneComposerAbilitySettings(settings.composerAbilities),
+    composerSkillSlots: cloneComposerSkillSlotSettings(settings.composerSkillSlots),
   }
 }
 
@@ -60,6 +68,7 @@ function defaultSettings(now: () => Date): AppSettings {
     theme: 'light',
     fontScale: DEFAULT_APP_FONT_SCALE,
     composerAbilities: getDefaultComposerAbilitySettings(),
+    composerSkillSlots: getDefaultComposerSkillSlotSettings(),
     updatedAt: now().toISOString(),
   }
 }
@@ -74,6 +83,7 @@ function parsePersistedSettings(raw: unknown, now: () => Date): AppSettings {
     theme: normalizeAppTheme(raw.theme) ?? fallback.theme,
     fontScale: normalizePersistedAppFontScale(raw.fontScale) ?? fallback.fontScale,
     composerAbilities: normalizePersistedComposerAbilitySettings(raw.composerAbilities),
+    composerSkillSlots: normalizePersistedComposerSkillSlotSettings(raw.composerSkillSlots),
     updatedAt: typeof raw.updatedAt === 'string' && raw.updatedAt.trim().length > 0
       ? raw.updatedAt.trim()
       : fallback.updatedAt,
@@ -107,6 +117,7 @@ export class AppSettingsStore {
 
   async update(input: Partial<Pick<AppSettings, 'theme' | 'fontScale'>> & {
     composerAbilities?: ComposerAbilitySettingsPatch
+    composerSkillSlots?: ComposerSkillSlotSettingsPatch
   }): Promise<AppSettings> {
     return this.withMutationLock(async () => {
       const current = await this.readFromDisk() ?? defaultSettings(this.now)
@@ -119,11 +130,15 @@ export class AppSettingsStore {
       const composerAbilities = input.composerAbilities === undefined
         ? current.composerAbilities
         : mergeComposerAbilitySettingsPatch(current.composerAbilities, input.composerAbilities)
+      const composerSkillSlots = input.composerSkillSlots === undefined
+        ? current.composerSkillSlots
+        : mergeComposerSkillSlotSettingsPatch(current.composerSkillSlots, input.composerSkillSlots)
       const next: AppSettings = {
         ...current,
         theme,
         fontScale,
         composerAbilities,
+        composerSkillSlots,
         updatedAt: this.now().toISOString(),
       }
 

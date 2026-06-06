@@ -5,6 +5,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createRoot, type Root } from 'react-dom/client'
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { AuthProvider } from '@/contexts/AuthContext'
 import type { OrgTree } from '@modules/org/types'
 import { MobileOrgPage } from '../MobileOrgPage'
 
@@ -81,7 +82,14 @@ function LocationProbe() {
   return <div data-testid="location">{location.pathname}{location.search}</div>
 }
 
-async function renderMobileOrgPage(tree: OrgTree = createOrgTree()) {
+async function renderMobileOrgPage(
+  tree: OrgTree = createOrgTree(),
+  authUser?: {
+    name?: string | null
+    email?: string | null
+    picture?: string | null
+  },
+) {
   container = document.createElement('div')
   document.body.appendChild(container)
   root = createRoot(container)
@@ -95,34 +103,36 @@ async function renderMobileOrgPage(tree: OrgTree = createOrgTree()) {
   await act(async () => {
     root?.render(
       <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={['/org']}>
-          <Routes>
-            <Route
-              path="/org"
-              element={(
-                <MobileOrgPage
-                  tree={tree}
-                  commanders={tree.commanders}
-                  operatorAutomationCount={0}
-                  showArchived={false}
-                  highlightedCommanderId={null}
-                  restoringCommanderId={null}
-                  onToggleArchived={vi.fn()}
-                  onHire={vi.fn()}
-                  onEdit={vi.fn()}
-                  onReplicate={vi.fn()}
-                  onDelete={vi.fn()}
-                  onRestore={vi.fn()}
-                  onSaveTemplate={vi.fn()}
-                  getCommanderAutomations={(commanderId) =>
-                    tree.automations.filter((automation) => automation.parentId === commanderId)}
-                />
-              )}
-            />
-            <Route path="/command-room" element={<LocationProbe />} />
-            <Route path="/automations" element={<LocationProbe />} />
-          </Routes>
-        </MemoryRouter>
+        <AuthProvider signOut={vi.fn()} user={authUser}>
+          <MemoryRouter initialEntries={['/org']}>
+            <Routes>
+              <Route
+                path="/org"
+                element={(
+                  <MobileOrgPage
+                    tree={tree}
+                    commanders={tree.commanders}
+                    operatorAutomationCount={0}
+                    showArchived={false}
+                    highlightedCommanderId={null}
+                    restoringCommanderId={null}
+                    onToggleArchived={vi.fn()}
+                    onHire={vi.fn()}
+                    onEdit={vi.fn()}
+                    onReplicate={vi.fn()}
+                    onDelete={vi.fn()}
+                    onRestore={vi.fn()}
+                    onSaveTemplate={vi.fn()}
+                    getCommanderAutomations={(commanderId) =>
+                      tree.automations.filter((automation) => automation.parentId === commanderId)}
+                  />
+                )}
+              />
+              <Route path="/command-room" element={<LocationProbe />} />
+              <Route path="/automations" element={<LocationProbe />} />
+            </Routes>
+          </MemoryRouter>
+        </AuthProvider>
       </QueryClientProvider>,
     )
     await Promise.resolve()
@@ -205,6 +215,30 @@ describe('MobileOrgPage', () => {
     expect(image?.src).toBe('https://example.com/nick.png')
   })
 
+  it('falls back to the authenticated user picture when the founder avatar is null', async () => {
+    const tree = createOrgTree()
+    tree.operator.avatarUrl = null
+
+    await renderMobileOrgPage(tree, {
+      name: 'Nick Gu',
+      email: 'nick@example.com',
+      picture: 'https://example.com/auth0-nick.png',
+    })
+
+    const image = document.body.querySelector<HTMLImageElement>('[data-testid="agent-avatar"] img[alt="Nick Gu"]')
+    expect(image?.src).toBe('https://example.com/auth0-nick.png')
+    expect(document.body.querySelector('[data-testid="mobile-founder-avatar-initials"]')).toBeNull()
+  })
+
+  it('renders founder initials when all avatar sources are missing', async () => {
+    const tree = createOrgTree()
+    tree.operator.avatarUrl = null
+
+    await renderMobileOrgPage(tree)
+
+    expect(document.body.querySelector('[data-testid="mobile-founder-avatar-initials"]')?.textContent).toBe('NG')
+  })
+
   it('falls back to Organization when the org identity name is missing', async () => {
     const tree = createOrgTree()
     tree.orgIdentity = null
@@ -219,6 +253,7 @@ describe('MobileOrgPage', () => {
 
     const tile = document.body.querySelector<HTMLElement>('[data-testid="mobile-org-commander-tile"]')
     expect(tile?.className).toContain('border-[color:var(--hv-border-soft)]')
+    expect(tile?.textContent).toContain('1 automation')
 
     await click('[data-testid="mobile-org-commander-toggle"]')
 

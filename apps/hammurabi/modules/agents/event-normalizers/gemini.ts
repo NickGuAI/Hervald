@@ -1,4 +1,7 @@
 import type { HammurabiEvent, HammurabiEventSource, HammurabiUsage } from '../../../src/types/hammurabi-events.js'
+import type { TranscriptEnvelope } from '../../../src/types/transcript-envelope.js'
+import { bridgeLegacyEventToTranscriptEnvelopes } from '../transcript-legacy-bridge.js'
+import { createTranscriptId } from '../transcript-id.js'
 
 const GEMINI_EVENT_SOURCE: HammurabiEventSource = {
   provider: 'gemini',
@@ -196,6 +199,132 @@ function describeStopReason(stopReason: string | undefined): { result: string; i
     default:
       return { result: 'Turn completed' }
   }
+}
+
+function createGeminiEnvelope(
+  update: Record<string, unknown>,
+  ev: TranscriptEnvelope['ev'],
+  overrides: Partial<Omit<TranscriptEnvelope, 'schemaVersion' | 'id' | 'time' | 'source' | 'ev'>> = {},
+): TranscriptEnvelope {
+  const sessionUpdate = readTrimmedString(update.sessionUpdate) ?? readTrimmedString(update.type)
+  const itemId = overrides.itemId
+    ?? readTrimmedString(update.id)
+    ?? readTrimmedString(update.toolCallId)
+  const turnId = overrides.turnId
+    ?? readTrimmedString(update.turnId)
+    ?? readTrimmedString(update.sessionId)
+  return {
+    schemaVersion: 2,
+    id: createTranscriptId(),
+    time: new Date().toISOString(),
+    source: {
+      provider: 'gemini',
+      backend: 'acp',
+      ...(readTrimmedString(update.sessionId) ? { sessionId: readTrimmedString(update.sessionId) } : {}),
+      ...(sessionUpdate ? { rawEventType: sessionUpdate } : {}),
+      ...(itemId ? { rawEventId: itemId } : {}),
+    },
+    ...(turnId ? { turnId } : {}),
+    ...(itemId ? { itemId } : {}),
+    ev,
+  }
+}
+
+function createGeminiRawEnvelope(update: Record<string, unknown>): TranscriptEnvelope {
+  return createGeminiEnvelope(update, {
+    type: 'provider.raw',
+    method: readTrimmedString(update.sessionUpdate) ?? readTrimmedString(update.type),
+    payload: update,
+  })
+}
+
+function createGeminiRawPayloadEnvelope(payload: unknown): TranscriptEnvelope {
+  return {
+    schemaVersion: 2,
+    id: createTranscriptId(),
+    time: new Date().toISOString(),
+    source: {
+      provider: 'gemini',
+      backend: 'acp',
+    },
+    ev: {
+      type: 'provider.raw',
+      payload,
+    },
+  }
+}
+
+export function mapGeminiToTranscriptEnvelopes(
+  rawUpdate: unknown,
+  state: GeminiTurnState,
+): TranscriptEnvelope[] {
+  const update = asObject(rawUpdate)
+  if (!update) {
+    return [createGeminiRawPayloadEnvelope(rawUpdate)]
+  }
+
+  const sessionUpdate = readTrimmedString(update.sessionUpdate)
+  if (!sessionUpdate) {
+    return [createGeminiRawEnvelope(update)]
+  }
+
+  if (sessionUpdate === 'tool_call_update') {
+    const status = readTrimmedString(update.status)
+    if (status && status !== 'completed' && status !== 'failed') {
+      const toolCallId = readTrimmedString(update.toolCallId) ?? createTranscriptId()
+      return [createGeminiEnvelope(update, {
+        type: 'tool.delta',
+        toolCallId,
+        status,
+        output: extractToolOutput(update.content) ?? stringifyUnknown(update.rawOutput),
+        data: update,
+      }, { itemId: toolCallId })]
+    }
+  }
+
+  const normalized = normalizeGeminiSessionUpdate(update, state)
+  if (normalized) {
+    const events = Array.isArray(normalized) ? normalized : [normalized]
+    return events.flatMap((event) => bridgeLegacyEventToTranscriptEnvelopes(event))
+  }
+
+  if (sessionUpdate.includes('sessionUpdate') || sessionUpdate.includes('status') || sessionUpdate.includes('error')) {
+    return [createGeminiEnvelope(update, {
+      type: 'provider.activity',
+      title: sessionUpdate,
+      data: update,
+    })]
+  }
+
+  return [createGeminiRawEnvelope(update)]
+}
+
+export function mapGeminiPromptResponseToTranscriptEnvelopes(
+  rawResult: unknown,
+  state: GeminiTurnState,
+): TranscriptEnvelope[] {
+  const bridged = normalizeGeminiPromptResponse(rawResult, state)
+    .flatMap((event) => bridgeLegacyEventToTranscriptEnvelopes(event))
+  const usageEnvelope = bridged.find((event) =>
+    event.ev.type === 'provider.activity'
+    && typeof event.ev.data === 'object'
+    && event.ev.data !== null
+    && 'usage' in event.ev.data,
+  )
+  const usage = usageEnvelope?.ev.type === 'provider.activity'
+    ? (usageEnvelope.ev.data as { usage?: unknown }).usage
+    : undefined
+  return bridged.map((event) => (
+    event.ev.type === 'turn.end' && usage
+      ? {
+          ...event,
+          ev: {
+            ...event.ev,
+            usage,
+          },
+        }
+      : event
+  ))
 }
 
 export function createGeminiTurnState(): GeminiTurnState {

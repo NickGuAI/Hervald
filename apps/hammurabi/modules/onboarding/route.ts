@@ -3,6 +3,8 @@ import { Router, type Request } from 'express'
 import type { ApiKeyStoreLike } from '../../server/api-keys/store.js'
 import { combinedAuth } from '../../server/middleware/combined-auth.js'
 import type { ProviderRegistryCapability } from '../../server/module-runtime-capabilities.js'
+import type { AutomationScheduler } from '../automations/scheduler.js'
+import type { AutomationStore } from '../automations/store.js'
 import type { ConversationStore } from '../commanders/conversation-store.js'
 import type { CommanderSessionStore } from '../commanders/store.js'
 import type { OperatorStore } from '../operators/store.js'
@@ -26,6 +28,9 @@ export interface OnboardingRouterOptions {
   orgIdentityStore?: OrgIdentityStore
   sessionStore: Pick<CommanderSessionStore, 'list' | 'create' | 'delete'>
   conversationStore?: Pick<ConversationStore, 'listByCommander' | 'getActiveChatForCommander' | 'ensureDefaultConversation' | 'delete'>
+  automationStore?: Pick<AutomationStore, 'create' | 'delete'>
+  automationScheduler?: Pick<AutomationScheduler, 'createAutomation' | 'deleteAutomation'>
+  automationSchedulerInitialized?: Promise<void>
   commanderDataDir: string
   providerRegistry: ProviderRegistryCapability
   shellRunner?: OnboardingShellRunner
@@ -142,6 +147,9 @@ export function createOnboardingRouter(options: OnboardingRouterOptions): Router
       orgIdentityStore,
       sessionStore: options.sessionStore,
       conversationStore: options.conversationStore,
+      automationStore: options.automationStore,
+      automationScheduler: options.automationScheduler,
+      automationSchedulerInitialized: options.automationSchedulerInitialized,
       commanderDataDir: options.commanderDataDir,
       providers: options.providerRegistry.listProviders(),
       env: options.env,

@@ -29,6 +29,7 @@ import { ChatPane } from './ChatPane'
 import type { ChatSession } from './SessionsColumn'
 import { SubAgentChip, type Worker } from './SubAgentChip'
 import type { WorkspacePendingFileAnnotation } from '@modules/workspace/use-workspace'
+import { STATE_COLOR } from '@modules/components/hervald'
 
 /* ---- local types ---- */
 
@@ -57,6 +58,7 @@ export interface CenterColumnProps {
   loadingOlderMessages?: boolean
   onLoadOlderMessages?: () => void
   workers?: Worker[]
+  automationSessions?: ChatSession[]
   activeTab: string
   setActiveTab: (tab: string) => void
   crons?: CommanderCronTask[]
@@ -159,6 +161,7 @@ export function CenterColumn({
   loadingOlderMessages = false,
   onLoadOlderMessages,
   workers = [],
+  automationSessions = [],
   crons = [],
   cronsLoading = false,
   cronsError = null,
@@ -222,6 +225,11 @@ export function CenterColumn({
   )
 
   const subAgents = workers.filter((w) => w.kind === 'worker' || w.kind === 'tool')
+  const automationChips = automationSessions.map((session) => ({
+    id: session.id,
+    name: session.label ?? session.name,
+    state: session.status ?? 'idle',
+  }))
   const hasCommander = !isGlobalScope && commander.id.trim().length > 0
   const hasConversation = isGlobalScope
     ? false
@@ -335,7 +343,7 @@ export function CenterColumn({
         style={{ flex: 1, overflowY: 'auto' }}
       >
         {/* delegated sub-agents strip */}
-        {subAgents.length > 0 && (
+        {(subAgents.length > 0 || automationChips.length > 0) && (
           <div
             data-testid="delegated-subagents-strip"
             data-test-id="delegated-subagents-strip"
@@ -356,10 +364,39 @@ export function CenterColumn({
                 color: 'var(--hv-fg-faint)',
               }}
             >
-              Delegated · {subAgents.length} sub-agents
+              Delegated · {subAgents.length} sub-agents · {automationChips.length} automations
             </span>
             {subAgents.slice(0, 5).map((w) => (
               <SubAgentChip key={w.id} worker={w} />
+            ))}
+            {automationChips.slice(0, 5).map((automation) => (
+              <span
+                key={automation.id}
+                className="font-mono"
+                data-testid="commander-center-automation-chip"
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  padding: '3px 10px',
+                  border: '1px solid var(--hv-border-soft)',
+                  borderRadius: '2px 8px 2px 8px',
+                  fontSize: 11.5,
+                  color: 'var(--hv-fg-muted)',
+                }}
+              >
+                <span
+                  aria-hidden
+                  style={{
+                    width: 5,
+                    height: 5,
+                    borderRadius: '50%',
+                    background: STATE_COLOR[automation.state] ?? STATE_COLOR.idle,
+                    flexShrink: 0,
+                  }}
+                />
+                {automation.name}
+              </span>
             ))}
           </div>
         )}

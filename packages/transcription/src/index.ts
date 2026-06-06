@@ -3,6 +3,7 @@ export interface TranscriptionOptions {
   language?: string;
   diarization?: boolean;
   prompt?: string;
+  terms?: string[];
   metadata?: Record<string, unknown>;
 }
 

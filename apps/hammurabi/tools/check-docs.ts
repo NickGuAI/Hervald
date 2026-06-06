@@ -12,6 +12,22 @@ const docsRoot = path.join(appRoot, 'docs')
 
 const failures: string[] = []
 
+const requiredPublicDocs = [
+  'getting-started/quickstart.md',
+  'concepts/commanders.md',
+  'concepts/workers.md',
+  'concepts/command-room.md',
+  'concepts/approvals.md',
+  'operate/provider-auth.md',
+  'operate/machines.md',
+  'operate/workspace.md',
+  'operate/channels.md',
+  'reference/cli.md',
+  'reference/api.md',
+  'reference/naming.md',
+  'troubleshoot.md',
+]
+
 function relative(filePath: string): string {
   return path.relative(repoRoot, filePath).replaceAll(path.sep, '/')
 }
@@ -27,6 +43,12 @@ function fail(message: string): void {
 function assertContains(haystack: string, needle: string, context: string): void {
   if (!haystack.includes(needle)) {
     fail(`${context} is missing ${needle}`)
+  }
+}
+
+function assertExists(filePath: string, context: string): void {
+  if (!existsSync(filePath)) {
+    fail(`${context} is missing ${relative(filePath)}`)
   }
 }
 
@@ -63,16 +85,73 @@ function checkMarkdownLinks(filePath: string): void {
   }
 }
 
+function checkPublicReadmeDocsLinks(): void {
+  const readmePath = path.join(appRoot, 'public', 'repo-root', 'README.md')
+  const source = readText(readmePath)
+  const linkPattern = /\[[^\]]+\]\(([^)]+)\)/g
+
+  for (const match of source.matchAll(linkPattern)) {
+    const rawTarget = match[1].trim()
+    const targetWithoutAnchor = rawTarget.split('#')[0].split('?')[0]
+    if (!targetWithoutAnchor) {
+      continue
+    }
+
+    let docsTarget: string | null = null
+    if (targetWithoutAnchor.startsWith('./docs/')) {
+      docsTarget = targetWithoutAnchor.slice('./docs/'.length)
+    } else if (targetWithoutAnchor.startsWith('docs/')) {
+      docsTarget = targetWithoutAnchor.slice('docs/'.length)
+    } else if (targetWithoutAnchor.startsWith('https://hervald.gehirn.ai/docs/')) {
+      docsTarget = targetWithoutAnchor.slice('https://hervald.gehirn.ai/docs/'.length)
+    } else if (targetWithoutAnchor === 'https://hervald.gehirn.ai/docs') {
+      docsTarget = 'index.md'
+    }
+
+    if (!docsTarget) {
+      continue
+    }
+
+    if (!path.extname(docsTarget)) {
+      docsTarget = path.join(docsTarget, 'index.md')
+    }
+
+    const resolved = path.join(docsRoot, docsTarget)
+    if (!existsSync(resolved)) {
+      fail(`${relative(readmePath)} links missing published docs target ${rawTarget}`)
+    }
+  }
+}
+
 function checkDocsIndex(): void {
   const llmsPath = path.join(docsRoot, 'llms.txt')
   const directoryPath = path.join(docsRoot, 'docs-directory.md')
+  const indexPath = path.join(docsRoot, 'index.md')
   const llms = readText(llmsPath)
+  const directory = readText(directoryPath)
+  const index = readText(indexPath)
 
+  checkMarkdownLinks(indexPath)
   checkMarkdownLinks(llmsPath)
   checkMarkdownLinks(directoryPath)
+  checkPublicReadmeDocsLinks()
 
-  for (const moduleName of moduleDirectories()) {
-    assertContains(llms, `modules/${moduleName}`, 'llms.txt module inventory')
+  for (const doc of requiredPublicDocs) {
+    assertExists(path.join(docsRoot, doc), 'public docs IA')
+    assertContains(index, doc, 'index.md public docs IA')
+    assertContains(llms, doc, 'llms.txt public docs IA')
+    assertContains(directory, doc, 'docs-directory.md public docs IA')
+  }
+
+  for (const heading of ['## Setup', '## Concepts', '## Operations', '## Reference']) {
+    assertContains(llms, heading, 'llms.txt grouped discovery headings')
+  }
+
+  if (/Source And Runtime|module-index\.xml|architecture\//u.test(llms)) {
+    fail('llms.txt must expose only public Hervald docs, not source/runtime maps')
+  }
+  if (/Source And Runtime|module-index\.xml|architecture\//u.test(directory)) {
+    fail('docs-directory.md must expose only public Hervald docs, not source/runtime maps')
   }
 }
 
@@ -201,8 +280,43 @@ function checkForbiddenRoots(): void {
 
 function checkGuardrailDocumentation(): void {
   const command = 'pnpm --filter hammurabi run docs:check'
-  assertContains(readText(path.join(docsRoot, 'docs-directory.md')), command, 'docs-directory.md')
   assertContains(readText(path.join(repoRoot, '.claude', 'rules', 'hammurabi.md')), command, '.claude/rules/hammurabi.md')
+}
+
+function checkNamingPolicy(): void {
+  const files = [
+    path.join(docsRoot, 'index.md'),
+    path.join(docsRoot, 'llms.txt'),
+    path.join(docsRoot, 'docs-directory.md'),
+    ...requiredPublicDocs.map((doc) => path.join(docsRoot, doc)),
+    path.join(appRoot, 'public', 'repo-root', 'README.md'),
+  ]
+
+  const forbiddenPublicBranding = /Hammurabi|hammurabi|HAMMURABI|X-Hammurabi/u
+
+  for (const filePath of files) {
+    readText(filePath).split(/\r?\n/u).forEach((line, index) => {
+      if (forbiddenPublicBranding.test(line)) {
+        fail(`${relative(filePath)}:${index + 1} contains deprecated public product wording`)
+      }
+    })
+  }
+
+  assertContains(
+    readText(path.join(appRoot, 'src', 'App.tsx')),
+    'Hervald is reconnecting',
+    'App auth recovery copy',
+  )
+  assertContains(
+    readText(path.join(appRoot, 'src', '__tests__', 'App.auth0.test.tsx')),
+    'Hervald is reconnecting',
+    'App auth recovery copy test',
+  )
+  assertContains(
+    readText(path.join(docsRoot, 'reference', 'naming.md')),
+    'Public docs and UI copy',
+    'naming policy contract',
+  )
 }
 
 checkDocsIndex()
@@ -210,13 +324,14 @@ checkModuleInventory()
 checkRouteMap()
 checkForbiddenRoots()
 checkGuardrailDocumentation()
+checkNamingPolicy()
 
 if (failures.length > 0) {
-  console.error('Hammurabi docs guardrail failed:')
+  console.error('Hervald docs guardrail failed:')
   for (const failure of failures) {
     console.error(`- ${failure}`)
   }
   process.exit(1)
 }
 
-console.log('Hammurabi docs guardrail passed.')
+console.log('Hervald docs guardrail passed.')

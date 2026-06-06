@@ -62,6 +62,7 @@ describe('opencodeProvider', () => {
       'opencode-worker-1',
       undefined,
       'anthropic/claude-sonnet-4',
+      undefined,
     )
     expect(runtime.sendRequest).toHaveBeenCalledWith('session/new', {
       cwd: '/tmp/opencode-worker',

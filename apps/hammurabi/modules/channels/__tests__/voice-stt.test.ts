@@ -30,7 +30,15 @@ describe('voice STT preflight', () => {
       }))
       setInboundTranscriptionProviderForTests({ provider: 'mock', transcribe })
       const adapter = createMockAdapter('whatsapp', true)
-      const conversation = await createChannelConversation(stores.conversationStore)
+      const conversation = await createChannelConversation(stores.conversationStore, {
+        voiceConfig: {
+          stt: {
+            model: 'gpt-4o-mini-transcribe',
+            prompt: 'Preserve PMAI and Kubernetes deployment terms.',
+            terms: ['VoiceFlow', 'Claude Code'],
+          },
+        },
+      })
       const event = makeInboundEvent({
         text: undefined,
         audio: { buffer: Buffer.from('audio'), mimeType: 'audio/ogg', durationMs: 1200 },
@@ -41,10 +49,36 @@ describe('voice STT preflight', () => {
         conversation,
         adapter,
         message: '',
+        env: {
+          HAMMURABI_DATA_DIR: stores.dataRoot,
+        } as NodeJS.ProcessEnv,
       })
 
       expect(result).toEqual({ ok: true, message: 'transcribed text', transcribed: true })
       expect(transcribe).toHaveBeenCalledOnce()
+      expect(transcribe.mock.calls[0]?.[1]).toEqual(
+        expect.objectContaining({
+          model: 'gpt-4o-mini-transcribe',
+          language: 'en',
+          prompt: expect.stringContaining('Preserve PMAI and Kubernetes deployment terms.'),
+          terms: expect.arrayContaining([
+            'Hammurabi',
+            'Gehirn',
+            'Claude Code',
+            'OpenCode',
+            'PMAI',
+            'Kubernetes',
+            'gRPC',
+            'VoiceFlow',
+            'whatsapp',
+            'peer-1',
+          ]),
+          metadata: expect.objectContaining({
+            mimeType: 'audio/ogg',
+            durationMs: 1200,
+          }),
+        }),
+      )
       expect(adapter.send).not.toHaveBeenCalled()
       const ledger = await readTranscriptEvents(buildConversationSessionName(conversation))
       expect(ledger).toEqual([

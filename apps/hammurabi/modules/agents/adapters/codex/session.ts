@@ -1,9 +1,18 @@
-import { normalizeCodexEvent } from '../../event-normalizers/codex.js'
+import { mapCodexToTranscriptEnvelopes, normalizeCodexEvent } from '../../event-normalizers/codex.js'
 import {
   codexApprovalAdapter,
   sendCodexApprovalReply,
   type CodexApprovalRawEvent,
 } from './approval-adapter.js'
+import {
+  buildCodexMcpElicitationQuestionEvent,
+  codexMcpElicitationApprovalAdapter,
+  findActiveCodexMcpToolContext,
+  hasCodexMcpElicitationSchemaFields,
+  readCodexMcpElicitationDetails,
+  sendCodexMcpElicitationReply,
+  type CodexMcpElicitationApprovalRawEvent,
+} from './elicitation.js'
 import {
   DEFAULT_SESSION_MESSAGE_QUEUE_LIMIT,
   SessionMessageQueue,
@@ -26,6 +35,10 @@ import {
 } from '../../session/state.js'
 import { truncateLogText } from '../../session/helpers.js'
 import { isDaemonMachine } from '../../machines.js'
+import {
+  isProviderAuthRequiredText,
+  type ProviderSpawnAuth,
+} from '../../provider-auth.js'
 import type {
   AnySession,
   ClaudePermissionMode,
@@ -44,7 +57,6 @@ import type {
 } from '../../types.js'
 import {
   buildCodexApprovalMissingIdSystemEvent,
-  buildCodexMcpElicitationPlanApprovalEvent,
   clearCodexPendingApprovalByItemId,
   getCodexApprovalRequestDetails,
   getCodexApprovalToolCall,
@@ -59,6 +71,12 @@ import { DEFAULT_CODEX_MODEL_ID } from './models.js'
 
 const CODEX_TRANSPORT_RECOVERY_GRACE_MS = 250
 const codexTransportRecoveryPromises = new WeakMap<StreamSession, Promise<void>>()
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null
+}
 
 export interface CodexSessionDeps {
   appendEvent(session: StreamSession, event: StreamJsonEvent): void
@@ -81,6 +99,7 @@ export interface CodexSessionDeps {
     sessionName: string,
     machine: MachineConfig | undefined,
     handleOwningSessionFailure: (failure: CodexRuntimeFailure) => void,
+    providerAuth?: ProviderSpawnAuth,
   ): CodexSessionRuntimeHandle
   schedulePersistedSessionsWrite(): void
   scheduleTurnWatchdog(session: StreamSession): void
@@ -88,6 +107,7 @@ export interface CodexSessionDeps {
   setExitedSession(sessionName: string, session: ExitedStreamSessionState): void
   writeTranscriptMeta(session: StreamSession): void
   getActionPolicyGate?(): ActionPolicyGate | null
+  markProviderAuthRequired?(session: StreamSession, detail: string): Promise<unknown> | unknown
 }
 
 export type CodexSendAttemptResult =
@@ -112,14 +132,14 @@ function resolveCodexTransportPolicy(mode: ClaudePermissionMode): {
   sandbox: string
   approvalPolicy: string | typeof ALWAYS_ON_CODEX_APPROVAL_POLICY
 } {
-  // Hammurabi owns the canonical action-policy gate (#1186); codex's own
+  // Hervald owns the canonical action-policy gate (#1186); codex's own
   // sandbox should not double-gate. workspace-write rejects writes to .git
   // metadata even inside the workspace, which breaks `git worktree add` for
   // dispatched workers and adds zero defense-in-depth (the gate already
   // routes provider-emitted approval events through the unified pipeline,
   // and internal default-allow policies fast-path safe internal actions).
   // Approval policy stays ALWAYS_ON granular so codex still emits the
-  // request events Hammurabi's gate intercepts.
+  // request events Hervald's gate intercepts.
   return {
     sandbox: 'danger-full-access',
     approvalPolicy: ALWAYS_ON_CODEX_APPROVAL_POLICY,
@@ -445,6 +465,7 @@ export async function failCodexSession(
     | 'deleteLiveSession'
     | 'deleteSessionEventHandlers'
     | 'getActiveSession'
+    | 'markProviderAuthRequired'
     | 'setCompletedSession'
     | 'setExitedSession'
   >,
@@ -458,6 +479,10 @@ export async function failCodexSession(
   deps.clearTurnWatchdog(session)
   clearCodexActiveTurnId(session)
   markCodexTurnHealthy(session)
+
+  if (isProviderAuthRequiredText(reason)) {
+    await deps.markProviderAuthRequired?.(session, reason)
+  }
 
   const message = codexFailureMessage(reason)
   const systemEvent: StreamJsonEvent = {
@@ -618,7 +643,7 @@ async function recoverCodexTransport(
 
 export async function shutdownCodexRuntimes(
   deps: Pick<CodexSessionDeps, 'clearTurnWatchdog' | 'getAllSessions'>,
-  reason = 'Hammurabi shutdown',
+  reason = 'Hervald shutdown',
 ): Promise<void> {
   const codexSessions = [...deps.getAllSessions()].filter((session): session is StreamSession =>
     session.kind === 'stream' && session.agentType === 'codex'
@@ -830,6 +855,7 @@ async function createCodexSessionFromThread(
       threadId,
       runtime,
     }),
+    providerAuthSnapshot: options.providerAuth?.snapshot,
     activeTurnId: undefined,
     adapter: createCodexSessionAdapter(deps),
     resumedFrom: options.resumedFrom,
@@ -864,7 +890,7 @@ async function createCodexSessionFromThread(
         })
         const missingIdEvent: StreamJsonEvent = {
           type: 'system',
-          text: 'Codex requested MCP user input, but the request id was missing. This request cannot be resolved from Hammurabi.',
+          text: 'Codex requested MCP user input, but the request id was missing. This request cannot be resolved from Hervald.',
         }
         deps.appendEvent(session, missingIdEvent)
         deps.broadcastEvent(session, missingIdEvent)
@@ -875,9 +901,85 @@ async function createCodexSessionFromThread(
       deps.clearTurnWatchdog(session)
       markCodexTurnHealthy(session)
 
-      const planApprovalEvent = buildCodexMcpElicitationPlanApprovalEvent(requestId, params)
-      deps.appendEvent(session, planApprovalEvent)
-      deps.broadcastEvent(session, planApprovalEvent)
+      const details = readCodexMcpElicitationDetails(requestId, params, threadId)
+      const activeToolContext = findActiveCodexMcpToolContext(session, params)
+      const isCodexAppsToolContext = activeToolContext?.server.trim().replace(/\s+/g, '_').toLowerCase() === 'codex_apps'
+      if (
+        activeToolContext
+        && (isCodexAppsToolContext || !hasCodexMcpElicitationSchemaFields(details.requestedSchema))
+      ) {
+        const replyDeps = {
+          appendEvent: deps.appendEvent,
+          broadcastEvent: deps.broadcastEvent,
+          schedulePersistedSessionsWrite: deps.schedulePersistedSessionsWrite,
+          scheduleTurnWatchdog: deps.scheduleTurnWatchdog,
+        }
+        const toolCallId = activeToolContext.toolCallId ?? details.toolId
+        const rawEvent: CodexMcpElicitationApprovalRawEvent = {
+          requestId,
+          threadId: details.threadId ?? threadId,
+          toolName: activeToolContext.toolName,
+          message: details.message,
+          replyDeps,
+          ...(toolCallId ? { toolCallId } : {}),
+          ...(activeToolContext.toolInput !== undefined ? { toolInput: activeToolContext.toolInput } : {}),
+          ...(details.requestedSchema !== undefined ? { requestedSchema: details.requestedSchema } : {}),
+          ...(activeToolContext.server ? { serverName: activeToolContext.server } : {}),
+          ...(activeToolContext.tool ? { tool: activeToolContext.tool } : {}),
+          ...(details.mode ? { mode: details.mode } : {}),
+        }
+        const actionPolicyGate = deps.getActionPolicyGate?.()
+        if (!actionPolicyGate) {
+          runtime.log('warn', 'Action policy gate unavailable for Codex MCP elicitation request', {
+            sessionName: session.name,
+            threadId,
+            requestId,
+            toolName: activeToolContext.toolName,
+          })
+          const unavailableEvent: StreamJsonEvent = {
+            type: 'system',
+            text: 'Hervald approval gate is unavailable. Codex MCP elicitation request denied.',
+          }
+          deps.appendEvent(session, unavailableEvent)
+          deps.broadcastEvent(session, unavailableEvent)
+          deps.schedulePersistedSessionsWrite()
+          const delivery = sendCodexMcpElicitationReply(session, rawEvent, 'decline', { scheduleTurnWatchdog: false })
+          if (!delivery.ok) {
+            runtime.log('error', 'Codex MCP elicitation deny fallback failed', {
+              sessionName: session.name,
+              threadId,
+              requestId,
+              reason: delivery.reason,
+            })
+          }
+          return
+        }
+
+        void handleProviderApproval(codexMcpElicitationApprovalAdapter, rawEvent, session, { actionPolicyGate })
+          .catch((error) => {
+            runtime.log('warn', 'Unified action-policy enforcement failed for Codex MCP elicitation request', {
+              sessionName: session.name,
+              threadId,
+              requestId,
+              toolName: activeToolContext.toolName,
+              error: truncateLogText(error instanceof Error ? error.message : String(error)),
+            })
+            const delivery = sendCodexMcpElicitationReply(session, rawEvent, 'decline', { scheduleTurnWatchdog: false })
+            if (!delivery.ok) {
+              runtime.log('error', 'Codex MCP elicitation deny fallback failed', {
+                sessionName: session.name,
+                threadId,
+                requestId,
+                reason: delivery.reason,
+              })
+            }
+          })
+        return
+      }
+
+      const questionEvent = buildCodexMcpElicitationQuestionEvent(details)
+      deps.appendEvent(session, questionEvent)
+      deps.broadcastEvent(session, questionEvent)
       deps.schedulePersistedSessionsWrite()
       return
     }
@@ -895,7 +997,7 @@ async function createCodexSessionFromThread(
 
       const unhandledEvent: StreamJsonEvent = {
         type: 'system',
-        text: `Codex requested approval via an unhandled method "${method}". Hammurabi automatically declined it so the turn can continue.`,
+        text: `Codex requested approval via an unhandled method "${method}". Hervald automatically declined it so the turn can continue.`,
       }
       deps.appendEvent(session, unhandledEvent)
       deps.broadcastEvent(session, unhandledEvent)
@@ -964,7 +1066,7 @@ async function createCodexSessionFromThread(
         })
         const unavailableEvent: StreamJsonEvent = {
           type: 'system',
-          text: 'Hammurabi approval gate is unavailable. Codex request denied.',
+          text: 'Hervald approval gate is unavailable. Codex request denied.',
         }
         deps.appendEvent(session, unavailableEvent)
         deps.broadcastEvent(session, unavailableEvent)
@@ -1020,6 +1122,19 @@ async function createCodexSessionFromThread(
 
     if (method === 'item/completed') {
       clearCodexPendingApprovalByItemId(session, getCodexCompletedItemId(params))
+    }
+
+    const transcriptParamsRecord = asRecord(params)
+    const transcriptParams = typeof requestId === 'number' && transcriptParamsRecord
+      ? { ...transcriptParamsRecord, requestId }
+      : params
+    const envelopes = mapCodexToTranscriptEnvelopes(method, transcriptParams)
+    if (envelopes.length > 0) {
+      for (const event of envelopes) {
+        deps.appendEvent(session, event)
+        deps.broadcastEvent(session, event)
+      }
+      return
     }
 
     const normalized = normalizeCodexEvent(method, params)
@@ -1098,6 +1213,7 @@ export async function createCodexAppServerSession(
       }
       void failCodexSession(sessionName, candidate, failure.reason, deps, failure.exitCode, failure.signal)
     },
+    options.providerAuth,
   )
 
   const sessionCwd = cwd || process.env.HOME || '/tmp'

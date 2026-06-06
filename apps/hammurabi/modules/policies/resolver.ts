@@ -28,6 +28,11 @@ const POLICY_RANK: Record<ActionPolicyValue, number> = {
   block: 2,
 }
 
+const REVIEW_REQUIRED_UNMATCHED_MCP_SERVERS = new Set([
+  normalizeMatcherToken('codex_apps'),
+  normalizeMatcherToken('opencode'),
+])
+
 function stricterPolicy(a: ActionPolicyValue, b: ActionPolicyValue): ActionPolicyValue {
   return POLICY_RANK[a] >= POLICY_RANK[b] ? a : b
 }
@@ -39,18 +44,58 @@ function getPolicyRecord(
   return policyView.records.find((record) => record.actionId === actionId) ?? null
 }
 
-function parseMcpServerName(toolName: string): string | null {
-  if (!toolName.startsWith('mcp__')) {
+function parseMcpToolIdentity(toolName: string): {
+  server: string
+  tool?: string
+  exactTokens: string[]
+  reviewRequiredWhenUnmatched: boolean
+} | null {
+  const trimmed = toolName.trim()
+  if (trimmed.startsWith('mcp__')) {
+    const stripped = trimmed.slice(5)
+    const separatorIndex = stripped.indexOf('__')
+    if (separatorIndex === -1) {
+      const server = normalizeMatcherToken(stripped)
+      return {
+        server,
+        exactTokens: [normalizeMatcherToken(`mcp__${stripped}`)],
+        reviewRequiredWhenUnmatched: REVIEW_REQUIRED_UNMATCHED_MCP_SERVERS.has(server),
+      }
+    }
+
+    const rawServer = stripped.slice(0, separatorIndex)
+    const rawTool = stripped.slice(separatorIndex + 2)
+    const server = normalizeMatcherToken(rawServer)
+    const tool = normalizeMatcherToken(rawTool)
+    return {
+      server,
+      tool,
+      exactTokens: [
+        normalizeMatcherToken(`mcp__${rawServer}__${rawTool}`),
+        normalizeMatcherToken(`${rawServer}/${rawTool}`),
+      ],
+      reviewRequiredWhenUnmatched: REVIEW_REQUIRED_UNMATCHED_MCP_SERVERS.has(server),
+    }
+  }
+
+  const slashIndex = trimmed.indexOf('/')
+  if (slashIndex === -1) {
     return null
   }
-
-  const stripped = toolName.slice(5)
-  const separatorIndex = stripped.indexOf('__')
-  if (separatorIndex === -1) {
-    return normalizeMatcherToken(stripped)
+  const server = normalizeMatcherToken(trimmed.slice(0, slashIndex))
+  const tool = normalizeMatcherToken(trimmed.slice(slashIndex + 1))
+  if (!server || !tool) {
+    return null
   }
-
-  return normalizeMatcherToken(stripped.slice(0, separatorIndex))
+  return {
+    server,
+    tool,
+    exactTokens: [
+      normalizeMatcherToken(trimmed),
+      normalizeMatcherToken(`mcp__${trimmed.slice(0, slashIndex)}__${trimmed.slice(slashIndex + 1)}`),
+    ],
+    reviewRequiredWhenUnmatched: REVIEW_REQUIRED_UNMATCHED_MCP_SERVERS.has(server),
+  }
 }
 
 function splitCompoundCommand(command: string): string[] {
@@ -69,9 +114,32 @@ function matchAction(
   action: ActionCategoryDefinition | null
   matchedBy: 'mcp' | 'bash' | 'tool' | 'fallback'
   matchedPattern?: string
+  reviewRequired?: boolean
 } {
-  const mcpServerName = parseMcpServerName(toolName)
-  if (mcpServerName) {
+  const mcpIdentity = parseMcpToolIdentity(toolName)
+  if (mcpIdentity) {
+    for (const action of actions) {
+      if (
+        action.id === INTERNAL_EDIT_IN_CWD_ACTION.id
+        || action.id === INTERNAL_SAFE_BASH_ACTION.id
+        || action.id === INTERNAL_SAFE_MCP_ACTION.id
+      ) {
+        continue
+      }
+      for (const matcher of action.matchers.mcpTools ?? []) {
+        const normalizedMatcher = normalizeMatcherToken(matcher)
+        if (mcpIdentity.exactTokens.includes(normalizedMatcher)) {
+          return {
+            action,
+            matchedBy: 'mcp',
+            matchedPattern: matcher,
+          }
+        }
+      }
+    }
+  }
+
+  if (mcpIdentity) {
     for (const action of actions) {
       if (
         action.id === INTERNAL_EDIT_IN_CWD_ACTION.id
@@ -81,7 +149,7 @@ function matchAction(
         continue
       }
       for (const server of action.matchers.mcpServers) {
-        if (normalizeMatcherToken(server) === mcpServerName) {
+        if (normalizeMatcherToken(server) === mcpIdentity.server) {
           return {
             action,
             matchedBy: 'mcp',
@@ -143,11 +211,19 @@ function matchAction(
     }
   }
 
-  if (mcpServerName) {
+  if (mcpIdentity) {
+    if (mcpIdentity.reviewRequiredWhenUnmatched) {
+      return {
+        action: null,
+        matchedBy: 'fallback',
+        matchedPattern: toolName,
+        reviewRequired: true,
+      }
+    }
     return {
       action: actions.find((candidate) => candidate.id === INTERNAL_SAFE_MCP_ACTION.id) ?? INTERNAL_SAFE_MCP_ACTION,
       matchedBy: 'mcp',
-      matchedPattern: mcpServerName,
+      matchedPattern: mcpIdentity.server,
     }
   }
 
@@ -244,6 +320,9 @@ export function resolveActionPolicy(input: ResolveActionPolicyInput): ResolvedAc
   }
   if (!matched.action) {
     actionDecision = input.policyView.fallbackPolicy
+  }
+  if (matched.reviewRequired) {
+    actionDecision = stricterPolicy('review', actionDecision)
   }
 
   if (skillPolicy) {

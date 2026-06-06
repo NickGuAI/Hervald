@@ -26,7 +26,7 @@ export interface HammurabiToolUseBlock {
 export interface HammurabiToolResultBlock {
   type: 'tool_result'
   tool_use_id?: string
-  content?: string
+  content?: unknown
   is_error?: boolean
 }
 
@@ -47,10 +47,16 @@ export interface HammurabiThinkingBlock {
 
 export interface HammurabiImageBlock {
   type: 'image'
+  alt?: string
+  url?: string
+  path?: string
   source?: {
     type?: string
     media_type?: string
+    mediaType?: string
     data?: string
+    url?: string
+    path?: string
   }
 }
 
@@ -58,6 +64,7 @@ export type HammurabiAssistantContentBlock =
   | HammurabiTextBlock
   | HammurabiThinkingBlock
   | HammurabiToolUseBlock
+  | HammurabiImageBlock
 
 export type HammurabiUserContentBlock =
   | HammurabiToolResultBlock
@@ -86,7 +93,7 @@ export interface PlanApprovalProviderContext {
   toolUseId: string
   toolName: string
   requestId?: string | number
-  answerFormat: 'claude.exit_plan_mode' | 'opencode.plan_decision' | 'codex.mcp_elicitation'
+  answerFormat: 'claude.exit_plan_mode' | 'opencode.plan_decision'
   requestedSchema?: unknown
 }
 
@@ -132,7 +139,7 @@ export type HammurabiEvent =
   | ({
       type: 'content_block_start'
       index?: number
-      content_block: HammurabiTextBlock | HammurabiThinkingBlock | HammurabiToolUseBlock
+      content_block: HammurabiTextBlock | HammurabiThinkingBlock | HammurabiToolUseBlock | HammurabiImageBlock
     } & HammurabiEventBase)
   | ({
       type: 'content_block_delta'
@@ -221,6 +228,6 @@ export type HammurabiEvent =
   | ({
       type: 'tool_result'
       tool_use_id?: string
-      content?: string
+      content?: unknown
       is_error?: boolean
     } & HammurabiEventBase)

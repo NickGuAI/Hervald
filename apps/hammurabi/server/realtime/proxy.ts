@@ -3,6 +3,7 @@ import { WebSocketServer, WebSocket, type RawData } from 'ws'
 import type { IncomingMessage } from 'node:http'
 import type { Duplex } from 'node:stream'
 import type { AuthUser } from '@gehirn/auth-providers'
+import type { TranscriptionProvider } from '@gehirn/transcription'
 import type { ApiKeyStoreLike } from '../api-keys/store.js'
 import {
   OpenAITranscriptionKeyStore,
@@ -15,8 +16,16 @@ import {
   isTransientCommitRaceError,
   type RealtimeTranscriptionClientLike,
 } from './openai-realtime.js'
+import {
+  createOpenAIBulkTranscriptionProvider,
+  transcribePreservedAudio,
+} from '../voice/stt.js'
+import {
+  buildVoiceTranscriptionContext,
+} from '../voice/transcription-context.js'
 
 const DEFAULT_WS_KEEPALIVE_INTERVAL_MS = 30000
+const DEFAULT_FINALIZE_TIMEOUT_MS = 2500
 const PCM16_MONO_SAMPLE_RATE_HZ = 24000
 const PCM16_BYTES_PER_SAMPLE = 2
 const MIN_BUFFERED_AUDIO_MS = 100
@@ -44,7 +53,12 @@ export interface RealtimeProxyOptions {
   createClient?: (options: {
     apiKey: string
     language: string
+    model: string
+    prompt: string
+    terms: string[]
   }) => RealtimeTranscriptionClientLike
+  retryTranscriptionProvider?: TranscriptionProvider
+  finalizeTimeoutMs?: number
 }
 
 export interface RealtimeProxyResult {
@@ -82,6 +96,14 @@ function parseKeepAliveIntervalMs(rawValue: unknown): number {
   return parsed
 }
 
+function parseFinalizeTimeoutMs(rawValue: unknown): number {
+  const parsed = Number.parseInt(String(rawValue ?? ''), 10)
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return DEFAULT_FINALIZE_TIMEOUT_MS
+  }
+  return parsed
+}
+
 function asFiniteNumber(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? value : null
 }
@@ -93,39 +115,59 @@ function sendJson(ws: WebSocket, payload: Record<string, unknown>): void {
   ws.send(JSON.stringify(payload))
 }
 
-function toBase64AudioChunk(data: RawData): string | null {
+function toBinaryAudioBuffer(data: RawData): Buffer | null {
   if (typeof data === 'string') {
     return null
   }
 
   if (data instanceof ArrayBuffer) {
     const buffer = Buffer.from(data)
-    return buffer.length > 0 ? buffer.toString('base64') : null
+    return buffer.length > 0 ? buffer : null
   }
 
   if (Array.isArray(data)) {
     const buffer = Buffer.concat(data.map((chunk) => Buffer.from(chunk)))
-    return buffer.length > 0 ? buffer.toString('base64') : null
+    return buffer.length > 0 ? buffer : null
   }
 
   const buffer = Buffer.from(data)
-  return buffer.length > 0 ? buffer.toString('base64') : null
+  return buffer.length > 0 ? buffer : null
 }
 
-function getBinaryAudioByteLength(data: RawData): number {
-  if (typeof data === 'string') {
-    return 0
-  }
+function parseTranscriptionTerms(url: URL): string[] {
+  const terms = [
+    ...url.searchParams.getAll('term'),
+    ...url.searchParams.getAll('terms').flatMap((value) => value.split(',')),
+  ]
+    .map((term) => term.trim())
+    .filter((term) => term.length > 0)
+  return terms
+}
 
-  if (data instanceof ArrayBuffer) {
-    return data.byteLength
-  }
+export function createPcm16MonoWavBuffer(
+  pcm16Audio: Buffer,
+  sampleRate = PCM16_MONO_SAMPLE_RATE_HZ,
+): Buffer {
+  const header = Buffer.alloc(44)
+  const dataLength = pcm16Audio.length
+  const byteRate = sampleRate * PCM16_BYTES_PER_SAMPLE
+  const blockAlign = PCM16_BYTES_PER_SAMPLE
 
-  if (Array.isArray(data)) {
-    return data.reduce((total, chunk) => total + chunk.byteLength, 0)
-  }
+  header.write('RIFF', 0, 'ascii')
+  header.writeUInt32LE(36 + dataLength, 4)
+  header.write('WAVE', 8, 'ascii')
+  header.write('fmt ', 12, 'ascii')
+  header.writeUInt32LE(16, 16)
+  header.writeUInt16LE(1, 20)
+  header.writeUInt16LE(1, 22)
+  header.writeUInt32LE(sampleRate, 24)
+  header.writeUInt32LE(byteRate, 28)
+  header.writeUInt16LE(blockAlign, 32)
+  header.writeUInt16LE(16, 34)
+  header.write('data', 36, 'ascii')
+  header.writeUInt32LE(dataLength, 40)
 
-  return data.byteLength
+  return Buffer.concat([header, pcm16Audio])
 }
 
 function attachWebSocketKeepAlive(
@@ -184,10 +226,25 @@ export function createRealtimeProxy(options: RealtimeProxyOptions = {}): Realtim
   const transcriptionKeyStore =
     options.transcriptionKeyStore ?? new OpenAITranscriptionKeyStore()
   const wsKeepAliveIntervalMs = parseKeepAliveIntervalMs(options.wsKeepAliveIntervalMs)
+  const finalizeTimeoutMs = parseFinalizeTimeoutMs(options.finalizeTimeoutMs)
   const createClient =
     options.createClient ??
-    ((clientOptions: { apiKey: string; language: string }) =>
-      new OpenAIRealtimeClient(clientOptions))
+    ((clientOptions: {
+      apiKey: string
+      language: string
+      model: string
+      prompt: string
+      terms: string[]
+    }) =>
+      new OpenAIRealtimeClient({
+        apiKey: clientOptions.apiKey,
+        transcriptionContext: {
+          language: clientOptions.language,
+          model: clientOptions.model,
+          prompt: clientOptions.prompt,
+          terms: clientOptions.terms,
+        },
+      }))
 
   const requireRealtimeAccess = combinedAuth({
     apiKeyStore: options.apiKeyStore,
@@ -273,33 +330,153 @@ export function createRealtimeProxy(options: RealtimeProxyOptions = {}): Realtim
       }
 
       const language = normalizeLanguage(url.searchParams.get('language'))
+      const transcriptionContext = buildVoiceTranscriptionContext({
+        language,
+        model: asNonEmptyString(url.searchParams.get('model')) ?? undefined,
+        prompt: asNonEmptyString(url.searchParams.get('prompt')) ?? undefined,
+        terms: parseTranscriptionTerms(url),
+      })
       wss.handleUpgrade(req, socket, head, (ws) => {
         const client = createClient({
           apiKey: openaiApiKey,
-          language,
+          language: transcriptionContext.language,
+          model: transcriptionContext.model,
+          prompt: transcriptionContext.prompt,
+          terms: transcriptionContext.terms,
+        })
+        const retryProvider = options.retryTranscriptionProvider ?? createOpenAIBulkTranscriptionProvider({
+          apiKeyProvider: async () => openaiApiKey,
         })
 
         const stopKeepAlive = attachWebSocketKeepAlive(ws, wsKeepAliveIntervalMs, () => {
           client.close()
         })
 
+        let startPromise: Promise<void> | null = null
         let finalized = false
+        let retrying = false
         let disposed = false
         let pendingStop = false
         let bufferedAudioBytes = 0
+        const preservedAudioChunks: Buffer[] = []
+        let finalizeTimer: NodeJS.Timeout | null = null
+
+        const clearFinalizeTimer = () => {
+          if (finalizeTimer !== null) {
+            clearTimeout(finalizeTimer)
+            finalizeTimer = null
+          }
+        }
 
         const dispose = () => {
           if (disposed) {
             return
           }
           disposed = true
+          clearFinalizeTimer()
           stopKeepAlive()
           client.close()
         }
 
+        const closeBrowser = (code: number, reason: string) => {
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.close(code, reason)
+          }
+        }
+
+        const sendError = (payload: {
+          code?: string | null
+          message: string
+          bytesAppended?: number | null
+        }) => {
+          sendJson(ws, {
+            type: 'error',
+            ...(payload.code ? { code: payload.code } : {}),
+            message: payload.message,
+            ...(typeof payload.bytesAppended === 'number' ? { bytesAppended: payload.bytesAppended } : {}),
+          })
+        }
+
+        const retryFromPreservedAudio = async (reason: string) => {
+          if (finalized || retrying || disposed) {
+            return
+          }
+          retrying = true
+          clearFinalizeTimer()
+
+          const pcmAudio = Buffer.concat(preservedAudioChunks)
+          if (pcmAudio.length < MIN_COMMIT_AUDIO_BYTES) {
+            sendError({
+              code: 'audio_too_short',
+              message: 'Recording too short',
+              bytesAppended: pcmAudio.length,
+            })
+            closeBrowser(1000, 'Recording too short')
+            return
+          }
+
+          try {
+            const transcript = await transcribePreservedAudio(
+              {
+                buffer: createPcm16MonoWavBuffer(pcmAudio),
+                mimeType: 'audio/wav',
+              },
+              {
+                ...transcriptionContext,
+                metadata: {
+                  source: 'realtime',
+                  retryReason: reason,
+                  pcm16Bytes: pcmAudio.length,
+                },
+              },
+              retryProvider,
+            )
+            finalized = true
+            sendJson(ws, {
+              type: 'final',
+              text: transcript,
+            })
+            closeBrowser(1000, 'Transcription completed')
+          } catch (error) {
+            const errorMessage =
+              error instanceof Error ? error.message : 'Realtime transcription retry failed'
+            sendError({
+              message: errorMessage,
+            })
+            closeBrowser(1011, 'Realtime transcription failed')
+          }
+        }
+
+        const scheduleRetryTimeout = () => {
+          clearFinalizeTimer()
+          finalizeTimer = setTimeout(() => {
+            void retryFromPreservedAudio('live-finalization-timeout')
+          }, finalizeTimeoutMs)
+        }
+
+        const startClient = () => {
+          if (startPromise) {
+            return
+          }
+          startPromise = client.connect().then(
+            () => {
+              sendJson(ws, {
+                type: 'ready',
+              })
+            },
+            (error) => {
+              const message =
+                error instanceof Error ? error.message : 'Failed to initialize realtime transcription'
+              sendError({ message })
+              closeBrowser(1011, 'Realtime initialization failed')
+              dispose()
+            },
+          )
+        }
+
         client.on('partial', (text: unknown) => {
           const partialText = asNonEmptyString(text)
-          if (!partialText) {
+          if (!partialText || !pendingStop) {
             return
           }
           sendJson(ws, {
@@ -310,17 +487,16 @@ export function createRealtimeProxy(options: RealtimeProxyOptions = {}): Realtim
 
         client.on('final', (text: unknown) => {
           const finalText = asNonEmptyString(text)
-          if (!finalText) {
+          if (!finalText || !pendingStop) {
             return
           }
           finalized = true
+          clearFinalizeTimer()
           sendJson(ws, {
             type: 'final',
             text: finalText,
           })
-          if (pendingStop && ws.readyState === WebSocket.OPEN) {
-            ws.close(1000, 'Transcription completed')
-          }
+          closeBrowser(1000, 'Transcription completed')
         })
 
         client.on('error', (message: unknown) => {
@@ -343,32 +519,46 @@ export function createRealtimeProxy(options: RealtimeProxyOptions = {}): Realtim
             return
           }
 
-          sendJson(ws, {
-            type: 'error',
-            code: errorCode,
-            message: errorMessage,
-            ...(bytesAppended !== null ? { bytesAppended } : {}),
-          })
           if (errorCode === 'audio_too_short') {
+            sendError({
+              code: errorCode,
+              message: errorMessage,
+              bytesAppended,
+            })
             return
           }
-          if (ws.readyState === WebSocket.OPEN) {
-            ws.close(1011, 'Realtime transcription failed')
+
+          if (pendingStop && !finalized) {
+            void retryFromPreservedAudio(`live-error:${errorCode ?? 'unknown'}`)
+            return
           }
+
+          sendError({
+            code: errorCode,
+            message: errorMessage,
+            bytesAppended,
+          })
+          closeBrowser(1011, 'Realtime transcription failed')
         })
 
         client.on('close', () => {
-          if (!finalized && ws.readyState === WebSocket.OPEN) {
-            ws.close(1011, 'Realtime upstream closed')
+          if (disposed || finalized) {
+            return
           }
+          if (pendingStop) {
+            void retryFromPreservedAudio('live-upstream-closed')
+            return
+          }
+          closeBrowser(1011, 'Realtime upstream closed')
         })
 
         ws.on('message', (rawData, isBinary) => {
           if (isBinary) {
-            const base64Audio = toBase64AudioChunk(rawData)
-            if (base64Audio) {
-              client.sendAudio(base64Audio)
-              bufferedAudioBytes += getBinaryAudioByteLength(rawData)
+            const audioBuffer = toBinaryAudioBuffer(rawData)
+            if (audioBuffer) {
+              preservedAudioChunks.push(audioBuffer)
+              client.sendAudio(audioBuffer.toString('base64'))
+              bufferedAudioBytes += audioBuffer.byteLength
             }
             return
           }
@@ -381,12 +571,23 @@ export function createRealtimeProxy(options: RealtimeProxyOptions = {}): Realtim
           }
 
           const messageType = asNonEmptyString(message.type)
-          if (messageType === 'stop') {
+          if (messageType === 'start') {
+            startClient()
+            return
+          }
+
+          if (messageType === 'commit' || messageType === 'stop') {
             pendingStop = true
             if (bufferedAudioBytes >= MIN_COMMIT_AUDIO_BYTES) {
               client.commitAudioBuffer()
-            } else if (ws.readyState === WebSocket.OPEN) {
-              ws.close(1000, 'Recording too short')
+              scheduleRetryTimeout()
+            } else {
+              sendError({
+                code: 'audio_too_short',
+                message: 'Recording too short',
+                bytesAppended: bufferedAudioBytes,
+              })
+              closeBrowser(1000, 'Recording too short')
             }
           }
         })
@@ -398,26 +599,6 @@ export function createRealtimeProxy(options: RealtimeProxyOptions = {}): Realtim
         ws.on('error', () => {
           dispose()
         })
-
-        void client.connect().then(
-          () => {
-            sendJson(ws, {
-              type: 'ready',
-            })
-          },
-          (error) => {
-            const message =
-              error instanceof Error ? error.message : 'Failed to initialize realtime transcription'
-            sendJson(ws, {
-              type: 'error',
-              message,
-            })
-            if (ws.readyState === WebSocket.OPEN) {
-              ws.close(1011, 'Realtime initialization failed')
-            }
-            dispose()
-          },
-        )
       })
     }).catch(() => {
       socket.write('HTTP/1.1 500 Internal Server Error\r\n\r\n')

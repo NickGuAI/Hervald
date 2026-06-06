@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import express from 'express'
 import { createServer, type Server } from 'node:http'
 import { mkdir, mkdtemp, rm } from 'node:fs/promises'
@@ -268,9 +268,28 @@ describe('registerConversationRoutes', () => {
         }),
       })
 
-      expect(startResponse.status).toBe(503)
-      expect(await startResponse.json()).toEqual({
-        error: 'OpenCode runtime failed to start: spawn opencode ENOENT',
+      const expectedError = 'OpenCode runtime failed to start: spawn opencode ENOENT'
+      expect([202, 503]).toContain(startResponse.status)
+      if (startResponse.status === 503) {
+        expect(await startResponse.json()).toEqual({ error: expectedError })
+        return
+      }
+
+      await vi.waitFor(async () => {
+        const detailResponse = await fetch(`${server.baseUrl}/api/conversations/${CONVERSATION_ID}`, {
+          headers: FULL_AUTH_HEADERS,
+        })
+        expect(detailResponse.status).toBe(200)
+        expect(await detailResponse.json()).toEqual(expect.objectContaining({
+          id: CONVERSATION_ID,
+          status: 'idle',
+          runtimeState: 'failed',
+          runtimeError: expectedError,
+          displayState: expect.objectContaining({
+            runtimeState: 'failed',
+            runtimeError: expectedError,
+          }),
+        }))
       })
     } finally {
       await server.close()

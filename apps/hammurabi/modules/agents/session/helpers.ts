@@ -8,6 +8,7 @@ import type {
   StreamJsonEvent,
   StreamSession,
 } from '../types.js'
+import { extractTranscriptUsageUpdate, isLegacyStreamEvent } from '../transcript-records.js'
 
 export function truncateLogText(value: string, maxChars = CODEX_SIDECAR_LOG_TEXT_LIMIT): string {
   const normalized = value.replace(/\s+/g, ' ').trim()
@@ -110,51 +111,41 @@ export function readUsageNumber(usage: Record<string, unknown>, keys: string[]):
 }
 
 export function applyStreamUsageEvent(session: StreamSession, event: StreamJsonEvent): void {
-  const evtType = event.type as string
-  if (evtType === 'message_delta' && event.usage) {
-    const usage = asObject(event.usage)
-    if (!usage) {
-      return
-    }
-    const usageIsTotal = event.usage_is_total === true
-    const inputTokens = readUsageNumber(usage, ['input_tokens', 'inputTokens', 'input'])
-    const outputTokens = readUsageNumber(usage, ['output_tokens', 'outputTokens', 'output'])
-    if (usageIsTotal) {
-      if (inputTokens !== undefined) session.usage.inputTokens = inputTokens
-      if (outputTokens !== undefined) session.usage.outputTokens = outputTokens
-    } else {
-      if (inputTokens !== undefined) session.usage.inputTokens += inputTokens
-      if (outputTokens !== undefined) session.usage.outputTokens += outputTokens
-    }
-
-    const totalCost = readFiniteNumber(event.total_cost_usd)
-    const cost = readFiniteNumber(event.cost_usd)
-    if (totalCost !== undefined) {
-      session.usage.costUsd = totalCost
-    } else if (cost !== undefined) {
-      session.usage.costUsd = cost
-    }
+  const usageUpdate = extractTranscriptUsageUpdate(event)
+  if (!usageUpdate?.usage) {
     return
   }
 
-  if (evtType === 'result') {
+  const usage = asObject(usageUpdate.usage)
+  if (!usage) {
+    return
+  }
+  const inputTokens = readUsageNumber(usage, ['input_tokens', 'inputTokens', 'input'])
+  const outputTokens = readUsageNumber(usage, ['output_tokens', 'outputTokens', 'output'])
+  if (usageUpdate.usageIsTotal) {
+    if (inputTokens !== undefined) session.usage.inputTokens = inputTokens
+    if (outputTokens !== undefined) session.usage.outputTokens = outputTokens
+  } else {
+    if (inputTokens !== undefined) session.usage.inputTokens += inputTokens
+    if (outputTokens !== undefined) session.usage.outputTokens += outputTokens
+  }
+
+  if (usageUpdate.totalCostUsd !== undefined) {
+    session.usage.costUsd = usageUpdate.totalCostUsd
+    return
+  }
+  if (usageUpdate.costUsd !== undefined) {
+    session.usage.costUsd = usageUpdate.costUsd
+    return
+  }
+
+  if (isLegacyStreamEvent(event) && event.type === 'result') {
     const totalCost = readFiniteNumber(event.total_cost_usd)
     const cost = readFiniteNumber(event.cost_usd)
     if (totalCost !== undefined) {
       session.usage.costUsd = totalCost
     } else if (cost !== undefined) {
       session.usage.costUsd = cost
-    }
-
-    if (event.usage) {
-      const usage = asObject(event.usage)
-      if (!usage) {
-        return
-      }
-      const inputTokens = readUsageNumber(usage, ['input_tokens', 'inputTokens', 'input'])
-      const outputTokens = readUsageNumber(usage, ['output_tokens', 'outputTokens', 'output'])
-      session.usage.inputTokens = inputTokens ?? session.usage.inputTokens
-      session.usage.outputTokens = outputTokens ?? session.usage.outputTokens
     }
   }
 }

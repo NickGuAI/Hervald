@@ -99,4 +99,50 @@ describe('commander workflow template scaffolding', () => {
     const written = await readFile(workflowPath, 'utf8')
     expect(written).toBe(`Commander ${commanderId} @ /workspace/custom\n`)
   })
+
+  it('refreshes a stale shared template with removed runtime config scaffolding', async () => {
+    const dir = await createTempDir('hammurabi-workflow-stale-template-')
+    await writeFile(
+      join(dir, COMMANDER_WORKFLOW_TEMPLATE_FILE),
+      [
+        '---',
+        'heartbeat.interval: 900000',
+        'heartbeat.message: "Check the board."',
+        '# maxTurns: 3',
+        'contextMode: fat',
+        '---',
+        '',
+        'You are [NAME]. Read `.memory/KNOWLEDGE.md` for facts.',
+      ].join('\n'),
+      'utf8',
+    )
+    const commanderId = '66666666-6666-4666-8666-666666666666'
+
+    const workflowPath = await scaffoldCommanderWorkflow(
+      commanderId,
+      {
+        cwd: '/workspace/current',
+      },
+      dir,
+    )
+
+    const refreshedTemplate = await readFile(join(dir, COMMANDER_WORKFLOW_TEMPLATE_FILE), 'utf8')
+    expect(refreshedTemplate).toContain('## Shared Knowledge Bootstrap')
+    expect(refreshedTemplate).toContain('## Memory')
+    expect(refreshedTemplate).not.toContain('heartbeat.interval')
+    expect(refreshedTemplate).not.toContain('heartbeat.message')
+    expect(refreshedTemplate).not.toContain('maxTurns:')
+    expect(refreshedTemplate).not.toContain('contextMode:')
+    expect(refreshedTemplate).not.toContain('KNOWLEDGE.md')
+
+    const written = await readFile(workflowPath, 'utf8')
+    expect(written).toContain('Workspace: /workspace/current')
+    expect(written).toContain(`hammurabi quests list --commander ${commanderId}`)
+    expect(written).toContain(`hammurabi memory save --commander ${commanderId} "<fact>"`)
+    expect(written).not.toContain('heartbeat.interval')
+    expect(written).not.toContain('heartbeat.message')
+    expect(written).not.toContain('maxTurns:')
+    expect(written).not.toContain('contextMode:')
+    expect(written).not.toContain('KNOWLEDGE.md')
+  })
 })

@@ -10,6 +10,7 @@ import type { QueuedMessage, QueuedMessageImage, QueuedMessagePriority } from '.
 import { parseMessageImagesForRequest } from '../message-images.js'
 import type { ProviderCreateOptions } from '../providers/provider-adapter.js'
 import { getProvider } from '../providers/registry.js'
+import { ProviderAuthRequiredError } from '../provider-auth.js'
 import { parseCodexApprovalDecision, parseSessionName } from '../session/input.js'
 import { snapshotDeletedResumableStreamSession } from '../session/state.js'
 import {
@@ -605,6 +606,17 @@ export function registerSessionControlRoutes(deps: SessionControlRouteDeps): voi
         deps.clearCodexResumeMetadata(originalName)
         res.status(409).json({
           error: codexRolloutUnavailableMessage(originalName),
+        })
+        return
+      }
+      if (error instanceof ProviderAuthRequiredError) {
+        res.status(424).json({
+          code: 'AUTH_REQUIRED',
+          provider: error.provider,
+          scopeId: error.snapshot.scopeId,
+          host: error.snapshot.host,
+          reauthUrl: error.snapshot.reauthUrl,
+          error: error.message,
         })
         return
       }

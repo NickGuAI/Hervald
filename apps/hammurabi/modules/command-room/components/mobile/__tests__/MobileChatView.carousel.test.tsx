@@ -16,20 +16,31 @@ vi.mock('@modules/agents/page-shell/MobileSessionShell', () => ({
     conversation,
     headerAccessory,
     emptyState,
+    messages = [],
+    composerEnabled = false,
     rootClassName,
   }: {
     conversation?: { id: string } | null
     headerAccessory?: ReactNode
     emptyState?: ReactNode
+    messages?: Array<{ id: string, text: string }>
+    composerEnabled?: boolean
     rootClassName?: string
   }) => (
     <div
       data-testid="mobile-session-shell"
       data-conversation-id={conversation?.id ?? ''}
+      data-message-count={messages.length}
+      data-composer-enabled={composerEnabled ? 'true' : 'false'}
       data-root-class={rootClassName}
     >
       {headerAccessory}
       {emptyState}
+      {messages.map((message) => (
+        <div key={message.id} data-testid="mobile-session-message">
+          {message.text}
+        </div>
+      ))}
     </div>
   ),
 }))
@@ -133,6 +144,14 @@ function renderView(overrides: Partial<Parameters<typeof MobileChatView>[0]> = {
 function getPageOrder(): string[] {
   return Array.from(document.body.querySelectorAll('[data-testid="mobile-chat-page"]'))
     .map((node) => node.getAttribute('data-conversation-id') ?? '')
+}
+
+function getShellByConversationId(conversationId: string): HTMLElement {
+  const shell = document.body.querySelector(
+    `[data-testid="mobile-session-shell"][data-conversation-id="${conversationId}"]`,
+  )
+  expect(shell).not.toBeNull()
+  return shell as HTMLElement
 }
 
 afterEach(() => {
@@ -289,6 +308,191 @@ describe('MobileChatView carousel', () => {
     expect(scrollTo).toHaveBeenCalledTimes(1)
     expect((carousel as HTMLDivElement).scrollLeft).toBe(320)
     expect(onSelectConversationId).not.toHaveBeenCalled()
+  })
+
+  it('ignores snap-back scroll events after the selected conversation changes', () => {
+    vi.useFakeTimers()
+    try {
+      const onSelectConversationId = vi.fn()
+      const conversations = [
+        buildConversation({
+          id: 'conv-1',
+          name: 'Chat 1',
+          createdAt: '2026-05-01T08:00:00.000Z',
+        }),
+        buildConversation({
+          id: 'conv-2',
+          name: 'Chat 2',
+          createdAt: '2026-05-01T08:05:00.000Z',
+        }),
+        buildConversation({
+          id: 'conv-3',
+          name: 'Chat 3',
+          createdAt: '2026-05-01T08:10:00.000Z',
+        }),
+      ]
+
+      const { rerender } = renderView({
+        conversations,
+        selectedConversationId: 'conv-1',
+        onSelectConversationId,
+      })
+
+      const carousel = document.body.querySelector('[data-testid="mobile-chat-carousel"]') as HTMLDivElement | null
+      expect(carousel).not.toBeNull()
+
+      Object.defineProperty(carousel as HTMLDivElement, 'clientWidth', {
+        configurable: true,
+        value: 320,
+      })
+      Object.defineProperty(carousel as HTMLDivElement, 'scrollLeft', {
+        configurable: true,
+        writable: true,
+        value: 0,
+      })
+      const scrollTo = vi.fn(({ left }: { left: number }) => {
+        ;(carousel as HTMLDivElement).scrollLeft = left
+      })
+      ;(carousel as HTMLDivElement).scrollTo = scrollTo
+
+      rerender({
+        conversations,
+        selectedConversationId: 'conv-2',
+        onSelectConversationId,
+      })
+
+      expect(scrollTo).toHaveBeenCalledWith({ left: 320, behavior: 'auto' })
+      expect((carousel as HTMLDivElement).scrollLeft).toBe(320)
+
+      ;(carousel as HTMLDivElement).scrollLeft = 0
+      flushSync(() => {
+        ;(carousel as HTMLDivElement).dispatchEvent(new Event('scroll'))
+      })
+      vi.advanceTimersByTime(150)
+
+      expect(onSelectConversationId).not.toHaveBeenCalledWith('conv-1')
+
+      vi.advanceTimersByTime(251)
+      ;(carousel as HTMLDivElement).scrollLeft = 640
+      flushSync(() => {
+        ;(carousel as HTMLDivElement).dispatchEvent(new Event('scroll'))
+      })
+      vi.advanceTimersByTime(150)
+
+      expect(onSelectConversationId).toHaveBeenCalledWith('conv-3')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps the previous conversation hydrated while selection settles', () => {
+    const conversations = [
+      buildConversation({
+        id: 'conv-1',
+        name: 'Chat 1',
+        createdAt: '2026-05-01T08:00:00.000Z',
+      }),
+      buildConversation({
+        id: 'conv-2',
+        name: 'Chat 2',
+        createdAt: '2026-05-01T08:05:00.000Z',
+      }),
+    ]
+
+    const conv1Transcript: MsgItem[] = [{
+      id: 'conv-1-message',
+      kind: 'agent',
+      text: 'conversation one still visible',
+    }]
+    const conv2Transcript: MsgItem[] = [{
+      id: 'conv-2-message',
+      kind: 'agent',
+      text: 'conversation two selected',
+    }]
+
+    const { rerender } = renderView({
+      conversations,
+      selectedConversationId: 'conv-1',
+      transcript: conv1Transcript,
+    })
+
+    expect(getShellByConversationId('conv-1').textContent).toContain('conversation one still visible')
+
+    rerender({
+      conversations,
+      selectedConversationId: 'conv-2',
+      transcript: conv2Transcript,
+    })
+
+    expect(getShellByConversationId('conv-1').textContent).toContain('conversation one still visible')
+    expect(getShellByConversationId('conv-2').textContent).toContain('conversation two selected')
+  })
+
+  it('allows the next swipe to advance while stale previous-page scrolls are guarded', () => {
+    vi.useFakeTimers()
+    try {
+      const onSelectConversationId = vi.fn()
+      const conversations = [
+        buildConversation({
+          id: 'conv-1',
+          name: 'Chat 1',
+          createdAt: '2026-05-01T08:00:00.000Z',
+        }),
+        buildConversation({
+          id: 'conv-2',
+          name: 'Chat 2',
+          createdAt: '2026-05-01T08:05:00.000Z',
+        }),
+        buildConversation({
+          id: 'conv-3',
+          name: 'Chat 3',
+          createdAt: '2026-05-01T08:10:00.000Z',
+        }),
+      ]
+
+      const { rerender } = renderView({
+        conversations,
+        selectedConversationId: 'conv-1',
+        onSelectConversationId,
+      })
+
+      const carousel = document.body.querySelector('[data-testid="mobile-chat-carousel"]') as HTMLDivElement | null
+      expect(carousel).not.toBeNull()
+
+      Object.defineProperty(carousel as HTMLDivElement, 'clientWidth', {
+        configurable: true,
+        value: 320,
+      })
+      Object.defineProperty(carousel as HTMLDivElement, 'scrollLeft', {
+        configurable: true,
+        writable: true,
+        value: 0,
+      })
+      ;(carousel as HTMLDivElement).scrollTo = vi.fn(({ left }: { left: number }) => {
+        ;(carousel as HTMLDivElement).scrollLeft = left
+      })
+
+      rerender({
+        conversations,
+        selectedConversationId: 'conv-2',
+        onSelectConversationId,
+      })
+
+      ;(carousel as HTMLDivElement).scrollLeft = 0
+      flushSync(() => {
+        ;(carousel as HTMLDivElement).dispatchEvent(new Event('scroll'))
+      })
+      expect(onSelectConversationId).not.toHaveBeenCalledWith('conv-1')
+
+      ;(carousel as HTMLDivElement).scrollLeft = 640
+      flushSync(() => {
+        ;(carousel as HTMLDivElement).dispatchEvent(new Event('scroll'))
+      })
+
+      expect(onSelectConversationId).toHaveBeenCalledWith('conv-3')
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('keeps non-archived chats for the active commander in the carousel and forwards the light theme class', () => {

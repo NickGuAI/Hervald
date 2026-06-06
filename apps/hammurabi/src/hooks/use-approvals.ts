@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { fetchJson, getAccessToken, isAuthRecoveryRequiredError } from '@/lib/api'
 import { getWsBase } from '@/lib/api-base'
@@ -6,8 +6,11 @@ import { createReconnectBackoff, shouldReconnectWebSocketClose } from '../../mod
 
 export const APPROVALS_QUERY_KEY = ['approvals', 'pending'] as const
 export const APPROVAL_HISTORY_QUERY_KEY = ['approvals', 'history'] as const
+export const APPROVAL_NOTIFICATION_MAX_VISIBLE = 3
+export const APPROVAL_NOTIFICATION_TTL_MS: number | null = null
 
 export type ApprovalDecision = 'approve' | 'reject'
+export type ApprovalResolvedDecision = ApprovalDecision | 'cancel'
 export type ApprovalStreamStatus = 'connecting' | 'connected' | 'disconnected'
 
 export interface ApprovalDetailLine {
@@ -57,7 +60,7 @@ export interface ApprovalHistoryEntry {
   commanderId: string | null
   source: string | null
   summary: string | null
-  decision: ApprovalDecision | null
+  decision: ApprovalResolvedDecision | null
   timedOut: boolean
   delivered: boolean | null
   raw: Record<string, unknown>
@@ -379,7 +382,7 @@ function normalizeApprovalHistoryEntry(input: unknown): ApprovalHistoryEntry | n
 
   const outcome = asRecord(raw.outcome)
   const timedOut = outcome?.timedOut === true
-  const decision = raw.decision === 'approve' || raw.decision === 'reject'
+  const decision = raw.decision === 'approve' || raw.decision === 'reject' || raw.decision === 'cancel'
     ? raw.decision
     : null
 
@@ -433,6 +436,55 @@ function approvalStreamUrl(path: string, token: string | null): string {
 
   const scheme = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
   return `${scheme}//${window.location.host}${path}${qs ? `?${qs}` : ''}`
+}
+
+const notificationSuppressionSources = new Set<string>()
+const notificationSuppressionListeners = new Set<() => void>()
+
+function notifyApprovalNotificationSuppressionChanged(): void {
+  for (const listener of notificationSuppressionListeners) {
+    listener()
+  }
+}
+
+function subscribeApprovalNotificationSuppression(listener: () => void): () => void {
+  notificationSuppressionListeners.add(listener)
+  return () => {
+    notificationSuppressionListeners.delete(listener)
+  }
+}
+
+function getApprovalNotificationSuppressionSnapshot(): boolean {
+  return notificationSuppressionSources.size > 0
+}
+
+export function setApprovalNotificationSuppression(source: string, suppressed: boolean): void {
+  const before = notificationSuppressionSources.size
+  if (suppressed) {
+    notificationSuppressionSources.add(source)
+  } else {
+    notificationSuppressionSources.delete(source)
+  }
+  if (notificationSuppressionSources.size !== before) {
+    notifyApprovalNotificationSuppressionChanged()
+  }
+}
+
+export function useApprovalNotificationSuppression(source: string, suppressed: boolean): void {
+  useEffect(() => {
+    setApprovalNotificationSuppression(source, suppressed)
+    return () => {
+      setApprovalNotificationSuppression(source, false)
+    }
+  }, [source, suppressed])
+}
+
+export function useApprovalNotificationsSuppressed(): boolean {
+  return useSyncExternalStore(
+    subscribeApprovalNotificationSuppression,
+    getApprovalNotificationSuppressionSnapshot,
+    getApprovalNotificationSuppressionSnapshot,
+  )
 }
 
 function normalizeApprovalStreamEvent(payload: unknown): ApprovalStreamEvent | null {
@@ -668,37 +720,60 @@ export function useApprovalNotifications(options?: {
   enabled?: boolean
   suppressNotifications?: boolean
   streamPath?: string
-  ttlMs?: number
+  ttlMs?: number | null
   maxVisible?: number
 }) {
   const enabled = options?.enabled ?? true
   const suppressNotifications = options?.suppressNotifications ?? false
-  const ttlMs = options?.ttlMs ?? 10_000
-  const maxVisible = options?.maxVisible ?? 3
+  const ttlMs = options?.ttlMs ?? APPROVAL_NOTIFICATION_TTL_MS
+  const maxVisible = options?.maxVisible ?? APPROVAL_NOTIFICATION_MAX_VISIBLE
   const [notifications, setNotifications] = useState<ApprovalNotification[]>([])
   const seenApprovalIdsRef = useRef(new Set<string>())
   const timeoutIdsRef = useRef(new Map<string, number>())
 
-  function dismissNotification(notificationId: string): void {
+  function clearNotificationTimer(notificationId: string): void {
     const timerId = timeoutIdsRef.current.get(notificationId)
     if (timerId !== undefined) {
       window.clearTimeout(timerId)
       timeoutIdsRef.current.delete(notificationId)
     }
+  }
+
+  function dismissNotification(notificationId: string): void {
+    clearNotificationTimer(notificationId)
     setNotifications((current) => current.filter((entry) => entry.id !== notificationId))
+  }
+
+  function removeNotificationsForApprovalId(approvalId: string | number | null): void {
+    if (approvalId === null || approvalId === undefined) {
+      return
+    }
+    const normalized = String(approvalId)
+    setNotifications((current) =>
+      current.filter((entry) => {
+        const matches =
+          String(entry.approval.decisionId) === normalized
+          || String(entry.approval.id) === normalized
+          || (entry.approval.requestId !== null && String(entry.approval.requestId) === normalized)
+        if (matches) {
+          clearNotificationTimer(entry.id)
+        }
+        return !matches
+      }),
+    )
   }
 
   const connectionStatus = useApprovalStream({
     enabled,
     path: options?.streamPath,
     onEnqueued: (approval) => {
-      if (suppressNotifications) {
-        return
-      }
       if (seenApprovalIdsRef.current.has(approval.id)) {
         return
       }
       seenApprovalIdsRef.current.add(approval.id)
+      if (suppressNotifications) {
+        return
+      }
       setNotifications((current) => [
         {
           id: `${approval.id}:${Date.now()}`,
@@ -706,20 +781,17 @@ export function useApprovalNotifications(options?: {
           createdAt: Date.now(),
         },
         ...current,
-      ].slice(0, maxVisible))
+      ])
     },
     onResolved: (approvalId) => {
-      if (approvalId === null || approvalId === undefined) {
-        return
-      }
-      const normalized = String(approvalId)
-      setNotifications((current) =>
-        current.filter((entry) => String(entry.approval.decisionId) !== normalized),
-      )
+      removeNotificationsForApprovalId(approvalId)
     },
   })
 
   useEffect(() => {
+    if (ttlMs === null) {
+      return
+    }
     for (const entry of notifications) {
       if (timeoutIdsRef.current.has(entry.id)) {
         continue
@@ -742,6 +814,8 @@ export function useApprovalNotifications(options?: {
 
   return {
     notifications,
+    visibleNotifications: notifications.slice(0, maxVisible),
+    hiddenNotificationCount: Math.max(0, notifications.length - maxVisible),
     dismissNotification,
     connectionStatus,
   }

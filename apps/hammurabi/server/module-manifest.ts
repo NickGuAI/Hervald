@@ -821,6 +821,31 @@ export const HAMMURABI_MODULE_SERVER_METADATA = [
     dependencies: HAMMURABI_MODULE_GRAPH[22].dependencies,
     capabilities: HAMMURABI_MODULE_GRAPH[22].capabilities,
   },
+  {
+    id: 'eval',
+    directory: 'eval',
+    serverOnly: true,
+    routes: [
+      {
+        id: 'eval.api',
+        surface: 'api',
+        mount: '/api/eval',
+        methods: ['GET', 'POST'],
+        auth: 'api-key-or-auth0',
+        ownerModuleId: 'eval',
+      },
+    ],
+    parsers: [],
+    websockets: [],
+    lifecycle: noLifecycle(),
+    storage: storage('eval', 'owned', 'Benchmark run manifests, summaries, trajectories, and submission state are internal Hammurabi artifacts.', {
+      keys: ['eval.result-manifests'],
+      roots: ['${HAMMURABI_EVAL_ROOT}', '~/.hammurabi/eval'],
+      files: ['*/**/config.json', '*/**/result.json', '*/**/summary.md', '*/**/leaderboard.json', '*/**/trajectories/*'],
+    }),
+    dependencies: HAMMURABI_MODULE_GRAPH[23].dependencies,
+    capabilities: HAMMURABI_MODULE_GRAPH[23].capabilities,
+  },
 ] as const satisfies readonly HammurabiModuleServerMetadata[]
 
 const serverMetadataById: ReadonlyMap<string, HammurabiModuleServerMetadata> = new Map(

@@ -2,13 +2,14 @@ import { describe, expect, it, vi } from 'vitest'
 
 import {
   buildPlanApprovalAutoResolvedSystemEvent,
-  buildCodexMcpElicitationResult,
   buildOpenCodePlanApprovalResult,
   buildPlanApprovalToolResultPayload,
   buildToolAnswerPayload,
   deliverPlanApprovalDecision,
   findExpiredPendingPlanApproval,
   isPlanApprovalExpired,
+  readPlanApprovalDefaultDecision,
+  readPlanApprovalToolId,
 } from '../plan-approval'
 import type { StreamJsonEvent, StreamSession } from '../types'
 
@@ -153,72 +154,36 @@ describe('plan approval helpers', () => {
     })
   })
 
-  it('delivers Codex MCP elicitation decisions through the runtime response channel', () => {
-    const sendResponse = vi.fn()
-    const planApproval = makePlanApproval({
-      toolName: 'Codex MCP Elicitation',
-      providerContext: {
-        provider: 'codex',
-        backend: 'rpc',
-        toolUseId: 'codex-mcp-elicitation-19',
-        toolName: 'Codex MCP Elicitation',
-        requestId: 19,
-        answerFormat: 'codex.mcp_elicitation',
-        requestedSchema: {
-          type: 'object',
-          properties: {
-            response: { type: 'string', title: 'Response' },
+  it('does not treat Codex MCP user questions as plan approvals', () => {
+    const event = {
+      schemaVersion: 2,
+      id: 'codex-question',
+      time: '2026-05-19T00:00:00.000Z',
+      source: { provider: 'codex', backend: 'rpc', rawEventType: 'mcpserver/elicitation/request' },
+      itemId: 'codex-mcp-elicitation-19',
+      ev: {
+        type: 'approval.request',
+        toolCallId: 'codex-mcp-elicitation-19',
+        interactionKind: 'ask_user_question',
+        prompt: 'Which value should Codex use?',
+        request: {
+          interactionKind: 'ask_user_question',
+          toolName: 'Codex MCP Elicitation',
+          providerContext: {
+            provider: 'codex',
+            backend: 'rpc',
+            toolUseId: 'codex-mcp-elicitation-19',
+            toolName: 'Codex MCP Elicitation',
+            requestId: 19,
+            answerFormat: 'codex.mcp_elicitation',
           },
-          required: ['response'],
         },
       },
-    })
-    const session = makeSession([planApproval])
-    session.providerContext = {
-      providerId: 'codex',
-      sessionId: 'thread-1',
-      runtime: {
-        sendResponse,
-      },
-    } as unknown as StreamSession['providerContext']
-    const writeToStdin = vi.fn()
+    } as StreamJsonEvent
+    const session = makeSession([event])
 
-    const result = deliverPlanApprovalDecision(
-      session,
-      planApproval,
-      'approve',
-      'Continue with the default plan.',
-      writeToStdin,
-    )
-
-    expect(result.ok).toBe(true)
-    expect(writeToStdin).not.toHaveBeenCalled()
-    expect(sendResponse).toHaveBeenCalledWith(19, {
-      action: 'accept',
-      content: {
-        response: 'Continue with the default plan.',
-      },
-    })
-    expect(buildCodexMcpElicitationResult(planApproval, 'reject')).toEqual({
-      requestId: 19,
-      result: { action: 'decline' },
-    })
-  })
-
-  it('ignores Codex MCP elicitation events without a numeric request id', () => {
-    const planApproval = makePlanApproval({
-      toolName: 'Codex MCP Elicitation',
-      providerContext: {
-        provider: 'codex',
-        backend: 'rpc',
-        toolUseId: 'codex-mcp-elicitation-bad-id',
-        toolName: 'Codex MCP Elicitation',
-        requestId: 'bad-id',
-        answerFormat: 'codex.mcp_elicitation',
-      },
-    })
-
-    expect(buildCodexMcpElicitationResult(planApproval, 'approve')).toBeNull()
+    expect(findExpiredPendingPlanApproval(session, Date.parse('2026-05-19T00:00:01.000Z'))).toBeNull()
+    expect(readPlanApprovalToolId(event)).toBeUndefined()
   })
 
   it('finds only expired pending plan approvals', () => {
@@ -230,6 +195,42 @@ describe('plan approval helpers', () => {
 
     expect(findExpiredPendingPlanApproval(session, Date.parse('2026-05-19T00:00:01.000Z'))).toBe(expired)
     expect(findExpiredPendingPlanApproval(session, Date.parse('2026-05-18T23:59:59.000Z'))).toBeNull()
+  })
+
+  it('finds expired v2 plan approvals with preserved default decision and tool id', () => {
+    const expired = {
+      schemaVersion: 2,
+      id: 'env-plan-approval',
+      time: '2026-05-19T00:00:00.000Z',
+      source: { provider: 'opencode', backend: 'acp', rawEventType: 'plan' },
+      itemId: 'plan-2',
+      ev: {
+        type: 'approval.request',
+        toolCallId: 'plan-2',
+        interactionKind: 'plan_approval',
+        prompt: '1. Patch',
+        expiresAt: '2026-05-19T00:00:00.000Z',
+        defaultDecision: 'reject',
+        request: {
+          interactionKind: 'plan_approval',
+          toolName: 'PlanApproval',
+          providerContext: {
+            provider: 'opencode',
+            backend: 'acp',
+            toolUseId: 'plan-2',
+            toolName: 'PlanApproval',
+            answerFormat: 'opencode.plan_decision',
+            requestId: 12,
+          },
+        },
+      },
+    } as StreamJsonEvent
+    const session = makeSession([expired])
+    const found = findExpiredPendingPlanApproval(session, Date.parse('2026-05-19T00:00:01.000Z'))
+
+    expect(found).toBe(expired)
+    expect(found ? readPlanApprovalToolId(found) : undefined).toBe('plan-2')
+    expect(found ? readPlanApprovalDefaultDecision(found) : undefined).toBe('reject')
   })
 
   it('supports autoResolveAfterMs when a timestamp anchor is present', () => {

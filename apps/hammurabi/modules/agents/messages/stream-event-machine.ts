@@ -1,8 +1,14 @@
 import type { AskQuestion, StreamEvent } from '@/types'
 import {
+  isTranscriptEnvelope,
+  type TranscriptEnvelope,
+  type TranscriptMessageRole,
+} from '../../../src/types/transcript-envelope.js'
+import {
   capMessages,
   createUserMessage,
   SUBAGENT_WORKING_LABEL,
+  type MessageImageAttachment,
   type MsgItem,
 } from './model.js'
 import {
@@ -30,6 +36,8 @@ export type CurrentBlock = {
 export type MutableStreamProcessorState = {
   currentBlock: CurrentBlock | null
   activeAgentMessageIds: string[]
+  activeEnvelopeMessages: Record<string, { msgId: string; role: TranscriptMessageRole; ended?: boolean }>
+  activeEnvelopeSubagents: Record<string, string>
   planningToolNames: Record<string, PlanningToolName>
 }
 
@@ -43,11 +51,32 @@ export type StreamEventProcessorContext = {
 }
 
 const FILE_MUTATING_TOOLS = new Set(['Bash', 'Edit', 'MultiEdit', 'Write', 'NotebookEdit'])
+const ALLOWED_MESSAGE_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp'])
+const IMAGE_PAYLOAD_COLLECTION_KEYS = new Set([
+  'attachments',
+  'artifact',
+  'artifacts',
+  'content',
+  'data',
+  'images',
+  'item',
+  'message',
+  'messages',
+  'output',
+  'part',
+  'payload',
+  'response',
+  'result',
+])
+const IMAGE_PAYLOAD_HINT_KEYS = new Set(['attachments', 'artifact', 'artifacts', 'images'])
+const IMAGE_PAYLOAD_MAX_DEPTH = 5
 
 export function createStreamProcessorState(): MutableStreamProcessorState {
   return {
     currentBlock: null,
     activeAgentMessageIds: [],
+    activeEnvelopeMessages: {},
+    activeEnvelopeSubagents: {},
     planningToolNames: {},
   }
 }
@@ -55,6 +84,8 @@ export function createStreamProcessorState(): MutableStreamProcessorState {
 export function resetStreamProcessorState(state: MutableStreamProcessorState) {
   state.currentBlock = null
   state.activeAgentMessageIds = []
+  state.activeEnvelopeMessages = {}
+  state.activeEnvelopeSubagents = {}
   state.planningToolNames = {}
 }
 
@@ -88,6 +119,998 @@ function clearActiveAgentMessageIds(state: MutableStreamProcessorState) {
   state.activeAgentMessageIds = []
 }
 
+function stringifyUnknown(value: unknown): string {
+  if (typeof value === 'string') {
+    return value
+  }
+  if (value === undefined || value === null) {
+    return ''
+  }
+  try {
+    return JSON.stringify(value, null, 2)
+  } catch {
+    return String(value)
+  }
+}
+
+function buildTranscriptMeta(
+  envelope: TranscriptEnvelope,
+  extra: Partial<NonNullable<MsgItem['transcript']>> = {},
+): NonNullable<MsgItem['transcript']> {
+  return {
+    envelopeId: envelope.id,
+    time: envelope.time,
+    source: envelope.source,
+    turnId: envelope.turnId,
+    itemId: envelope.itemId,
+    parentId: envelope.parentId,
+    subagentId: envelope.subagentId,
+    providerEventType: envelope.source.rawEventType,
+    providerEventId: envelope.source.rawEventId,
+    ...extra,
+  }
+}
+
+function getEnvelopeMessageKey(envelope: TranscriptEnvelope, role: TranscriptMessageRole): string {
+  return [
+    role,
+    envelope.source.provider,
+    envelope.itemId ?? '',
+    envelope.turnId ?? '',
+    envelope.parentId ?? '',
+    envelope.subagentId ?? '',
+  ].join(':')
+}
+
+function hasDurableEnvelopeMessageIdentity(envelope: TranscriptEnvelope): boolean {
+  return Boolean(envelope.itemId || envelope.turnId || envelope.parentId || envelope.subagentId)
+}
+
+function getEnvelopeSubagentParentId(
+  state: MutableStreamProcessorState,
+  envelope: TranscriptEnvelope,
+): string | undefined {
+  if (!envelope.subagentId) {
+    return undefined
+  }
+  return state.activeEnvelopeSubagents[envelope.subagentId]
+}
+
+function appendMessageWithOptionalParent(
+  context: StreamEventProcessorContext,
+  message: MsgItem,
+  parentMessageId?: string,
+) {
+  context.setMessages((prev) => {
+    return appendMessageWithOptionalParentToList(
+      prev,
+      message,
+      parentMessageId,
+      context.capMessages ?? capMessages,
+    )
+  })
+}
+
+function appendMessageWithOptionalParentToList(
+  prev: MsgItem[],
+  message: MsgItem,
+  parentMessageId: string | undefined,
+  limitMessages: (msgs: MsgItem[]) => MsgItem[],
+): MsgItem[] {
+  if (!parentMessageId) {
+    return limitMessages([...prev, message])
+  }
+
+  const index = prev.findIndex((candidate) => candidate.id === parentMessageId)
+  if (index === -1) {
+    return limitMessages([...prev, message])
+  }
+
+  const updated = [...prev]
+  const parent = updated[index]
+  updated[index] = {
+    ...parent,
+    children: [...(parent.children ?? []), message],
+  }
+  return limitMessages(updated)
+}
+
+function updateMessageOrChild(
+  prev: MsgItem[],
+  targetId: string,
+  updater: (message: MsgItem) => MsgItem,
+): MsgItem[] {
+  return prev.map((message) => {
+    if (message.id === targetId) {
+      return updater(message)
+    }
+    if (!message.children?.length) {
+      return message
+    }
+    let changed = false
+    const children = message.children.map((child) => {
+      if (child.id !== targetId) {
+        return child
+      }
+      changed = true
+      return updater(child)
+    })
+    return changed ? { ...message, children } : message
+  })
+}
+
+function removeMessageOrChild(prev: MsgItem[], targetId: string): MsgItem[] {
+  const next = prev
+    .filter((message) => message.id !== targetId)
+    .map((message) => (
+      message.children?.length
+        ? { ...message, children: message.children.filter((child) => child.id !== targetId) }
+        : message
+    ))
+  return next
+}
+
+function findMessageId(
+  messages: MsgItem[],
+  predicate: (message: MsgItem) => boolean,
+): string | undefined {
+  for (const message of messages) {
+    if (predicate(message)) {
+      return message.id
+    }
+    for (const child of message.children ?? []) {
+      if (predicate(child)) {
+        return child.id
+      }
+    }
+  }
+  return undefined
+}
+
+function formatPlanText(plan: unknown): string {
+  if (typeof plan === 'string') {
+    return plan.trim()
+  }
+  if (Array.isArray(plan)) {
+    return plan.map((entry) => stringifyUnknown(entry)).filter(Boolean).join('\n')
+  }
+  return stringifyUnknown(plan)
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null
+}
+
+function readTrimmedString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined
+}
+
+function readImageMediaType(
+  record: Record<string, unknown>,
+  source: Record<string, unknown> | null,
+): string | undefined {
+  const mediaType = (
+    readTrimmedString(source?.media_type)
+    ?? readTrimmedString(source?.mediaType)
+    ?? readTrimmedString(source?.mime_type)
+    ?? readTrimmedString(source?.mimeType)
+    ?? readTrimmedString(record.mediaType)
+    ?? readTrimmedString(record.media_type)
+    ?? readTrimmedString(record.mimeType)
+    ?? readTrimmedString(record.mime_type)
+  )?.toLowerCase()
+  return mediaType
+}
+
+function normalizeImageRecord(
+  record: Record<string, unknown>,
+  allowInferredImage: boolean,
+): MessageImageAttachment | null {
+  const blockType = readTrimmedString(record.type)?.toLowerCase()
+  const isExplicitImageType =
+    blockType === 'image'
+    || blockType === 'image_url'
+    || blockType === 'input_image'
+    || blockType === 'output_image'
+  const source = asRecord(record.source)
+  const imageUrl = asRecord(record.image_url) ?? asRecord(record.imageUrl)
+  const mediaType = readImageMediaType(record, source)
+  const data = readTrimmedString(source?.data) ?? readTrimmedString(record.data)
+  const alt = readTrimmedString(record.alt) ?? readTrimmedString(source?.alt)
+
+  if (mediaType && data && ALLOWED_MESSAGE_IMAGE_TYPES.has(mediaType)) {
+    return {
+      mediaType,
+      data,
+      ...(alt ? { alt } : {}),
+    }
+  }
+
+  const url =
+    readTrimmedString(imageUrl?.url)
+    ?? readTrimmedString(record.image_url)
+    ?? readTrimmedString(record.imageUrl)
+    ?? readTrimmedString(source?.url)
+    ?? readTrimmedString(source?.path)
+    ?? readTrimmedString(record.url)
+    ?? readTrimmedString(record.path)
+    ?? readTrimmedString(record.uri)
+  if (!url) {
+    return null
+  }
+
+  if (!isExplicitImageType && !allowInferredImage && !mediaType?.startsWith('image/')) {
+    return null
+  }
+
+  return {
+    url,
+    ...(mediaType ? { mediaType } : {}),
+    ...(alt ? { alt } : {}),
+  }
+}
+
+function normalizeImageBlock(block: unknown): MessageImageAttachment | null {
+  const record = asRecord(block)
+  if (!record || readTrimmedString(record.type)?.toLowerCase() !== 'image') {
+    return null
+  }
+  return normalizeImageRecord(record, true)
+}
+
+function looksLikeImageReference(value: string): boolean {
+  return (
+    /^https?:\/\//iu.test(value)
+    || value.startsWith('data:')
+    || value.startsWith('/api/workspace/raw?')
+    || value.startsWith('file://')
+    || value.startsWith('/')
+    || value.startsWith('~/')
+    || value.startsWith('./')
+    || value.startsWith('../')
+    || /^[A-Za-z]:[\\/]/u.test(value)
+  )
+}
+
+function imageSignature(image: MessageImageAttachment): string {
+  return [
+    image.mediaType ?? '',
+    image.data ?? '',
+    image.url ?? '',
+    image.alt ?? '',
+  ].join('\u0000')
+}
+
+function pushUniqueImage(
+  images: MessageImageAttachment[],
+  image: MessageImageAttachment,
+) {
+  const signature = imageSignature(image)
+  if (images.some((candidate) => imageSignature(candidate) === signature)) {
+    return
+  }
+  images.push(image)
+}
+
+function collectImageAttachments(
+  value: unknown,
+  images: MessageImageAttachment[],
+  depth = 0,
+  allowInferredImage = false,
+) {
+  if (depth > IMAGE_PAYLOAD_MAX_DEPTH || value === undefined || value === null) {
+    return
+  }
+
+  if (typeof value === 'string') {
+    const trimmed = value.trim()
+    if (!trimmed) {
+      return
+    }
+    if (allowInferredImage && looksLikeImageReference(trimmed)) {
+      pushUniqueImage(images, { url: trimmed })
+      return
+    }
+    if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+      try {
+        collectImageAttachments(JSON.parse(trimmed), images, depth + 1, allowInferredImage)
+      } catch {
+        // Tool output often contains non-JSON text; leave it as text-only output.
+      }
+    }
+    return
+  }
+
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      collectImageAttachments(entry, images, depth + 1, allowInferredImage)
+    }
+    return
+  }
+
+  const record = asRecord(value)
+  if (!record) {
+    return
+  }
+
+  const directImage = normalizeImageRecord(record, allowInferredImage)
+  if (directImage) {
+    pushUniqueImage(images, directImage)
+  }
+
+  for (const [key, child] of Object.entries(record)) {
+    if (!IMAGE_PAYLOAD_COLLECTION_KEYS.has(key)) {
+      continue
+    }
+    collectImageAttachments(
+      child,
+      images,
+      depth + 1,
+      allowInferredImage || IMAGE_PAYLOAD_HINT_KEYS.has(key),
+    )
+  }
+}
+
+function extractImageAttachments(value: unknown): MessageImageAttachment[] {
+  const images: MessageImageAttachment[] = []
+  collectImageAttachments(value, images)
+  return images
+}
+
+function readPlanningAction(value: unknown): 'enter' | 'proposed' | 'decision' | undefined {
+  return value === 'enter' || value === 'proposed' || value === 'decision'
+    ? value
+    : undefined
+}
+
+function readPlanningEventFromV2Plan(plan: unknown): Extract<StreamEvent, { type: 'planning' }> | null {
+  const record = asRecord(plan)
+  const action = readPlanningAction(record?.action)
+  if (!record || !action) {
+    return null
+  }
+  const planText = typeof record.plan === 'string' ? record.plan : undefined
+  const message = typeof record.message === 'string' ? record.message : undefined
+  const approved = typeof record.approved === 'boolean' || record.approved === null
+    ? record.approved
+    : undefined
+  return {
+    type: 'planning',
+    action,
+    ...(planText !== undefined ? { plan: planText } : {}),
+    ...(approved !== undefined ? { approved } : {}),
+    ...(message !== undefined ? { message } : {}),
+  }
+}
+
+function readTranscriptTextDelta(payload: unknown): string | undefined {
+  const record = asRecord(payload)
+  if (!record) {
+    return undefined
+  }
+  for (const key of ['text', 'delta', 'textDelta', 'outputTextDelta']) {
+    const value = record[key]
+    if (typeof value === 'string' && value.length > 0) {
+      return value
+    }
+  }
+  const delta = asRecord(record.delta)
+  const deltaText = delta?.text
+  return typeof deltaText === 'string' && deltaText.length > 0 ? deltaText : undefined
+}
+
+function promoteLegacyCodexRawDelta(envelope: TranscriptEnvelope): TranscriptEnvelope | null {
+  if (
+    envelope.ev.type !== 'provider.raw'
+    || envelope.source.provider !== 'codex'
+    || envelope.ev.method !== 'item/agentMessage/delta'
+  ) {
+    return null
+  }
+  const text = readTranscriptTextDelta(envelope.ev.payload)
+  return text
+    ? {
+        ...envelope,
+        ev: { type: 'message.delta', text, channel: 'final' },
+      }
+    : null
+}
+
+function appendProviderActivity(
+  context: StreamEventProcessorContext,
+  envelope: TranscriptEnvelope,
+  text: string,
+  payload: unknown,
+) {
+  appendMessageWithOptionalParent(context, {
+    id: context.nextId(),
+    kind: 'provider',
+    text,
+    transcript: buildTranscriptMeta(envelope, {
+      providerPayload: payload,
+      providerEventType: envelope.source.rawEventType ?? envelope.ev.type,
+    }),
+  }, getEnvelopeSubagentParentId(context.state, envelope))
+}
+
+function appendAgentMessage(
+  context: StreamEventProcessorContext,
+  text: string,
+  images?: MessageImageAttachment[],
+  parentMessageId?: string,
+  transcript?: MsgItem['transcript'],
+) {
+  const normalizedImages = images?.filter(Boolean)
+  if (!text.trim() && (!normalizedImages || normalizedImages.length === 0)) {
+    return
+  }
+  appendMessageWithOptionalParent(context, {
+    id: context.nextId(),
+    kind: 'agent',
+    text,
+    ...(normalizedImages && normalizedImages.length > 0 ? { images: normalizedImages } : {}),
+    ...(transcript ? { transcript } : {}),
+  }, parentMessageId)
+}
+
+function appendAgentImagesFromPayload(
+  context: StreamEventProcessorContext,
+  envelope: TranscriptEnvelope,
+  payload: unknown,
+  parentMessageId?: string,
+) {
+  const images = extractImageAttachments(payload)
+  if (images.length === 0) {
+    return
+  }
+  appendAgentMessage(
+    context,
+    '',
+    images,
+    parentMessageId,
+    buildTranscriptMeta(envelope, {
+      providerPayload: payload,
+      providerEventType: envelope.source.rawEventType ?? envelope.ev.type,
+    }),
+  )
+}
+
+function normalizeToolStatus(status: string | undefined): 'running' | 'success' | 'error' {
+  const normalized = status?.trim().toLowerCase()
+  if (!normalized) {
+    return 'running'
+  }
+  if (['ok', 'completed', 'complete', 'success', 'succeeded'].includes(normalized)) {
+    return 'success'
+  }
+  if (['error', 'failed', 'failure', 'cancelled', 'canceled', 'rejected'].includes(normalized)) {
+    return 'error'
+  }
+  return 'running'
+}
+
+function processTranscriptEnvelope(
+  context: StreamEventProcessorContext,
+  envelope: TranscriptEnvelope,
+  isReplay: boolean,
+) {
+  const promotedEnvelope = promoteLegacyCodexRawDelta(envelope)
+  if (promotedEnvelope) {
+    processTranscriptEnvelope(context, promotedEnvelope, isReplay)
+    return
+  }
+
+  const parentMessageId = getEnvelopeSubagentParentId(context.state, envelope)
+  const ev = envelope.ev
+
+  switch (ev.type) {
+    case 'turn.start':
+      context.setMessages((prev) =>
+        prev.map((message) =>
+          message.kind === 'tool' && message.toolStatus === 'running'
+            ? { ...message, toolStatus: 'success' }
+            : message,
+        ),
+      )
+      clearActiveAgentMessageIds(context.state)
+      context.state.activeEnvelopeMessages = {}
+      if (!isReplay) {
+        context.setIsStreaming(false)
+      }
+      return
+
+    case 'turn.end': {
+      const resultStatus = normalizeToolStatus(ev.status)
+      const isSubagentResult = Boolean(envelope.subagentId)
+      context.setMessages((prev) =>
+        (context.capMessages ?? capMessages)([
+          ...prev.map((message) =>
+            message.kind === 'tool' && message.toolStatus === 'running'
+              ? { ...message, toolStatus: resultStatus }
+              : message,
+          ),
+          ...(isSubagentResult
+            ? []
+            : [{
+                id: context.nextId(),
+                kind: 'system' as const,
+                text: 'Awaiting input',
+                transcript: buildTranscriptMeta(envelope),
+              }]),
+        ]),
+      )
+      clearActiveAgentMessageIds(context.state)
+      context.setIsStreaming(false)
+      context.onWorkspaceMutation?.()
+      return
+    }
+
+    case 'message.start': {
+      const key = getEnvelopeMessageKey(envelope, ev.role)
+      const existing = context.state.activeEnvelopeMessages[key]
+      if (existing) {
+        if (ev.role === 'assistant' && !isReplay && !existing.ended) {
+          context.setIsStreaming(true)
+        }
+        return
+      }
+      const kind = ev.role === 'assistant'
+        ? 'agent'
+        : (ev.role === 'user' ? 'user' : 'system')
+      const id = context.nextId()
+      context.state.activeEnvelopeMessages[key] = { msgId: id, role: ev.role, ended: false }
+      appendMessageWithOptionalParent(context, {
+        id,
+        kind,
+        text: '',
+        timestamp: envelope.time,
+        transcript: buildTranscriptMeta(envelope),
+      }, parentMessageId)
+      if (ev.role === 'assistant' && !isReplay) {
+        context.setIsStreaming(true)
+      }
+      return
+    }
+
+    case 'message.delta': {
+      const role: TranscriptMessageRole = ev.channel === 'system'
+        ? 'system'
+        : (context.state.activeEnvelopeMessages[getEnvelopeMessageKey(envelope, 'assistant')]?.role
+          ?? context.state.activeEnvelopeMessages[getEnvelopeMessageKey(envelope, 'user')]?.role
+          ?? 'assistant')
+      const key = getEnvelopeMessageKey(envelope, role)
+      const existing = context.state.activeEnvelopeMessages[key]
+      const kind = role === 'assistant'
+        ? 'agent'
+        : (role === 'user' ? 'user' : 'system')
+      const targetId = existing?.msgId ?? context.nextId()
+      if (!existing) {
+        context.state.activeEnvelopeMessages[key] = { msgId: targetId, role, ended: false }
+      }
+      context.setMessages((prev) => {
+        const existingMessageId = findMessageId(prev, (message) => message.id === targetId)
+        const base = existingMessageId
+          ? prev
+          : appendMessageWithOptionalParentToList(prev, {
+              id: targetId,
+              kind,
+              text: '',
+              timestamp: envelope.time,
+              transcript: buildTranscriptMeta(envelope),
+            }, parentMessageId, (items) => items)
+        return (context.capMessages ?? capMessages)(updateMessageOrChild(base, targetId, (message) => ({
+          ...message,
+          text: message.text + ev.text,
+        })))
+      })
+      if (!isReplay && role === 'assistant' && !existing?.ended) {
+        context.setIsStreaming(true)
+      }
+      return
+    }
+
+    case 'message.image': {
+      const image = normalizeImageBlock(ev.image)
+      if (!image) {
+        return
+      }
+      const role = ev.role ?? 'assistant'
+      const key = getEnvelopeMessageKey(envelope, role)
+      const existing = context.state.activeEnvelopeMessages[key]
+      const kind = role === 'assistant'
+        ? 'agent'
+        : (role === 'user' ? 'user' : 'system')
+      const targetId = existing?.msgId ?? context.nextId()
+      if (!existing) {
+        context.state.activeEnvelopeMessages[key] = { msgId: targetId, role, ended: false }
+      }
+      context.setMessages((prev) => {
+        const existingMessageId = findMessageId(prev, (message) => message.id === targetId)
+        const base = existingMessageId
+          ? prev
+          : appendMessageWithOptionalParentToList(prev, {
+              id: targetId,
+              kind,
+              text: '',
+              timestamp: envelope.time,
+              transcript: buildTranscriptMeta(envelope),
+            }, parentMessageId, (items) => items)
+        return (context.capMessages ?? capMessages)(updateMessageOrChild(base, targetId, (message) => ({
+          ...message,
+          images: [...(message.images ?? []), image],
+        })))
+      })
+      if (!isReplay && role === 'assistant' && !existing?.ended) {
+        context.setIsStreaming(true)
+      }
+      return
+    }
+
+    case 'message.end': {
+      for (const role of ['assistant', 'user', 'system'] as const) {
+        const key = getEnvelopeMessageKey(envelope, role)
+        const active = context.state.activeEnvelopeMessages[key]
+        if (!active) {
+          continue
+        }
+        context.setMessages((prev) => {
+          const messageId = active.msgId
+          const targetId = findMessageId(prev, (message) => message.id === messageId)
+          if (!targetId) {
+            return prev
+          }
+          const emptyMessageId = findMessageId(prev, (message) =>
+            message.id === messageId
+            && !message.text.trim()
+            && (!message.images || message.images.length === 0),
+          )
+          return emptyMessageId ? removeMessageOrChild(prev, emptyMessageId) : prev
+        })
+        if (hasDurableEnvelopeMessageIdentity(envelope)) {
+          context.state.activeEnvelopeMessages[key] = { ...active, ended: true }
+        } else {
+          delete context.state.activeEnvelopeMessages[key]
+        }
+      }
+      context.setIsStreaming(false)
+      return
+    }
+
+    case 'thinking.delta': {
+      const key = `thinking:${envelope.itemId ?? envelope.turnId ?? envelope.id}:${envelope.subagentId ?? ''}`
+      const existing = context.state.activeEnvelopeMessages[key]
+      const targetId = existing?.msgId ?? context.nextId()
+      if (!existing) {
+        context.state.activeEnvelopeMessages[key] = { msgId: targetId, role: 'assistant' }
+        appendMessageWithOptionalParent(context, {
+          id: targetId,
+          kind: 'thinking',
+          text: '',
+          timestamp: envelope.time,
+          transcript: buildTranscriptMeta(envelope),
+        }, parentMessageId)
+      }
+      context.setMessages((prev) => updateMessageOrChild(prev, targetId, (message) => ({
+        ...message,
+        text: message.text + ev.text,
+      })))
+      if (!isReplay) {
+        context.setIsStreaming(true)
+      }
+      return
+    }
+
+    case 'tool.start': {
+      const { toolInput, toolFile, oldString, newString } = extractToolDetails(
+        ev.name,
+        ev.input,
+      )
+      const questions = (ev.input as { questions?: AskQuestion[] } | undefined)?.questions
+      const id = context.nextId()
+      const transcript = buildTranscriptMeta(envelope)
+      if (ev.name === 'AskUserQuestion') {
+        appendMessageWithOptionalParent(context, {
+          id,
+          kind: 'ask',
+          text: '',
+          toolId: ev.toolCallId,
+          toolName: ev.name,
+          askQuestions: questions ?? [],
+          askAnswered: false,
+          transcript,
+        }, parentMessageId)
+        return
+      }
+
+      appendMessageWithOptionalParent(context, {
+        id,
+        kind: 'tool',
+        text: '',
+        toolId: ev.toolCallId,
+        toolName: ev.name,
+        toolStatus: 'running',
+        toolInput,
+        toolFile,
+        oldString,
+        newString,
+        subagentDescription: ev.name === 'Agent'
+          ? extractSubagentDescription(ev.input) ?? ev.title ?? SUBAGENT_WORKING_LABEL
+          : undefined,
+        transcript,
+      }, parentMessageId)
+
+      if (ev.name === 'Agent') {
+        pushActiveAgentMessageId(context.state, id)
+      }
+      const toolSubagentId = envelope.subagentId ?? (ev.name === 'Agent' ? ev.toolCallId : undefined)
+      if (
+        toolSubagentId
+        && (ev.name === 'Agent' || !context.state.activeEnvelopeSubagents[toolSubagentId])
+      ) {
+        context.state.activeEnvelopeSubagents[toolSubagentId] = id
+      }
+      return
+    }
+
+    case 'tool.delta': {
+      context.setMessages((prev) => {
+        const toolMessageId = findMessageId(prev, (message) =>
+          message.kind === 'tool' && message.toolId === ev.toolCallId,
+        )
+        if (!toolMessageId) {
+          return prev
+        }
+        return updateMessageOrChild(prev, toolMessageId, (message) => ({
+          ...message,
+          toolStatus: normalizeToolStatus(ev.status),
+          toolOutput: `${message.toolOutput ?? ''}${ev.output ?? ''}`,
+          transcript: buildTranscriptMeta(envelope, { providerPayload: ev.data }),
+        }))
+      })
+      if (ev.data !== undefined) {
+        appendAgentImagesFromPayload(context, envelope, ev.data, parentMessageId)
+      }
+      return
+    }
+
+    case 'tool.end': {
+      const status = normalizeToolStatus(ev.status)
+      const output = stringifyUnknown(ev.result ?? ev.error)
+      let shouldTriggerWorkspaceRefresh = false
+      let completedMessageId: string | undefined
+      context.setMessages((prev) => {
+        const toolMessageId = findMessageId(prev, (message) =>
+          (message.kind === 'tool' || message.kind === 'ask') && message.toolId === ev.toolCallId,
+        )
+        if (!toolMessageId) {
+          return prev
+        }
+        completedMessageId = toolMessageId
+        return updateMessageOrChild(prev, toolMessageId, (message) => {
+          if (message.kind === 'ask') {
+            return {
+              ...message,
+              askAnswered: true,
+              askSubmitting: false,
+              transcript: buildTranscriptMeta(envelope, { providerPayload: ev.result }),
+            }
+          }
+          if (FILE_MUTATING_TOOLS.has(message.toolName ?? '')) {
+            shouldTriggerWorkspaceRefresh = true
+          }
+          if (message.toolName === 'Agent') {
+            removeActiveAgentMessageId(context.state, message.id)
+          }
+          return {
+            ...message,
+            toolStatus: status,
+            ...(output ? { toolOutput: output } : {}),
+            transcript: buildTranscriptMeta(envelope, {
+              providerPayload: ev.result ?? ev.error,
+            }),
+          }
+        })
+      })
+      const subagentIdToClear = envelope.subagentId
+        ?? (context.state.activeEnvelopeSubagents[ev.toolCallId] ? ev.toolCallId : undefined)
+      if (
+        subagentIdToClear
+        && completedMessageId
+        && context.state.activeEnvelopeSubagents[subagentIdToClear] === completedMessageId
+      ) {
+        delete context.state.activeEnvelopeSubagents[subagentIdToClear]
+      }
+      appendAgentImagesFromPayload(context, envelope, ev.result ?? ev.error, parentMessageId)
+      if (shouldTriggerWorkspaceRefresh) {
+        context.onWorkspaceMutation?.()
+      }
+      return
+    }
+
+    case 'subagent.start': {
+      const id = context.nextId()
+      appendMessageWithOptionalParent(context, {
+        id,
+        kind: 'tool',
+        text: '',
+        toolId: envelope.subagentId ?? envelope.itemId ?? envelope.id,
+        toolName: 'Agent',
+        toolStatus: 'running',
+        subagentDescription: ev.title ?? ev.name ?? SUBAGENT_WORKING_LABEL,
+        transcript: buildTranscriptMeta(envelope),
+      }, parentMessageId)
+      pushActiveAgentMessageId(context.state, id)
+      if (envelope.subagentId) {
+        context.state.activeEnvelopeSubagents[envelope.subagentId] = id
+      }
+      return
+    }
+
+    case 'subagent.end': {
+      const targetSubagentId = envelope.subagentId
+      if (!targetSubagentId) {
+        return
+      }
+      context.setMessages((prev) => {
+        const toolMessageId = context.state.activeEnvelopeSubagents[targetSubagentId]
+          ?? findMessageId(prev, (message) => message.kind === 'tool' && message.transcript?.subagentId === targetSubagentId)
+        if (!toolMessageId) {
+          return prev
+        }
+        return updateMessageOrChild(prev, toolMessageId, (message) => ({
+          ...message,
+          toolStatus: normalizeToolStatus(ev.status),
+          transcript: buildTranscriptMeta(envelope),
+        }))
+      })
+      delete context.state.activeEnvelopeSubagents[targetSubagentId]
+      return
+    }
+
+    case 'approval.request': {
+      const questions = Array.isArray(ev.questions) ? ev.questions as AskQuestion[] : []
+      const request = typeof ev.request === 'object' && ev.request !== null
+        ? ev.request as Record<string, unknown>
+        : {}
+      if (ev.interactionKind === 'plan_approval' || request.interactionKind === 'plan_approval') {
+        appendMessageWithOptionalParent(context, {
+          id: context.nextId(),
+          kind: 'ask',
+          text: '',
+          toolId: ev.toolCallId,
+          toolName: typeof request.toolName === 'string' ? request.toolName : 'PlanApproval',
+          askInteractionKind: 'plan_approval',
+          askAnswered: false,
+          planApprovalPlan: ev.prompt ?? '',
+          planApprovalApproveLabel: typeof request.approveLabel === 'string' ? request.approveLabel : undefined,
+          planApprovalRejectLabel: typeof request.rejectLabel === 'string' ? request.rejectLabel : undefined,
+          planApprovalCustomResponseLabel: typeof request.customResponseLabel === 'string'
+            ? request.customResponseLabel
+            : undefined,
+          transcript: buildTranscriptMeta(envelope, { providerPayload: ev.request }),
+        }, parentMessageId)
+        return
+      }
+      appendMessageWithOptionalParent(context, {
+        id: context.nextId(),
+        kind: questions.length > 0 ? 'ask' : 'provider',
+        text: questions.length > 0 ? '' : (ev.prompt ?? 'Approval requested'),
+        ...(questions.length > 0
+          ? {
+              toolId: ev.toolCallId,
+              toolName: 'ApprovalRequest',
+              askQuestions: questions,
+              askAnswered: false,
+            }
+          : {}),
+        transcript: buildTranscriptMeta(envelope, { providerPayload: ev.request }),
+      }, parentMessageId)
+      return
+    }
+
+    case 'approval.resolved': {
+      if (!ev.toolCallId) {
+        appendProviderActivity(
+          context,
+          envelope,
+          ev.approved === false ? 'Approval rejected' : 'Approval resolved',
+          ev.result,
+        )
+        return
+      }
+      context.setMessages((prev) => {
+        const targetId = findMessageId(prev, (message) =>
+          message.kind === 'ask' && message.toolId === ev.toolCallId,
+        )
+        if (!targetId) {
+          return prev
+        }
+        return updateMessageOrChild(prev, targetId, (message) => ({
+          ...message,
+          askAnswered: true,
+          askSubmitting: false,
+          transcript: buildTranscriptMeta(envelope, { providerPayload: ev.result }),
+        }))
+      })
+      return
+    }
+
+    case 'plan.update': {
+      const planningEvent = readPlanningEventFromV2Plan(ev.plan)
+      if (planningEvent) {
+        context.setMessages((prev) =>
+          (context.capMessages ?? capMessages)([
+            ...prev,
+            {
+              ...toPlanningMessage(context.nextId(), planningEvent),
+              transcript: buildTranscriptMeta(envelope, { providerPayload: ev.plan }),
+            },
+          ]),
+        )
+        return
+      }
+      const planText = formatPlanText(ev.plan)
+      if (!planText) {
+        return
+      }
+      context.setMessages((prev) =>
+        (context.capMessages ?? capMessages)([
+          ...prev,
+          {
+            ...toPlanningMessage(context.nextId(), {
+              type: 'planning',
+              action: 'proposed',
+              plan: planText,
+            }),
+            transcript: buildTranscriptMeta(envelope, { providerPayload: ev.plan }),
+          },
+        ]),
+      )
+      return
+    }
+
+    case 'file.change': {
+      appendMessageWithOptionalParent(context, {
+        id: context.nextId(),
+        kind: 'tool',
+        text: '',
+        toolId: envelope.itemId ?? envelope.id,
+        toolName: 'Edit',
+        toolStatus: 'success',
+        toolFile: ev.path,
+        toolOutput: stringifyUnknown(ev.data),
+        transcript: buildTranscriptMeta(envelope, { providerPayload: ev.data }),
+      }, parentMessageId)
+      context.onWorkspaceMutation?.()
+      return
+    }
+
+    case 'provider.activity':
+      appendProviderActivity(
+        context,
+        envelope,
+        ev.title ?? ev.detail ?? `${envelope.source.provider} activity`,
+        ev.data,
+      )
+      appendAgentImagesFromPayload(context, envelope, ev.data, parentMessageId)
+      return
+
+    case 'provider.raw':
+      appendProviderActivity(
+        context,
+        envelope,
+        ev.method
+          ? `${envelope.source.provider} raw: ${ev.method}`
+          : `${envelope.source.provider} raw activity`,
+        ev.payload,
+      )
+      appendAgentImagesFromPayload(context, envelope, ev.payload, parentMessageId)
+      return
+  }
+}
+
 function sameImages(
   left: MsgItem['images'] | undefined,
   right: MsgItem['images'] | undefined,
@@ -99,8 +1122,33 @@ function sameImages(
   }
   return leftImages.every((image, index) => {
     const candidate = rightImages[index]
-    return image.mediaType === candidate?.mediaType && image.data === candidate?.data
+    return imageSignature(image) === (candidate ? imageSignature(candidate) : '')
   })
+}
+
+function isDuplicateUserBoundaryNoise(message: MsgItem): boolean {
+  return (
+    message.kind === 'provider'
+    || message.kind === 'system'
+    || (message.kind === 'agent' && !message.text.trim())
+  )
+}
+
+function hasPendingEquivalentUserMessage(
+  messages: MsgItem[],
+  text: string,
+  images?: MsgItem['images'],
+): boolean {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const candidate = messages[index]
+    if (candidate.kind === 'user') {
+      return candidate.text === text && sameImages(candidate.images, images)
+    }
+    if (!isDuplicateUserBoundaryNoise(candidate)) {
+      return false
+    }
+  }
+  return false
 }
 
 function appendUserMessageIfDistinct(
@@ -109,12 +1157,7 @@ function appendUserMessageIfDistinct(
   images?: MsgItem['images'],
 ) {
   context.setMessages((prev) => {
-    const lastMessage = prev[prev.length - 1]
-    if (
-      lastMessage?.kind === 'user'
-      && lastMessage.text === text
-      && sameImages(lastMessage.images, images)
-    ) {
+    if (hasPendingEquivalentUserMessage(prev, text, images)) {
       return prev
     }
     return (context.capMessages ?? capMessages)([
@@ -328,6 +1371,11 @@ export function processStreamEvent(
   event: StreamEvent,
   isReplay = false,
 ) {
+  if (isTranscriptEnvelope(event)) {
+    processTranscriptEnvelope(context, event, isReplay)
+    return
+  }
+
   if (event.type === 'agent') {
     const text =
       extractAgentMessageText(event.message)
@@ -361,20 +1409,23 @@ export function processStreamEvent(
         break
       }
 
+      let pendingAgentText = ''
+      let pendingAgentImages: MessageImageAttachment[] = []
+      const flushPendingAgentMessage = () => {
+        appendAgentMessage(context, pendingAgentText, pendingAgentImages)
+        pendingAgentText = ''
+        pendingAgentImages = []
+      }
+
       for (const block of blocks) {
         if (block.type === 'text') {
           const text = block.text ?? ''
           if (!text) {
             continue
           }
-          const id = context.nextId()
-          context.setMessages((prev) =>
-            (context.capMessages ?? capMessages)([
-              ...prev,
-              { id, kind: 'agent', text },
-            ]),
-          )
+          pendingAgentText += text
         } else if (block.type === 'thinking') {
+          flushPendingAgentMessage()
           const text =
             (typeof block.thinking === 'string' ? block.thinking : undefined)
             ?? (typeof block.text === 'string' ? block.text : '')
@@ -449,19 +1500,21 @@ export function processStreamEvent(
               { id, kind: 'thinking', text },
             ]),
           )
+        } else if (block.type === 'image') {
+          const image = normalizeImageBlock(block)
+          if (!image) {
+            continue
+          }
+          pendingAgentImages.push(image)
         } else if ((block as { type?: string }).type === 'agent_message') {
+          flushPendingAgentMessage()
           const text = extractAgentMessageText(block)
           if (!text) {
             continue
           }
-          const id = context.nextId()
-          context.setMessages((prev) =>
-            (context.capMessages ?? capMessages)([
-              ...prev,
-              { id, kind: 'agent', text },
-            ]),
-          )
+          appendAgentMessage(context, text)
         } else if (block.type === 'tool_use') {
+          flushPendingAgentMessage()
           if (typeof block.id === 'string' && isPlanningToolName(block.name)) {
             context.state.planningToolNames[block.id] = block.name
             appendPlanningToolUse(context, block.name, block.input)
@@ -534,6 +1587,7 @@ export function processStreamEvent(
           }
         }
       }
+      flushPendingAgentMessage()
       break
     }
 
@@ -588,6 +1642,9 @@ export function processStreamEvent(
       if (toolResults.length === 0) {
         break
       }
+      const toolResultImages = toolResults.flatMap((result) =>
+        extractImageAttachments(result.content ?? event.tool_use_result),
+      )
 
       let shouldTriggerWorkspaceRefresh = false
       context.setMessages((prev) => {
@@ -677,6 +1734,9 @@ export function processStreamEvent(
       if (shouldTriggerWorkspaceRefresh) {
         context.onWorkspaceMutation?.()
       }
+      if (toolResultImages.length > 0) {
+        appendAgentMessage(context, '', toolResultImages)
+      }
       break
     }
 
@@ -756,6 +1816,15 @@ export function processStreamEvent(
             pushActiveAgentMessageId(context.state, id)
           }
         }
+        if (!isReplay) {
+          context.setIsStreaming(true)
+        }
+      } else if (block.type === 'image') {
+        const image = normalizeImageBlock(block)
+        if (image) {
+          appendAgentMessage(context, '', [image])
+        }
+        context.state.currentBlock = null
         if (!isReplay) {
           context.setIsStreaming(true)
         }
@@ -892,6 +1961,7 @@ export function processStreamEvent(
         ),
       )
       clearActiveAgentMessageIds(context.state)
+      context.state.activeEnvelopeMessages = {}
       context.setIsStreaming(false)
       break
     }

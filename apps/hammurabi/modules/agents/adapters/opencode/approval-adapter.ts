@@ -19,6 +19,8 @@ export interface OpenCodeApprovalRawEvent {
   replyDeps: OpenCodeApprovalReplyDeps
 }
 
+const OPENCODE_UNKNOWN_MCP_TOOL_NAME = 'mcp__opencode__unknown_mcp'
+
 function readTrimmedString(value: unknown): string | undefined {
   if (typeof value !== 'string') {
     return undefined
@@ -38,6 +40,14 @@ function pickToolValue(rawEvent: OpenCodeApprovalRawEvent, key: string): unknown
   return rawEvent.toolCall[key] ?? rawEvent.toolSnapshot?.[key]
 }
 
+function normalizeMcpToken(value: string): string {
+  return value.trim().replace(/\s+/g, '_')
+}
+
+function buildMcpToolName(server: string, tool: string): string {
+  return `mcp__${normalizeMcpToken(server)}__${normalizeMcpToken(tool)}`
+}
+
 function readToolKind(rawEvent: OpenCodeApprovalRawEvent): string | undefined {
   return readTrimmedString(pickToolValue(rawEvent, 'kind'))
 }
@@ -49,6 +59,67 @@ function readToolTitle(rawEvent: OpenCodeApprovalRawEvent): string | undefined {
 function readToolLocations(rawEvent: OpenCodeApprovalRawEvent): unknown[] {
   const direct = pickToolValue(rawEvent, 'locations')
   return Array.isArray(direct) ? direct : []
+}
+
+function readToolInput(source: Record<string, unknown>): unknown {
+  return source.arguments ?? source.args ?? source.input ?? source.toolInput
+}
+
+function structuredMcpSources(rawEvent: OpenCodeApprovalRawEvent): Record<string, unknown>[] {
+  const directSources = [
+    rawEvent.toolCall,
+    rawEvent.toolSnapshot,
+    asRecord(rawEvent.params.toolCall),
+    asRecord(rawEvent.params.tool),
+    rawEvent.params,
+  ].filter((entry): entry is Record<string, unknown> => entry !== null && entry !== undefined)
+  const sources: Record<string, unknown>[] = []
+  for (const source of directSources) {
+    const meta = asRecord(source._meta)
+    const nestedToolParams = asRecord(meta?.tool_params) ?? asRecord(meta?.toolParams)
+    if (nestedToolParams) {
+      sources.push(nestedToolParams)
+    }
+    sources.push(source)
+  }
+  return sources
+}
+
+function readOpenCodeMcpIdentity(rawEvent: OpenCodeApprovalRawEvent): {
+  toolName: string
+  serverName: string
+  tool: string
+  toolInput?: unknown
+  incomplete: boolean
+} {
+  for (const source of structuredMcpSources(rawEvent)) {
+    const serverName = readTrimmedString(source.mcp_server_name) ??
+      readTrimmedString(source.mcpServerName) ??
+      readTrimmedString(source.serverName) ??
+      readTrimmedString(source.server)
+    const tool = readTrimmedString(source.toolName) ??
+      readTrimmedString(source.tool) ??
+      readTrimmedString(source.name)
+    if (!serverName || !tool) {
+      continue
+    }
+
+    const toolInput = readToolInput(source)
+    return {
+      toolName: buildMcpToolName(serverName, tool),
+      serverName,
+      tool,
+      ...(toolInput !== undefined ? { toolInput } : {}),
+      incomplete: false,
+    }
+  }
+
+  return {
+    toolName: OPENCODE_UNKNOWN_MCP_TOOL_NAME,
+    serverName: 'opencode',
+    tool: 'unknown_mcp',
+    incomplete: true,
+  }
 }
 
 function deriveOpenCodeToolName(rawEvent: OpenCodeApprovalRawEvent): string {
@@ -68,7 +139,7 @@ function deriveOpenCodeToolName(rawEvent: OpenCodeApprovalRawEvent): string {
     case 'read':
       return 'Read'
     case 'mcp':
-      return title ?? 'McpTool'
+      return readOpenCodeMcpIdentity(rawEvent).toolName
     default:
       return title ?? 'Tool'
   }
@@ -105,6 +176,10 @@ function deriveOpenCodeToolInput(rawEvent: OpenCodeApprovalRawEvent): unknown {
   }
 
   if (kind === 'mcp') {
+    const identity = readOpenCodeMcpIdentity(rawEvent)
+    if (identity.toolInput !== undefined) {
+      return identity.toolInput
+    }
     // OpenCode ACP permission requests currently expose kind/title/content/locations,
     // but not the structured MCP server + tool identifiers Hammurabi needs for
     // exact outbound classification. We route the request through the unified
@@ -112,6 +187,8 @@ function deriveOpenCodeToolInput(rawEvent: OpenCodeApprovalRawEvent): unknown {
     // upstream rather than adding a parallel interception layer.
     return {
       ...(title ? { title } : {}),
+      kind: 'mcp',
+      identityIncomplete: identity.incomplete,
       content,
       locations: readToolLocations(rawEvent),
     }
@@ -150,6 +227,9 @@ export const opencodeApprovalAdapter = registerApprovalAdapter<ProviderApprovalA
   source: 'opencode',
 
   toUnifiedRequest(rawEvent, session) {
+    const toolKind = readToolKind(rawEvent)
+    const title = readToolTitle(rawEvent)
+    const mcpIdentity = toolKind === 'mcp' ? readOpenCodeMcpIdentity(rawEvent) : null
     return {
       source: 'opencode',
       toolName: deriveOpenCodeToolName(rawEvent),
@@ -160,6 +240,17 @@ export const opencodeApprovalAdapter = registerApprovalAdapter<ProviderApprovalA
         requestId: rawEvent.requestId,
         method: rawEvent.method,
         toolCallId: readTrimmedString(rawEvent.toolCall.toolCallId),
+        provider: 'opencode',
+        ...(toolKind ? { toolKind } : {}),
+        ...(title ? { title } : {}),
+        ...(mcpIdentity
+          ? {
+              interaction: 'mcp_permission',
+              serverName: mcpIdentity.serverName,
+              tool: mcpIdentity.tool,
+              identityIncomplete: mcpIdentity.incomplete,
+            }
+          : {}),
       },
     }
   },

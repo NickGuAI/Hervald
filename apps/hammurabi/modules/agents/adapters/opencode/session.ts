@@ -1,5 +1,7 @@
 import {
   createOpenCodeTurnState,
+  mapOpenCodePromptResponseToTranscriptEnvelopes,
+  mapOpenCodeToTranscriptEnvelopes,
   normalizeOpenCodePromptResponse,
   normalizeOpenCodeSessionUpdate,
 } from '../../event-normalizers/opencode.js'
@@ -33,6 +35,7 @@ import {
   toExitBasedCompletedSession,
 } from '../../session/state.js'
 import { OpenCodeAcpRuntime } from '../../launchers/runtimes.js'
+import type { ProviderSpawnAuth } from '../../provider-auth.js'
 import type {
   AnySession,
   ClaudePermissionMode,
@@ -58,6 +61,7 @@ export interface OpenCodeSessionDeps {
     sessionName: string,
     machine?: MachineConfig,
     model?: string,
+    providerAuth?: ProviderSpawnAuth,
   ) => OpenCodeAcpRuntimeHandle
   schedulePersistedSessionsWrite(): void
   setCompletedSession(sessionName: string, session: CompletedSession): void
@@ -133,7 +137,10 @@ export async function startOpenCodeTurn(
       sessionId: resumeSessionId,
       prompt: [{ type: 'text', text: promptText }],
     })
-    const finalEvents = normalizeOpenCodePromptResponse(result, session.opencodeTurnState)
+    const finalEvents = mapOpenCodePromptResponseToTranscriptEnvelopes(
+      result,
+      session.opencodeTurnState ?? createOpenCodeTurnState(),
+    )
     for (const event of finalEvents) {
       deps.appendEvent(session, event)
       deps.broadcastEvent(session, event)
@@ -294,8 +301,9 @@ export async function createOpenCodeAcpSession(
   deps.clearExitedSession(sessionName)
 
   const runtimeFactory = deps.runtimeFactory
-    ?? ((name: string, machine?: MachineConfig, model?: string) => new OpenCodeAcpRuntime(name, machine, model))
-  const runtime = runtimeFactory(sessionName, options.machine, options.model)
+    ?? ((name: string, machine?: MachineConfig, model?: string, providerAuth?: ProviderSpawnAuth) =>
+      new OpenCodeAcpRuntime(name, machine, model, undefined, providerAuth))
+  const runtime = runtimeFactory(sessionName, options.machine, options.model, options.providerAuth)
   const initializedAt = new Date().toISOString()
   const sessionCwd = cwd || process.env.HOME || '/tmp'
 
@@ -380,6 +388,7 @@ export async function createOpenCodeAcpSession(
       sessionId: resumeSessionId,
       runtime,
     }),
+    providerAuthSnapshot: options.providerAuth?.snapshot,
     adapter: createOpenCodeSessionAdapter(deps),
     resumedFrom: options.resumedFrom,
     opencodePendingSystemPrompt: buildOpenCodeSystemPrompt(options.systemPrompt, options.maxTurns),
@@ -400,15 +409,14 @@ export async function createOpenCodeAcpSession(
           ? { ...update, requestId }
           : payload?.update
         trackOpenCodeToolCallSnapshot(session, asObject(updateForNormalization))
-        const normalized = normalizeOpenCodeSessionUpdate(
+        const normalized = mapOpenCodeToTranscriptEnvelopes(
           updateForNormalization,
           session.opencodeTurnState ?? createOpenCodeTurnState(),
         )
-        if (!normalized) {
+        if (normalized.length === 0) {
           return
         }
-        const events = Array.isArray(normalized) ? normalized : [normalized]
-        for (const event of events) {
+        for (const event of normalized) {
           deps.appendEvent(session, event)
           deps.broadcastEvent(session, event)
         }
@@ -425,7 +433,7 @@ export async function createOpenCodeAcpSession(
         if (!actionPolicyGate) {
           const unavailableEvent: StreamJsonEvent = {
             type: 'system',
-            text: 'Hammurabi approval gate is unavailable. OpenCode request denied.',
+            text: 'Hervald approval gate is unavailable. OpenCode request denied.',
           }
           deps.appendEvent(session, unavailableEvent)
           deps.broadcastEvent(session, unavailableEvent)

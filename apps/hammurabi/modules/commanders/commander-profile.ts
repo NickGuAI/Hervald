@@ -12,7 +12,15 @@ export const COMMANDER_PROFILE_FILE = 'profile.json'
 export const DEFAULT_COMMANDER_AVATAR_URL = '/assets/commanders/atlas-profile.jpg'
 export const GAIA_COMMANDER_AVATAR_URL = '/assets/commanders/gaia-profile.png'
 export const LEGACY_GAIA_COMMANDER_AVATAR_URL = '/assets/commanders/gaia-profile.svg'
+export const ASINA_COMMANDER_AVATAR_URL = '/assets/commanders/asina-profile.svg'
+export const ALFRED_COMMANDER_AVATAR_URL = '/assets/commanders/alfred-profile.svg'
+export const EINSTEIN_COMMANDER_AVATAR_URL = '/assets/commanders/einstein-profile.svg'
 const BUNDLED_COMMANDER_AVATAR_PATTERN = /^\/assets\/commanders\/[a-z0-9][a-z0-9._-]*\.(?:gif|jpe?g|png|svg|webp)$/iu
+const STOCK_COMMANDER_AVATAR_URL_BY_TEMPLATE_ID: Readonly<Record<string, string>> = {
+  'engineering-manager': ASINA_COMMANDER_AVATAR_URL,
+  'general-assistant': ALFRED_COMMANDER_AVATAR_URL,
+  'research-intelligence-analyst': EINSTEIN_COMMANDER_AVATAR_URL,
+}
 
 /** Optional UI metadata stored at `<commander>/.memory/profile.json` on disk. */
 export interface CommanderUiProfile {
@@ -64,6 +72,18 @@ function isBundledCommanderAvatarUrl(value: string): boolean {
 
 function normalizeBundledCommanderAvatarUrl(value: string): string {
   return value === LEGACY_GAIA_COMMANDER_AVATAR_URL ? GAIA_COMMANDER_AVATAR_URL : value
+}
+
+export function resolveDefaultCommanderAvatarUrl(options: {
+  host?: string | null
+  templateId?: string | null
+}): string {
+  if (options.host?.trim().toLowerCase() === 'gaia') {
+    return GAIA_COMMANDER_AVATAR_URL
+  }
+  const templateId = options.templateId?.trim().toLowerCase()
+  return (templateId && STOCK_COMMANDER_AVATAR_URL_BY_TEMPLATE_ID[templateId])
+    ?? DEFAULT_COMMANDER_AVATAR_URL
 }
 
 export function sanitizeUiProfile(raw: unknown): CommanderUiProfile | null {

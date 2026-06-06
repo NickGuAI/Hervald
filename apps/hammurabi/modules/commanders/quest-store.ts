@@ -7,7 +7,8 @@ import {
 import { resolveCommanderDataDir } from './paths.js'
 import type { AutomationQuestEventBus } from '../automations/quest-event-bus.js'
 
-export type CommanderQuestStatus = 'pending' | 'active' | 'done' | 'failed'
+export type CommanderQuestStatus = 'pending' | 'active' | 'blocked' | 'done' | 'failed'
+export type CommanderQuestBlockedReason = 'auth_required'
 export type CommanderQuestSource = 'manual' | 'github-issue' | 'idea' | 'voice-log'
 export type QuestArtifactType = 'github_issue' | 'github_pr' | 'url' | 'file'
 
@@ -31,6 +32,8 @@ export interface CommanderQuest {
   claimedByConversationId?: string
   createdAt: string
   completedAt?: string
+  blockedAt?: string
+  blockedReason?: CommanderQuestBlockedReason
   status: CommanderQuestStatus
   source: CommanderQuestSource
   instruction: string
@@ -60,6 +63,7 @@ export interface CreateCommanderQuestInput {
 export interface UpdateCommanderQuestInput {
   claimedByConversationId?: string | null
   status?: CommanderQuestStatus
+  blockedReason?: CommanderQuestBlockedReason | null
   source?: CommanderQuestSource
   instruction?: string
   githubIssueUrl?: string | null
@@ -93,7 +97,8 @@ export class QuestUpdateError extends Error {
   }
 }
 
-const QUEST_STATUSES = new Set<CommanderQuestStatus>(['pending', 'active', 'done', 'failed'])
+const QUEST_STATUSES = new Set<CommanderQuestStatus>(['pending', 'active', 'blocked', 'done', 'failed'])
+const QUEST_BLOCKED_REASONS = new Set<CommanderQuestBlockedReason>(['auth_required'])
 const QUEST_SOURCES = new Set<CommanderQuestSource>(['manual', 'github-issue', 'idea', 'voice-log'])
 const QUEST_ARTIFACT_TYPES = new Set<QuestArtifactType>(['github_issue', 'github_pr', 'url', 'file'])
 
@@ -111,6 +116,10 @@ function asTrimmedString(value: unknown): string | null {
 
 function isQuestStatus(value: unknown): value is CommanderQuestStatus {
   return typeof value === 'string' && QUEST_STATUSES.has(value as CommanderQuestStatus)
+}
+
+function isQuestBlockedReason(value: unknown): value is CommanderQuestBlockedReason {
+  return typeof value === 'string' && QUEST_BLOCKED_REASONS.has(value as CommanderQuestBlockedReason)
 }
 
 function isQuestSource(value: unknown): value is CommanderQuestSource {
@@ -193,6 +202,10 @@ function validateClaimStateForCreate(
   }
 }
 
+function appendQuestNote(current: string | undefined, note: string): string {
+  return current ? `${current}\n${note}` : note
+}
+
 interface QuestMigrationRecord {
   id: string
   commanderId: string
@@ -271,6 +284,8 @@ function parseQuest(
   const claimedByConversationId = asTrimmedString(raw.claimedByConversationId) ?? undefined
   const createdAt = asTrimmedString(raw.createdAt)
   const completedAt = asTrimmedString(raw.completedAt) ?? undefined
+  const blockedAt = asTrimmedString(raw.blockedAt) ?? undefined
+  const blockedReason = isQuestBlockedReason(raw.blockedReason) ? raw.blockedReason : undefined
   const instruction = asTrimmedString(raw.instruction)
   const { contract, aliasLiteral } = normalizeContract(raw.contract)
   const artifacts = normalizeQuestArtifacts(raw.artifacts) ?? []
@@ -300,6 +315,8 @@ function parseQuest(
     ...(claimedByConversationId ? { claimedByConversationId } : {}),
     createdAt,
     ...(completedAt ? { completedAt } : {}),
+    ...(blockedAt ? { blockedAt } : {}),
+    ...(blockedReason ? { blockedReason } : {}),
     status: raw.status,
     source: raw.source,
     instruction,
@@ -332,6 +349,8 @@ function cloneQuest(quest: CommanderQuest): CommanderQuest {
     ...quest,
     ...(quest.claimedByConversationId ? { claimedByConversationId: quest.claimedByConversationId } : {}),
     ...(quest.completedAt ? { completedAt: quest.completedAt } : {}),
+    ...(quest.blockedAt ? { blockedAt: quest.blockedAt } : {}),
+    ...(quest.blockedReason ? { blockedReason: quest.blockedReason } : {}),
     artifacts: (quest.artifacts ?? []).map((artifact) => ({ ...artifact })),
     contract: {
       ...quest.contract,
@@ -494,6 +513,7 @@ export class QuestStore {
       commanderId,
       ...(claimedByConversationId ? { claimedByConversationId } : {}),
       createdAt,
+      ...(input.status === 'blocked' ? { blockedAt: createdAt, blockedReason: 'auth_required' as const } : {}),
       status: input.status,
       source: input.source,
       instruction,
@@ -552,10 +572,27 @@ export class QuestStore {
           if (!nextQuest.completedAt) {
             nextQuest.completedAt = new Date().toISOString()
           }
+          delete nextQuest.blockedAt
+          delete nextQuest.blockedReason
+        } else if (update.status === 'blocked') {
+          delete nextQuest.completedAt
+          nextQuest.blockedAt = new Date().toISOString()
+          nextQuest.blockedReason = update.blockedReason ?? nextQuest.blockedReason ?? 'auth_required'
         } else {
           delete nextQuest.completedAt
+          delete nextQuest.blockedAt
+          delete nextQuest.blockedReason
         }
         delete nextQuest.claimedByConversationId
+      }
+      if (update.blockedReason !== undefined && update.status !== 'blocked') {
+        throw new QuestUpdateError('blockedReason is only valid when status is blocked')
+      }
+      if (update.blockedReason !== undefined && update.status === 'blocked') {
+        if (update.blockedReason === null || !isQuestBlockedReason(update.blockedReason)) {
+          throw new Error(`Invalid quest blocked reason: ${String(update.blockedReason)}`)
+        }
+        nextQuest.blockedReason = update.blockedReason
       }
       if (update.source !== undefined) {
         if (!isQuestSource(update.source)) {
@@ -651,12 +688,85 @@ export class QuestStore {
       const existingNote = asTrimmedString(current.note)
       const nextQuest: CommanderQuest = {
         ...current,
-        note: existingNote ? `${existingNote}\n${safeNote}` : safeNote,
+        note: appendQuestNote(existingNote ?? undefined, safeNote),
       }
 
       quests[index] = nextQuest
       await this.writeQuestsForCommander(safeCommanderId, quests)
       return cloneQuest(nextQuest)
+    })
+  }
+
+  async blockActiveForAuthRequired(commanderId: string, detail: string): Promise<CommanderQuest[]> {
+    const safeCommanderId = asTrimmedString(commanderId)
+    const safeDetail = asTrimmedString(detail) ?? 'Provider authentication is required'
+    if (!safeCommanderId) {
+      throw new Error('commanderId is required')
+    }
+
+    return this.withMutationLock(async () => {
+      const quests = await this.readQuestsForCommander(safeCommanderId)
+      const blockedAt = new Date().toISOString()
+      const blocked: CommanderQuest[] = []
+      const nextQuests = quests.map((quest) => {
+        if (quest.status !== 'active') {
+          return quest
+        }
+        const nextQuest: CommanderQuest = {
+          ...quest,
+          status: 'blocked',
+          blockedReason: 'auth_required',
+          blockedAt,
+          completedAt: undefined,
+          claimedByConversationId: undefined,
+          note: appendQuestNote(asTrimmedString(quest.note) ?? undefined, `AUTH_REQUIRED: ${safeDetail}`),
+        }
+        blocked.push(nextQuest)
+        return nextQuest
+      })
+
+      if (blocked.length > 0) {
+        await this.writeQuestsForCommander(safeCommanderId, nextQuests)
+      }
+      return blocked.map((quest) => cloneQuest(quest))
+    })
+  }
+
+  async unblockAuthRequired(commanderId: string, detail: string): Promise<CommanderQuest[]> {
+    const safeCommanderId = asTrimmedString(commanderId)
+    const safeDetail = asTrimmedString(detail) ?? 'Provider authentication is ready'
+    if (!safeCommanderId) {
+      throw new Error('commanderId is required')
+    }
+
+    return this.withMutationLock(async () => {
+      const quests = await this.readQuestsForCommander(safeCommanderId)
+      const unblockedAt = new Date().toISOString()
+      const unblocked: CommanderQuest[] = []
+      const nextQuests = quests.map((quest) => {
+        if (quest.status !== 'blocked' || quest.blockedReason !== 'auth_required') {
+          return quest
+        }
+        const nextQuest: CommanderQuest = {
+          ...quest,
+          status: 'pending',
+          blockedAt: undefined,
+          blockedReason: undefined,
+          completedAt: undefined,
+          claimedByConversationId: undefined,
+          note: appendQuestNote(
+            asTrimmedString(quest.note) ?? undefined,
+            `AUTH_READY: ${safeDetail} at ${unblockedAt}`,
+          ),
+        }
+        unblocked.push(nextQuest)
+        return nextQuest
+      })
+
+      if (unblocked.length > 0) {
+        await this.writeQuestsForCommander(safeCommanderId, nextQuests)
+      }
+      return unblocked.map((quest) => cloneQuest(quest))
     })
   }
 

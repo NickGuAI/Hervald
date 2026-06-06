@@ -8,6 +8,7 @@ import {
 } from '../session/input.js'
 import type { ProviderCreateOptions } from '../providers/provider-adapter.js'
 import { getProvider, parseProviderId } from '../providers/registry.js'
+import { ProviderAuthRequiredError } from '../provider-auth.js'
 import type {
   AgentType,
   AnySession,
@@ -217,6 +218,17 @@ export function registerWorkerDispatchRoutes(deps: WorkerDispatchRouteDeps): voi
         cwd: workerSession.cwd,
       })
     } catch (err) {
+      if (err instanceof ProviderAuthRequiredError) {
+        res.status(424).json({
+          code: 'AUTH_REQUIRED',
+          provider: err.provider,
+          scopeId: err.snapshot.scopeId,
+          host: err.snapshot.host,
+          reauthUrl: err.snapshot.reauthUrl,
+          error: err.message,
+        })
+        return
+      }
       const message = err instanceof Error ? err.message : 'Failed to dispatch worker'
       res.status(500).json({ error: message })
     }

@@ -97,6 +97,73 @@ describe('QuestStore', () => {
     expect(refreshed?.status).toBe('pending')
   })
 
+  it('blocks active quests with auth_required and clears the claim holder', async () => {
+    const active = await store.create({
+      commanderId: 'cmdr-auth',
+      claimedByConversationId: 'conversation-auth',
+      status: 'active',
+      source: 'manual',
+      instruction: 'Run worker with subscription auth',
+      note: 'Started worker',
+      contract: {
+        cwd: '/tmp/example-repo',
+        permissionMode: 'default',
+        agentType: 'codex',
+        skillsToUse: [],
+      },
+    })
+
+    const blocked = await store.blockActiveForAuthRequired('cmdr-auth', '401 unauthorized')
+
+    expect(blocked).toHaveLength(1)
+    expect(blocked[0]).toMatchObject({
+      id: active.id,
+      status: 'blocked',
+      blockedReason: 'auth_required',
+      note: 'Started worker\nAUTH_REQUIRED: 401 unauthorized',
+    })
+    expect(blocked[0]?.blockedAt).toBeTruthy()
+    expect(blocked[0]?.claimedByConversationId).toBeUndefined()
+
+    const listed = await store.list('cmdr-auth')
+    expect(listed[0]?.status).toBe('blocked')
+    expect(listed[0]?.blockedReason).toBe('auth_required')
+  })
+
+  it('unblocks auth_required quests after provider re-auth completes', async () => {
+    const active = await store.create({
+      commanderId: 'cmdr-auth-ready',
+      claimedByConversationId: 'conversation-auth-ready',
+      status: 'active',
+      source: 'manual',
+      instruction: 'Resume worker after re-auth',
+      note: 'Started worker',
+      contract: {
+        cwd: '/tmp/example-repo',
+        permissionMode: 'default',
+        agentType: 'claude',
+        skillsToUse: [],
+      },
+    })
+    await store.blockActiveForAuthRequired('cmdr-auth-ready', 'invalid_grant')
+
+    const unblocked = await store.unblockAuthRequired('cmdr-auth-ready', 'claude provider authentication is ready')
+
+    expect(unblocked).toHaveLength(1)
+    expect(unblocked[0]).toMatchObject({
+      id: active.id,
+      status: 'pending',
+      note: expect.stringContaining('AUTH_READY: claude provider authentication is ready at '),
+    })
+    expect(unblocked[0]?.blockedAt).toBeUndefined()
+    expect(unblocked[0]?.blockedReason).toBeUndefined()
+    expect(unblocked[0]?.claimedByConversationId).toBeUndefined()
+
+    const listed = await store.list('cmdr-auth-ready')
+    expect(listed[0]?.status).toBe('pending')
+    expect(listed[0]?.blockedReason).toBeUndefined()
+  })
+
   it('sets completedAt on completion and clears it when reopened', async () => {
     const created = await store.create({
       commanderId: 'cmdr-4',

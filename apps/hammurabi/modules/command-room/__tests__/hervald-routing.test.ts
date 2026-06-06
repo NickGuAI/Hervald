@@ -6,6 +6,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { ensureLocalStorage } from './ensureLocalStorage'
 
 const mocks = vi.hoisted(() => ({
   fetchJson: vi.fn(),
@@ -446,7 +447,7 @@ describe('Hervald command-room routing', () => {
       removeEventListener: vi.fn(),
       dispatchEvent: vi.fn(),
     }))
-    window.localStorage.clear()
+    ensureLocalStorage().clear()
     document.documentElement.className = 'hv-light'
 
     mocks.fetchJson.mockImplementation(async (path: string) => {
@@ -604,7 +605,7 @@ describe('Hervald command-room routing', () => {
     mountedRoots = []
     reactActEnvironment.IS_REACT_ACT_ENVIRONMENT = previousActEnvironment
     document.body.innerHTML = ''
-    window.localStorage.clear()
+    ensureLocalStorage().clear()
     document.documentElement.className = ''
   })
 

@@ -33,8 +33,14 @@ async function renderLanding(path: string) {
 }
 
 async function clickSignIn() {
-  const button = Array.from(document.body.querySelectorAll('button'))
-    .find((candidate) => candidate.textContent?.trim() === 'Sign in')
+  let button: HTMLButtonElement | null = null
+  await vi.waitFor(() => {
+    button = Array.from(container?.querySelectorAll('button') ?? [])
+      .find((candidate) => candidate.textContent?.trim() === 'Sign in') ?? null
+    if (!button) {
+      throw new Error('Missing sign in button')
+    }
+  })
   if (!button) {
     throw new Error('Missing sign in button')
   }
@@ -96,7 +102,7 @@ describe('LandingPage', () => {
     await clickSignIn()
 
     expect(mocks.loginWithRedirect).not.toHaveBeenCalled()
-    expect(document.body.textContent).toContain('Hammurabi is reconnecting')
+    expect(document.body.textContent).toContain('Hervald is reconnecting')
   })
 
   it('allows Auth0 sign-in when the health probe is unreachable', async () => {

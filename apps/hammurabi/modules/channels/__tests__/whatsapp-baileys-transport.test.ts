@@ -123,6 +123,40 @@ afterEach(async () => {
 })
 
 describe('BaileysWhatsAppTransport', () => {
+  it('does not pass Baileys deprecated terminal QR option', async () => {
+    const dataDir = await createTempDir()
+    const config = parseWhatsAppChannelConfig(
+      {
+        transport: 'baileys',
+        baileys: {
+          connectTimeoutMs: 1_000,
+          printQrInTerminal: true,
+        },
+      },
+      'pm-ai',
+      dataDir,
+    )
+    const transport = new BaileysWhatsAppTransport()
+
+    const sessionPromise = transport.beginPairing({
+      challengeId: 'challenge-qr-option',
+      accountId: 'pm-ai',
+      config,
+      handlers: {
+        onInbound: () => undefined,
+      },
+    })
+
+    await waitForCondition(() => baileysMock.sockets.length === 1)
+    const socketConfig = baileysMock.makeWASocket.mock.calls[0]?.[0] as Record<string, unknown>
+    expect(socketConfig).not.toHaveProperty('printQRInTerminal')
+
+    baileysMock.sockets[0]?.ev.emit('connection.update', { qr: 'qr-1' })
+    const session = await sessionPromise
+    expect(session.qrCode).toBe('qr-1')
+    await session.runtime.stop()
+  })
+
   it('closes the pairing socket when the QR challenge times out', async () => {
     const dataDir = await createTempDir()
     const config = parseWhatsAppChannelConfig(

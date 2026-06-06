@@ -16,6 +16,46 @@ export interface ParsedCodexProtocolPayload {
   result?: unknown
   error?: unknown
   threadId?: string
+  threadIds?: string[]
+}
+
+function readThreadIdCandidate(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim().length > 0
+    ? value.trim()
+    : undefined
+}
+
+function collectThreadIds(value: unknown, ids: Set<string>, depth = 0): void {
+  if (depth > 4 || !value || typeof value !== 'object') {
+    return
+  }
+
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      collectThreadIds(entry, ids, depth + 1)
+    }
+    return
+  }
+
+  const record = value as Record<string, unknown>
+  const directThreadId = readThreadIdCandidate(record.threadId)
+  if (directThreadId) {
+    ids.add(directThreadId)
+  }
+  const conversationId = readThreadIdCandidate(record.conversationId)
+  if (conversationId) {
+    ids.add(conversationId)
+  }
+
+  const threadObject = asObject(record.thread)
+  const nestedThreadId = readThreadIdCandidate(threadObject?.id)
+  if (nestedThreadId) {
+    ids.add(nestedThreadId)
+  }
+
+  for (const nested of Object.values(record)) {
+    collectThreadIds(nested, ids, depth + 1)
+  }
 }
 
 export function parseCodexProtocolPayload(payloadText: string): ParsedCodexProtocolPayload {
@@ -30,9 +70,10 @@ export function parseCodexProtocolPayload(payloadText: string): ParsedCodexProto
   }
 
   const params = asObject(payload.params)
-  const threadId = typeof params?.threadId === 'string' && params.threadId.trim().length > 0
-    ? params.threadId.trim()
-    : undefined
+  const threadIds = new Set<string>()
+  collectThreadIds(params, threadIds)
+  const normalizedThreadIds = [...threadIds]
+  const threadId = normalizedThreadIds[0]
 
   return {
     ...(typeof payload.id === 'number' ? { id: payload.id } : {}),
@@ -40,7 +81,8 @@ export function parseCodexProtocolPayload(payloadText: string): ParsedCodexProto
     params: payload.params,
     result: payload.result,
     error: payload.error,
-    threadId,
+    ...(threadId ? { threadId } : {}),
+    ...(normalizedThreadIds.length > 0 ? { threadIds: normalizedThreadIds } : {}),
   }
 }
 

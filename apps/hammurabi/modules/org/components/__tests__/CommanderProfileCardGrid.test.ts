@@ -1,6 +1,23 @@
-import { describe, expect, it, vi } from 'vitest'
+// @vitest-environment jsdom
+
+import { act } from 'react'
+import { createElement } from 'react'
+import { flushSync } from 'react-dom'
+import { createRoot, type Root } from 'react-dom/client'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { OrgNode } from '../../types'
-import { buildCommanderProfileCardItems } from '../CommanderProfileCardGrid'
+import {
+  CommanderProfileCardGrid,
+  buildCommanderProfileCardItems,
+} from '../CommanderProfileCardGrid'
+
+const reactActEnvironment = globalThis as typeof globalThis & {
+  IS_REACT_ACT_ENVIRONMENT?: boolean
+}
+
+let previousActEnvironment: boolean | undefined
+let root: Root | null = null
+let container: HTMLDivElement | null = null
 
 function createCommander(overrides: Partial<OrgNode> = {}): OrgNode {
   return {
@@ -21,10 +38,29 @@ function createCommander(overrides: Partial<OrgNode> = {}): OrgNode {
 }
 
 describe('buildCommanderProfileCardItems', () => {
+  beforeEach(() => {
+    previousActEnvironment = reactActEnvironment.IS_REACT_ACT_ENVIRONMENT
+    reactActEnvironment.IS_REACT_ACT_ENVIRONMENT = true
+  })
+
+  afterEach(async () => {
+    if (root) {
+      await act(async () => {
+        root?.unmount()
+      })
+    }
+    root = null
+    container?.remove()
+    container = null
+    document.body.innerHTML = ''
+    reactActEnvironment.IS_REACT_ACT_ENVIRONMENT = previousActEnvironment
+  })
+
   it('maps org nodes into ProfileCard items without identity colors', () => {
     const onSelect = vi.fn()
     const [item] = buildCommanderProfileCardItems({
       commanders: [createCommander()],
+      automationCountsByCommanderId: { 'cmd-1': 2 },
       expandedId: 'cmd-1',
       onSelect,
     })
@@ -37,6 +73,7 @@ describe('buildCommanderProfileCardItems', () => {
       handle: '@atlas-prime',
       status: 'Running',
       statusState: 'active',
+      automationCount: 2,
       selected: true,
       archived: false,
     })
@@ -58,6 +95,7 @@ describe('buildCommanderProfileCardItems', () => {
         archived: true,
         status: 'paused',
       })],
+      automationCountsByCommanderId: { 'cmd-2': 0 },
       expandedId: null,
       onSelect,
     })
@@ -69,11 +107,34 @@ describe('buildCommanderProfileCardItems', () => {
       handle: '@borealis',
       status: 'Archived',
       statusState: 'idle',
+      automationCount: 0,
       selected: false,
       archived: true,
     })
 
     item.onClick()
     expect(onSelect).toHaveBeenCalledWith('cmd-2')
+  })
+
+  it('renders a visible automation count for each commander card', async () => {
+    container = document.createElement('div')
+    document.body.appendChild(container)
+    root = createRoot(container)
+
+    flushSync(() => {
+      root?.render(createElement(CommanderProfileCardGrid, {
+        commanders: [createCommander()],
+        automationCountsByCommanderId: { 'cmd-1': 3 },
+        expandedId: null,
+        onSelect: vi.fn(),
+      }))
+    })
+
+    await vi.waitFor(() => {
+      const automationSignal = container?.querySelector<HTMLElement>(
+        '[data-testid="commander-profile-card-automation-signal"][data-commander-id="cmd-1"]',
+      )
+      expect(automationSignal?.textContent).toBe('3 automations')
+    })
   })
 })

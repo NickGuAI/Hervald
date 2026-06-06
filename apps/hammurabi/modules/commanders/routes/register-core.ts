@@ -65,10 +65,24 @@ import {
   buildCommanderWizardSystemPrompt,
 } from '../templates/wizard-prompt.js'
 import {
+  BENCHMARK_COMMANDER_CWD,
+  BENCHMARK_COMMANDER_DISPLAY_NAME,
+  BENCHMARK_COMMANDER_FAT_PIN_INTERVAL,
+  BENCHMARK_COMMANDER_HEARTBEAT_MINUTES,
+  BENCHMARK_COMMANDER_MAX_TURNS,
+  BENCHMARK_COMMANDER_PERSONA,
+  BENCHMARK_COMMANDER_TASK_SOURCE,
+  BENCHMARK_COMMANDER_TEMPLATE_ID,
+  bootstrapBenchmarkCommanderFiles,
+  isBenchmarkCommanderMarker,
+  seedBenchmarkCommanderDefaultAutomations,
+} from '../templates/benchmark-bootstrap.js'
+import {
   mergeIdentityOperatingStyleIntoCommanderWorkflow,
   readCommanderWorkflowMarkdown,
   scaffoldCommanderWorkflow,
 } from '../templates/workflow.js'
+import { findCommanderArchetype } from '../templates/archetypes.js'
 import {
   STARTUP_PROMPT,
   buildConversationSessionName,
@@ -564,6 +578,7 @@ export function registerCoreRoutes(
       heartbeat?: CommanderSession['heartbeat']
       uiProfile?: CommanderUiProfile | null
       identityOperatingStyle?: string
+      bootstrapBenchmark?: boolean
     } = {},
   ) => {
     const heartbeat = options.heartbeat ?? session.heartbeat
@@ -572,8 +587,16 @@ export function registerCoreRoutes(
       heartbeat,
     })
     let defaultConversationId: string | null = null
+    let seededAutomationIds: string[] = []
 
     const rollbackCreatedCommander = async (): Promise<void> => {
+      for (const automationId of seededAutomationIds) {
+        if (context.automationScheduler) {
+          await context.automationScheduler.deleteAutomation(automationId).catch(() => {})
+        } else {
+          await context.automationStore.delete(automationId, { removeFiles: true }).catch(() => {})
+        }
+      }
       if (defaultConversationId) {
         await context.conversationStore.delete(defaultConversationId).catch(() => {})
       }
@@ -589,13 +612,26 @@ export function registerCoreRoutes(
       })
       defaultConversationId = defaultConversation.id
 
-      await scaffoldCommanderWorkflow(
-        created.id,
-        {
-          cwd: created.cwd,
-        },
-        context.commanderBasePath,
-      )
+      if (options.bootstrapBenchmark) {
+        await bootstrapBenchmarkCommanderFiles(created.id, context.commanderBasePath)
+        const automationSeed = await seedBenchmarkCommanderDefaultAutomations({
+          commanderId: created.id,
+          host: created.host,
+          model: created.model,
+          automationStore: context.automationStore,
+          automationScheduler: context.automationScheduler,
+          automationSchedulerInitialized: context.automationSchedulerInitialized,
+        })
+        seededAutomationIds = automationSeed.created
+      } else {
+        await scaffoldCommanderWorkflow(
+          created.id,
+          {
+            cwd: created.cwd,
+          },
+          context.commanderBasePath,
+        )
+      }
       if (options.identityOperatingStyle) {
         await mergeIdentityOperatingStyleIntoCommanderWorkflow(
           created.id,
@@ -722,6 +758,9 @@ export function registerCoreRoutes(
       const result = await installCommanderPackage(definition, {
         sessionStore: context.sessionStore,
         conversationStore: context.conversationStore,
+        automationStore: context.automationStore,
+        automationScheduler: context.automationScheduler,
+        automationSchedulerInitialized: context.automationSchedulerInitialized,
         commanderDataDir: context.commanderDataDir,
         commanderBasePath: context.commanderBasePath,
         now: context.now,
@@ -1060,22 +1099,37 @@ export function registerCoreRoutes(
       return
     }
 
-    const taskSource = req.body?.taskSource != null
-      ? parseTaskSource(req.body.taskSource)
+    const isBenchmarkCreate = isBenchmarkCommanderMarker(req.body?.templateId)
+      || isBenchmarkCommanderMarker(req.body?.archetypeId)
+    const benchmarkArchetype = findCommanderArchetype(BENCHMARK_COMMANDER_TEMPLATE_ID)
+    const benchmarkTaskSource = benchmarkArchetype?.suggestedTaskSource
+      ? { ...benchmarkArchetype.suggestedTaskSource }
+      : { ...BENCHMARK_COMMANDER_TASK_SOURCE }
+
+    const rawTaskSource = req.body?.taskSource ?? (isBenchmarkCreate ? benchmarkTaskSource : undefined)
+    const taskSource = rawTaskSource != null
+      ? parseTaskSource(rawTaskSource)
       : null
-    if (req.body?.taskSource != null && !taskSource) {
+    if (rawTaskSource != null && !taskSource) {
       res.status(400).json({ error: 'Invalid taskSource' })
       return
     }
 
-    const parsedContextConfig = parseOptionalHeartbeatContextConfig(req.body?.contextConfig)
+    const rawContextConfig = req.body?.contextConfig ?? (
+      isBenchmarkCreate
+        ? (benchmarkArchetype?.defaultContextConfig ?? { fatPinInterval: BENCHMARK_COMMANDER_FAT_PIN_INTERVAL })
+        : undefined
+    )
+    const parsedContextConfig = parseOptionalHeartbeatContextConfig(rawContextConfig)
     if (!parsedContextConfig.valid) {
       res.status(400).json({ error: 'Invalid contextConfig' })
       return
     }
 
     const parsedMaxTurns = parseOptionalCommanderMaxTurns(
-      req.body?.maxTurns,
+      req.body?.maxTurns ?? (isBenchmarkCreate
+        ? (benchmarkArchetype?.defaultMaxTurns ?? BENCHMARK_COMMANDER_MAX_TURNS)
+        : undefined),
       { max: context.runtimeConfig.limits.maxTurns },
     )
     if (!parsedMaxTurns.valid) {
@@ -1085,7 +1139,9 @@ export function registerCoreRoutes(
       return
     }
 
-    const parsedContextMode = parseOptionalCommanderContextMode(req.body?.contextMode)
+    const parsedContextMode = parseOptionalCommanderContextMode(
+      req.body?.contextMode ?? (isBenchmarkCreate ? benchmarkArchetype?.defaultContextMode : undefined),
+    )
     if (!parsedContextMode.valid) {
       res.status(400).json({ error: 'contextMode must be either "thin" or "fat"' })
       return
@@ -1097,7 +1153,10 @@ export function registerCoreRoutes(
       return
     }
 
-    const displayName = parseMessage(req.body?.displayName) ?? host
+    const displayName = parseMessage(req.body?.displayName)
+      ?? (isBenchmarkCreate
+        ? (benchmarkArchetype?.defaultDisplayName ?? BENCHMARK_COMMANDER_DISPLAY_NAME)
+        : host)
     try {
       await assertUniqueCommanderDisplayName(displayName)
     } catch (error) {
@@ -1107,11 +1166,14 @@ export function registerCoreRoutes(
       }
       throw error
     }
-    const cwd = parseMessage(req.body?.cwd) ?? undefined
+    const cwd = parseMessage(req.body?.cwd)
+      ?? (isBenchmarkCreate
+        ? (benchmarkArchetype?.defaultCwd ?? BENCHMARK_COMMANDER_CWD)
+        : undefined)
     const avatarSeed = parseMessage(req.body?.avatarSeed) ?? undefined
     const templateId = req.body?.templateId === null
       ? null
-      : (parseMessage(req.body?.templateId) ?? undefined)
+      : (parseMessage(req.body?.templateId) ?? (isBenchmarkCreate ? BENCHMARK_COMMANDER_TEMPLATE_ID : undefined))
     const replicatedFromCommanderId = req.body?.replicatedFromCommanderId === null
       ? null
       : (parseSessionId(req.body?.replicatedFromCommanderId) ?? undefined)
@@ -1133,8 +1195,20 @@ export function registerCoreRoutes(
       res.status(400).json({ error: 'persona must be a string when provided' })
       return
     }
-    const identityOperatingStyle = parsedIdentityOperatingStyle.value ?? parsedLegacyIdentity.value
-    const defaultHeartbeat = createDefaultHeartbeatConfig()
+    const identityOperatingStyle = parsedIdentityOperatingStyle.value
+      ?? parsedLegacyIdentity.value
+      ?? (isBenchmarkCreate
+        ? (benchmarkArchetype?.defaultIdentityOperatingStyle ?? BENCHMARK_COMMANDER_PERSONA)
+        : undefined)
+    const defaultHeartbeat = {
+      ...createDefaultHeartbeatConfig(),
+      ...(isBenchmarkCreate
+        ? {
+            intervalMs: (benchmarkArchetype?.defaultHeartbeatMinutes ?? BENCHMARK_COMMANDER_HEARTBEAT_MINUTES) * 60_000,
+            intervalOverridden: true,
+          }
+        : {}),
+    }
     let heartbeat = defaultHeartbeat
 
     if (req.body?.heartbeat !== undefined) {
@@ -1146,7 +1220,9 @@ export function registerCoreRoutes(
       heartbeat = mergeHeartbeatConfig(defaultHeartbeat, parsedHeartbeat.value)
     }
 
-    const parsedAgentTypeCreate = parseOptionalCommanderAgentType(req.body?.agentType)
+    const parsedAgentTypeCreate = parseOptionalCommanderAgentType(
+      req.body?.agentType ?? (isBenchmarkCreate ? benchmarkArchetype?.defaultAgentType : undefined),
+    )
     if (parsedAgentTypeCreate === null) {
       res.status(400).json({ error: 'agentType must be a registered provider id' })
       return
@@ -1191,6 +1267,7 @@ export function registerCoreRoutes(
       const created = await persistCreatedCommander(session, displayName, {
         heartbeat,
         identityOperatingStyle,
+        bootstrapBenchmark: isBenchmarkCreate,
       })
       res.status(201).json(
         displayName !== created.host

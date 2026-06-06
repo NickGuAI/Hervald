@@ -1,13 +1,19 @@
 import { useEffect, useState } from 'react'
-import { ExternalLink, FileCode2, FileImage, FileWarning, Loader2, Pencil, Save, Trash2 } from 'lucide-react'
+import { Download, ExternalLink, FileCode2, FileImage, FileWarning, Loader2, Pencil, Save, Trash2 } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { getAccessToken, isAuthRecoveryRequiredError } from '@/lib/api'
 import { cn } from '@/lib/utils'
 import type {
   WorkspaceFilePreview as WorkspaceFilePreviewData,
-  WorkspaceSourceDescriptor,
 } from '../types'
+import { buildWorkspaceRawUrl } from '../use-workspace'
+
+export { buildWorkspaceRawUrl } from '../use-workspace'
+
+function isHtmlPreviewPath(path: string): boolean {
+  return /\.html?$/iu.test(path)
+}
 
 interface WorkspaceFilePreviewProps {
   selectedPath: string | null
@@ -21,27 +27,13 @@ interface WorkspaceFilePreviewProps {
   onSave?: () => void
   onRename?: () => void
   onDelete?: () => void
+  onDownload?: () => void
+  downloading?: boolean
   onInsertPath?: (path: string, type: 'file') => void
   variant?: 'light' | 'dark'
   displayMode?: 'editor' | 'preview'
   showHeader?: boolean
   showTextActions?: boolean
-}
-
-export function buildWorkspaceRawUrl(
-  source: WorkspaceSourceDescriptor,
-  path: string,
-  accessToken?: string | null,
-): string | null {
-  if (!source.id.trim()) {
-    return null
-  }
-  const query = new URLSearchParams({ path })
-  if (accessToken) {
-    query.set('access_token', accessToken)
-  }
-  query.set('targetId', source.id)
-  return `/api/workspace/raw?${query.toString()}`
 }
 
 export function WorkspaceFilePreview({
@@ -56,6 +48,8 @@ export function WorkspaceFilePreview({
   onSave = () => undefined,
   onRename = () => undefined,
   onDelete = () => undefined,
+  onDownload,
+  downloading = false,
   onInsertPath,
   displayMode = 'editor',
   showHeader = true,
@@ -64,36 +58,57 @@ export function WorkspaceFilePreview({
   const isMarkdownPreview = preview?.kind === 'text'
     && (displayMode === 'preview' || readOnly)
     && preview.path.toLowerCase().endsWith('.md')
+  const isHtmlPreview = preview?.kind === 'text'
+    && !preview.truncated
+    && (displayMode === 'preview' || readOnly)
+    && isHtmlPreviewPath(preview.path)
   const isReadOnlyTextPreview = preview?.kind === 'text'
     && !isMarkdownPreview
+    && !isHtmlPreview
     && (displayMode === 'preview' || readOnly)
   const [rawFileUrl, setRawFileUrl] = useState<string | null>(null)
-  const rawPreviewSource = (preview?.kind === 'pdf' || preview?.kind === 'binary')
-    && preview.workspace.source.kind === 'target'
+  const [downloadFileUrl, setDownloadFileUrl] = useState<string | null>(null)
+  const rawPreviewKind = preview?.kind === 'pdf' || preview?.kind === 'binary'
+  const previewRawSource = preview?.workspace.source.kind === 'target'
     ? preview.workspace.source
     : null
-  const rawPreviewPath = preview?.kind === 'pdf' || preview?.kind === 'binary' ? preview.path : null
+  const previewRawPath = preview ? preview.path : null
 
   useEffect(() => {
     let cancelled = false
 
-    if (!rawPreviewSource || !rawPreviewPath) {
+    if (!previewRawSource || !previewRawPath) {
       setRawFileUrl(null)
+      setDownloadFileUrl(null)
       return () => {
         cancelled = true
       }
     }
 
     setRawFileUrl(null)
+    setDownloadFileUrl(buildWorkspaceRawUrl(
+      previewRawSource,
+      previewRawPath,
+      null,
+      { download: true },
+    ))
     void getAccessToken()
       .then((token) => {
         if (cancelled) {
           return
         }
-        setRawFileUrl(buildWorkspaceRawUrl(
-          rawPreviewSource,
-          rawPreviewPath,
+        setRawFileUrl(rawPreviewKind
+          ? buildWorkspaceRawUrl(
+              previewRawSource,
+              previewRawPath,
+              token,
+            )
+          : null)
+        setDownloadFileUrl(buildWorkspaceRawUrl(
+          previewRawSource,
+          previewRawPath,
           token,
+          { download: true },
         ))
       })
       .catch((error) => {
@@ -102,18 +117,27 @@ export function WorkspaceFilePreview({
         }
         if (isAuthRecoveryRequiredError(error)) {
           setRawFileUrl(null)
+          setDownloadFileUrl(null)
           return
         }
-        setRawFileUrl(buildWorkspaceRawUrl(
-          rawPreviewSource,
-          rawPreviewPath,
+        setRawFileUrl(rawPreviewKind
+          ? buildWorkspaceRawUrl(
+              previewRawSource,
+              previewRawPath,
+            )
+          : null)
+        setDownloadFileUrl(buildWorkspaceRawUrl(
+          previewRawSource,
+          previewRawPath,
+          null,
+          { download: true },
         ))
       })
 
     return () => {
       cancelled = true
     }
-  }, [rawPreviewPath, rawPreviewSource])
+  }, [previewRawPath, previewRawSource, rawPreviewKind])
 
   if (!selectedPath) {
     return (
@@ -162,6 +186,28 @@ export function WorkspaceFilePreview({
             </p>
           </div>
           <div className="flex items-center gap-1">
+            {onDownload ? (
+              <button
+                type="button"
+                className="inline-flex items-center gap-1.5 rounded-md border border-[color:var(--hv-border-hair)] px-2 py-1 text-xs hover:bg-[var(--hv-surface-hover)] disabled:cursor-not-allowed disabled:opacity-60"
+                onClick={onDownload}
+                disabled={downloading}
+                aria-label={`Download ${preview.name}`}
+              >
+                {downloading ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
+                Download
+              </button>
+            ) : downloadFileUrl && (
+              <a
+                href={downloadFileUrl}
+                className="inline-flex items-center gap-1.5 rounded-md border border-[color:var(--hv-border-hair)] px-2 py-1 text-xs hover:bg-[var(--hv-surface-hover)]"
+                download
+                aria-label={`Download ${preview.name}`}
+              >
+                <Download size={13} />
+                Download
+              </a>
+            )}
             {onInsertPath && (
               <button
                 type="button"
@@ -201,7 +247,7 @@ export function WorkspaceFilePreview({
             <embed src={rawFileUrl} type="application/pdf" className="w-full h-full" />
             <p className="p-4 text-sm">Your browser doesn't support inline PDF preview. <a href={rawFileUrl} className="underline">Open the PDF</a>.</p>
           </object>
-        ) : rawPreviewSource && rawPreviewPath ? (
+        ) : previewRawSource && previewRawPath ? (
           <div className="flex flex-1 items-center justify-center px-4 text-sm text-[color:var(--hv-fg-subtle)]">
             <Loader2 size={16} className="mr-2 animate-spin" />
             Loading PDF preview…
@@ -247,6 +293,8 @@ export function WorkspaceFilePreview({
               <span>
                 {isMarkdownPreview
                   ? (preview.truncated ? 'Markdown preview truncated to 256KB' : 'Rendered markdown preview')
+                  : isHtmlPreview
+                    ? 'Rendered HTML preview'
                   : (preview.truncated
                     ? 'Preview truncated to 256KB'
                     : (readOnly || displayMode === 'preview' ? 'Text preview' : 'Editable text preview'))}
@@ -276,6 +324,21 @@ export function WorkspaceFilePreview({
                   {draftContent}
                 </ReactMarkdown>
               </article>
+            </div>
+          ) : isHtmlPreview ? (
+            <div
+              className={cn(
+                'flex-1 min-h-0 overflow-hidden border-t',
+                'border-[color:var(--hv-border-hair)] bg-white',
+              )}
+            >
+              <iframe
+                className="h-full w-full border-0"
+                sandbox="allow-forms allow-popups allow-scripts"
+                referrerPolicy="no-referrer"
+                title={`Rendered HTML preview of ${preview.name}`}
+                srcDoc={draftContent}
+              />
             </div>
           ) : isReadOnlyTextPreview ? (
             <pre

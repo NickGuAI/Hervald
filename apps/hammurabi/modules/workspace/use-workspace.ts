@@ -1,5 +1,6 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { fetchJson } from '@/lib/api'
+import { buildRequestHeaders, fetchJson } from '@/lib/api'
+import { getFullUrl } from '@/lib/api-base'
 import type {
   WorkspaceContextMaterialization,
   WorkspaceContextRequest,
@@ -10,6 +11,7 @@ import type {
   WorkspaceGitStatus,
   WorkspaceMutationResult,
   WorkspacePathResolution,
+  WorkspaceSourceDescriptor,
   WorkspaceTreeResponse,
 } from './types'
 
@@ -21,8 +23,35 @@ export type WorkspaceSource =
     readOnly?: boolean
   }
 
+export type WorkspaceSourceRecovery = (
+  staleSource: WorkspaceSource,
+) => Promise<WorkspaceSource | null | undefined>
+
 export function getWorkspaceSourceKey(source: WorkspaceSource): string {
   return `target:${source.targetId}`
+}
+
+export function isWorkspaceTargetNotFoundError(error: unknown): boolean {
+  return error instanceof Error && error.message.includes('Workspace target not found')
+}
+
+async function fetchWithWorkspaceTargetRecovery<T>(
+  source: WorkspaceSource,
+  read: (readSource: WorkspaceSource) => Promise<T>,
+  recoverSource?: WorkspaceSourceRecovery,
+): Promise<T> {
+  try {
+    return await read(source)
+  } catch (error) {
+    if (!recoverSource || !isWorkspaceTargetNotFoundError(error)) {
+      throw error
+    }
+    const recoveredSource = await recoverSource(source)
+    if (!recoveredSource) {
+      throw error
+    }
+    return read(recoveredSource)
+  }
 }
 
 function withPathQuery(basePath: string, relativePath?: string, extra?: Record<string, string>): string {
@@ -51,6 +80,136 @@ function targetQuery(source: WorkspaceSource): Record<string, string> {
 
 function withTargetQuery(basePath: string, source: WorkspaceSource): string {
   return withPathQuery(basePath, undefined, targetQuery(source))
+}
+
+type WorkspaceRawSource = WorkspaceSource | WorkspaceSourceDescriptor
+
+function getWorkspaceRawTargetId(source: WorkspaceRawSource): string {
+  return 'targetId' in source ? source.targetId : source.id
+}
+
+function fallbackDownloadFileName(relativePath: string): string {
+  const normalizedPath = relativePath.replace(/\\/g, '/')
+  const pathParts = normalizedPath.split('/').filter(Boolean)
+  const fileName = pathParts[pathParts.length - 1]?.trim()
+  return fileName || 'download'
+}
+
+function parseContentDispositionFileName(value: string | null): string | null {
+  if (!value) {
+    return null
+  }
+
+  const utf8Match = /filename\*=UTF-8''([^;]+)/iu.exec(value)
+  if (utf8Match?.[1]) {
+    try {
+      return decodeURIComponent(utf8Match[1].trim())
+    } catch {
+      return utf8Match[1].trim()
+    }
+  }
+
+  const fileNameMatch = /filename="([^"]+)"|filename=([^;]+)/iu.exec(value)
+  const fileName = (fileNameMatch?.[1] ?? fileNameMatch?.[2])?.trim()
+  return fileName || null
+}
+
+async function readDownloadError(response: Response): Promise<string> {
+  const body = await response.text().catch(() => '')
+  const trimmedBody = body.trim()
+  if (!trimmedBody) {
+    return response.statusText || 'Download failed'
+  }
+
+  try {
+    const parsed = JSON.parse(trimmedBody) as { error?: unknown }
+    if (typeof parsed.error === 'string' && parsed.error.trim()) {
+      return parsed.error.trim()
+    }
+  } catch {
+    // Non-JSON error bodies are returned as plain text below.
+  }
+
+  return trimmedBody
+}
+
+function triggerBrowserDownload(blob: Blob, fileName: string): void {
+  if (
+    typeof window === 'undefined'
+    || typeof document === 'undefined'
+    || typeof URL.createObjectURL !== 'function'
+  ) {
+    throw new Error('Browser downloads are not available in this environment')
+  }
+
+  const objectUrl = URL.createObjectURL(blob)
+  const anchor = document.createElement('a')
+  anchor.href = objectUrl
+  anchor.download = fileName
+  anchor.style.display = 'none'
+  document.body.appendChild(anchor)
+  anchor.click()
+  anchor.remove()
+  window.setTimeout(() => {
+    if (typeof URL.revokeObjectURL === 'function') {
+      URL.revokeObjectURL(objectUrl)
+    }
+  }, 0)
+}
+
+export function buildWorkspaceRawUrl(
+  source: WorkspaceRawSource,
+  path: string,
+  accessToken?: string | null,
+  options: { download?: boolean } = {},
+): string | null {
+  const targetId = getWorkspaceRawTargetId(source).trim()
+  if (!targetId) {
+    return null
+  }
+  const query = new URLSearchParams({ path })
+  if (accessToken) {
+    query.set('access_token', accessToken)
+  }
+  query.set('targetId', targetId)
+  if (options.download) {
+    query.set('download', '1')
+  }
+  return getFullUrl(`/api/workspace/raw?${query.toString()}`)
+}
+
+async function downloadWorkspaceFileOnce(
+  source: WorkspaceRawSource,
+  relativePath: string,
+): Promise<void> {
+  const downloadUrl = buildWorkspaceRawUrl(source, relativePath, null, { download: true })
+  if (!downloadUrl) {
+    throw new Error('Workspace target is unavailable')
+  }
+
+  const response = await fetch(downloadUrl, {
+    headers: await buildRequestHeaders(),
+  })
+  if (!response.ok) {
+    throw new Error(`Request failed (${response.status}): ${await readDownloadError(response)}`)
+  }
+
+  const blob = await response.blob()
+  const fileName = parseContentDispositionFileName(response.headers.get('content-disposition'))
+    ?? fallbackDownloadFileName(relativePath)
+  triggerBrowserDownload(blob, fileName)
+}
+
+export async function downloadWorkspaceFile(
+  source: WorkspaceSource,
+  relativePath: string,
+  recoverSource?: WorkspaceSourceRecovery,
+): Promise<void> {
+  return fetchWithWorkspaceTargetRecovery(
+    source,
+    (readSource) => downloadWorkspaceFileOnce(readSource, relativePath),
+    recoverSource,
+  )
 }
 
 export interface WorkspaceOpenResponse {
@@ -199,26 +358,44 @@ export function useWorkspaceFilePreview(
   source: WorkspaceSource,
   relativePath: string | null,
   enabled = true,
+  recoverSource?: WorkspaceSourceRecovery,
 ) {
   return useQuery({
     queryKey: ['workspace', getWorkspaceSourceKey(source), 'file', relativePath ?? 'none'],
-    queryFn: () => fetchWorkspaceFilePreview(source, relativePath!),
+    queryFn: () => fetchWithWorkspaceTargetRecovery(
+      source,
+      (readSource) => fetchWorkspaceFilePreview(readSource, relativePath!),
+      recoverSource,
+    ),
     enabled: enabled && Boolean(relativePath),
   })
 }
 
-export function useWorkspaceGitStatus(source: WorkspaceSource, enabled = true) {
+export function useWorkspaceGitStatus(
+  source: WorkspaceSource,
+  enabled = true,
+  recoverSource?: WorkspaceSourceRecovery,
+) {
   return useQuery({
     queryKey: ['workspace', getWorkspaceSourceKey(source), 'git', 'status'],
-    queryFn: () => fetchWorkspaceGitStatus(source),
+    queryFn: () => fetchWithWorkspaceTargetRecovery(source, fetchWorkspaceGitStatus, recoverSource),
     enabled,
   })
 }
 
-export function useWorkspaceGitLog(source: WorkspaceSource, enabled = true, limit = 15) {
+export function useWorkspaceGitLog(
+  source: WorkspaceSource,
+  enabled = true,
+  limit = 15,
+  recoverSource?: WorkspaceSourceRecovery,
+) {
   return useQuery({
     queryKey: ['workspace', getWorkspaceSourceKey(source), 'git', 'log', limit],
-    queryFn: () => fetchWorkspaceGitLog(source, limit),
+    queryFn: () => fetchWithWorkspaceTargetRecovery(
+      source,
+      (readSource) => fetchWorkspaceGitLog(readSource, limit),
+      recoverSource,
+    ),
     enabled,
   })
 }

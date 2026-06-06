@@ -1,5 +1,5 @@
 import { WorkspaceOverlay } from '@modules/agents/components/WorkspaceOverlay'
-import type { WorkspaceSource } from '@modules/workspace/use-workspace'
+import type { WorkspaceSource, WorkspaceSourceRecovery } from '@modules/workspace/use-workspace'
 import type { WorkspaceTreeNode } from '@modules/workspace/types'
 
 interface MobileWorkspaceSheetProps {
@@ -9,6 +9,8 @@ interface MobileWorkspaceSheetProps {
   onSelectFile: (filePath: string, type: WorkspaceTreeNode['type']) => void
   requestedPath?: string | null
   requestedPathToken?: number
+  onRequestedPathConsumed?: (token: number) => void
+  onRecoverStaleTarget?: WorkspaceSourceRecovery
 }
 
 export function MobileWorkspaceSheet({
@@ -18,6 +20,8 @@ export function MobileWorkspaceSheet({
   onSelectFile,
   requestedPath,
   requestedPathToken = 0,
+  onRequestedPathConsumed,
+  onRecoverStaleTarget,
 }: MobileWorkspaceSheetProps) {
   if (!open || !source) {
     return null
@@ -34,6 +38,8 @@ export function MobileWorkspaceSheet({
       source={source}
       requestedPath={requestedPath}
       requestedPathToken={requestedPathToken}
+      onRequestedPathConsumed={onRequestedPathConsumed}
+      onRecoverStaleTarget={onRecoverStaleTarget}
     />
   )
 }

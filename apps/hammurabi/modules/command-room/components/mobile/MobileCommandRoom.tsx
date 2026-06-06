@@ -7,6 +7,7 @@ import {
   getWorkspaceSourceKey,
   type WorkspacePendingFileAnnotation,
   type WorkspaceSource,
+  type WorkspaceSourceRecovery,
 } from '@modules/workspace/use-workspace'
 import type { WorkspaceTreeNode } from '@modules/workspace/types'
 import type { SessionComposerSubmitPayload } from '@modules/agents/components/SessionComposer'
@@ -24,6 +25,7 @@ import {
 } from '@modules/command-room/route-metadata'
 import type { ConversationRecord } from '@modules/conversation/hooks/use-conversations'
 import type { CreateConversationReasoningConfig } from '@modules/conversation/components/CreateConversationPanel'
+import type { ChatSession } from '@modules/command-room/components/desktop/SessionsColumn'
 import type { Commander, Worker } from '@modules/command-room/components/desktop/SessionRow'
 import { MobileApprovalSheet } from '@modules/approvals/MobileApprovalSheet'
 import { MobileChatView } from './MobileChatView'
@@ -59,6 +61,7 @@ export interface MobileCommandRoomProps {
   commanders: Commander[]
   commanderSessions: CommanderSession[]
   workers: Worker[]
+  automationSessions?: ChatSession[]
   pendingApprovals: PendingApproval[]
   selectedCommanderId: string | null
   onSelectCommanderId: (id: string) => void
@@ -97,6 +100,8 @@ export interface MobileCommandRoomProps {
   onOpenWorkspaceFile?: (path: string) => void
   workspaceRequestedPath?: string | null
   workspaceRequestedPathToken?: number
+  onWorkspaceRequestedPathConsumed?: (token: number) => void
+  onRecoverStaleWorkspaceTarget?: WorkspaceSourceRecovery
   onStopCommander?: () => void
   onCreateChatForCommander?: (commanderId: string) => void | Promise<void>
   onCreateConversation?: (
@@ -123,6 +128,7 @@ export function MobileCommandRoom({
   commanders,
   commanderSessions,
   workers,
+  automationSessions = [],
   pendingApprovals,
   selectedCommanderId,
   onSelectCommanderId,
@@ -159,6 +165,8 @@ export function MobileCommandRoom({
   onOpenWorkspaceFile,
   workspaceRequestedPath,
   workspaceRequestedPathToken = 0,
+  onWorkspaceRequestedPathConsumed,
+  onRecoverStaleWorkspaceTarget,
   onStopCommander,
   onCreateConversation,
   requestedNewChatCommanderId = null,
@@ -257,6 +265,12 @@ export function MobileCommandRoom({
       ? workers.filter((worker) => worker.commanderId === activeCommander.id)
       : [],
     [activeCommander, workers],
+  )
+  const activeCommanderAutomationSessions = useMemo(
+    () => activeCommander
+      ? automationSessions.filter((session) => session.parentCommanderId === activeCommander.id)
+      : [],
+    [activeCommander, automationSessions],
   )
   const activeCommanderSession = useMemo(
     () => activeCommander
@@ -463,6 +477,7 @@ export function MobileCommandRoom({
         open={sheet === 'team'}
         commander={activeCommander}
         workers={workers}
+        automationSessions={activeCommanderAutomationSessions}
         approvals={pendingApprovals}
         onOpenApproval={openApproval}
         onClose={closeSheets}
@@ -490,6 +505,8 @@ export function MobileCommandRoom({
         onClose={closeSheets}
         requestedPath={workspaceRequestedPath}
         requestedPathToken={workspaceRequestedPathToken}
+        onRequestedPathConsumed={onWorkspaceRequestedPathConsumed}
+        onRecoverStaleTarget={onRecoverStaleWorkspaceTarget}
       />
     </section>
   )

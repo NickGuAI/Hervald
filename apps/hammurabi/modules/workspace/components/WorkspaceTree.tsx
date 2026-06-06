@@ -1,4 +1,4 @@
-import { Check, ChevronRight, FileText, Folder, FolderOpen, Loader2, Plus } from 'lucide-react'
+import { Check, ChevronRight, Download, FileText, Folder, FolderOpen, Loader2, Plus } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { WorkspaceTreeNode } from '../types'
 
@@ -12,6 +12,8 @@ interface WorkspaceTreeProps {
   onSelectPath: (path: string) => void
   onToggleDirectory: (path: string) => void
   onAddPath?: (path: string, knownType?: WorkspaceTreeNode['type']) => void
+  onDownloadPath?: (path: string, knownType?: WorkspaceTreeNode['type']) => void
+  downloadingPath?: string | null
   selectDirectoriesOnClick?: boolean
 }
 
@@ -27,6 +29,8 @@ function TreeBranch({
   onSelectPath,
   onToggleDirectory,
   onAddPath,
+  onDownloadPath,
+  downloadingPath,
   selectDirectoriesOnClick = true,
 }: WorkspaceTreeProps & {
   parentPath: string
@@ -43,6 +47,7 @@ function TreeBranch({
         const isSelected = selectedPath === node.path
         const isLoading = loadingPaths.has(node.path)
         const isAdded = addedPaths?.has(node.path) ?? false
+        const isDownloading = downloadingPath === node.path
 
         return (
           <div key={node.path}>
@@ -116,6 +121,27 @@ function TreeBranch({
                 </button>
               )}
 
+              {onDownloadPath && (
+                <button
+                  type="button"
+                  className={cn(
+                    'inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-[color:var(--hv-fg-subtle)] transition-colors hover:bg-[var(--hv-surface-hover)] disabled:cursor-not-allowed disabled:opacity-40',
+                    isDownloading && 'text-[color:var(--hv-fg)]',
+                  )}
+                  onClick={(event) => {
+                    event.stopPropagation()
+                    if (!isDirectory) {
+                      onDownloadPath(node.path, node.type)
+                    }
+                  }}
+                  disabled={isDirectory || isDownloading}
+                  aria-label={`Download ${node.path}`}
+                  title={isDirectory ? 'Directories cannot be downloaded as single files' : `Download ${node.path}`}
+                >
+                  {isDownloading ? <Loader2 size={12} className="animate-spin" /> : <Download size={12} />}
+                </button>
+              )}
+
               {isLoading && <Loader2 size={12} className="shrink-0 animate-spin text-[color:var(--hv-fg-subtle)]" />}
             </div>
 
@@ -132,6 +158,8 @@ function TreeBranch({
                 onSelectPath={onSelectPath}
                 onToggleDirectory={onToggleDirectory}
                 onAddPath={onAddPath}
+                onDownloadPath={onDownloadPath}
+                downloadingPath={downloadingPath}
                 selectDirectoriesOnClick={selectDirectoriesOnClick}
               />
             )}

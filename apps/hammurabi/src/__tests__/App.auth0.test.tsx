@@ -174,6 +174,29 @@ describe('App Auth0 configuration', () => {
     expect(window.location.pathname).toBe('/welcome')
   })
 
+  it('clears stored API key and native instance URL after API-key auth is rejected', async () => {
+    vi.stubEnv('VITE_AUTH0_DOMAIN', '')
+    vi.stubEnv('VITE_AUTH0_AUDIENCE', '')
+    vi.stubEnv('VITE_AUTH0_CLIENT_ID', '')
+    localStorage.setItem('hammurabi_api_key', 'expired-mobile-key')
+    localStorage.setItem('hammurabi_instance_url', 'https://self.example.com')
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(new Response('{"error":"Unauthorized"}', { status: 401 })),
+    )
+
+    await renderApp('/welcome')
+
+    await expect(fetchJson('/api/modules')).rejects.toThrow(/401/)
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(localStorage.getItem('hammurabi_api_key')).toBeNull()
+    expect(localStorage.getItem('hammurabi_instance_url')).toBeNull()
+  })
+
   it('redirects Auth0 users to re-authenticate when silent token recovery fails', async () => {
     mocks.isAuthenticated = true
     mocks.getAccessTokenSilently.mockRejectedValue(
@@ -216,7 +239,7 @@ describe('App Auth0 configuration', () => {
 
     expect(mocks.loginWithRedirect).not.toHaveBeenCalled()
     expect(document.body.querySelector('[data-testid="auth-recovery-unavailable"]')?.textContent)
-      .toContain('Hammurabi is reconnecting')
+      .toContain('Hervald is reconnecting')
   })
 
   it('clears unavailable Auth0 recovery state after the auth session ends', async () => {

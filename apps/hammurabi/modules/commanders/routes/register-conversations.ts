@@ -1,6 +1,6 @@
 import { rm } from 'node:fs/promises'
 import path from 'node:path'
-import type { Response } from 'express'
+import type { Request, Response } from 'express'
 import { parseMessageImagesForRequest } from '../../agents/message-images.js'
 import { sanitizeTranscriptFileKey } from '../../agents/session/persistence.js'
 import {
@@ -201,6 +201,24 @@ function requestActorId(req: import('express').Request): string | undefined {
 function requestId(req: import('express').Request): string | undefined {
   const value = req.get('x-request-id')
   return value && value.trim().length > 0 ? value.trim() : undefined
+}
+
+function requestAbortSignal(req: Request, res: Response): AbortSignal {
+  const controller = new AbortController()
+  let responseFinished = false
+  const abort = () => {
+    if (!responseFinished && !controller.signal.aborted) {
+      controller.abort(new Error('HTTP request closed before response finished'))
+    }
+  }
+  res.once('finish', () => {
+    responseFinished = true
+    req.off('aborted', abort)
+    req.off('close', abort)
+  })
+  req.once('aborted', abort)
+  req.once('close', abort)
+  return controller.signal
 }
 
 function withLiveSession(
@@ -999,7 +1017,10 @@ export function registerConversationRoutes(
       context,
       conversation,
       { message: messageWithContext, displayMessage: message, images },
-      queue ? { queue: true, priority: 'normal' } : undefined,
+      {
+        ...(queue ? { queue: true, priority: 'normal' as const } : {}),
+        abortSignal: requestAbortSignal(req, res),
+      },
     )
     if (!delivered.ok) {
       res.status(delivered.status).json({ error: delivered.error })

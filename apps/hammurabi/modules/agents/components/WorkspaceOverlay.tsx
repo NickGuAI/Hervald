@@ -3,10 +3,12 @@ import { FolderOpen, Search, X } from 'lucide-react'
 import { DismissibleOverlay } from '@/components/DismissibleOverlay'
 import { cn } from '@/lib/utils'
 import {
+  downloadWorkspaceFile,
   getWorkspaceSourceKey,
   useWorkspaceGitLog,
   useWorkspaceGitStatus,
   type WorkspaceSource,
+  type WorkspaceSourceRecovery,
 } from '../../workspace/use-workspace'
 import type { WorkspaceTreeNode } from '../../workspace/types'
 import { PreviewPopup } from './workspace-overlay/PreviewPopup'
@@ -22,6 +24,8 @@ export interface WorkspaceOverlayProps {
   source: WorkspaceSource
   requestedPath?: string | null
   requestedPathToken?: number
+  onRequestedPathConsumed?: (token: number) => void
+  onRecoverStaleTarget?: WorkspaceSourceRecovery
 }
 
 type OverlayTab = 'files' | 'changes' | 'log'
@@ -39,10 +43,14 @@ export function WorkspaceOverlay({
   source,
   requestedPath,
   requestedPathToken = 0,
+  onRequestedPathConsumed,
+  onRecoverStaleTarget,
 }: WorkspaceOverlayProps) {
   const sourceKey = getWorkspaceSourceKey(source)
   const [activeTab, setActiveTab] = useState<OverlayTab>('files')
   const [query, setQuery] = useState('')
+  const [downloadError, setDownloadError] = useState<{ path: string; message: string } | null>(null)
+  const [downloadingPath, setDownloadingPath] = useState<string | null>(null)
   const searchRef = useRef<HTMLInputElement>(null)
 
   const {
@@ -65,10 +73,21 @@ export function WorkspaceOverlay({
     onSelectFile,
     requestedPath,
     requestedPathToken,
+    onRequestedPathConsumed,
+    onRecoverStaleTarget,
   })
 
-  const gitStatusQuery = useWorkspaceGitStatus(source, open && activeTab === 'changes')
-  const gitLogQuery = useWorkspaceGitLog(source, open && activeTab === 'log')
+  const gitStatusQuery = useWorkspaceGitStatus(
+    source,
+    open && activeTab === 'changes',
+    onRecoverStaleTarget,
+  )
+  const gitLogQuery = useWorkspaceGitLog(
+    source,
+    open && activeTab === 'log',
+    15,
+    onRecoverStaleTarget,
+  )
 
   useEffect(() => {
     if (open) {
@@ -80,7 +99,35 @@ export function WorkspaceOverlay({
 
   useEffect(() => {
     setActiveTab('files')
+    setDownloadError(null)
+    setDownloadingPath(null)
   }, [sourceKey])
+
+  async function handleDownloadPath(
+    path: string,
+    knownType?: WorkspaceTreeNode['type'],
+  ): Promise<void> {
+    if (knownType !== 'file') {
+      setDownloadError({
+        path,
+        message: 'Directories cannot be downloaded as single files',
+      })
+      return
+    }
+
+    setDownloadError(null)
+    setDownloadingPath(path)
+    try {
+      await downloadWorkspaceFile(source, path, onRecoverStaleTarget)
+    } catch (error) {
+      setDownloadError({
+        path,
+        message: error instanceof Error ? error.message : 'Failed to download workspace file',
+      })
+    } finally {
+      setDownloadingPath(null)
+    }
+  }
 
   if (!open) {
     return null
@@ -154,6 +201,11 @@ export function WorkspaceOverlay({
                 </button>
               ))}
             </div>
+            {downloadError && (
+              <div className="mt-2 rounded-md border border-[color:var(--hv-accent-danger)] bg-[var(--hv-accent-danger-wash)] px-3 py-2 text-sm text-[color:var(--hv-accent-danger)]">
+                {downloadError.message}
+              </div>
+            )}
           </div>
 
           <div className="min-h-0 flex-1 overflow-y-auto p-3">
@@ -164,9 +216,11 @@ export function WorkspaceOverlay({
                 loadingPaths={loadingPaths}
                 addedPaths={addedPaths}
                 selectedPath={selectedPath}
+                downloadingPath={downloadingPath}
                 onSelectPath={handlePreviewPath}
                 onToggleDirectory={(path) => void handleToggleDirectory(path)}
                 onAddPath={handleAddPath}
+                onDownloadPath={(path, knownType) => void handleDownloadPath(path, knownType)}
               />
             )}
 
@@ -197,6 +251,9 @@ export function WorkspaceOverlay({
         draftContent={previewDraftContent}
         loading={Boolean(previewQuery?.isLoading || previewQuery?.isFetching)}
         error={previewError}
+        downloading={Boolean(selectedPreviewPath && downloadingPath === selectedPreviewPath)}
+        downloadError={selectedPreviewPath && downloadError?.path === selectedPreviewPath ? downloadError.message : null}
+        onDownload={selectedPreviewPath ? () => void handleDownloadPath(selectedPreviewPath, 'file') : undefined}
         onClose={closePreview}
       />
     </>

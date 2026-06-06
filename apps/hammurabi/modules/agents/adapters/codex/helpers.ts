@@ -61,7 +61,7 @@ export function isCodexApprovalLikeMethod(method: string): boolean {
 }
 
 export function isCodexMcpElicitationMethod(method: string): boolean {
-  return method === 'mcpserver/elicitation/request'
+  return method === 'mcpserver/elicitation/request' || method === 'mcpServer/elicitation/request'
 }
 
 function readTrimmedString(value: unknown): string | undefined {
@@ -70,146 +70,6 @@ function readTrimmedString(value: unknown): string | undefined {
   }
   const trimmed = value.trim()
   return trimmed.length > 0 ? trimmed : undefined
-}
-
-function readStringArray(value: unknown): string[] {
-  return Array.isArray(value)
-    ? value.filter((entry): entry is string => typeof entry === 'string' && entry.trim().length > 0)
-    : []
-}
-
-function readElicitationObject(params: unknown): {
-  payload: Record<string, unknown>
-  requestParams: Record<string, unknown>
-} {
-  const payload = asObject(params) ?? {}
-  const request = asObject(payload.request)
-  const requestParams = asObject(request?.params) ?? asObject(payload.params) ?? payload
-  return { payload, requestParams }
-}
-
-function readElicitationRequestedSchema(payload: Record<string, unknown>, requestParams: Record<string, unknown>): unknown {
-  return requestParams.requestedSchema ??
-    requestParams.requested_schema ??
-    payload.requestedSchema ??
-    payload.requested_schema
-}
-
-function describeElicitationSchema(schema: unknown): string[] {
-  const schemaObject = asObject(schema)
-  const properties = asObject(schemaObject?.properties)
-  if (!properties) {
-    return []
-  }
-
-  const required = new Set(readStringArray(schemaObject?.required))
-  return Object.entries(properties).flatMap(([name, rawProperty]) => {
-    const property = asObject(rawProperty)
-    const title = readTrimmedString(property?.title)
-    const description = readTrimmedString(property?.description)
-    const type = readTrimmedString(property?.type)
-    const label = title && title !== name ? `${name} (${title})` : name
-    const detail = [type, required.has(name) ? 'required' : null, description]
-      .filter((value): value is string => Boolean(value))
-      .join('; ')
-    return [`- ${label}${detail ? `: ${detail}` : ''}`]
-  })
-}
-
-function readPlanDefaultDecision(value: unknown): 'approve' | 'reject' | undefined {
-  const normalized = readTrimmedString(value)?.toLowerCase()
-  if (!normalized) {
-    return undefined
-  }
-  if (['accept', 'approve', 'approved', 'yes', 'true'].includes(normalized)) {
-    return 'approve'
-  }
-  if (['decline', 'reject', 'rejected', 'no', 'false', 'cancel'].includes(normalized)) {
-    return 'reject'
-  }
-  return undefined
-}
-
-function readAutoResolveAfterMs(value: unknown): number | undefined {
-  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
-    return undefined
-  }
-  return value
-}
-
-export function buildCodexMcpElicitationPlanApprovalEvent(
-  requestId: number,
-  params: unknown,
-): Extract<StreamJsonEvent, { type: 'plan_approval' }> {
-  const { payload, requestParams } = readElicitationObject(params)
-  const requestedSchema = readElicitationRequestedSchema(payload, requestParams)
-  const message = readTrimmedString(requestParams.message) ??
-    readTrimmedString(payload.message) ??
-    readTrimmedString(requestParams.prompt) ??
-    readTrimmedString(payload.prompt) ??
-    readTrimmedString(requestParams.question) ??
-    readTrimmedString(payload.question) ??
-    'Codex requested user input through MCP elicitation.'
-  const serverName = readTrimmedString(requestParams.mcp_server_name) ??
-    readTrimmedString(payload.mcp_server_name) ??
-    readTrimmedString(requestParams.serverName) ??
-    readTrimmedString(payload.serverName) ??
-    readTrimmedString(requestParams.server) ??
-    readTrimmedString(payload.server)
-  const mode = readTrimmedString(requestParams.mode) ?? readTrimmedString(payload.mode)
-  const url = readTrimmedString(requestParams.url) ?? readTrimmedString(payload.url)
-  const schemaLines = describeElicitationSchema(requestedSchema)
-  const toolId = readTrimmedString(requestParams.toolId) ??
-    readTrimmedString(payload.toolId) ??
-    readTrimmedString(requestParams.toolUseId) ??
-    readTrimmedString(payload.toolUseId) ??
-    readTrimmedString(requestParams.itemId) ??
-    readTrimmedString(payload.itemId) ??
-    `codex-mcp-elicitation-${requestId}`
-  const expiresAt = readTrimmedString(requestParams.expiresAt) ?? readTrimmedString(payload.expiresAt)
-  const autoResolveAfterMs = readAutoResolveAfterMs(requestParams.autoResolveAfterMs)
-    ?? readAutoResolveAfterMs(payload.autoResolveAfterMs)
-  const defaultDecision = readPlanDefaultDecision(requestParams.defaultDecision)
-    ?? readPlanDefaultDecision(payload.defaultDecision)
-    ?? readPlanDefaultDecision(requestParams.defaultAction)
-    ?? readPlanDefaultDecision(payload.defaultAction)
-
-  const plan = [
-    `Codex requested MCP user input${serverName ? ` from ${serverName}` : ''}.`,
-    mode ? `Mode: ${mode}` : null,
-    url ? `URL: ${url}` : null,
-    '',
-    message,
-    schemaLines.length > 0 ? ['', 'Requested fields:', ...schemaLines].join('\n') : null,
-  ].filter((value): value is string => value !== null).join('\n')
-
-  return {
-    type: 'plan_approval',
-    interactionKind: 'plan_approval',
-    toolId,
-    toolName: 'Codex MCP Elicitation',
-    plan,
-    approveLabel: 'Respond',
-    rejectLabel: 'Decline',
-    customResponseLabel: 'Response',
-    ...(expiresAt ? { expiresAt } : {}),
-    ...(autoResolveAfterMs !== undefined ? { autoResolveAfterMs } : {}),
-    ...(defaultDecision ? { defaultDecision } : {}),
-    providerContext: {
-      provider: 'codex',
-      backend: 'rpc',
-      toolUseId: toolId,
-      toolName: 'Codex MCP Elicitation',
-      requestId,
-      answerFormat: 'codex.mcp_elicitation',
-      ...(requestedSchema !== undefined ? { requestedSchema } : {}),
-    },
-    source: {
-      provider: 'codex',
-      backend: 'rpc',
-      normalizedAt: new Date().toISOString(),
-    },
-  }
 }
 
 export function getCodexApprovalTargetLabel(method: CodexApprovalMethod): string {
@@ -247,7 +107,11 @@ export function getCodexApprovalRequestDetails(params: unknown): {
 
   const threadId = typeof payload.threadId === 'string' && payload.threadId.trim().length > 0
     ? payload.threadId.trim()
-    : undefined
+    : (typeof payload.conversationId === 'string' && payload.conversationId.trim().length > 0
+      ? payload.conversationId.trim()
+      : (readTrimmedString(asObject(payload.turn)?.threadId)
+        ?? readTrimmedString(asObject(payload.item)?.threadId)
+        ?? readTrimmedString(asObject(payload.thread)?.id)))
   const itemId = typeof payload.itemId === 'string' && payload.itemId.trim().length > 0
     ? payload.itemId.trim()
     : undefined
@@ -408,7 +272,7 @@ export function buildCodexApprovalRequestSystemEvent(request: CodexPendingApprov
     .join(' ')
   return {
     type: 'system',
-    text: `Codex is waiting for ${approvalTarget} approval (request ${request.requestId}). Awaiting accept/decline decision.${extras ? ` ${extras}` : ''}`,
+    text: `Codex is waiting for ${approvalTarget} approval (request ${request.requestId}). Awaiting accept/decline/cancel decision.${extras ? ` ${extras}` : ''}`,
   }
 }
 
@@ -420,7 +284,7 @@ export function buildCodexApprovalMissingIdSystemEvent(method: CodexApprovalMeth
     .join(' ')
   return {
     type: 'system',
-    text: `Codex requested ${approvalTarget} approval, but the request id was missing. This approval cannot be resolved from Hammurabi.${extras ? ` ${extras}` : ''}`,
+    text: `Codex requested ${approvalTarget} approval, but the request id was missing. This approval cannot be resolved from Hervald.${extras ? ` ${extras}` : ''}`,
   }
 }
 
@@ -433,7 +297,9 @@ export function buildCodexApprovalDecisionEvent(
     type: 'system',
     text: decision === 'accept'
       ? `Accepted Codex ${approvalTarget} approval request ${request.requestId}.`
-      : `Declined Codex ${approvalTarget} approval request ${request.requestId}.`,
+      : decision === 'cancel'
+        ? `Cancelled Codex ${approvalTarget} approval request ${request.requestId}.`
+        : `Declined Codex ${approvalTarget} approval request ${request.requestId}.`,
   }
 }
 

@@ -6,6 +6,7 @@ import {
   useUpdateFounderProfile,
   useUploadFounderAvatar,
 } from '@modules/operators/hooks/useFounderProfile'
+import { resolveFounderAvatarSrc } from '@modules/operators/founder-avatar'
 
 const INPUT_CLASS =
   'mt-1 w-full rounded-lg border border-[var(--hv-field-border)] bg-[var(--hv-field-bg)] px-3 py-2 text-[16px] text-[color:var(--hv-fg)] placeholder:text-[color:var(--hv-field-placeholder)] focus:outline-none focus:border-[var(--hv-field-focus-border)] md:text-sm'
@@ -91,7 +92,7 @@ export function AccountProfileCard() {
 
   const liveDisplayName = founder?.displayName ?? auth?.user?.name ?? 'Operator'
   const liveEmail = founder?.email ?? auth?.user?.email ?? 'Signed in with an API key'
-  const avatarSrc = avatarPreview ?? founder?.avatarUrl ?? auth?.user?.picture ?? null
+  const avatarSrc = resolveFounderAvatarSrc(founder, auth, { avatarPreview })
   const isPending = updateProfileMutation.isPending || uploadAvatarMutation.isPending
   const loadError = isFounderMissingError(error) ? null : error instanceof Error ? error.message : null
 

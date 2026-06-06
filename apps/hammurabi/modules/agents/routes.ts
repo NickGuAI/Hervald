@@ -1,4 +1,4 @@
-import { Router, type Request } from 'express'
+import { Router, type Request, type Response } from 'express'
 import { WebSocket } from 'ws'
 import { execFile, spawn, type ChildProcess } from 'node:child_process'
 import { createReadStream } from 'node:fs'
@@ -127,6 +127,20 @@ import {
   parseProviderId,
 } from './providers/registry.js'
 import {
+  buildProviderNativeAuthDetail,
+  completeProviderOAuthFlow,
+  buildProviderReauthUrl,
+  prepareProviderSpawnAuth,
+  ProviderAuthRequiredError,
+  ProviderAuthStore,
+  providerUsesManagedOAuth,
+  resolveProviderAuthScopeId,
+  startProviderOAuthFlow,
+  type ProviderOAuthCompleteResult,
+  type ProviderAuthSnapshot,
+  type ProviderSpawnAuth,
+} from './provider-auth.js'
+import {
   ensureClaudeProviderContext,
   ensureGeminiProviderContext,
   readClaudeSessionId,
@@ -214,6 +228,13 @@ import {
   toExitBasedCompletedSession,
   toWorldAgent,
 } from './session/state.js'
+import {
+  extractTranscriptUsageUpdate,
+  isTranscriptExitRecord,
+  isTranscriptTurnEndRecord,
+  isTranscriptTurnStartRecord,
+  readTranscriptEnvelopeSessionId,
+} from './transcript-records.js'
 import { CodexSessionRuntime, GeminiAcpRuntime, OpenCodeAcpRuntime } from './launchers/runtimes.js'
 import type {
   ActiveSkillInvocation,
@@ -332,6 +353,18 @@ import { createStreamIoHelpers } from './stream-io-helpers.js'
 
 const MESSAGE_QUEUE_RETRY_INITIAL_MS = 250
 const MESSAGE_QUEUE_RETRY_MAX_MS = 5000
+const DEFAULT_PROVIDER_AUTH_PROBE_INTERVAL_MS = 60_000
+
+function resolveProviderAuthProbeIntervalMs(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env.HAMMURABI_PROVIDER_AUTH_PROBE_INTERVAL_MS?.trim()
+  if (!raw) {
+    return DEFAULT_PROVIDER_AUTH_PROBE_INTERVAL_MS
+  }
+  const parsed = Number.parseInt(raw, 10)
+  return Number.isFinite(parsed) && parsed >= 0
+    ? parsed
+    : DEFAULT_PROVIDER_AUTH_PROBE_INTERVAL_MS
+}
 
 export function createAgentsRouter(options: AgentsRouterOptions = {}): AgentsRouterResult {
   const router = Router()
@@ -382,6 +415,7 @@ export function createAgentsRouter(options: AgentsRouterOptions = {}): AgentsRou
     ? new CommanderSessionStore(options.commanderSessionStorePath)
     : new CommanderSessionStore()
   const conversationStore = new ConversationStore(commanderDataDir)
+  const providerAuthStore = options.providerAuthStore ?? new ProviderAuthStore()
   const runtimeConfig = loadCommanderRuntimeConfig()
   const prunerConfig = {
     enabled: options.enableSessionPruner ?? runtimeConfig.agents?.pruner?.enabled ?? DEFAULT_AGENT_PRUNER_ENABLED,
@@ -557,6 +591,185 @@ export function createAgentsRouter(options: AgentsRouterOptions = {}): AgentsRou
     return { ok: true }
   }
 
+  function sendProviderAuthRequiredResponse(res: Response, error: ProviderAuthRequiredError): void {
+    res.status(424).json({
+      code: 'AUTH_REQUIRED',
+      provider: error.provider,
+      status: error.snapshot.status,
+      authMethod: error.snapshot.authMethod,
+      scopeId: error.snapshot.scopeId,
+      host: error.snapshot.host,
+      reauthUrl: error.snapshot.reauthUrl,
+      error: error.message,
+    })
+  }
+
+  async function markProviderAuthRequired(
+    session: StreamSession,
+    detail: string,
+  ): Promise<ProviderAuthSnapshot> {
+    const scopeId = resolveProviderAuthScopeId(session.creator)
+    const host = session.host ?? 'local'
+    const managedOAuth = providerUsesManagedOAuth(session.agentType)
+    const nativeAuthDetail = buildProviderNativeAuthDetail(session.agentType, host)
+    const snapshot: ProviderAuthSnapshot = {
+      provider: session.agentType,
+      scopeId,
+      host,
+      status: 'auth_required',
+      authMethod: managedOAuth ? 'oauth' : nativeAuthDetail ? 'login' : 'missing',
+      detail: nativeAuthDetail ? `${detail} ${nativeAuthDetail}` : detail,
+      lastCheckedAt: new Date().toISOString(),
+      ...(managedOAuth ? { reauthUrl: buildProviderReauthUrl(session.agentType, scopeId, host) } : {}),
+    }
+    session.providerAuthSnapshot = snapshot
+    await providerAuthStore.upsertSnapshot(snapshot)
+    if (session.creator.kind === 'commander' && session.creator.id) {
+      await options.questStore?.blockActiveForAuthRequired(session.creator.id, detail)
+    }
+    return snapshot
+  }
+
+  async function handleProviderAuthCompleted(result: ProviderOAuthCompleteResult): Promise<void> {
+    await options.questStore?.unblockAuthRequired(
+      result.scopeId,
+      `${result.provider} provider authentication is ready`,
+    )
+  }
+
+  function firstForwardedHeader(value: unknown): string | null {
+    if (typeof value !== 'string') {
+      return null
+    }
+    const first = value.split(',')[0]?.trim()
+    return first && /^[a-z0-9.:-]+$/iu.test(first) ? first : null
+  }
+
+  function configuredProviderOAuthCallbackUrl(provider: AgentType): string | null {
+    const providerSpecificKey = provider === 'codex'
+      ? 'HAMMURABI_CODEX_OAUTH_CALLBACK_URL'
+      : null
+    const configured = (providerSpecificKey ? process.env[providerSpecificKey] : undefined)
+      ?? process.env.HAMMURABI_PROVIDER_OAUTH_CALLBACK_URL
+    return configured?.trim() || null
+  }
+
+  function inferPublicRequestOrigin(req: Request): string {
+    const configuredBase = process.env.HAMMURABI_PUBLIC_BASE_URL?.trim()
+      ?? process.env.HAMMURABI_PROVIDER_OAUTH_CALLBACK_BASE_URL?.trim()
+    if (configuredBase) {
+      return configuredBase
+    }
+
+    const proto = firstForwardedHeader(req.headers['x-forwarded-proto']) ?? req.protocol
+    const host = firstForwardedHeader(req.headers['x-forwarded-host']) ?? req.get('host')
+    if (!host) {
+      throw new Error('Unable to infer Hervald public host for provider OAuth callback')
+    }
+    return `${proto}://${host}`
+  }
+
+  function providerOAuthCallbackUrl(req: Request, provider: AgentType): string {
+    const configured = configuredProviderOAuthCallbackUrl(provider)
+    if (configured) {
+      return configured
+    }
+    return new URL('/api/agents/provider-auth/oauth/callback', inferPublicRequestOrigin(req)).toString()
+  }
+
+  function escapeProviderOAuthHtml(value: string): string {
+    return value
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;')
+  }
+
+  function sendProviderOAuthCallbackHtml(res: Response, statusCode: number, title: string, message: string): void {
+    res
+      .status(statusCode)
+      .type('html')
+      .set('cache-control', 'no-store')
+      .send(`<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>${escapeProviderOAuthHtml(title)}</title></head>
+<body>
+  <h1>${escapeProviderOAuthHtml(title)}</h1>
+  <p>${escapeProviderOAuthHtml(message)}</p>
+</body>
+</html>`)
+  }
+
+  async function refreshProviderAuthSnapshots(): Promise<ProviderAuthSnapshot[]> {
+    const machines = await readMachineRegistry().catch(() => [] as MachineConfig[])
+    const machineById = new Map(machines.map((machine) => [machine.id, machine]))
+    const seen = new Set<string>()
+    const snapshots: ProviderAuthSnapshot[] = []
+
+    for (const session of sessions.values()) {
+      if (session.kind !== 'stream') {
+        continue
+      }
+      const scopeId = resolveProviderAuthScopeId(session.creator)
+      const host = session.host ?? 'local'
+      const key = `${session.agentType}:${scopeId}:${host}`
+      if (seen.has(key)) {
+        continue
+      }
+      seen.add(key)
+      const machine = session.host
+        ? machineById.get(session.host) ?? {
+          id: session.host,
+          label: session.host,
+          host: null,
+        } satisfies MachineConfig
+        : undefined
+
+      try {
+        const providerAuth = await prepareProviderSpawnAuth({
+          provider: session.agentType,
+          scopeId,
+          machine,
+          store: providerAuthStore,
+        })
+        session.providerAuthSnapshot = providerAuth.snapshot
+        snapshots.push(providerAuth.snapshot)
+        if (
+          providerAuth.snapshot.status === 'auth_required'
+          && session.creator.kind === 'commander'
+          && session.creator.id
+        ) {
+          await options.questStore?.blockActiveForAuthRequired(
+            session.creator.id,
+            providerAuth.snapshot.detail ?? 'Provider authentication is required',
+          )
+        }
+        if (
+          providerAuth.snapshot.status === 'ready'
+          && session.creator.kind === 'commander'
+          && session.creator.id
+        ) {
+          await options.questStore?.unblockAuthRequired(
+            session.creator.id,
+            `${session.agentType} provider authentication is ready`,
+          )
+        }
+      } catch (error) {
+        if (error instanceof ProviderAuthRequiredError) {
+          snapshots.push(await markProviderAuthRequired(session, error.message))
+          continue
+        }
+        console.warn(
+          '[agents/provider-auth] failed to refresh auth snapshot',
+          { provider: session.agentType, scopeId, host, error: error instanceof Error ? error.message : String(error) },
+        )
+      }
+    }
+
+    return snapshots.length > 0 ? snapshots : providerAuthStore.listSnapshots()
+  }
+
   async function writeMachineRegistry(machines: readonly MachineConfig[]): Promise<MachineConfig[]> {
     return machineRegistry.writeMachineRegistry(machines)
   }
@@ -598,6 +811,7 @@ export function createAgentsRouter(options: AgentsRouterOptions = {}): AgentsRou
       void runSessionPruners()
     }, prunerConfig.sweepIntervalMs)
     : null
+  sessionPrunerTimer?.unref?.()
   const clearSessionPrunerTimer = () => {
     if (sessionPrunerTimer) {
       clearInterval(sessionPrunerTimer)
@@ -609,6 +823,26 @@ export function createAgentsRouter(options: AgentsRouterOptions = {}): AgentsRou
 
   if (sessionPrunerTimer) {
     process.on('SIGTERM', handleSessionPrunerSigterm)
+  }
+
+  const providerAuthProbeIntervalMs = resolveProviderAuthProbeIntervalMs()
+  const providerAuthProbeTimer = providerAuthProbeIntervalMs > 0
+    ? setInterval(() => {
+      void refreshProviderAuthSnapshots()
+    }, providerAuthProbeIntervalMs)
+    : null
+  providerAuthProbeTimer?.unref?.()
+  const clearProviderAuthProbeTimer = () => {
+    if (providerAuthProbeTimer) {
+      clearInterval(providerAuthProbeTimer)
+    }
+  }
+  const handleProviderAuthProbeSigterm = () => {
+    clearProviderAuthProbeTimer()
+  }
+
+  if (providerAuthProbeTimer) {
+    process.on('SIGTERM', handleProviderAuthProbeSigterm)
   }
 
   for (const session of sessions.values()) {
@@ -673,6 +907,106 @@ export function createAgentsRouter(options: AgentsRouterOptions = {}): AgentsRou
     createProviderStreamSession,
     readMachineRegistry,
     schedulePersistedSessionsWrite,
+  })
+
+  router.get('/provider-auth/snapshots', requireReadAccess, async (_req, res) => {
+    try {
+      res.json({ snapshots: await providerAuthStore.listSnapshots() })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to read provider auth snapshots'
+      res.status(500).json({ error: message })
+    }
+  })
+
+  router.post('/provider-auth/probe', requireReadAccess, async (_req, res) => {
+    try {
+      res.json({ snapshots: await refreshProviderAuthSnapshots() })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to refresh provider auth snapshots'
+      res.status(500).json({ error: message })
+    }
+  })
+
+  async function startReauthFlowForRequest(
+    req: Request,
+    provider: AgentType,
+    scopeId: string,
+    host: string,
+  ) {
+    return startProviderOAuthFlow({
+      provider,
+      scopeId,
+      host,
+      store: providerAuthStore,
+      callbackUrl: providerOAuthCallbackUrl(req, provider),
+    })
+  }
+
+  router.get('/provider-auth/:provider/reauth', requireWriteAccess, async (req, res) => {
+    const provider = parseProviderId(req.params.provider)
+    if (!provider) {
+      res.status(400).json({ error: 'Invalid provider' })
+      return
+    }
+    const scopeId = typeof req.query.scopeId === 'string' && req.query.scopeId.trim().length > 0
+      ? req.query.scopeId.trim()
+      : resolveProviderAuthScopeId({ kind: 'human', id: sessionCreatorIdFromUser(req) })
+    const host = typeof req.query.host === 'string' && req.query.host.trim().length > 0
+      ? req.query.host.trim()
+      : 'local'
+    try {
+      const flow = await startReauthFlowForRequest(req, provider, scopeId, host)
+      res.redirect(flow.authorizationUrl)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to start provider OAuth flow'
+      res.status(400).json({ error: message })
+    }
+  })
+
+  router.post('/provider-auth/:provider/reauth/start', requireWriteAccess, async (req, res) => {
+    const provider = parseProviderId(req.params.provider)
+    if (!provider) {
+      res.status(400).json({ error: 'Invalid provider' })
+      return
+    }
+    const scopeId = typeof req.body?.scopeId === 'string' && req.body.scopeId.trim().length > 0
+      ? req.body.scopeId.trim()
+      : resolveProviderAuthScopeId({ kind: 'human', id: sessionCreatorIdFromUser(req) })
+    const host = typeof req.body?.host === 'string' && req.body.host.trim().length > 0
+      ? req.body.host.trim()
+      : 'local'
+    try {
+      res.json(await startReauthFlowForRequest(req, provider, scopeId, host))
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to start provider OAuth flow'
+      res.status(400).json({ error: message })
+    }
+  })
+
+  router.get('/provider-auth/oauth/callback', async (req, res) => {
+    const state = typeof req.query.state === 'string' ? req.query.state.trim() : ''
+    const code = typeof req.query.code === 'string' ? req.query.code.trim() : ''
+    if (!state || !code) {
+      sendProviderOAuthCallbackHtml(res, 400, 'Re-auth failed', 'OAuth callback requires state and code.')
+      return
+    }
+    try {
+      const result = await completeProviderOAuthFlow({
+        state,
+        code,
+        store: providerAuthStore,
+      })
+      await handleProviderAuthCompleted(result)
+      sendProviderOAuthCallbackHtml(
+        res,
+        200,
+        'Re-auth complete',
+        'Provider authentication is ready. You can close this tab and return to Hervald.',
+      )
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to complete provider OAuth flow'
+      sendProviderOAuthCallbackHtml(res, 400, 'Re-auth failed', message)
+    }
   })
 
   router.post('/sessions/sweep', requireWriteAccess, async (req, res) => {
@@ -824,11 +1158,10 @@ export function createAgentsRouter(options: AgentsRouterOptions = {}): AgentsRou
     // that single message, not across the session). Across multiple turns we
     // must *accumulate* (`+=`) to build session totals. The `result` event at
     // the end carries session-level cumulative totals and overrides directly.
-    const evtType = event.type as string
     const provider = getProvider(session.agentType)
     const usesRuntimeWatchdog = Boolean(provider?.runtimeWatchdog)
     const persistsResumeFromEvents = Boolean(provider?.uiCapabilities.supportsEffort)
-    if (evtType === 'message_start') {
+    if (isTranscriptTurnStartRecord(event)) {
       const wasCompleted = session.lastTurnCompleted
       // One-shot session types (`cron`, `sentinel`, `automation`) are intentionally
       // single-turn. Once a `result` event has been stored on the session,
@@ -857,7 +1190,7 @@ export function createAgentsRouter(options: AgentsRouterOptions = {}): AgentsRou
         schedulePersistedSessionsWrite()
       }
     }
-    if (evtType === 'result') {
+    if (isTranscriptTurnEndRecord(event)) {
       const wasCompleted = session.lastTurnCompleted
       session.lastTurnCompleted = true
       session.completedTurnAt = new Date().toISOString()
@@ -899,15 +1232,21 @@ export function createAgentsRouter(options: AgentsRouterOptions = {}): AgentsRou
         scheduleAutoRotationIfNeeded(session.name)
       }
     }
-    if (evtType === 'exit' && usesRuntimeWatchdog) {
+    if (isTranscriptExitRecord(event) && usesRuntimeWatchdog) {
       clearCodexPendingApprovals(session)
       clearCodexTurnWatchdog(session)
       markCodexTurnHealthy(session)
     }
     applyStreamUsageEvent(session, event)
+    const usageUpdate = extractTranscriptUsageUpdate(event)
+    if (usageUpdate?.totalCostUsd !== undefined) {
+      session.usage.costUsd = usageUpdate.totalCostUsd
+    } else if (usageUpdate?.costUsd !== undefined) {
+      session.usage.costUsd = usageUpdate.costUsd
+    }
 
     if (persistsResumeFromEvents) {
-      const sessionId = extractClaudeSessionId(event)
+      const sessionId = extractClaudeSessionId(event) ?? readTranscriptEnvelopeSessionId(event)
       if (sessionId && readClaudeSessionId(session) !== sessionId) {
         ensureClaudeProviderContext(session).sessionId = sessionId
         schedulePersistedSessionsWrite()
@@ -1236,6 +1575,7 @@ export function createAgentsRouter(options: AgentsRouterOptions = {}): AgentsRou
     writeToStdin,
     writeTranscriptMeta,
     getActionPolicyGate,
+    markProviderAuthRequired,
   }
 
   function getProviderSessionDeps(agentType: AgentType): ProviderAdapterDeps {
@@ -1263,7 +1603,7 @@ export function createAgentsRouter(options: AgentsRouterOptions = {}): AgentsRou
           emitCodexApprovalQueueEvent({
             type: 'resolved',
             approval: toPendingCodexApprovalView(session, pendingRequest),
-            decision: decision === 'accept' ? 'approve' : 'reject',
+            decision: decision === 'accept' ? 'approve' : decision === 'cancel' ? 'cancel' : 'reject',
             delivered,
           })
         },
@@ -1271,6 +1611,7 @@ export function createAgentsRouter(options: AgentsRouterOptions = {}): AgentsRou
           sessionName: string,
           machine: MachineConfig | undefined,
           handleOwningSessionFailure: (failure: CodexRuntimeFailure) => void,
+          providerAuth?: ProviderSpawnAuth,
         ) => new CodexSessionRuntime(
           sessionName,
           machine,
@@ -1279,6 +1620,7 @@ export function createAgentsRouter(options: AgentsRouterOptions = {}): AgentsRou
           handleOwningSessionFailure,
           spawn,
           daemonRegistry,
+          providerAuth,
         ),
         scheduleTurnWatchdog: scheduleCodexTurnWatchdog,
       } as unknown as ProviderAdapterDeps
@@ -1287,16 +1629,26 @@ export function createAgentsRouter(options: AgentsRouterOptions = {}): AgentsRou
     if (providerId === 'gemini') {
       return {
         ...providerSessionBaseDeps,
-        runtimeFactory: (sessionName: string, machine?: MachineConfig, model?: string) =>
-          new GeminiAcpRuntime(sessionName, machine, model, daemonRegistry),
+        runtimeFactory: (
+          sessionName: string,
+          machine?: MachineConfig,
+          model?: string,
+          providerAuth?: ProviderSpawnAuth,
+        ) =>
+          new GeminiAcpRuntime(sessionName, machine, model, daemonRegistry, providerAuth),
       } as unknown as ProviderAdapterDeps
     }
 
     if (providerId === 'opencode') {
       return {
         ...providerSessionBaseDeps,
-        runtimeFactory: (sessionName: string, machine?: MachineConfig, model?: string) =>
-          new OpenCodeAcpRuntime(sessionName, machine, model, daemonRegistry),
+        runtimeFactory: (
+          sessionName: string,
+          machine?: MachineConfig,
+          model?: string,
+          providerAuth?: ProviderSpawnAuth,
+        ) =>
+          new OpenCodeAcpRuntime(sessionName, machine, model, daemonRegistry, providerAuth),
       } as unknown as ProviderAdapterDeps
     }
 
@@ -1310,11 +1662,31 @@ export function createAgentsRouter(options: AgentsRouterOptions = {}): AgentsRou
     cwd: string | undefined,
     machine: MachineConfig | undefined,
     agentType: AgentType = 'claude',
-    options: ProviderStreamSessionOptions = {},
+    sessionOptions: ProviderStreamSessionOptions = {},
   ): Promise<StreamSession> {
     const provider = getProvider(agentType)
     if (!provider) {
       throw new Error(`Unknown provider: ${agentType}`)
+    }
+
+    let providerAuth
+    try {
+      providerAuth = await prepareProviderSpawnAuth({
+        provider: agentType,
+        scopeId: resolveProviderAuthScopeId(sessionOptions.creator),
+        machine,
+        store: providerAuthStore,
+        env: process.env,
+      })
+    } catch (error) {
+      if (
+        error instanceof ProviderAuthRequiredError
+        && sessionOptions.creator?.kind === 'commander'
+        && sessionOptions.creator.id
+      ) {
+        await options.questStore?.blockActiveForAuthRequired(sessionOptions.creator.id, error.message)
+      }
+      throw error
     }
 
     return await provider.create({
@@ -1323,7 +1695,8 @@ export function createAgentsRouter(options: AgentsRouterOptions = {}): AgentsRou
       task,
       cwd,
       machine,
-      ...options,
+      ...sessionOptions,
+      providerAuth,
     }, getProviderSessionDeps(agentType))
   }
 
@@ -1349,7 +1722,7 @@ export function createAgentsRouter(options: AgentsRouterOptions = {}): AgentsRou
     await provider.teardown(session, reason)
   }
 
-  async function shutdownProviderRuntimes(reason = 'Hammurabi shutdown'): Promise<void> {
+  async function shutdownProviderRuntimes(reason = 'Hervald shutdown'): Promise<void> {
     await Promise.allSettled(
       listProviders().map(async (provider) => {
         const providerSessions = [...sessions.values()].filter((session): session is StreamSession => (
@@ -2303,6 +2676,10 @@ export function createAgentsRouter(options: AgentsRouterOptions = {}): AgentsRou
           })
           return
         }
+        if (err instanceof ProviderAuthRequiredError) {
+          sendProviderAuthRequiredResponse(res, err)
+          return
+        }
         const message = err instanceof Error ? err.message : 'Failed to create stream session'
         res.status(500).json({ error: message })
       }
@@ -2461,11 +2838,17 @@ export function createAgentsRouter(options: AgentsRouterOptions = {}): AgentsRou
    */
   async function dispatchWorkerForCommander({
     commanderId,
+    abortSignal,
     rawBody,
   }: {
     commanderId: string
+    abortSignal?: AbortSignal
     rawBody: unknown
   }): Promise<{ status: number; body: Record<string, unknown> }> {
+    if (abortSignal?.aborted) {
+      return { status: 499, body: { error: 'Worker dispatch was cancelled before launch' } }
+    }
+
     const body: Record<string, unknown> =
       rawBody && typeof rawBody === 'object' && !Array.isArray(rawBody)
         ? (rawBody as Record<string, unknown>)
@@ -2681,6 +3064,11 @@ export function createAgentsRouter(options: AgentsRouterOptions = {}): AgentsRou
         },
       )
 
+      if (abortSignal?.aborted) {
+        await teardownProviderSession(session, 'Worker dispatch was cancelled before registration')
+        return { status: 499, body: { error: 'Worker dispatch was cancelled before registration' } }
+      }
+
       sessions.set(sessionName, session)
       schedulePersistedSessionsWrite()
 
@@ -2698,6 +3086,19 @@ export function createAgentsRouter(options: AgentsRouterOptions = {}): AgentsRou
         },
       }
     } catch (err) {
+      if (err instanceof ProviderAuthRequiredError) {
+        return {
+          status: 424,
+          body: {
+            code: 'AUTH_REQUIRED',
+            provider: err.provider,
+            scopeId: err.snapshot.scopeId,
+            host: err.snapshot.host,
+            reauthUrl: err.snapshot.reauthUrl,
+            error: err.message,
+          },
+        }
+      }
       const message = err instanceof Error ? err.message : 'Failed to create stream session'
       return { status: 500, body: { error: message } }
     }
@@ -2906,6 +3307,10 @@ async function isLiveSessionResumeAvailable(session: StreamSession): Promise<boo
       clearSessionPrunerTimer()
       if (sessionPrunerTimer) {
         process.off('SIGTERM', handleSessionPrunerSigterm)
+      }
+      clearProviderAuthProbeTimer()
+      if (providerAuthProbeTimer) {
+        process.off('SIGTERM', handleProviderAuthProbeSigterm)
       }
       daemonRegistry.shutdown()
       await flushPersistedSessionsWrite()

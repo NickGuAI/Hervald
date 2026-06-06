@@ -9,6 +9,7 @@ import {
 import type { AgentType } from '../../agents/types.js'
 import { DEFAULT_CLAUDE_EFFORT_LEVEL, isClaudeEffortLevel } from '../../claude-effort.js'
 import type {
+  CommanderPackageAutomation,
   CommanderPackageDefinition,
   CommanderPackageExample,
   CommanderPackageSkill,
@@ -34,10 +35,35 @@ interface RawSkillsManifest {
   optional?: unknown
 }
 
+interface RawAutomationsManifest {
+  automations?: unknown
+}
+
 interface RawSkillEntry {
   id?: unknown
   label?: unknown
   purpose?: unknown
+}
+
+interface RawAutomationEntry {
+  id?: unknown
+  label?: unknown
+  purpose?: unknown
+  trigger?: unknown
+  schedule?: unknown
+  questTrigger?: unknown
+  instruction?: unknown
+  agentType?: unknown
+  status?: unknown
+  description?: unknown
+  timezone?: unknown
+  skills?: unknown
+  machine?: unknown
+  workDir?: unknown
+  model?: unknown
+  sessionType?: unknown
+  seedMemory?: unknown
+  maxRuns?: unknown
 }
 
 const modulePackagesDir = path.dirname(fileURLToPath(import.meta.url))
@@ -112,6 +138,91 @@ function parseSkillEntry(raw: unknown, required: boolean): CommanderPackageSkill
   }
 }
 
+function parseAutomationTrigger(value: unknown, packageDir: string): CommanderPackageAutomation['trigger'] {
+  if (value === 'schedule' || value === 'quest' || value === 'manual') {
+    return value
+  }
+  throw new Error(`Commander package ${packageDir} has invalid automations[].trigger`)
+}
+
+function parseAutomationStatus(value: unknown): CommanderPackageAutomation['status'] {
+  return value === 'active' || value === 'completed' || value === 'cancelled'
+    ? value
+    : 'paused'
+}
+
+function parseOptionalString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined
+}
+
+function parseAutomationSkills(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return []
+  }
+  return value
+    .map((entry) => parseOptionalString(entry))
+    .filter((entry): entry is string => Boolean(entry))
+}
+
+function parsePositiveInteger(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isInteger(value) && value > 0
+    ? value
+    : undefined
+}
+
+function parseQuestTrigger(value: unknown): CommanderPackageAutomation['questTrigger'] | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return undefined
+  }
+  const record = value as Record<string, unknown>
+  if (record.event !== 'completed') {
+    return undefined
+  }
+  const commanderId = parseOptionalString(record.commanderId)
+  return {
+    event: 'completed',
+    ...(commanderId ? { commanderId } : {}),
+  }
+}
+
+function parseAutomationEntry(raw: unknown, packageDir: string): CommanderPackageAutomation {
+  const entry = raw as RawAutomationEntry
+  const trigger = parseAutomationTrigger(entry.trigger, packageDir)
+  const schedule = parseOptionalString(entry.schedule)
+  const questTrigger = parseQuestTrigger(entry.questTrigger)
+  if (trigger === 'schedule' && !schedule) {
+    throw new Error(`Commander package ${packageDir} schedule automation is missing schedule`)
+  }
+  if (trigger === 'quest' && !questTrigger) {
+    throw new Error(`Commander package ${packageDir} quest automation is missing questTrigger`)
+  }
+
+  const sessionType = entry.sessionType === 'pty' || entry.sessionType === 'stream'
+    ? entry.sessionType
+    : undefined
+
+  return {
+    id: requireString(entry.id, 'automations[].id', packageDir),
+    label: requireString(entry.label, 'automations[].label', packageDir),
+    purpose: requireString(entry.purpose, 'automations[].purpose', packageDir),
+    trigger,
+    ...(schedule ? { schedule } : {}),
+    ...(questTrigger ? { questTrigger } : {}),
+    instruction: requireString(entry.instruction, 'automations[].instruction', packageDir),
+    ...(entry.agentType ? { agentType: parseAgentType(entry.agentType) } : {}),
+    status: parseAutomationStatus(entry.status),
+    ...(parseOptionalString(entry.description) ? { description: parseOptionalString(entry.description) } : {}),
+    ...(parseOptionalString(entry.timezone) ? { timezone: parseOptionalString(entry.timezone) } : {}),
+    skills: parseAutomationSkills(entry.skills),
+    ...(parseOptionalString(entry.machine) ? { machine: parseOptionalString(entry.machine) } : {}),
+    ...(parseOptionalString(entry.workDir) ? { workDir: parseOptionalString(entry.workDir) } : {}),
+    ...(parseOptionalString(entry.model) ? { model: parseOptionalString(entry.model) } : {}),
+    ...(sessionType ? { sessionType } : {}),
+    ...(typeof entry.seedMemory === 'string' ? { seedMemory: entry.seedMemory } : {}),
+    ...(parsePositiveInteger(entry.maxRuns) ? { maxRuns: parsePositiveInteger(entry.maxRuns) } : {}),
+  }
+}
+
 async function readJson<T>(filePath: string): Promise<T> {
   return JSON.parse(await readFile(filePath, 'utf8')) as T
 }
@@ -133,6 +244,18 @@ async function readExamples(packageDir: string): Promise<CommanderPackageExample
       body,
     }
   }))
+}
+
+async function readAutomations(packageDir: string): Promise<CommanderPackageAutomation[]> {
+  const filePath = path.join(packageDir, 'automations.manifest.json')
+  const manifest = await readJson<RawAutomationsManifest>(filePath).catch((error) => {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return { automations: [] }
+    }
+    throw error
+  })
+  const automations = Array.isArray(manifest.automations) ? manifest.automations : []
+  return automations.map((entry) => parseAutomationEntry(entry, packageDir))
 }
 
 export async function loadCommanderPackage(
@@ -172,6 +295,7 @@ export async function loadCommanderPackage(
         ...required.map((entry) => parseSkillEntry(entry, true)),
         ...optional.map((entry) => parseSkillEntry(entry, false)),
       ],
+      automations: await readAutomations(packageDir),
       examples: await readExamples(packageDir),
       commanderMd: await readFile(path.join(packageDir, 'COMMANDER.md'), 'utf8'),
       onboarding: await readFile(path.join(packageDir, 'onboarding.md'), 'utf8'),

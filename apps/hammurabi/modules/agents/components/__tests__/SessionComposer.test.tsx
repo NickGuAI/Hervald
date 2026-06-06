@@ -21,13 +21,6 @@ const composerAbilitiesMock = vi.hoisted(() => ({
   useComposerAbilities: vi.fn(() => ({
     abilities: [
       {
-        id: 'create-quests',
-        label: 'Create Quests',
-        prompt: 'Load quests, ask for acceptance criteria when missing, and add drift detection.',
-        enabled: true,
-        source: 'default',
-      },
-      {
         id: 'think-hard',
         label: 'Think Hard',
         prompt: 'Think ultra hard internally and keep the user-visible answer concise.',
@@ -43,6 +36,31 @@ const composerAbilitiesMock = vi.hoisted(() => ({
     customAbilitiesEnabled: composerAbilitiesMock.customAbilitiesEnabled,
     addCustomAbility: composerAbilitiesMock.addCustomAbility,
     removeCustomAbility: composerAbilitiesMock.removeCustomAbility,
+    isLoading: false,
+    isSaving: false,
+  })),
+}))
+
+const composerSkillSlotsMock = vi.hoisted(() => ({
+  primarySkillName: null as string | null,
+  setPrimarySkillName: vi.fn(async (skillName: string) => {
+    composerSkillSlotsMock.primarySkillName = skillName.replace(/^\/+/u, '')
+    return true
+  }),
+  clearPrimarySkillName: vi.fn(async () => {
+    composerSkillSlotsMock.primarySkillName = null
+    return true
+  }),
+  useComposerSkillSlots: vi.fn(() => ({
+    settings: {
+      slots: [{
+        id: 'primary',
+        skillName: composerSkillSlotsMock.primarySkillName,
+      }],
+    },
+    primarySkillName: composerSkillSlotsMock.primarySkillName,
+    setPrimarySkillName: composerSkillSlotsMock.setPrimarySkillName,
+    clearPrimarySkillName: composerSkillSlotsMock.clearPrimarySkillName,
     isLoading: false,
     isSaving: false,
   })),
@@ -67,9 +85,25 @@ vi.mock('@/hooks/use-composer-abilities', () => ({
   useComposerAbilities: composerAbilitiesMock.useComposerAbilities,
 }))
 
+vi.mock('@/hooks/use-composer-skill-slots', () => ({
+  useComposerSkillSlots: composerSkillSlotsMock.useComposerSkillSlots,
+}))
+
 vi.mock('../SkillsPicker', () => ({
-  SkillsPicker: ({ visible }: { visible: boolean }) => (
-    <div data-testid="skills-picker" data-visible={String(visible)} />
+  SkillsPicker: ({
+    visible,
+    onSelectSkill,
+  }: {
+    visible: boolean
+    onSelectSkill: (command: string) => void
+  }) => (
+    <div data-testid="skills-picker" data-visible={String(visible)}>
+      {visible && (
+        <button type="button" aria-label="Pick create-quests skill" onClick={() => onSelectSkill('/create-quests')}>
+          /create-quests
+        </button>
+      )}
+    </div>
   ),
 }))
 
@@ -132,6 +166,10 @@ beforeEach(() => {
   composerAbilitiesMock.addCustomAbility.mockReset()
   composerAbilitiesMock.removeCustomAbility.mockReset()
   composerAbilitiesMock.useComposerAbilities.mockClear()
+  composerSkillSlotsMock.primarySkillName = null
+  composerSkillSlotsMock.setPrimarySkillName.mockClear()
+  composerSkillSlotsMock.clearPrimarySkillName.mockClear()
+  composerSkillSlotsMock.useComposerSkillSlots.mockClear()
 })
 
 afterEach(() => {
@@ -146,6 +184,7 @@ afterEach(() => {
   container = null
   document.body.innerHTML = ''
   window.localStorage.clear()
+  vi.useRealTimers()
   vi.clearAllMocks()
 })
 
@@ -183,17 +222,81 @@ describe('SessionComposer', () => {
     expect(document.body.querySelector('.composer-preview-markdown')).toBeNull()
   })
 
+  it('restores a just-typed draft after immediate unmount before the debounce advances', async () => {
+    vi.useFakeTimers()
+    renderComposer({
+      sessionName: 'conversation-conv-1',
+      variant: 'mobile',
+    })
+
+    const textarea = document.body.querySelector('textarea') as HTMLTextAreaElement | null
+    expect(textarea).not.toBeNull()
+
+    flushSync(() => {
+      const descriptor = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')
+      descriptor?.set?.call(textarea, 'draft before debounce')
+      textarea?.dispatchEvent(new Event('input', { bubbles: true }))
+      textarea?.dispatchEvent(new Event('change', { bubbles: true }))
+      root?.unmount()
+    })
+    root = null
+    container?.remove()
+    container = null
+
+    expect(window.localStorage.getItem('hammurabi:draft:conversation-conv-1')).toBe('draft before debounce')
+
+    renderComposer({
+      sessionName: 'conversation-conv-1',
+      variant: 'desktop',
+    })
+
+    await vi.waitFor(() => {
+      const restoredTextarea = document.body.querySelector('textarea') as HTMLTextAreaElement | null
+      expect(restoredTextarea?.value).toBe('draft before debounce')
+    })
+  })
+
+  it('flushes the latest draft on pagehide before the debounce advances', async () => {
+    vi.useFakeTimers()
+    renderComposer({ sessionName: 'conversation-conv-1' })
+    setDraftText('flush from pagehide')
+
+    expect(window.localStorage.getItem('hammurabi:draft:conversation-conv-1')).toBeNull()
+
+    window.dispatchEvent(new Event('pagehide'))
+
+    expect(window.localStorage.getItem('hammurabi:draft:conversation-conv-1')).toBe('flush from pagehide')
+  })
+
   it('renders composer abilities in the mobile variant when queue access is unavailable', async () => {
     renderComposer({ variant: 'mobile' })
 
     const buttons = Array.from(composerRow().querySelectorAll('button'))
     expect(buttons).toHaveLength(5)
     expect(findButtonByLabel('Add to chat')).toBeDefined()
-    expect(findButtonByLabel('Enable Create Quests ability')).toBeDefined()
+    expect(findButtonByLabel('Configure quick skill slot')).toBeDefined()
     expect(findButtonByLabel('Enable Think Hard ability')).toBeDefined()
     expect(findButtonByLabel('Start voice input')).toBeDefined()
     expect(findButtonByLabel('Send message')).toBeDefined()
     expect(document.body.querySelector('button[aria-label="Add custom composer ability"]')).toBeNull()
+  })
+
+  it('keeps the mobile textarea above a compact action row with mic next to send', async () => {
+    renderComposer({ variant: 'mobile' })
+
+    const composer = document.body.querySelector('.hervald-session-composer--mobile')
+    expect(composer).not.toBeNull()
+
+    const row = composerRow()
+    expect(row.querySelector('.composer-field-stack textarea')).toBeNull()
+    expect(composer?.querySelector(':scope > .input-bar > .composer-field-stack textarea')).not.toBeNull()
+    expect(row.querySelector('button[aria-label="Add to chat"]')).not.toBeNull()
+    expect(row.querySelector('button[aria-label="Configure quick skill slot"]')).not.toBeNull()
+    expect(row.querySelector('button[aria-label="Enable Think Hard ability"]')).not.toBeNull()
+
+    const primaryActions = row.querySelector('.composer-mobile-primary-actions')
+    expect(primaryActions?.children.item(0)?.getAttribute('aria-label')).toBe('Start voice input')
+    expect(primaryActions?.children.item(1)?.getAttribute('aria-label')).toBe('Send message')
   })
 
   it('renders the mobile queue button and opens the queue panel with controls', async () => {
@@ -219,12 +322,11 @@ describe('SessionComposer', () => {
       onRemoveQueuedMessage,
     })
 
-    const queueButton = Array.from(composerRow().querySelectorAll('button'))
-      .find((candidate) => candidate.textContent?.trim() === 'Queue 1/8')
-    expect(queueButton).toBeTruthy()
+    const queueButton = findButtonByLabel('Open queue')
+    expect(queueButton.textContent?.trim()).toBe('1/8')
 
     flushSync(() => {
-      ;(queueButton as HTMLButtonElement).click()
+      queueButton.click()
     })
 
     const panel = document.body.querySelector('[data-testid="queue-panel"]')
@@ -234,6 +336,37 @@ describe('SessionComposer', () => {
     expect(document.body.querySelector('button[aria-label="Move queued message 1 up"]')).not.toBeNull()
     expect(document.body.querySelector('button[aria-label="Move queued message 1 down"]')).not.toBeNull()
     expect(document.body.querySelector('button[aria-label="Remove queued message 1"]')).not.toBeNull()
+  })
+
+  it('queues the current draft from the explicit mobile queue message button', async () => {
+    const onSend = vi.fn(() => true)
+    const onQueue = vi.fn(() => true)
+
+    renderComposer({
+      variant: 'mobile',
+      isStreaming: false,
+      onSend,
+      onQueue,
+      queueSnapshot: {
+        currentMessage: null,
+        items: [],
+        totalCount: 0,
+        maxSize: 8,
+      },
+    })
+
+    const queueMessageButton = findButtonByLabel('Queue message')
+    expect(queueMessageButton.disabled).toBe(true)
+
+    setDraftText('Queue this on mobile')
+    expect(queueMessageButton.disabled).toBe(false)
+
+    flushSync(() => {
+      queueMessageButton.click()
+    })
+
+    expect(onQueue).toHaveBeenCalledWith({ text: 'Queue this on mobile', images: undefined })
+    expect(onSend).not.toHaveBeenCalled()
   })
 
   it('sends from the mobile primary action when the session is idle', async () => {
@@ -331,7 +464,7 @@ describe('SessionComposer', () => {
     })
   })
 
-  it('queues from the mobile primary action while streaming without calling send', async () => {
+  it('queues from the explicit mobile queue action while streaming without calling send', async () => {
     const onSend = vi.fn(() => true)
     const onQueue = vi.fn(() => true)
 
@@ -340,15 +473,47 @@ describe('SessionComposer', () => {
       isStreaming: true,
       onSend,
       onQueue,
+      queueSnapshot: {
+        currentMessage: null,
+        items: [],
+        totalCount: 0,
+        maxSize: 8,
+      },
     })
     setDraftText('Queue this follow-up')
 
     flushSync(() => {
-      findButtonByLabel('Add to queue').click()
+      findButtonByLabel('Queue message').click()
     })
 
     expect(onQueue).toHaveBeenCalledWith({ text: 'Queue this follow-up', images: undefined })
     expect(onSend).not.toHaveBeenCalled()
+  })
+
+  it('keeps the mobile primary action sendable while streaming when queue drafts are supported', async () => {
+    const onSend = vi.fn(() => true)
+    const onQueue = vi.fn(() => true)
+
+    renderComposer({
+      variant: 'mobile',
+      isStreaming: true,
+      onSend,
+      onQueue,
+      queueSnapshot: {
+        currentMessage: null,
+        items: [],
+        totalCount: 0,
+        maxSize: 8,
+      },
+    })
+    setDraftText('Send this directly')
+
+    flushSync(() => {
+      findButtonByLabel('Send message').click()
+    })
+
+    expect(onSend).toHaveBeenCalledWith({ text: 'Send this directly', images: undefined })
+    expect(onQueue).not.toHaveBeenCalled()
   })
 
   it('keeps the mobile primary action sendable while streaming when queue drafts are unsupported', async () => {
@@ -376,15 +541,29 @@ describe('SessionComposer', () => {
     expect(buttons).toHaveLength(7)
     expect(findButtonByLabel('Attach image')).toBeDefined()
     expect(findButtonByLabel('Skills')).toBeDefined()
-    expect(findButtonByLabel('Enable Create Quests ability')).toBeDefined()
+    expect(findButtonByLabel('Configure quick skill slot')).toBeDefined()
     expect(findButtonByLabel('Enable Think Hard ability')).toBeDefined()
     expect(findButtonByLabel('Start voice input')).toBeDefined()
     expect(document.body.textContent).toContain('Queue')
     expect(document.body.querySelector('button[aria-label="Add custom composer ability"]')).toBeNull()
   })
 
-  it('applies the selected Create Quests ability to the next send payload without losing context', async () => {
+  it('configures the quick skill slot from the skills picker', async () => {
+    renderComposer()
+
+    flushSync(() => {
+      findButtonByLabel('Configure quick skill slot').click()
+    })
+    flushSync(() => {
+      findButtonByLabel('Pick create-quests skill').click()
+    })
+
+    expect(composerSkillSlotsMock.setPrimarySkillName).toHaveBeenCalledWith('/create-quests')
+  })
+
+  it('applies the configured quick skill slot to the draft without losing context', async () => {
     const onSend = vi.fn(() => true)
+    composerSkillSlotsMock.primarySkillName = 'create-quests'
 
     renderComposer({
       onSend,
@@ -393,22 +572,19 @@ describe('SessionComposer', () => {
     setDraftText('Break this into implementation work')
 
     flushSync(() => {
-      findButtonByLabel('Enable Create Quests ability').click()
+      findButtonByLabel('Apply /create-quests skill').click()
     })
     flushSync(() => {
       findButtonByLabel('Send').click()
     })
 
     expect(onSend).toHaveBeenCalledWith({
-      text: expect.stringContaining('[Composer abilities]'),
+      text: '/create-quests Break this into implementation work',
       images: undefined,
       context: {
         filePaths: ['docs/spec.md'],
       },
     })
-    const payload = onSend.mock.calls[0]?.[0] as { text: string }
-    expect(payload.text).toContain('Create Quests: Load quests')
-    expect(payload.text).toContain('[User message]\nBreak this into implementation work')
   })
 
   it('applies the selected Think Hard ability to the mobile queue payload', async () => {
@@ -420,6 +596,12 @@ describe('SessionComposer', () => {
       isStreaming: true,
       onSend,
       onQueue,
+      queueSnapshot: {
+        currentMessage: null,
+        items: [],
+        totalCount: 0,
+        maxSize: 8,
+      },
     })
     setDraftText('Compare the options')
 
@@ -427,7 +609,7 @@ describe('SessionComposer', () => {
       findButtonByLabel('Enable Think Hard ability').click()
     })
     flushSync(() => {
-      findButtonByLabel('Add to queue').click()
+      findButtonByLabel('Queue message').click()
     })
 
     expect(onQueue).toHaveBeenCalledWith({

@@ -188,6 +188,7 @@ export const geminiProvider: ProviderAdapter = registerProvider({
         creator: options.creator,
         conversationId: options.conversationId,
         currentSkillInvocation: options.currentSkillInvocation,
+        providerAuth: options.providerAuth,
       },
       deps,
     )

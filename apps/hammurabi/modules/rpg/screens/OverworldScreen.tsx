@@ -36,7 +36,7 @@ interface AgentSession {
 }
 
 // Browser-safe quest types (mirrors quest-store.ts without node imports)
-type QuestStatus = 'pending' | 'active' | 'done' | 'failed'
+type QuestStatus = 'pending' | 'active' | 'blocked' | 'done' | 'failed'
 type QuestSource = 'manual' | 'github-issue' | 'idea' | 'voice-log'
 
 interface QuestArtifact {
@@ -60,6 +60,7 @@ interface Quest {
 const STATUS_STYLE: Record<QuestStatus, { dot: string; text: string; label: string }> = {
   pending:  { dot: 'border-amber-500/60 bg-amber-500/20', text: 'text-amber-400', label: 'Pending' },
   active:   { dot: 'border-emerald-500/60 bg-emerald-500/20', text: 'text-emerald-300', label: 'Active' },
+  blocked:  { dot: 'border-slate-500/60 bg-slate-500/20', text: 'text-slate-300', label: 'Blocked' },
   done:     { dot: 'border-amber-600/40 bg-amber-600/30', text: 'text-amber-600', label: 'Done' },
   failed:   { dot: 'border-red-500/40 bg-red-500/20', text: 'text-red-400', label: 'Failed' },
 }
@@ -144,7 +145,7 @@ function QuestBoard({ onClose }: { onClose: () => void }) {
 
   // Group quests by status for display
   const questsByStatus = useMemo(() => {
-    const groups: Record<QuestStatus, Quest[]> = { active: [], pending: [], done: [], failed: [] }
+    const groups: Record<QuestStatus, Quest[]> = { active: [], pending: [], blocked: [], done: [], failed: [] }
     for (const q of quests) {
       groups[q.status].push(q)
     }
@@ -185,7 +186,7 @@ function QuestBoard({ onClose }: { onClose: () => void }) {
                   {/* Show quests under selected commander */}
                   {isSel && quests.length > 0 ? (
                     <div className="ml-5 border-l border-amber-900/30 pl-3 py-1">
-                      {(['active', 'pending', 'done', 'failed'] as QuestStatus[]).map((status) => {
+                      {(['active', 'pending', 'blocked', 'done', 'failed'] as QuestStatus[]).map((status) => {
                         const group = questsByStatus[status]
                         if (group.length === 0) return null
                         const style = STATUS_STYLE[status]

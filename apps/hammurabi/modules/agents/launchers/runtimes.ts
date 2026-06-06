@@ -10,6 +10,10 @@ import {
   isDaemonMachine,
   isRemoteMachine,
 } from '../machines.js'
+import {
+  mergeProviderSpawnAuthIntoLaunch,
+  type ProviderSpawnAuth,
+} from '../provider-auth.js'
 import type { MachineDaemonRegistry } from '../daemon/registry.js'
 import {
   CODEX_RUNTIME_FORCE_KILL_WAIT_MS,
@@ -73,6 +77,7 @@ export class GeminiAcpRuntime implements GeminiAcpRuntimeHandle {
     machine?: MachineConfig,
     model?: string,
     private readonly daemonRegistry?: Pick<MachineDaemonRegistry, 'spawnProcess'>,
+    private readonly providerAuth?: ProviderSpawnAuth,
   ) {
     this.sessionName = sessionName
     this.machine = isRemoteMachine(machine) ? machine : null
@@ -273,7 +278,11 @@ export class GeminiAcpRuntime implements GeminiAcpRuntimeHandle {
       this.stderrTail = []
       const cp = this.machine
         ? (() => {
-            const preparedLaunch = prepareMachineLaunchEnvironment(this.machine, process.env)
+            const preparedLaunch = mergeProviderSpawnAuthIntoLaunch(
+              prepareMachineLaunchEnvironment(this.machine, process.env),
+              this.providerAuth,
+              this.machine,
+            )
             const remoteCommand = buildLoginShellCommand(
               buildGeminiAcpInvocation(this.model),
               undefined,
@@ -299,7 +308,11 @@ export class GeminiAcpRuntime implements GeminiAcpRuntimeHandle {
               if (!this.daemonRegistry) {
                 throw new Error(`Daemon machine "${this.daemonMachine.id}" is not connected`)
               }
-              const preparedLaunch = prepareDaemonMachineLaunchEnvironment(this.daemonMachine)
+              const preparedLaunch = mergeProviderSpawnAuthIntoLaunch(
+                prepareDaemonMachineLaunchEnvironment(this.daemonMachine),
+                this.providerAuth,
+                this.daemonMachine,
+              )
               const command = buildLoginShellCommand(
                 buildGeminiAcpInvocation(this.model),
                 undefined,
@@ -318,7 +331,7 @@ export class GeminiAcpRuntime implements GeminiAcpRuntimeHandle {
             : GEMINI_ACP_ARGS,
           {
             stdio: ['pipe', 'pipe', 'pipe'],
-            env: { ...process.env },
+            env: { ...process.env, ...this.providerAuth?.env },
           },
         )
       this.attachProcess(cp)
@@ -470,6 +483,7 @@ export class OpenCodeAcpRuntime implements OpenCodeAcpRuntimeHandle {
     machine?: MachineConfig,
     model?: string,
     private readonly daemonRegistry?: Pick<MachineDaemonRegistry, 'spawnProcess'>,
+    private readonly providerAuth?: ProviderSpawnAuth,
   ) {
     this.sessionName = sessionName
     this.machine = isRemoteMachine(machine) ? machine : null
@@ -671,7 +685,11 @@ export class OpenCodeAcpRuntime implements OpenCodeAcpRuntimeHandle {
       this.stderrTail = []
       const cp = this.machine
         ? (() => {
-            const preparedLaunch = prepareMachineLaunchEnvironment(this.machine, process.env)
+            const preparedLaunch = mergeProviderSpawnAuthIntoLaunch(
+              prepareMachineLaunchEnvironment(this.machine, process.env),
+              this.providerAuth,
+              this.machine,
+            )
             const remoteCommand = buildOpenCodeAcpInvocation({
               model: this.model,
               envFile: preparedLaunch.sourcedEnvFile,
@@ -696,7 +714,11 @@ export class OpenCodeAcpRuntime implements OpenCodeAcpRuntimeHandle {
               if (!this.daemonRegistry) {
                 throw new Error(`Daemon machine "${this.daemonMachine.id}" is not connected`)
               }
-              const preparedLaunch = prepareDaemonMachineLaunchEnvironment(this.daemonMachine)
+              const preparedLaunch = mergeProviderSpawnAuthIntoLaunch(
+                prepareDaemonMachineLaunchEnvironment(this.daemonMachine),
+                this.providerAuth,
+                this.daemonMachine,
+              )
               const command = buildOpenCodeAcpInvocation({
                 model: this.model,
                 envFile: preparedLaunch.sourcedEnvFile,
@@ -714,7 +736,7 @@ export class OpenCodeAcpRuntime implements OpenCodeAcpRuntimeHandle {
             : OPENCODE_ACP_ARGS,
           {
             stdio: ['pipe', 'pipe', 'pipe'],
-            env: { ...process.env },
+            env: { ...process.env, ...this.providerAuth?.env },
           },
         )
       this.attachProcess(cp)

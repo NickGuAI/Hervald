@@ -8,6 +8,7 @@ import type { ChildProcess } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { ApiKeyStoreLike } from '../../../server/api-keys/store'
+import { ProviderAuthStore } from '../provider-auth'
 
 vi.mock('node:child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:child_process')>()
@@ -60,6 +61,23 @@ const WRITE_ONLY_AUTH_HEADERS = {
 }
 
 let spawnedProcesses: MockChildProcess[] = []
+
+async function createReadyCodexProviderAuthStore(scopeId = 'api-key') {
+  const dir = await mkdtemp(join(tmpdir(), 'hammurabi-codex-auth-'))
+  const store = new ProviderAuthStore(join(dir, 'provider-secrets.json'))
+  await store.putToken('codex', scopeId, {
+    access: 'test-codex-access-token',
+    expiresAt: 4102444800000,
+    updatedAt: '2026-01-01T00:00:00.000Z',
+  })
+
+  return {
+    store,
+    cleanup: async () => {
+      await rm(dir, { recursive: true, force: true })
+    },
+  }
+}
 
 function createMockChildProcess(pid: number): MockChildProcess {
   const stdout = new PassThrough()
@@ -698,6 +716,7 @@ describe('dispatch-worker', () => {
     })
 
     it('omits approval bridge flags for Codex remote worker dispatch (Codex uses granular stdio approval)', async () => {
+      const providerAuth = await createReadyCodexProviderAuthStore()
       const registry = await createTempMachinesRegistry({
         machines: [
           {
@@ -708,7 +727,10 @@ describe('dispatch-worker', () => {
           },
         ],
       })
-      const server = await startServer({ machinesFilePath: registry.filePath })
+      const server = await startServer({
+        machinesFilePath: registry.filePath,
+        providerAuthStore: providerAuth.store,
+      })
 
       try {
         await createCommanderSession(server.baseUrl)
@@ -758,6 +780,7 @@ describe('dispatch-worker', () => {
       } finally {
         await server.close()
         await registry.cleanup()
+        await providerAuth.cleanup()
       }
     })
 

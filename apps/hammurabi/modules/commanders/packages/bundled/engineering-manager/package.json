@@ -11,6 +11,7 @@
   "effort": "max",
   "contextMode": "thin",
   "uiProfile": {
+    "avatar": "/assets/commanders/asina-profile.svg",
     "speakingTone": "Precise engineering commander",
     "portraitStyleId": "sumi-e"
   }

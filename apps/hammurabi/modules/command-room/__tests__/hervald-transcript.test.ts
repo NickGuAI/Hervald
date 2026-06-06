@@ -72,6 +72,125 @@ describe('mergeHistoricalAndLiveTranscript', () => {
     ])
     expect(merged.some((message) => message.text.includes('<workspace-'))).toBe(false)
   })
+
+  it('folds a live replay tail into the fuller historical assistant message with the same transcript identity', () => {
+    const fullText = [
+      'CommandRoom.tsx](/home/builder/App/apps/hammurabi/modules/command-room/components/CommandRoom.tsx:825).',
+      '',
+      'So the clean fix is:',
+      '',
+      'After Resume/Start, set the conversation into a starting visual state.',
+      'Show a full conversation loading panel while conversation.runtimeState === starting.',
+      'Switch to transcript + composer only when composerEnabled && composerSendReady.',
+    ].join('\n')
+    const replayTail = [
+      'So the clean fix is:',
+      '',
+      'After Resume/Start, set the conversation into a starting visual state.',
+      'Show a full conversation loading panel while conversation.runtimeState === starting.',
+      'Switch to transcript + composer only when composerEnabled && composerSendReady.',
+    ].join('\n')
+    const historicalMessages: MsgItem[] = [
+      {
+        id: 'history-agent',
+        kind: 'agent',
+        text: fullText,
+        transcript: {
+          source: { provider: 'codex', backend: 'rpc' },
+          turnId: 'turn-1',
+          itemId: 'assistant-1',
+        },
+      },
+    ]
+    const liveMessages: MsgItem[] = [
+      {
+        id: 'live-agent-tail',
+        kind: 'agent',
+        text: replayTail,
+        transcript: {
+          source: { provider: 'codex', backend: 'rpc' },
+          turnId: 'turn-1',
+          itemId: 'assistant-1',
+        },
+      },
+    ]
+
+    expect(mergeHistoricalAndLiveTranscript(historicalMessages, liveMessages)).toEqual([
+      historicalMessages[0],
+    ])
+  })
+
+  it('keeps the fuller live assistant message when the historical copy is the replay tail', () => {
+    const historyTail = [
+      'Show a full conversation loading panel while conversation.runtimeState === starting.',
+      'Switch to transcript + composer only when composerEnabled && composerSendReady.',
+    ].join('\n')
+    const liveFullText = [
+      'So the clean fix is:',
+      '',
+      'After Resume/Start, set the conversation into a starting visual state.',
+      'Show a full conversation loading panel while conversation.runtimeState === starting.',
+      'Switch to transcript + composer only when composerEnabled && composerSendReady.',
+    ].join('\n')
+    const historicalMessages: MsgItem[] = [
+      {
+        id: 'history-agent-tail',
+        kind: 'agent',
+        text: historyTail,
+        transcript: {
+          source: { provider: 'codex', backend: 'rpc' },
+          turnId: 'turn-2',
+          itemId: 'assistant-2',
+        },
+      },
+    ]
+    const liveMessages: MsgItem[] = [
+      {
+        id: 'live-agent-full',
+        kind: 'agent',
+        text: liveFullText,
+        transcript: {
+          source: { provider: 'codex', backend: 'rpc' },
+          turnId: 'turn-2',
+          itemId: 'assistant-2',
+        },
+      },
+    ]
+
+    expect(mergeHistoricalAndLiveTranscript(historicalMessages, liveMessages)).toEqual([
+      liveMessages[0],
+    ])
+  })
+
+  it('drops long adjacent assistant tail duplicates even when old transcript rows lack provider identity', () => {
+    const historicalMessages: MsgItem[] = [
+      {
+        id: 'history-agent',
+        kind: 'agent',
+        text: [
+          'The backend/read model already exposes runtimeState, websocketReady, sendTarget, liveSession, and allowedActions.',
+          'The UI should not infer readiness from message text or transcript events when deciding whether the conversation is ready.',
+        ].join(' '),
+      },
+    ]
+    const liveMessages: MsgItem[] = [
+      {
+        id: 'live-agent-tail',
+        kind: 'agent',
+        text: 'The UI should not infer readiness from message text or transcript events when deciding whether the conversation is ready.',
+      },
+      {
+        id: 'live-agent-next',
+        kind: 'agent',
+        text: 'A genuinely new follow-up remains visible.',
+      },
+    ]
+
+    expect(mergeHistoricalAndLiveTranscript(historicalMessages, liveMessages)).toEqual([
+      historicalMessages[0],
+      liveMessages[1],
+    ])
+  })
 })
 
 describe('appendQueuedMessagesToTranscript', () => {

@@ -5,7 +5,7 @@ export type SessionMessagePeekRoleFilter = 'assistant' | 'user' | 'all'
 export interface SessionMessagePeekEntry {
   ts: string
   type: 'assistant' | 'user' | 'system' | 'message_start' | 'content_block_start' | string
-  kind?: 'text' | 'thinking' | 'tool_use' | 'tool_result' | 'warning'
+  kind?: 'text' | 'thinking' | 'tool_use' | 'tool_result' | 'image' | 'warning'
   tool?: string
   preview: string
 }
@@ -87,6 +87,32 @@ function stringifyPreview(value: unknown): string {
   } catch {
     return ''
   }
+}
+
+function imageBlockPreview(block: { alt?: unknown; url?: unknown; path?: unknown; source?: unknown }): string {
+  if (typeof block.alt === 'string' && block.alt.trim()) {
+    return block.alt
+  }
+  if (typeof block.url === 'string' && block.url.trim()) {
+    return block.url
+  }
+  if (typeof block.path === 'string' && block.path.trim()) {
+    return block.path
+  }
+  const source = asObject(block.source)
+  if (typeof source?.url === 'string' && source.url.trim()) {
+    return source.url
+  }
+  if (typeof source?.path === 'string' && source.path.trim()) {
+    return source.path
+  }
+  if (typeof source?.media_type === 'string' && source.media_type.trim()) {
+    return source.media_type
+  }
+  if (typeof source?.mediaType === 'string' && source.mediaType.trim()) {
+    return source.mediaType
+  }
+  return 'image'
 }
 
 function extractFirstScalar(value: unknown): string {
@@ -244,6 +270,15 @@ function extractContentBlockStartEntry(
     }
   }
 
+  if (block.type === 'image') {
+    return {
+      ts,
+      type: 'content_block_start',
+      kind: 'image',
+      preview: truncatePreview(imageBlockPreview(block)),
+    }
+  }
+
   const preview = truncatePreview(typeof block.text === 'string' && block.text.trim().length > 0 ? block.text : 'text')
   return {
     ts,
@@ -289,6 +324,16 @@ function collectAssistantEntries(
         toolNamesById.set(toolId, toolName)
       }
       pushEntry(entries, buildToolUseEntry(block, 'assistant', ts), role, includeToolUse)
+      continue
+    }
+
+    if (block.type === 'image') {
+      pushEntry(entries, {
+        ts,
+        type: 'assistant',
+        kind: 'image',
+        preview: truncatePreview(imageBlockPreview(block)),
+      }, role, includeToolUse)
     }
   }
 }

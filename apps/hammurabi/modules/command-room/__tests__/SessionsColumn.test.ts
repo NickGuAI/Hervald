@@ -5,6 +5,7 @@ import { createRoot } from 'react-dom/client'
 import { flushSync } from 'react-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { STATE_COLOR } from '@modules/components/hervald'
+import { ensureLocalStorage } from './ensureLocalStorage'
 
 const mocks = vi.hoisted(() => ({
   useFontScale: vi.fn(),
@@ -18,8 +19,9 @@ import { SessionsColumn } from '../components/desktop/SessionsColumn'
 
 describe('Hervald SessionsColumn', () => {
   beforeEach(() => {
-    window.localStorage.removeItem('hervald-sessions-collapsed')
-    window.localStorage.removeItem('hervald-sessions-show-exited')
+    const storage = ensureLocalStorage()
+    storage.removeItem('hervald-sessions-collapsed')
+    storage.removeItem('hervald-sessions-show-exited')
     mocks.useFontScale.mockReturnValue({
       fontScale: 1,
       adjustFontScale: vi.fn(),
@@ -391,7 +393,7 @@ describe('Hervald SessionsColumn', () => {
       fontScaleStep: 0.1,
       isSaving: false,
     })
-    const setItem = vi.spyOn(Storage.prototype, 'setItem')
+    const setItem = vi.spyOn(ensureLocalStorage(), 'setItem')
 
     flushSync(() => {
       root.render(
@@ -442,6 +444,112 @@ describe('Hervald SessionsColumn', () => {
       root.unmount()
     })
     setItem.mockRestore()
+    container.remove()
+  })
+
+  it('shows commander-local automations in the selected commander team and keeps global automations in the global section', () => {
+    const container = document.createElement('div')
+    document.body.appendChild(container)
+    const root = createRoot(container)
+
+    flushSync(() => {
+      root.render(
+        createElement(SessionsColumn, {
+          selectedCommanderId: 'cmdr-1',
+          onSelectCommander: vi.fn(),
+          onCreateCommander: vi.fn(),
+          onCreateSession: vi.fn(),
+          selectedChatId: null,
+          onSelectChat: vi.fn(),
+          commanders: [
+            {
+              id: 'cmdr-1',
+              name: 'Atlas',
+              status: 'running',
+            },
+          ],
+          workers: [
+            {
+              id: 'worker-1',
+              name: 'reviewer',
+              kind: 'worker',
+              state: 'running',
+              creator: { kind: 'commander', id: 'cmdr-1' },
+            },
+          ],
+          approvals: [],
+          workerSessions: [],
+          automationSessions: [
+            {
+              id: 'auto-global',
+              name: 'auto-global',
+              label: 'global-briefing',
+              status: 'active',
+              creator: { kind: 'automation', id: 'auto-global' },
+              parentCommanderId: null,
+            },
+            {
+              id: 'auto-local',
+              name: 'auto-local',
+              label: 'atlas-review',
+              status: 'active',
+              creator: { kind: 'automation', id: 'auto-local' },
+              parentCommanderId: 'cmdr-1',
+            },
+            {
+              id: 'auto-other',
+              name: 'auto-other',
+              label: 'borealis-retro',
+              status: 'active',
+              creator: { kind: 'automation', id: 'auto-other' },
+              parentCommanderId: 'cmdr-2',
+            },
+            {
+              id: 'auto-unknown',
+              name: 'auto-unknown',
+              label: 'unresolved-ownership',
+              status: 'active',
+              creator: { kind: 'automation', id: 'auto-unknown' },
+            },
+          ],
+          cronSessions: [],
+          sentinelSessions: [],
+        }),
+      )
+    })
+
+    const teamButton = Array.from(container.querySelectorAll('button')).find((button) =>
+      button.textContent?.includes('Team'),
+    )
+    if (!teamButton) {
+      throw new Error('expected Team dropdown button')
+    }
+    flushSync(() => {
+      teamButton.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    const localAutomationRows = Array.from(
+      container.querySelectorAll('[data-testid="commander-team-automation-row"]'),
+    )
+    expect(localAutomationRows).toHaveLength(1)
+    expect(localAutomationRows[0]?.textContent).toContain('atlas-review')
+    expect(container.textContent).not.toContain('borealis-retro')
+
+    const automationHeader = Array.from(container.querySelectorAll('button')).find((button) =>
+      button.textContent?.includes('Automations'),
+    )
+    if (!automationHeader) throw new Error('expected Automations section header')
+    flushSync(() => {
+      automationHeader.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    expect(container.textContent).toContain('global-briefing')
+    expect(container.textContent).not.toContain('borealis-retro')
+    expect(container.textContent).not.toContain('unresolved-ownership')
+
+    flushSync(() => {
+      root.unmount()
+    })
     container.remove()
   })
 })

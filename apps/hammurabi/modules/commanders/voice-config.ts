@@ -12,6 +12,9 @@ export interface VoiceConfig {
   stt: {
     enabled: boolean
     provider: string
+    model: string
+    prompt?: string
+    terms: string[]
   }
 }
 
@@ -29,6 +32,8 @@ const DEFAULT_VOICE_CONFIG: VoiceConfig = {
   stt: {
     enabled: true,
     provider: 'openai',
+    model: 'gpt-4o-transcribe',
+    terms: [],
   },
 }
 
@@ -44,6 +49,37 @@ function asString(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim().length > 0
     ? value.trim()
     : undefined
+}
+
+function asStringArray(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) {
+    return undefined
+  }
+  const values = value
+    .filter((entry): entry is string => typeof entry === 'string')
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0)
+  return values.length > 0 ? values : undefined
+}
+
+function mergeTerms(...termLists: Array<readonly string[] | undefined>): string[] {
+  const seen = new Set<string>()
+  const output: string[] = []
+  for (const terms of termLists) {
+    for (const term of terms ?? []) {
+      const normalized = term.trim()
+      if (!normalized) {
+        continue
+      }
+      const key = normalized.toLocaleLowerCase()
+      if (seen.has(key)) {
+        continue
+      }
+      seen.add(key)
+      output.push(normalized)
+    }
+  }
+  return output
 }
 
 export function normalizeVoiceConfig(raw: unknown): VoiceConfigOverride | undefined {
@@ -62,6 +98,9 @@ export function normalizeVoiceConfig(raw: unknown): VoiceConfigOverride | undefi
     ? {
       enabled: asBoolean(raw.stt.enabled),
       provider: asString(raw.stt.provider),
+      model: asString(raw.stt.model),
+      prompt: asString(raw.stt.prompt),
+      terms: asStringArray(raw.stt.terms),
     }
     : undefined
 
@@ -105,6 +144,17 @@ export function mergeVoiceConfig(
       provider: conversationConfig?.stt?.provider
         ?? commanderConfig?.stt?.provider
         ?? DEFAULT_VOICE_CONFIG.stt.provider,
+      model: conversationConfig?.stt?.model
+        ?? commanderConfig?.stt?.model
+        ?? DEFAULT_VOICE_CONFIG.stt.model,
+      prompt: conversationConfig?.stt?.prompt
+        ?? commanderConfig?.stt?.prompt
+        ?? DEFAULT_VOICE_CONFIG.stt.prompt,
+      terms: mergeTerms(
+        DEFAULT_VOICE_CONFIG.stt.terms,
+        commanderConfig?.stt?.terms,
+        conversationConfig?.stt?.terms,
+      ),
     },
   }
 }

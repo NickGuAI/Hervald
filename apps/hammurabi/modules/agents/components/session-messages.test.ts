@@ -14,7 +14,7 @@ function makeTool(id: string, toolName: string): MsgItem {
 }
 
 describe('groupMessages', () => {
-  it('keeps Agent tool blocks visible and splits surrounding generic tool groups', () => {
+  it('collapses operational activity into one activity group', () => {
     const messages: MsgItem[] = [
       makeTool('read', 'Read'),
       makeTool('bash', 'Bash'),
@@ -25,18 +25,9 @@ describe('groupMessages', () => {
 
     expect(groupMessages(messages)).toEqual([
       {
-        type: 'tool-group',
-        id: 'tg-read',
-        tools: [messages[0], messages[1]],
-      },
-      {
-        type: 'single',
-        msg: messages[2],
-      },
-      {
-        type: 'tool-group',
-        id: 'tg-edit',
-        tools: [messages[3], messages[4]],
+        type: 'activity-group',
+        id: 'ag-read',
+        messages,
       },
     ])
   })

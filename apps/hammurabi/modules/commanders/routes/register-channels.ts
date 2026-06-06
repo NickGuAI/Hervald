@@ -6,17 +6,40 @@ import {
 import { appendTranscriptEvent } from '../../agents/transcript-store.js'
 import { getChannelAdapter } from '../../channels/registry.js'
 import { CommanderMismatchError, resolveInboundChannelMessage } from '../../channels/resolver.js'
-import { TranscriptionError, transcribeInboundAudio } from '../../../server/voice/stt.js'
+import { TranscriptionError, transcribePreservedAudio } from '../../../server/voice/stt.js'
+import { buildVoiceTranscriptionContext } from '../../../server/voice/transcription-context.js'
 import {
   buildConversationSessionName,
   deliverConversationMessage,
   stopConversationSession,
 } from './conversation-runtime.js'
+import { resolveConversationVoiceConfig } from '../voice-config.js'
 import type { ParsedChannelMessageInput } from '../route-parsers.js'
 import type { ChannelAdapter, ChannelInboundEvent } from '../../channels/types.js'
 import type { Conversation } from '../conversation-store.js'
 import type { CommanderChannelMeta } from '../store.js'
 import type { CommanderRoutesContext } from './types.js'
+
+function requestAbortSignal(
+  req: import('express').Request,
+  res: import('express').Response,
+): AbortSignal {
+  const controller = new AbortController()
+  let responseFinished = false
+  const abort = () => {
+    if (!responseFinished && !controller.signal.aborted) {
+      controller.abort(new Error('HTTP request closed before response finished'))
+    }
+  }
+  res.once('finish', () => {
+    responseFinished = true
+    req.off('aborted', abort)
+    req.off('close', abort)
+  })
+  req.once('aborted', abort)
+  req.once('close', abort)
+  return controller.signal
+}
 
 function resolveParsedChannelDisplayName(
   meta: Pick<ParsedChannelMessageInput['channelMeta'], 'displayName' | 'peerId'>,
@@ -50,6 +73,22 @@ function toInboundEvent(
     rawTimestamp: parsed.rawTimestamp,
     rawSourceId: parsed.rawSourceId,
   }
+}
+
+function voiceChannelTerms(input: {
+  event: ChannelInboundEvent
+  conversation: Conversation
+}): string[] {
+  return [
+    input.event.provider,
+    input.event.peerDisplayName,
+    input.event.peerId,
+    input.event.groupId,
+    input.event.threadId,
+    input.conversation.channelMeta?.displayName,
+    input.conversation.channelMeta?.subject,
+    input.conversation.channelMeta?.space,
+  ].filter((term): term is string => typeof term === 'string' && term.trim().length > 0)
 }
 
 async function appendVoiceTranscriptLedgerEntry(input: {
@@ -89,6 +128,7 @@ export async function applyInboundVoicePreflight(input: {
   conversation: Conversation
   adapter: ChannelAdapter | null
   message: string
+  env?: NodeJS.ProcessEnv
 }): Promise<
   | { ok: true; message: string; transcribed: boolean }
   | { ok: false; reason: 'transcription-failed' }
@@ -98,10 +138,22 @@ export async function applyInboundVoicePreflight(input: {
   }
 
   try {
-    const transcript = await transcribeInboundAudio(
-      input.event.audio.buffer,
-      input.event.audio.mimeType,
-    )
+    const voiceConfig = await resolveConversationVoiceConfig(input.conversation, input.env)
+    if (!voiceConfig.stt.enabled) {
+      return { ok: true, message: input.message, transcribed: false }
+    }
+    const context = buildVoiceTranscriptionContext({
+      model: voiceConfig.stt.model,
+      prompt: voiceConfig.stt.prompt,
+      terms: [
+        ...voiceConfig.stt.terms,
+        ...voiceChannelTerms({
+          event: input.event,
+          conversation: input.conversation,
+        }),
+      ],
+    })
+    const transcript = await transcribePreservedAudio(input.event.audio, context)
     await appendVoiceTranscriptLedgerEntry({
       conversation: input.conversation,
       event: input.event,
@@ -235,6 +287,7 @@ export function registerChannelRoutes(
           ...sendOptions,
           autoStartIdle: true,
           dispatchChannelReplies: true,
+          abortSignal: requestAbortSignal(req, res),
         },
       )
 

@@ -23,6 +23,16 @@ export interface NormalizedCall {
   timestamp: string
   eventName: string
   signal: 'logs' | 'metrics' | 'traces'
+  metadata?: TelemetryMetadata
+}
+
+export interface TelemetryMetadata {
+  source?: string
+  run_id?: string
+  bench?: string
+  task_id?: string
+  turn?: number
+  runner_mode?: string
 }
 
 // ---------------------------------------------------------------------------
@@ -91,6 +101,86 @@ function readStringAttribute(
     }
   }
   return ''
+}
+
+function readMetadataString(
+  attributes: Record<string, string | number | boolean>,
+  keys: string[],
+): string | undefined {
+  const value = readStringAttribute(attributes, keys).trim()
+  return value.length > 0 ? value : undefined
+}
+
+function readMetadataNumber(
+  attributes: Record<string, string | number | boolean>,
+  keys: string[],
+): number | undefined {
+  for (const key of keys) {
+    if (!Object.prototype.hasOwnProperty.call(attributes, key)) {
+      continue
+    }
+    const parsed = asNumber(attributes[key])
+    if (Number.isFinite(parsed)) {
+      return Math.round(parsed)
+    }
+  }
+  return undefined
+}
+
+function extractMetadata(
+  attributes: Record<string, string | number | boolean>,
+): TelemetryMetadata | undefined {
+  const metadata: TelemetryMetadata = {
+    source: readMetadataString(attributes, [
+      'metadata.source',
+      'eval.source',
+      'hammurabi.eval.source',
+      'source',
+    ]),
+    run_id: readMetadataString(attributes, [
+      'metadata.run_id',
+      'metadata.runId',
+      'eval.run_id',
+      'eval.runId',
+      'hammurabi.eval.run_id',
+      'run_id',
+      'runId',
+    ]),
+    bench: readMetadataString(attributes, [
+      'metadata.bench',
+      'eval.bench',
+      'hammurabi.eval.bench',
+      'bench',
+    ]),
+    task_id: readMetadataString(attributes, [
+      'metadata.task_id',
+      'metadata.taskId',
+      'eval.task_id',
+      'eval.taskId',
+      'hammurabi.eval.task_id',
+      'task_id',
+      'taskId',
+    ]),
+    turn: readMetadataNumber(attributes, [
+      'metadata.turn',
+      'eval.turn',
+      'hammurabi.eval.turn',
+      'turn',
+    ]),
+    runner_mode: readMetadataString(attributes, [
+      'metadata.runner_mode',
+      'metadata.runnerMode',
+      'eval.runner_mode',
+      'eval.runnerMode',
+      'hammurabi.eval.runner_mode',
+      'runner_mode',
+      'runnerMode',
+    ]),
+  }
+
+  return Object.values(metadata).some((value) => value !== undefined)
+    ? metadata
+    : undefined
 }
 
 function normalizeEventName(rawEventName: string, serviceName: string): string {
@@ -189,6 +279,10 @@ export function normalizeLogRecord(
   if (!sessionId) return null
 
   const eventName = normalizeEventName(record.eventName, agentName)
+  const metadata = extractMetadata({
+    ...record.resource,
+    ...record.attributes,
+  })
 
   if (!CALL_EVENT_NAMES.has(eventName)) {
     // Non-call events: still return a normalized record for storage but with
@@ -207,6 +301,7 @@ export function normalizeLogRecord(
       timestamp: safeNanoToIso(record.timestampNano, now),
       eventName,
       signal: 'logs',
+      metadata,
     }
   }
 
@@ -226,6 +321,7 @@ export function normalizeLogRecord(
       timestamp: safeNanoToIso(record.timestampNano, now),
       eventName,
       signal: 'logs',
+      metadata,
     }
   }
 
@@ -259,6 +355,7 @@ export function normalizeLogRecord(
       timestamp: safeNanoToIso(record.timestampNano, now),
       eventName,
       signal: 'logs',
+      metadata,
     }
   }
 
@@ -278,6 +375,7 @@ export function normalizeLogRecord(
       timestamp: safeNanoToIso(record.timestampNano, now),
       eventName,
       signal: 'logs',
+      metadata,
     }
   }
 
@@ -301,6 +399,10 @@ export function normalizeMetricDataPoint(
 
   const metricName = dataPoint.metricName
   const model = asString(dataPoint.attributes.model) || 'unknown'
+  const metadata = extractMetadata({
+    ...dataPoint.resource,
+    ...dataPoint.attributes,
+  })
 
   // claude_code.cost.usage and claude_code.token.usage use CUMULATIVE
   // aggregation temporality — each export reports a running total since process
@@ -324,5 +426,6 @@ export function normalizeMetricDataPoint(
     timestamp: safeNanoToIso(dataPoint.timestampNano, now),
     eventName: metricName,
     signal: 'metrics',
+    metadata,
   }
 }

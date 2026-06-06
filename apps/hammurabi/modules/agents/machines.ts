@@ -44,6 +44,38 @@ export const ANTHROPIC_MODEL_ENV_KEYS = [
   'ANTHROPIC_DEFAULT_SONNET_MODEL',
 ] as const
 
+export const CODEX_RUNTIME_TELEMETRY_ENV_KEYS = [
+  'OTEL_EXPORTER_OTLP_ENDPOINT',
+  'OTEL_EXPORTER_OTLP_HEADERS',
+  'OTEL_EXPORTER_OTLP_LOGS_ENDPOINT',
+  'OTEL_EXPORTER_OTLP_LOGS_HEADERS',
+  'OTEL_EXPORTER_OTLP_METRICS_ENDPOINT',
+  'OTEL_EXPORTER_OTLP_METRICS_HEADERS',
+  'OTEL_EXPORTER_OTLP_TRACES_ENDPOINT',
+  'OTEL_EXPORTER_OTLP_TRACES_HEADERS',
+  'OTEL_EXPORTER_OTLP_PROTOCOL',
+  'OTEL_EXPORTER_OTLP_LOGS_PROTOCOL',
+  'OTEL_EXPORTER_OTLP_METRICS_PROTOCOL',
+  'OTEL_EXPORTER_OTLP_TRACES_PROTOCOL',
+  'OTEL_LOGS_EXPORTER',
+  'OTEL_METRICS_EXPORTER',
+  'OTEL_TRACES_EXPORTER',
+  'OTEL_RESOURCE_ATTRIBUTES',
+  'OTEL_SERVICE_NAME',
+] as const
+
+export const CODEX_RUNTIME_INHERITED_ENV_KEYS = [
+  ...ANTHROPIC_MODEL_ENV_KEYS,
+  ...CODEX_RUNTIME_TELEMETRY_ENV_KEYS,
+] as const
+
+export const CODEX_RUNTIME_DISABLED_TELEMETRY_ENV = {
+  OTEL_SDK_DISABLED: 'true',
+  OTEL_LOGS_EXPORTER: 'none',
+  OTEL_METRICS_EXPORTER: 'none',
+  OTEL_TRACES_EXPORTER: 'none',
+} as const
+
 export function scrubEnvironmentVariables(
   env: NodeJS.ProcessEnv,
   keys: readonly string[],
@@ -57,6 +89,13 @@ export function scrubEnvironmentVariables(
 
 export function buildUnsetEnvironmentCommand(keys: readonly string[]): string {
   return `unset ${keys.join(' ')}`
+}
+
+export function buildCodexRuntimeEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  return {
+    ...scrubEnvironmentVariables(env, CODEX_RUNTIME_INHERITED_ENV_KEYS),
+    ...CODEX_RUNTIME_DISABLED_TELEMETRY_ENV,
+  }
 }
 
 export interface MachineRegistryStore {
@@ -363,11 +402,11 @@ export function buildLoginShellBootstrap(envFile?: string): string {
   const commands = [
     '. "$HOME/.bashrc" >/dev/null 2>&1 || true',
     '. "$HOME/.zshrc" >/dev/null 2>&1 || true',
-    'for __hm_env_key in $(env | awk -F= \'/^HAMMURABI_MACHINE_ENV_[0-9]+=/{print $1}\' | sort); do __hm_env_entry=$(printenv "$__hm_env_key" || true); [ -n "$__hm_env_entry" ] || continue; __hm_env_name=${__hm_env_entry%%=*}; __hm_env_value=${__hm_env_entry#*=}; export "$__hm_env_name=$__hm_env_value"; unset "$__hm_env_key"; done',
   ]
   if (envFile) {
     commands.push(`. ${shellEscape(envFile)} >/dev/null 2>&1 || true`)
   }
+  commands.push('for __hm_env_key in $(env | awk -F= \'/^HAMMURABI_MACHINE_ENV_[0-9]+=/{print $1}\' | sort); do __hm_env_entry=$(printenv "$__hm_env_key" || true); [ -n "$__hm_env_entry" ] || continue; __hm_env_name=${__hm_env_entry%%=*}; __hm_env_value=${__hm_env_entry#*=}; export "$__hm_env_name=$__hm_env_value"; unset "$__hm_env_key"; done')
   return commands.join('; ')
 }
 
@@ -418,8 +457,22 @@ export function buildClaudeShellInvocation(
   return `${envPrefix} claude ${args.map((arg) => shellEscape(arg)).join(' ')}`
 }
 
+function buildCodexManagedAuthBootstrap(): string {
+  return [
+    'if [ -n "${HAMMURABI_CODEX_AUTH_JSON_B64:-}" ]; then',
+    '__hm_codex_home="$(mktemp -d "${TMPDIR:-/tmp}/hammurabi-codex.XXXXXX")"',
+    'mkdir -p "$__hm_codex_home"',
+    '(printf "%s" "$HAMMURABI_CODEX_AUTH_JSON_B64" | base64 -d 2>/dev/null || printf "%s" "$HAMMURABI_CODEX_AUTH_JSON_B64" | base64 -D) > "$__hm_codex_home/auth.json"',
+    'chmod 600 "$__hm_codex_home/auth.json"',
+    'export CODEX_HOME="$__hm_codex_home"',
+    'unset HAMMURABI_CODEX_AUTH_JSON_B64',
+    'trap \'rm -rf "$__hm_codex_home"\' EXIT',
+    'fi',
+  ].join('; ')
+}
+
 export function buildCodexAppServerInvocation(listenUrl = 'stdio://'): string {
-  return `${buildUnsetEnvironmentCommand(ANTHROPIC_MODEL_ENV_KEYS)} && codex app-server --listen ${shellEscape(listenUrl)}`
+  return `${buildCodexManagedAuthBootstrap()} && ${buildUnsetEnvironmentCommand(CODEX_RUNTIME_INHERITED_ENV_KEYS)} && export OTEL_SDK_DISABLED=true OTEL_LOGS_EXPORTER=none OTEL_METRICS_EXPORTER=none OTEL_TRACES_EXPORTER=none && codex app-server --listen ${shellEscape(listenUrl)}`
 }
 
 export function buildGeminiAcpInvocation(model?: string): string {
@@ -474,7 +527,7 @@ export function buildSshDestination(machine: MachineConfig & { host: string }): 
  *
  *   -R 127.0.0.1:<port>:127.0.0.1:<port>
  *      Reverse port-forward — remote 127.0.0.1:<port> reaches the EC2
- *      Hammurabi daemon. Binds remote loopback only; the daemon is not
+ *      Hervald daemon. Binds remote loopback only; the daemon is not
  *      exposed on any other interface.
  *
  *   -o SendEnv=HAMMURABI_INTERNAL_TOKEN
@@ -709,7 +762,7 @@ export async function resolveTailscaleHostname(
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code
     if (code === 'ENOENT') {
-      throw new Error('Tailscale CLI is not installed on this Hammurabi host')
+      throw new Error('Tailscale CLI is not installed on this Hervald host')
     }
     throw new Error(error instanceof Error ? error.message : 'Failed to run tailscale ping')
   }

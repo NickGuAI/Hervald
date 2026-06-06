@@ -95,6 +95,21 @@ function readRequiredPath(query: Record<string, unknown>): string {
   return targetPath
 }
 
+function isDownloadRequested(query: Record<string, unknown>): boolean {
+  const value = query.download
+  return value === '1' || value === 'true'
+}
+
+function safeDownloadFileName(filePath: string): string {
+  const normalizedPath = filePath.replace(/\\/g, '/')
+  const fileName = path.basename(normalizedPath).trim()
+  const safeName = fileName
+    .replace(/[\u0000-\u001f"<>:|?*\\/]+/gu, '_')
+    .replace(/^\.+$/u, '')
+    .trim()
+  return safeName || 'download'
+}
+
 function readContent(body: unknown): string {
   if (typeof body !== 'object' || body === null) {
     return ''
@@ -143,6 +158,26 @@ function isWorkspaceRootEscape(error: unknown): error is WorkspaceError {
     && error.message === 'Workspace path escapes the workspace root'
 }
 
+function pathContainsLocalFile(rootPath: string, targetPath: string): boolean {
+  const relative = path.relative(rootPath, targetPath)
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative))
+}
+
+function localPathAliasVariant(targetPath: string): string {
+  const normalized = path.normalize(targetPath)
+  return normalized.startsWith('/private/')
+    ? normalized.slice('/private'.length)
+    : `/private${normalized}`
+}
+
+function isLocalPathAlias(leftPath: string, rightPath: string): boolean {
+  const normalizedLeft = path.normalize(leftPath)
+  const normalizedRight = path.normalize(rightPath)
+  return normalizedLeft === normalizedRight
+    || localPathAliasVariant(normalizedLeft) === normalizedRight
+    || normalizedLeft === localPathAliasVariant(normalizedRight)
+}
+
 async function resolveExternalLocalWorkspaceReference(
   options: WorkspaceRouterOptions,
   resolved: ResolvedWorkspaceTarget,
@@ -175,9 +210,19 @@ async function resolveExternalLocalWorkspaceReference(
     throw new WorkspaceError(400, 'Workspace path must be a file or directory')
   }
 
-  const targetRootPath = targetStat.isDirectory()
-    ? resolvedAbsolutePath
-    : path.dirname(resolvedAbsolutePath)
+  let targetRootPath = targetStat.isDirectory()
+    ? (
+        isLocalPathAlias(absolutePath, resolvedAbsolutePath)
+          ? absolutePath
+          : resolvedAbsolutePath
+      )
+    : path.dirname(absolutePath)
+  if (!targetStat.isDirectory()) {
+    const resolvedRequestedRoot = await realpath(targetRootPath)
+    if (!pathContainsLocalFile(resolvedRequestedRoot, resolvedAbsolutePath)) {
+      targetRootPath = path.dirname(resolvedAbsolutePath)
+    }
+  }
   const target = await options.resolver.open({
     authorizationConversationId: resolved.target.conversationId,
     authorizationSessionName: resolved.target.sessionName,
@@ -338,15 +383,19 @@ export function createWorkspaceRouter(options: WorkspaceRouterOptions): Router {
   router.get('/raw', requireReadAccess, async (req, res) => {
     try {
       const resolved = await options.resolver.resolveTarget(readTargetId(req.query))
+      const requestedPath = readRequiredPath(req.query)
       const { absolutePath } = await resolveWorkspacePath(
         resolved.workspace,
-        readRequiredPath(req.query),
+        requestedPath,
         { expectFile: true },
         resolved.commandRunner,
       )
       const mimeType = getMimeType(absolutePath)
       if (mimeType) {
         res.type(mimeType)
+      }
+      if (isDownloadRequested(req.query)) {
+        res.attachment(safeDownloadFileName(requestedPath || absolutePath))
       }
       if (resolved.workspace.isRemote) {
         if (!resolved.commandRunner) {

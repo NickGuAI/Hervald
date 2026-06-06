@@ -36,6 +36,7 @@ import { ActionPolicyGate } from '../../policies/action-policy-gate'
 import { createPoliciesRouter } from '../../policies/routes'
 import { ApprovalCoordinator } from '../../policies/pending-store'
 import { PolicyStore } from '../../policies/store'
+import { ProviderAuthStore } from '../provider-auth'
 import {
   appendTranscriptEvent as appendTranscriptEventToStore,
   resetTranscriptStoreRoot as resetTranscriptStoreRootInStore,
@@ -254,6 +255,32 @@ async function createMissingMachinesRegistryPath(): Promise<TempMachinesRegistry
   }
 }
 
+async function createDefaultProviderAuthStore(): Promise<{
+  dir: string
+  store: ProviderAuthStore
+}> {
+  const dir = await mkdtemp(join(tmpdir(), 'hammurabi-provider-auth-'))
+  const store = new ProviderAuthStore(join(dir, 'provider-secrets.json'))
+  const scopes = [
+    'api-key',
+    'default',
+    'human:default',
+    'test-key-id',
+    'codex-bootstrap',
+    'codex-visible',
+    'codex-rotate',
+  ]
+  for (const scope of scopes) {
+    await store.putToken('codex', scope, {
+      access: 'test-codex-access-token',
+      expiresAt: 4102444800000,
+      updatedAt: '2026-01-01T00:00:00.000Z',
+    })
+  }
+
+  return { dir, store }
+}
+
 async function startServer(options: Partial<AgentsRouterOptions> = {}): Promise<RunningServer> {
   const app = express()
   app.use(express.json())
@@ -277,6 +304,9 @@ async function startServer(options: Partial<AgentsRouterOptions> = {}): Promise<
       return approvalSessionsInterface
     },
   })
+  const defaultProviderAuth = options.providerAuthStore
+    ? null
+    : await createDefaultProviderAuthStore()
 
   const agents = createAgentsRouter({
     apiKeyStore: createTestApiKeyStore(),
@@ -284,6 +314,7 @@ async function startServer(options: Partial<AgentsRouterOptions> = {}): Promise<
     commanderSessionStorePath: '/tmp/nonexistent-commander-sessions-test.json',
     internalToken: INTERNAL_TOKEN,
     getActionPolicyGate: options.getActionPolicyGate ?? (() => actionPolicyGate),
+    providerAuthStore: defaultProviderAuth?.store,
     ...options,
   })
   approvalSessionsInterface = agents.approvalSessionsInterface
@@ -334,6 +365,9 @@ async function startServer(options: Partial<AgentsRouterOptions> = {}): Promise<
         })
       })
       await rm(approvalDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 })
+      if (defaultProviderAuth) {
+        await rm(defaultProviderAuth.dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 })
+      }
     },
   }
 }
@@ -381,6 +415,7 @@ async function connectWsWithReplay(
   replay: {
     type: 'replay'
     events: Array<Record<string, unknown>>
+    envelopes?: Array<Record<string, unknown>>
     messages?: Array<Record<string, unknown>>
     projection?: Record<string, unknown>
     more?: boolean
@@ -394,6 +429,7 @@ async function connectWsWithReplay(
   const replayPromise = new Promise<{
     type: 'replay'
     events: Array<Record<string, unknown>>
+    envelopes?: Array<Record<string, unknown>>
     messages?: Array<Record<string, unknown>>
     projection?: Record<string, unknown>
     more?: boolean
@@ -403,6 +439,7 @@ async function connectWsWithReplay(
       const parsed = JSON.parse(data.toString()) as {
         type: string
         events?: Array<Record<string, unknown>>
+        envelopes?: Array<Record<string, unknown>>
         messages?: Array<Record<string, unknown>>
         projection?: Record<string, unknown>
         more?: boolean
@@ -412,6 +449,7 @@ async function connectWsWithReplay(
         resolve({
           type: 'replay',
           events: parsed.events,
+          envelopes: parsed.envelopes,
           messages: parsed.messages,
           projection: parsed.projection,
           more: parsed.more,

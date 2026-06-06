@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
   createGeminiTurnState,
+  mapGeminiPromptResponseToTranscriptEnvelopes,
+  mapGeminiToTranscriptEnvelopes,
   normalizeGeminiPromptResponse,
   normalizeGeminiSessionUpdate,
 } from '../../event-normalizers/gemini'
@@ -10,6 +12,90 @@ const GEMINI_SOURCE = {
 } as const
 
 describe('agents/event-normalizers/gemini', () => {
+  it('maps non-final Gemini tool updates into v2 tool.delta envelopes', () => {
+    const state = createGeminiTurnState()
+
+    expect(mapGeminiToTranscriptEnvelopes({
+      sessionUpdate: 'tool_call_update',
+      sessionId: 'gemini-session-1',
+      toolCallId: 'tool-2',
+      status: 'running',
+      rawOutput: { progress: 'streaming' },
+    }, state)).toEqual([
+      expect.objectContaining({
+        schemaVersion: 2,
+        itemId: 'tool-2',
+        source: expect.objectContaining({
+          provider: 'gemini',
+          backend: 'acp',
+          sessionId: 'gemini-session-1',
+          rawEventType: 'tool_call_update',
+        }),
+        ev: {
+          type: 'tool.delta',
+          toolCallId: 'tool-2',
+          status: 'running',
+          output: '{\n  "progress": "streaming"\n}',
+          data: expect.objectContaining({ status: 'running' }),
+        },
+      }),
+    ])
+  })
+
+  it('preserves unsupported Gemini updates and emits v2 prompt completion', () => {
+    const state = createGeminiTurnState()
+
+    expect(mapGeminiToTranscriptEnvelopes({
+      sessionUpdate: 'session/error',
+      sessionId: 'gemini-session-2',
+      error: { message: 'boom' },
+    }, state)).toEqual([
+      expect.objectContaining({
+        source: expect.objectContaining({
+          rawEventType: 'session/error',
+        }),
+        ev: {
+          type: 'provider.activity',
+          title: 'session/error',
+          data: expect.objectContaining({
+            error: { message: 'boom' },
+          }),
+        },
+      }),
+    ])
+
+    expect(mapGeminiPromptResponseToTranscriptEnvelopes({
+      stopReason: 'end_turn',
+      usage: { inputTokens: 2, outputTokens: 3 },
+    }, state)).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        ev: {
+          type: 'turn.end',
+          status: 'ok',
+          result: 'Turn completed',
+          usage: { input_tokens: 2, output_tokens: 3 },
+          error: undefined,
+        },
+      }),
+    ]))
+  })
+
+  it('preserves malformed Gemini updates as provider.raw envelopes', () => {
+    expect(mapGeminiToTranscriptEnvelopes('not-json-object', createGeminiTurnState())).toEqual([
+      expect.objectContaining({
+        schemaVersion: 2,
+        source: expect.objectContaining({
+          provider: 'gemini',
+          backend: 'acp',
+        }),
+        ev: {
+          type: 'provider.raw',
+          payload: 'not-json-object',
+        },
+      }),
+    ])
+  })
+
   it('maps Gemini ACP streaming chunks into canonical delta events', () => {
     const state = createGeminiTurnState()
 

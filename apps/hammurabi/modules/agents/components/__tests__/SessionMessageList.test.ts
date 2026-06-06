@@ -10,7 +10,7 @@ import type { MsgItem } from '../session-messages'
 const THINKING_TEXT = 'Reason through the three git repos and compare status output.'
 
 describe('SessionMessageList thinking blocks', () => {
-  it('renders replayed thinking content on mount and supports collapse/re-expand', () => {
+  it('collapses replayed thinking content under main-agent activity by default', () => {
     const container = document.createElement('div')
     document.body.appendChild(container)
     const root = createRoot(container)
@@ -27,21 +27,17 @@ describe('SessionMessageList thinking blocks', () => {
       root.render(createElement(SessionMessageList, { messages, onAnswer: () => undefined }))
     })
 
-    const toggle = container.querySelector('button')
+    const toggle = container.querySelector<HTMLButtonElement>('.msg-agent-activity-toggle')
     if (!toggle) {
-      throw new Error('expected thinking toggle button')
+      throw new Error('expected activity toggle button')
     }
     const chevron = toggle.querySelector('svg.lucide-chevron-right')
     if (!chevron) {
-      throw new Error('expected thinking chevron icon')
+      throw new Error('expected activity chevron icon')
     }
 
-    expect(container.textContent).toContain(THINKING_TEXT)
-    expect(chevron.getAttribute('class')).toContain('rotate-90')
-
-    flushSync(() => {
-      toggle.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    })
+    expect(container.textContent).toContain('Main agent')
+    expect(container.textContent).toContain('thinking')
     expect(container.textContent).not.toContain(THINKING_TEXT)
     expect(chevron.getAttribute('class')).not.toContain('rotate-90')
 
@@ -50,6 +46,12 @@ describe('SessionMessageList thinking blocks', () => {
     })
     expect(container.textContent).toContain(THINKING_TEXT)
     expect(chevron.getAttribute('class')).toContain('rotate-90')
+
+    flushSync(() => {
+      toggle.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    expect(container.textContent).not.toContain(THINKING_TEXT)
+    expect(chevron.getAttribute('class')).not.toContain('rotate-90')
 
     flushSync(() => {
       root.unmount()
@@ -87,6 +89,67 @@ describe('SessionMessageList queued transcript turns', () => {
       root.unmount()
     })
     container.remove()
+  })
+})
+
+describe('SessionMessageList inline image panes', () => {
+  it('renders assistant Markdown and structured images in desktop and mobile chat panes', () => {
+    const messages: MsgItem[] = [
+      {
+        id: 'agent-markdown-image',
+        kind: 'agent',
+        text: 'Desktop and mobile preview:\n\n![Chart](https://example.com/chart.png)',
+      },
+      {
+        id: 'agent-structured-image',
+        kind: 'agent',
+        text: '',
+        images: [{ mediaType: 'image/png', data: 'structured-image-base64', alt: 'Generated chart' }],
+      },
+      {
+        id: 'user-image-regression',
+        kind: 'user',
+        text: '[image]',
+        images: [{ mediaType: 'image/png', data: 'user-image-base64' }],
+      },
+    ]
+
+    for (const width of [1024, 360]) {
+      const container = document.createElement('div')
+      container.className = 'hervald-chat-pane hv-light'
+      container.style.width = `${width}px`
+      document.body.appendChild(container)
+      const root = createRoot(container)
+
+      flushSync(() => {
+        root.render(createElement(SessionMessageList, {
+          messages,
+          onAnswer: () => undefined,
+        }))
+      })
+
+      const agentBubble = container.querySelector<HTMLElement>('.msg-agent')
+      if (!agentBubble) {
+        throw new Error(`expected agent bubble at ${width}px`)
+      }
+      const inlineImage = agentBubble.querySelector<HTMLImageElement>('.msg-agent-md .msg-inline-image')
+      const structuredImage = container.querySelector<HTMLImageElement>('.msg-agent-attachments .msg-attachment')
+      const userImage = container.querySelector<HTMLImageElement>('.msg-user .msg-attachment')
+
+      expect(inlineImage?.getAttribute('src')).toBe('https://example.com/chart.png')
+      expect(inlineImage?.getAttribute('referrerpolicy')).toBe('no-referrer')
+      expect(inlineImage?.className).toContain('max-w-full')
+      expect(structuredImage?.getAttribute('src')).toBe('data:image/png;base64,structured-image-base64')
+      expect(structuredImage?.getAttribute('referrerpolicy')).toBe('no-referrer')
+      expect(structuredImage?.className).toContain('max-w-full')
+      expect(userImage?.getAttribute('src')).toBe('data:image/png;base64,user-image-base64')
+      expect(container.textContent).not.toContain('[image]')
+
+      flushSync(() => {
+        root.unmount()
+      })
+      container.remove()
+    }
   })
 })
 
@@ -223,6 +286,73 @@ describe('SessionMessageList planning blocks', () => {
     expect(onAnswer).toHaveBeenCalledWith('plan-exit', {
       decision: ['approve'],
       message: ['Ship this plan.'],
+    })
+
+    flushSync(() => {
+      root.unmount()
+    })
+    container.remove()
+  })
+
+  it('renders Codex MCP user questions without the plan approval card', () => {
+    const container = document.createElement('div')
+    document.body.appendChild(container)
+    const root = createRoot(container)
+    const onAnswer = vi.fn()
+
+    const messages: MsgItem[] = [
+      {
+        id: 'codex-mcp-question',
+        kind: 'ask',
+        text: '',
+        toolId: 'codex-mcp-elicitation-913',
+        toolName: 'Codex MCP Elicitation',
+        askInteractionKind: 'ask_user_question',
+        askQuestions: [
+          {
+            id: 'response',
+            header: 'Response',
+            question: 'Which value should Codex use?',
+            options: [],
+            multiSelect: false,
+          },
+        ] as MsgItem['askQuestions'],
+        askAnswered: false,
+      },
+    ]
+
+    flushSync(() => {
+      root.render(createElement(SessionMessageList, { messages, onAnswer }))
+    })
+
+    expect(container.textContent).toContain('Question')
+    expect(container.textContent).toContain('Which value should Codex use?')
+    expect(container.textContent).not.toContain('Plan Approval')
+
+    const input = container.querySelector('input')
+    if (!input) {
+      throw new Error('expected free-text answer input')
+    }
+    const inputValueSetter = Object.getOwnPropertyDescriptor(
+      HTMLInputElement.prototype,
+      'value',
+    )?.set
+    flushSync(() => {
+      inputValueSetter?.call(input, 'Use the default.')
+      input.dispatchEvent(new InputEvent('input', { bubbles: true }))
+    })
+
+    const submitButton = Array.from(container.querySelectorAll('button'))
+      .find((button) => button.textContent?.includes('Submit'))
+    if (!submitButton) {
+      throw new Error('expected submit button')
+    }
+    flushSync(() => {
+      submitButton.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    expect(onAnswer).toHaveBeenCalledWith('codex-mcp-elicitation-913', {
+      response: ['Use the default.'],
     })
 
     flushSync(() => {

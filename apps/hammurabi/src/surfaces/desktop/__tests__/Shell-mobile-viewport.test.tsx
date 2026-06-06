@@ -9,6 +9,8 @@ import type { FrontendNavItem } from '@/types'
 
 const mocks = vi.hoisted(() => ({
   useAgentSessions: vi.fn(),
+  useApprovalNotifications: vi.fn(),
+  useApprovalNotificationsSuppressed: vi.fn(() => false),
   usePendingApprovals: vi.fn(),
 }))
 
@@ -17,6 +19,9 @@ vi.mock('@/hooks/use-agents', () => ({
 }))
 
 vi.mock('@/hooks/use-approvals', () => ({
+  APPROVAL_NOTIFICATION_MAX_VISIBLE: 3,
+  useApprovalNotifications: mocks.useApprovalNotifications,
+  useApprovalNotificationsSuppressed: mocks.useApprovalNotificationsSuppressed,
   usePendingApprovals: mocks.usePendingApprovals,
 }))
 
@@ -100,6 +105,13 @@ describe('Shell — mobile viewport frame ownership (#1107)', () => {
     originalMatchMedia = window.matchMedia
     mocks.useAgentSessions.mockReturnValue({ data: [] })
     mocks.usePendingApprovals.mockReturnValue({ data: [] })
+    mocks.useApprovalNotifications.mockReturnValue({
+      notifications: [],
+      visibleNotifications: [],
+      hiddenNotificationCount: 0,
+      dismissNotification: vi.fn(),
+      connectionStatus: 'connected',
+    })
   })
 
   afterEach(async () => {

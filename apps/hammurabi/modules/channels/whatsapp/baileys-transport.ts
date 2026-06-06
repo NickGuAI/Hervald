@@ -147,7 +147,6 @@ async function createBaileysSocket(input: BaileysRuntimeOptions): Promise<WASock
     },
     version,
     logger: logger as never,
-    printQRInTerminal: input.config.baileys.printQrInTerminal,
     browser: [input.config.baileys.browserName, 'hammurabi', '1.0.0'],
     markOnlineOnConnect: input.config.baileys.markOnlineOnConnect,
     syncFullHistory: input.config.baileys.syncFullHistory,

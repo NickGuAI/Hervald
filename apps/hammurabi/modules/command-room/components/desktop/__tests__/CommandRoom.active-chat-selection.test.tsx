@@ -181,6 +181,7 @@ vi.mock('../SessionsColumn', () => ({
     onSelectConversation,
     onArchiveConversation,
     selectedChatId,
+    sessionActionError,
   }: {
     commanders: Array<{ id: string; name: string }>
     conversations?: Array<{ id: string }>
@@ -188,6 +189,7 @@ vi.mock('../SessionsColumn', () => ({
     onSelectConversation?: (id: string) => void
     onArchiveConversation?: (id: string) => void | Promise<void>
     selectedChatId: string | null
+    sessionActionError?: string | null
   }) => createElement(
     'div',
     null,
@@ -220,12 +222,18 @@ vi.mock('../SessionsColumn', () => ({
           key: `archive-${conversation.id}`,
           type: 'button',
           'data-testid': `archive-${conversation.id}`,
-          onClick: () => { void onArchiveConversation?.(conversation.id) },
+          onClick: () => {
+            const archiveResult = onArchiveConversation?.(conversation.id)
+            if (archiveResult && typeof archiveResult.catch === 'function') {
+              void archiveResult.catch(() => undefined)
+            }
+          },
         },
         `archive ${conversation.id}`,
       ),
     ]),
     createElement('div', { 'data-testid': 'selected-chat' }, selectedChatId ?? 'none'),
+    createElement('div', { 'data-testid': 'session-action-error' }, sessionActionError ?? ''),
   ),
 }), { virtual: true })
 
@@ -516,6 +524,80 @@ describe('CommandRoom backend active chat selection', () => {
     expect(window.location.search).not.toContain('panel=automation')
   })
 
+  it('commits the commander selection before the active chat lookup resolves', async () => {
+    let resolveActive!: (value: TestConversationRecord | null) => void
+    mocks.fetchCommanderActiveConversation.mockImplementationOnce(async () =>
+      new Promise<TestConversationRecord | null>((resolve) => {
+        resolveActive = resolve
+      }),
+    )
+
+    await renderAt('/command-room')
+    await selectCommander('atlas')
+
+    expect(setSelectedCommanderId).toHaveBeenCalledWith('atlas')
+    expect(window.location.search).toContain('commander=atlas')
+    expect(window.location.search).not.toContain('conversation=')
+    expect(document.body.querySelector('[data-testid="selected-chat"]')?.textContent).toBe('none')
+
+    await act(async () => {
+      resolveActive(conversationsByCommander.atlas[0] ?? null)
+    })
+
+    await vi.waitFor(() => {
+      expect(document.body.querySelector('[data-testid="selected-chat"]')?.textContent).toBe('conv-new')
+    })
+    expect(window.location.search).toContain('conversation=conv-new')
+  })
+
+  it('loads target commander conversation metadata while URL selection is settling', async () => {
+    selectedCommanderId = 'hermes'
+    conversationsByCommander.hermes = [
+      buildConversation('conv-hermes', 'hermes', 'active', '2026-05-01T00:30:00.000Z'),
+    ]
+
+    await renderAt('/command-room?commander=atlas&conversation=conv-old')
+
+    expect(mocks.useConversations.mock.calls.some(([commanderId, selectedConversationId]) =>
+      commanderId === 'atlas' && selectedConversationId === null)).toBe(true)
+    expect(document.body.querySelector('[data-testid="conversation-conv-new"]')).not.toBeNull()
+    expect(mocks.useConversationMessages).not.toHaveBeenCalledWith('conv-old', true)
+  })
+
+  it('does not let a stale active chat response override a newer commander selection', async () => {
+    conversationsByCommander.hermes = [
+      buildConversation('conv-hermes', 'hermes', 'active', '2026-05-01T00:30:00.000Z'),
+    ]
+    let resolveAthena!: (value: TestConversationRecord | null) => void
+    mocks.fetchCommanderActiveConversation.mockImplementation(async (commanderId: string) => {
+      if (commanderId === 'atlas') {
+        return new Promise<TestConversationRecord | null>((resolve) => {
+          resolveAthena = resolve
+        })
+      }
+      return getMockBackendActiveChat(commanderId)
+    })
+
+    await renderAt('/command-room')
+    await selectCommander('atlas')
+    await selectCommander('hermes')
+
+    await vi.waitFor(() => {
+      expect(window.location.search).toContain('commander=hermes')
+    })
+
+    await act(async () => {
+      resolveAthena(conversationsByCommander.atlas[0] ?? null)
+    })
+
+    await vi.waitFor(() => {
+      expect(document.body.querySelector('[data-testid="selected-chat"]')?.textContent).toBe('conv-hermes')
+    })
+    expect(window.location.search).toContain('commander=hermes')
+    expect(window.location.search).toContain('conversation=conv-hermes')
+    expect(window.location.search).not.toContain('conv-new')
+  })
+
   it('restores commander and conversation state from the URL', async () => {
     await renderAt('/command-room?commander=atlas&conversation=conv-old')
 
@@ -715,6 +797,40 @@ describe('CommandRoom backend active chat selection', () => {
       }))
       expect(window.location.search).not.toContain('conversation=')
       expect(document.body.querySelector('[data-testid="selected-chat"]')?.textContent).toBe('none')
+    })
+  })
+
+  it('surfaces archive failures with archive copy in the sessions column', async () => {
+    conversationsByCommander.atlas = [
+      buildConversation('conv-only', 'atlas', 'active', '2026-05-01T00:30:00.000Z'),
+    ]
+    const updateMutateAsync = vi.fn(async () => {
+      throw new Error('Failed to archive conversation')
+    })
+    mocks.useUpdateConversation.mockReturnValue({ mutateAsync: updateMutateAsync, isPending: false })
+
+    await renderAt('/command-room?commander=atlas&conversation=conv-only')
+
+    await vi.waitFor(() => {
+      expect(document.body.querySelector('[data-testid="selected-chat"]')?.textContent).toBe('conv-only')
+    })
+
+    const archiveButton = document.body.querySelector('[data-testid="archive-conv-only"]')
+    if (!(archiveButton instanceof HTMLButtonElement)) {
+      throw new Error('missing archive button')
+    }
+
+    await act(async () => {
+      archiveButton.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    await vi.waitFor(() => {
+      expect(updateMutateAsync).toHaveBeenCalledWith(expect.objectContaining({
+        conversationId: 'conv-only',
+        status: 'archived',
+      }))
+      expect(document.body.querySelector('[data-testid="session-action-error"]')?.textContent)
+        .toContain('Failed to archive conversation')
     })
   })
 

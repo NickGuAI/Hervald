@@ -12,13 +12,14 @@ export function SkillsPicker({
   theme = 'light',
 }: {
   visible: boolean
-  onSelectSkill: (command: string) => void
+  onSelectSkill: (command: string) => boolean | void | Promise<boolean | void>
   onClose: () => void
   variant?: 'default' | 'hervald'
   theme?: 'light' | 'dark'
 }) {
   const { data: skills, isError, isLoading } = useSkills()
   const [query, setQuery] = useState('')
+  const [selectingSkillName, setSelectingSkillName] = useState<string | null>(null)
   const filteredSkills = useMemo(() => {
     if (!skills) return []
     const normalized = query.trim().toLowerCase()
@@ -104,16 +105,24 @@ export function SkillsPicker({
               filteredSkills.map((skill) => (
                 <button
                   key={skill.name}
-                  onClick={() => {
+                  onClick={async () => {
                     const cmd = `/${skill.name}`
-                    onSelectSkill(cmd)
-                    onClose()
+                    setSelectingSkillName(skill.name)
+                    try {
+                      const selected = await onSelectSkill(cmd)
+                      if (selected !== false) {
+                        onClose()
+                      }
+                    } finally {
+                      setSelectingSkillName(null)
+                    }
                   }}
                   className={cn(
                     'w-full text-left p-3 rounded-lg border border-[color:var(--hv-border-hair)] bg-[var(--hv-bg-raised)] transition-colors',
                     '[-webkit-tap-highlight-color:transparent] [@media(hover:hover)]:hover:bg-[var(--hv-surface-hover)]',
                     variant === 'hervald' && 'sheet-skill--hervald',
                   )}
+                  disabled={selectingSkillName !== null}
                 >
                   <div className="flex items-center gap-2">
                     <Zap
@@ -131,6 +140,9 @@ export function SkillsPicker({
                     >
                       /{skill.name}
                     </span>
+                    {selectingSkillName === skill.name && (
+                      <span className="ml-auto h-1.5 w-1.5 rounded-full bg-[var(--hv-fg-faint)]" />
+                    )}
                   </div>
                   {skill.description && (
                     <p

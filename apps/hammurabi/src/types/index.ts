@@ -1,9 +1,15 @@
 import type { HammurabiEvent } from './hammurabi-events.js'
+import type { TranscriptEnvelope } from './transcript-envelope.js'
 import type { ClaudeAdaptiveThinkingMode } from '../../modules/claude-adaptive-thinking.js'
 import type { ClaudeEffortLevel } from '../../modules/claude-effort.js'
 import type { ClaudeMaxThinkingTokens } from '../../modules/claude-max-thinking-tokens.js'
 import type { HammurabiUiSurface } from './module-manifest.js'
 export type { HammurabiEvent, HammurabiEventSource } from './hammurabi-events.js'
+export type {
+  TranscriptEnvelope,
+  TranscriptEnvelopeEvent,
+  TranscriptEnvelopeSource,
+} from './transcript-envelope.js'
 
 // Module system types
 export interface FrontendModuleBinding {
@@ -172,6 +178,36 @@ export interface AgentSession {
   status?: AgentSessionStatus
   resumeAvailable?: boolean
   queuedMessageCount?: number
+}
+
+export type ProviderAuthStatus = 'ready' | 'auth_required' | 'unknown'
+export type ProviderAuthMethod = 'oauth' | 'api-key' | 'login' | 'missing'
+
+export interface ProviderAuthSnapshot {
+  provider: AgentType
+  scopeId: string
+  host: string
+  status: ProviderAuthStatus
+  lastCheckedAt: string
+  accountId?: string
+  accountEmail?: string
+  detail?: string
+  reauthUrl?: string
+  authMethod?: ProviderAuthMethod
+}
+
+export interface ProviderAuthSnapshotsResponse {
+  snapshots: ProviderAuthSnapshot[]
+}
+
+export interface ProviderReauthStartResponse {
+  provider: AgentType
+  scopeId: string
+  host: string
+  state: string
+  authorizationUrl: string
+  callbackUrl: string
+  expiresAt: string
 }
 
 // hamRPG world types
@@ -359,8 +395,8 @@ export interface AskQuestion {
   multiSelect: boolean
 }
 
-// Stream events in the agents UI now use the shared Hammurabi contract.
-export type StreamEvent = HammurabiEvent
+// Stream events in the agents UI can be historical Hammurabi events or v2 transcript envelopes.
+export type StreamEvent = HammurabiEvent | TranscriptEnvelope
 
 // Telemetry types
 export type SessionStatus = 'active' | 'idle' | 'stale' | 'completed'

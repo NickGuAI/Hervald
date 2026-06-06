@@ -4,6 +4,8 @@ import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
   loadCommanderVoiceConfig,
+  mergeVoiceConfig,
+  normalizeVoiceConfig,
   resolveCommanderVoiceConfigPath,
 } from '../voice-config.js'
 
@@ -64,5 +66,47 @@ describe('commander voice config paths', () => {
     await expect(readFile(oldPath, 'utf8')).resolves.toBe(
       JSON.stringify({ tts: { voice: 'legacy' } }),
     )
+  })
+
+  it('normalizes and merges STT prompt, model, and terms from commander and conversation config', () => {
+    expect(normalizeVoiceConfig({
+      stt: {
+        enabled: true,
+        provider: 'openai',
+        model: 'gpt-4o-mini-transcribe',
+        prompt: '  Preserve Columbia AI seminar names.  ',
+        terms: [' Hammurabi ', '', 'Gehirn', 'hammurabi'],
+      },
+    })).toEqual({
+      stt: {
+        enabled: true,
+        provider: 'openai',
+        model: 'gpt-4o-mini-transcribe',
+        prompt: 'Preserve Columbia AI seminar names.',
+        terms: ['Hammurabi', 'Gehirn', 'hammurabi'],
+      },
+    })
+
+    expect(mergeVoiceConfig(
+      {
+        stt: {
+          model: 'gpt-4o-transcribe',
+          prompt: 'Commander prompt',
+          terms: ['Hammurabi', 'Claude Code'],
+        },
+      },
+      {
+        stt: {
+          prompt: 'Conversation prompt',
+          terms: ['PMAI', 'claude code', 'Kubernetes'],
+        },
+      },
+    ).stt).toEqual({
+      enabled: true,
+      provider: 'openai',
+      model: 'gpt-4o-transcribe',
+      prompt: 'Conversation prompt',
+      terms: ['Hammurabi', 'Claude Code', 'PMAI', 'Kubernetes'],
+    })
   })
 })

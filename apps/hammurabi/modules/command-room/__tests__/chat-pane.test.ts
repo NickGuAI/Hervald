@@ -75,8 +75,9 @@ describe('ChatPane', () => {
       },
     ])
 
-    expect(html).toContain('Thinking')
-    expect(html).toContain('Analyzing the dependency graph.')
+    expect(html).toContain('Main agent')
+    expect(html).toContain('thinking')
+    expect(html).not.toContain('Analyzing the dependency graph.')
   })
 
   it('renders planning blocks', () => {
@@ -136,8 +137,10 @@ describe('ChatPane', () => {
       },
     ])
 
-    expect(html).toContain('Read')
+    expect(html).toContain('Main agent')
+    expect(html).toContain('1 tool call')
     expect(html).toContain('done')
+    expect(html).not.toContain('package.json')
   })
 
   it('renders grouped tool calls', () => {
@@ -158,6 +161,7 @@ describe('ChatPane', () => {
       },
     ])
 
+    expect(html).toContain('Main agent')
     expect(html).toContain('2 tool calls')
     expect(html).toContain('1 running')
   })
@@ -221,10 +225,10 @@ describe('ChatPane', () => {
     ])
 
     expect(html).toContain('Running Sub-agents')
-    expect(html).toContain('msg-subagent')
-    expect(html).toContain('Sub-agent')
+    expect(html).toContain('msg-agent-activity')
+    expect(html).toContain('1 sub-agent')
     expect(html).toContain('Investigate flaky test')
-    expect(html).toContain('Read the failing test output')
+    expect(html).not.toContain('Read the failing test output')
     expect(html).not.toContain('Agent: Investigate flaky test')
   })
 })

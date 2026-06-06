@@ -39,9 +39,9 @@ describe('session-messages compatibility facade', () => {
 
     expect(groupMessages(messages)).toEqual([
       {
-        type: 'tool-group',
-        id: 'tg-tool-1',
-        tools: messages,
+        type: 'activity-group',
+        id: 'ag-tool-1',
+        messages,
       },
     ])
   })

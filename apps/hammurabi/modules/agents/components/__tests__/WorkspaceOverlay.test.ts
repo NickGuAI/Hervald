@@ -9,12 +9,14 @@ const mocks = vi.hoisted(() => ({
   fetchWorkspaceTree: vi.fn(),
   fetchWorkspaceExpandedTree: vi.fn(),
   fetchWorkspacePathResolution: vi.fn(),
+  downloadWorkspaceFile: vi.fn(),
   useWorkspaceFilePreview: vi.fn(),
   useWorkspaceGitStatus: vi.fn(),
   useWorkspaceGitLog: vi.fn(),
 }))
 
 vi.mock('../../../workspace/use-workspace', () => ({
+  downloadWorkspaceFile: mocks.downloadWorkspaceFile,
   fetchWorkspaceTree: mocks.fetchWorkspaceTree,
   fetchWorkspaceExpandedTree: mocks.fetchWorkspaceExpandedTree,
   fetchWorkspacePathResolution: mocks.fetchWorkspacePathResolution,
@@ -223,6 +225,7 @@ describe('WorkspaceOverlay', () => {
     mocks.fetchWorkspaceTree.mockReset()
     mocks.fetchWorkspaceExpandedTree.mockReset()
     mocks.fetchWorkspacePathResolution.mockReset()
+    mocks.downloadWorkspaceFile.mockReset()
     mocks.useWorkspaceFilePreview.mockReset()
     mocks.useWorkspaceGitStatus.mockReset()
     mocks.useWorkspaceGitLog.mockReset()
@@ -295,6 +298,47 @@ describe('WorkspaceOverlay', () => {
       'expected requested workspace path preview',
     )
     expect(document.body.textContent).toContain('Tree selection: src/index.ts')
+
+    await act(async () => {
+      root.unmount()
+    })
+    container.remove()
+  })
+
+  it('downloads the current preview from the popup header', async () => {
+    const container = document.createElement('div')
+    document.body.appendChild(container)
+    const root = createRoot(container)
+    const onClose = vi.fn()
+    mocks.downloadWorkspaceFile.mockResolvedValue(undefined)
+
+    await renderOverlay(root, onClose)
+
+    await waitForCondition(
+      () =>
+        Array.from(document.body.querySelectorAll('button')).some((button) =>
+          button.textContent?.includes('Preview src/index.ts'),
+        ),
+      'expected preview button',
+    )
+    const previewButton = Array.from(document.body.querySelectorAll('button')).find((button) =>
+      button.textContent?.includes('Preview src/index.ts'),
+    )
+    if (!previewButton) {
+      throw new Error('expected preview button')
+    }
+
+    await dispatchEventAndFlush(previewButton, new MouseEvent('click', { bubbles: true }))
+    await waitForCondition(
+      () => document.body.textContent?.includes('Previewing src/index.ts') ?? false,
+      'expected preview content',
+    )
+
+    const downloadButton = document.body.querySelector('[aria-label="Download src/index.ts"]') as HTMLButtonElement | null
+    expect(downloadButton).not.toBeNull()
+
+    await dispatchEventAndFlush(downloadButton!, new MouseEvent('click', { bubbles: true }))
+    expect(mocks.downloadWorkspaceFile).toHaveBeenCalledWith(SOURCE, 'src/index.ts', undefined)
 
     await act(async () => {
       root.unmount()

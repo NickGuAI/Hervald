@@ -3,7 +3,7 @@
 import { act } from 'react'
 import type { ReactElement } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { MagicBento, MagicBentoCard } from '../MagicBento'
 
 let root: Root | null = null
@@ -41,7 +41,13 @@ describe('MagicBento', () => {
       </MagicBento>,
     )
 
-    expect(document.querySelector('[data-testid="bento"]')?.className).toContain('hv-magic-bento')
+    const bento = await vi.waitFor(() => {
+      const element = document.querySelector('[data-testid="bento"]')
+      expect(element).not.toBeNull()
+      return element as HTMLElement
+    })
+
+    expect(bento.classList.contains('hv-magic-bento')).toBe(true)
     expect(document.querySelector('[data-testid="card-a"]')?.getAttribute('data-bento-span')).toBe('6')
     expect(document.querySelector('[data-testid="card-b"]')?.getAttribute('data-bento-span')).toBe('3')
   })

@@ -6,13 +6,41 @@ import { createRoot, type Root } from 'react-dom/client'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { ensureLocalStorage } from '../../../__tests__/ensureLocalStorage'
 
 const mocks = vi.hoisted(() => ({
+  fetchJson: vi.fn(),
   useCommander: vi.fn(),
   useAgentSessions: vi.fn(),
   useMachines: vi.fn(),
   useAgentSessionStream: vi.fn(),
   usePendingApprovals: vi.fn(),
+  fetchWorkspacePathResolution: vi.fn(),
+  openWorkspaceTarget: vi.fn(),
+  workspacePanelProps: [] as Array<{
+    source?: { targetId?: string }
+    requestedPath?: string | null
+    requestedPathToken?: number
+    onRequestedPathConsumed?: (token: number) => void
+    onRecoverStaleTarget?: (source: { kind: 'target'; targetId: string }) => Promise<unknown>
+  }>,
+  sessionsColumnProps: [] as Array<{
+    workers?: unknown[]
+    workerSessions?: unknown[]
+    automationSessions?: Array<{
+      id?: string
+      label?: string
+      parentCommanderId?: string | null
+    }>
+  }>,
+  centerColumnProps: [] as Array<{
+    onOpenWorkspaceFile?: (path: string) => void
+    automationSessions?: Array<{
+      id?: string
+      label?: string
+      parentCommanderId?: string | null
+    }>
+  }>,
 }))
 
 vi.mock('@/hooks/use-is-mobile', () => ({
@@ -20,15 +48,7 @@ vi.mock('@/hooks/use-is-mobile', () => ({
 }))
 
 vi.mock('@/lib/api', () => ({
-  fetchJson: vi.fn(async (path: string) => {
-    if (path === '/api/workspace/preferences') {
-      return { panelDefault: 'last-used' }
-    }
-    if (path.includes('/conversations')) {
-      return []
-    }
-    return {}
-  }),
+  fetchJson: mocks.fetchJson,
 }))
 
 vi.mock('@/hooks/use-agents', () => ({
@@ -58,106 +78,163 @@ vi.mock('@modules/commanders/hooks/useCommander', () => ({
 }))
 
 vi.mock('../SessionsColumn', () => ({
-  SessionsColumn: ({
-    onSelectChat,
-  }: {
+  SessionsColumn: (props: {
     onSelectChat: (sessionId: string) => void
-  }) => createElement(
-    'button',
-    {
-      type: 'button',
-      'data-testid': 'select-chat',
-      onClick: () => onSelectChat('worker-1'),
-    },
-    'Select worker chat',
-  ),
+    workers?: unknown[]
+    workerSessions?: unknown[]
+    automationSessions?: Array<{
+      id?: string
+      label?: string
+      parentCommanderId?: string | null
+    }>
+  }) => {
+    const { onSelectChat } = props
+    mocks.sessionsColumnProps.push(props)
+    return createElement(
+      'button',
+      {
+        type: 'button',
+        'data-testid': 'select-chat',
+        onClick: () => onSelectChat('worker-1'),
+      },
+      'Select worker chat',
+    )
+  },
 }))
 
 vi.mock('../CenterColumn', () => ({
-  CenterColumn: ({
-    contextFilePaths = [],
-    onRemoveContextFilePath,
-    onClearContextFilePaths,
-    onOpenWorkspace,
-  }: {
+  CenterColumn: (props: {
     contextFilePaths?: string[]
     onRemoveContextFilePath?: (path: string) => void
     onClearContextFilePaths?: () => void
     onOpenWorkspace?: () => void
-  }) => createElement(
-    'div',
-    null,
-    createElement(
-      'button',
-      {
-        type: 'button',
-        'data-testid': 'open-workspace',
-        onClick: () => onOpenWorkspace?.(),
-      },
-      'Open workspace',
-    ),
-    createElement(
-      'button',
-      {
-        type: 'button',
-        'data-testid': 'remove-context',
-        onClick: () => onRemoveContextFilePath?.('docs/spec.md'),
-      },
-      'Remove context path',
-    ),
-    createElement(
-      'button',
-      {
-        type: 'button',
-        'data-testid': 'clear-context',
-        onClick: () => onClearContextFilePaths?.(),
-      },
-      'Clear context paths',
-    ),
-    createElement(
+    onOpenWorkspaceFile?: (path: string) => void
+    automationSessions?: Array<{
+      id?: string
+      label?: string
+      parentCommanderId?: string | null
+    }>
+  }) => {
+    const {
+      contextFilePaths = [],
+      onRemoveContextFilePath,
+      onClearContextFilePaths,
+      onOpenWorkspace,
+      onOpenWorkspaceFile,
+    } = props
+    mocks.centerColumnProps.push(props)
+    return createElement(
       'div',
-      {
-        'data-testid': 'context-paths',
-        'data-context-paths': contextFilePaths.join('|'),
-      },
-      contextFilePaths.join('|'),
-    ),
-  ),
+      null,
+      createElement(
+        'button',
+        {
+          type: 'button',
+          'data-testid': 'open-chat-file',
+          onClick: () => onOpenWorkspaceFile?.('/tmp/external/spec.md'),
+        },
+        'Open chat file',
+      ),
+      createElement(
+        'button',
+        {
+          type: 'button',
+          'data-testid': 'open-workspace',
+          onClick: () => onOpenWorkspace?.(),
+        },
+        'Open workspace',
+      ),
+      createElement(
+        'button',
+        {
+          type: 'button',
+          'data-testid': 'remove-context',
+          onClick: () => onRemoveContextFilePath?.('docs/spec.md'),
+        },
+        'Remove context path',
+      ),
+      createElement(
+        'button',
+        {
+          type: 'button',
+          'data-testid': 'clear-context',
+          onClick: () => onClearContextFilePaths?.(),
+        },
+        'Clear context paths',
+      ),
+      createElement(
+        'div',
+        {
+          'data-testid': 'context-paths',
+          'data-context-paths': contextFilePaths.join('|'),
+        },
+        contextFilePaths.join('|'),
+      ),
+    )
+  },
 }))
 
 vi.mock('@modules/workspace/use-workspace', () => ({
-  fetchWorkspacePathResolution: vi.fn(async (_source: unknown, requestedPath: string) => ({
-    workspace: {},
-    requestedPath,
-    path: requestedPath,
-    type: 'file',
-    treePath: '',
-  })),
+  fetchWorkspacePathResolution: mocks.fetchWorkspacePathResolution,
   getWorkspaceSourceKey: (source: { targetId?: string }) => `workspace:${source.targetId ?? 'target'}`,
+  isWorkspaceTargetNotFoundError: (error: unknown) =>
+    error instanceof Error && error.message.includes('Workspace target not found'),
   materializeWorkspaceContext: vi.fn(async () => ({ text: '', filePaths: [], directoryPaths: [], fileAnnotations: [] })),
-  openWorkspaceTarget: vi.fn(async (input: { sessionName?: string }) => ({
-    targetId: input.sessionName ? 'wt-worker-1' : 'wt-commander-1',
-    label: input.sessionName ? 'local:/tmp/worker-1' : 'local:/tmp/atlas',
-    host: 'local',
-    rootPath: input.sessionName ? '/tmp/worker-1' : '/tmp/atlas',
-    isReadOnly: false,
-  })),
+  openWorkspaceTarget: mocks.openWorkspaceTarget,
 }))
 
 vi.mock('@modules/workspace/components/WorkspacePanel', () => ({
-  WorkspacePanel: ({
-    onInsertPath,
-  }: {
+  WorkspacePanel: (props: {
+    source?: { targetId?: string }
+    requestedPath?: string | null
+    requestedPathToken?: number
     onInsertPath?: (path: string) => void
-  }) => createElement(
-      'button',
-      {
-        type: 'button',
-        'data-testid': 'insert-path',
-        onClick: () => onInsertPath?.('docs/spec.md'),
-      },
-      'Insert docs/spec.md',
-    ),
+    onRequestedPathConsumed?: (token: number) => void
+    onRecoverStaleTarget?: (source: { kind: 'target'; targetId: string }) => Promise<unknown>
+  }) => {
+    mocks.workspacePanelProps.push(props)
+    return createElement(
+      'div',
+      null,
+      createElement(
+        'button',
+        {
+          type: 'button',
+          'data-testid': 'insert-path',
+          onClick: () => props.onInsertPath?.('docs/spec.md'),
+        },
+        'Insert docs/spec.md',
+      ),
+      createElement(
+        'button',
+        {
+          type: 'button',
+          'data-testid': 'recover-stale-target',
+          onClick: () => {
+            void props.onRecoverStaleTarget?.({ kind: 'target', targetId: props.source?.targetId ?? '' })
+          },
+        },
+        'Recover stale target',
+      ),
+      createElement(
+        'button',
+        {
+          type: 'button',
+          'data-testid': 'consume-requested-path',
+          onClick: () => props.onRequestedPathConsumed?.(props.requestedPathToken ?? 0),
+        },
+        'Consume requested path',
+      ),
+      createElement(
+        'div',
+        {
+          'data-testid': 'workspace-panel-source',
+          'data-target-id': props.source?.targetId ?? '',
+          'data-requested-path': props.requestedPath ?? '',
+        },
+      ),
+    )
+  },
 }))
 
 vi.mock('@modules/commanders/components/QuestBoard', () => ({
@@ -255,7 +332,36 @@ async function renderRoom(initialEntry = '/command-room') {
 describe('CommandRoom context file wiring', () => {
   beforeEach(() => {
     ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
-    window.localStorage.clear()
+    ensureLocalStorage().clear()
+    mocks.sessionsColumnProps.length = 0
+    mocks.centerColumnProps.length = 0
+    mocks.workspacePanelProps.length = 0
+    mocks.fetchJson.mockImplementation(async (path: string) => {
+      if (path === '/api/workspace/preferences') {
+        return { panelDefault: 'last-used' }
+      }
+      if (path.includes('/conversations')) {
+        return []
+      }
+      if (path === '/api/automations') {
+        return []
+      }
+      return {}
+    })
+    mocks.fetchWorkspacePathResolution.mockImplementation(async (_source: unknown, requestedPath: string) => ({
+      workspace: {},
+      requestedPath,
+      path: requestedPath,
+      type: 'file',
+      treePath: '',
+    }))
+    mocks.openWorkspaceTarget.mockImplementation(async (input: { sessionName?: string }) => ({
+      targetId: input.sessionName ? 'wt-worker-1' : 'wt-commander-1',
+      label: input.sessionName ? 'local:/tmp/worker-1' : 'local:/tmp/atlas',
+      host: 'local',
+      rootPath: input.sessionName ? '/tmp/worker-1' : '/tmp/atlas',
+      isReadOnly: false,
+    }))
 
     const commander = buildCommander()
 
@@ -360,6 +466,346 @@ describe('CommandRoom context file wiring', () => {
 
     await vi.waitFor(() => {
       expect(contextPaths()).toBe('')
+    })
+  })
+
+  it('preserves a chat-linked location retarget after a stale auto-open response settles', async () => {
+    let resolveInitialAutoOpen!: (value: {
+      targetId: string
+      label: string
+      host: string
+      rootPath: string
+      isReadOnly: boolean
+    }) => void
+    const initialAutoOpen = new Promise<{
+      targetId: string
+      label: string
+      host: string
+      rootPath: string
+      isReadOnly: boolean
+    }>((resolve) => {
+      resolveInitialAutoOpen = resolve
+    })
+    let commanderOpenCount = 0
+    mocks.openWorkspaceTarget.mockImplementation(async () => {
+      commanderOpenCount += 1
+      if (commanderOpenCount === 1) {
+        return initialAutoOpen
+      }
+      return {
+        targetId: 'wt-commander-1',
+        label: 'local:/tmp/atlas',
+        host: 'local',
+        rootPath: '/tmp/atlas',
+        isReadOnly: false,
+      }
+    })
+    mocks.fetchWorkspacePathResolution.mockResolvedValue({
+      workspace: {},
+      requestedPath: '/tmp/external/spec.md',
+      path: 'spec.md',
+      type: 'file',
+      treePath: '',
+      targetId: 'wt-location-1',
+      targetLabel: 'local:/tmp/external',
+      targetReadOnly: false,
+    })
+
+    await renderRoom()
+
+    await vi.waitFor(() => {
+      expect(mocks.openWorkspaceTarget).toHaveBeenCalledTimes(1)
+    })
+
+    await act(async () => {
+      ;(document.body.querySelector('[data-testid="open-chat-file"]') as HTMLButtonElement).click()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    await vi.waitFor(() => {
+      const latestProps = mocks.workspacePanelProps.at(-1)
+      expect(latestProps?.source?.targetId).toBe('wt-location-1')
+      expect(latestProps?.requestedPath).toBe('spec.md')
+    })
+
+    await act(async () => {
+      resolveInitialAutoOpen({
+        targetId: 'wt-commander-stale',
+        label: 'local:/tmp/stale-atlas',
+        host: 'local',
+        rootPath: '/tmp/stale-atlas',
+        isReadOnly: false,
+      })
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    await vi.waitFor(() => {
+      expect(mocks.workspacePanelProps.at(-1)?.source?.targetId).toBe('wt-location-1')
+      expect(
+        document.body.querySelector('[data-testid="workspace-panel-source"]')?.getAttribute('data-target-id'),
+      ).toBe('wt-location-1')
+    })
+  })
+
+  it('does not replay a consumed chat file request after switching workspace owners', async () => {
+    mocks.fetchWorkspacePathResolution.mockResolvedValue({
+      workspace: {},
+      requestedPath: '/tmp/external/spec.md',
+      path: 'spec.md',
+      type: 'file',
+      treePath: '',
+    })
+
+    await renderRoom()
+
+    await vi.waitFor(() => {
+      expect(mocks.openWorkspaceTarget).toHaveBeenCalledTimes(1)
+    })
+
+    await act(async () => {
+      ;(document.body.querySelector('[data-testid="open-chat-file"]') as HTMLButtonElement).click()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    await vi.waitFor(() => {
+      expect(mocks.workspacePanelProps.at(-1)?.requestedPath).toBe('spec.md')
+    })
+
+    await act(async () => {
+      ;(document.body.querySelector('[data-testid="consume-requested-path"]') as HTMLButtonElement).click()
+      await Promise.resolve()
+    })
+
+    await vi.waitFor(() => {
+      expect(mocks.workspacePanelProps.at(-1)?.requestedPath ?? null).toBeNull()
+    })
+
+    flushSync(() => {
+      ;(document.body.querySelector('[data-testid="select-chat"]') as HTMLButtonElement).click()
+    })
+
+    await vi.waitFor(() => {
+      expect(mocks.workspacePanelProps.at(-1)?.source?.targetId).toBe('wt-worker-1')
+      expect(mocks.workspacePanelProps.at(-1)?.requestedPath ?? null).toBeNull()
+    })
+  })
+
+  it('reopens the selected workspace owner when a panel reports a stale target', async () => {
+    let openCount = 0
+    mocks.openWorkspaceTarget.mockImplementation(async () => {
+      openCount += 1
+      return {
+        targetId: openCount === 1 ? 'wt-stale' : 'wt-reopened',
+        label: openCount === 1 ? 'local:/tmp/stale' : 'local:/tmp/reopened',
+        host: 'local',
+        rootPath: openCount === 1 ? '/tmp/stale' : '/tmp/reopened',
+        isReadOnly: false,
+      }
+    })
+
+    await renderRoom()
+
+    await vi.waitFor(() => {
+      expect(mocks.openWorkspaceTarget).toHaveBeenCalledTimes(1)
+    })
+
+    flushSync(() => {
+      ;(document.body.querySelector('[data-testid="open-workspace"]') as HTMLButtonElement).click()
+    })
+
+    await vi.waitFor(() => {
+      expect(mocks.workspacePanelProps.at(-1)?.source?.targetId).toBe('wt-stale')
+    })
+
+    await act(async () => {
+      ;(document.body.querySelector('[data-testid="recover-stale-target"]') as HTMLButtonElement).click()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    await vi.waitFor(() => {
+      expect(mocks.openWorkspaceTarget).toHaveBeenCalledTimes(2)
+      expect(mocks.workspacePanelProps.at(-1)?.source?.targetId).toBe('wt-reopened')
+    })
+  })
+
+  it('does not let a stale recovery open overwrite a newer chat retarget', async () => {
+    let resolveRecoveryOpen!: (value: {
+      targetId: string
+      label: string
+      host: string
+      rootPath: string
+      isReadOnly: boolean
+    }) => void
+    const recoveryOpen = new Promise<{
+      targetId: string
+      label: string
+      host: string
+      rootPath: string
+      isReadOnly: boolean
+    }>((resolve) => {
+      resolveRecoveryOpen = resolve
+    })
+    let openCount = 0
+    mocks.openWorkspaceTarget.mockImplementation(async () => {
+      openCount += 1
+      if (openCount === 1) {
+        return {
+          targetId: 'wt-stale',
+          label: 'local:/tmp/stale',
+          host: 'local',
+          rootPath: '/tmp/stale',
+          isReadOnly: false,
+        }
+      }
+      return recoveryOpen
+    })
+    mocks.fetchWorkspacePathResolution.mockResolvedValue({
+      workspace: {},
+      requestedPath: '/tmp/external/spec.md',
+      path: 'spec.md',
+      type: 'file',
+      treePath: '',
+      targetId: 'wt-location-1',
+      targetLabel: 'local:/tmp/external',
+      targetReadOnly: false,
+    })
+
+    await renderRoom()
+
+    await vi.waitFor(() => {
+      expect(mocks.openWorkspaceTarget).toHaveBeenCalledTimes(1)
+    })
+
+    flushSync(() => {
+      ;(document.body.querySelector('[data-testid="open-workspace"]') as HTMLButtonElement).click()
+    })
+
+    await vi.waitFor(() => {
+      expect(mocks.workspacePanelProps.at(-1)?.source?.targetId).toBe('wt-stale')
+    })
+
+    await act(async () => {
+      ;(document.body.querySelector('[data-testid="recover-stale-target"]') as HTMLButtonElement).click()
+      await Promise.resolve()
+    })
+
+    await vi.waitFor(() => {
+      expect(mocks.openWorkspaceTarget).toHaveBeenCalledTimes(2)
+    })
+
+    await act(async () => {
+      ;(document.body.querySelector('[data-testid="open-chat-file"]') as HTMLButtonElement).click()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    await vi.waitFor(() => {
+      expect(mocks.workspacePanelProps.at(-1)?.source?.targetId).toBe('wt-location-1')
+    })
+
+    await act(async () => {
+      resolveRecoveryOpen({
+        targetId: 'wt-reopened',
+        label: 'local:/tmp/reopened',
+        host: 'local',
+        rootPath: '/tmp/reopened',
+        isReadOnly: false,
+      })
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    await vi.waitFor(() => {
+      expect(mocks.workspacePanelProps.at(-1)?.source?.targetId).toBe('wt-location-1')
+      expect(
+        document.body.querySelector('[data-testid="workspace-panel-source"]')?.getAttribute('data-target-id'),
+      ).toBe('wt-location-1')
+    })
+  })
+
+  it('joins automation session ownership before passing sessions to the desktop commander list', async () => {
+    mocks.fetchJson.mockImplementation(async (path: string) => {
+      if (path === '/api/workspace/preferences') {
+        return { panelDefault: 'last-used' }
+      }
+      if (path.includes('/conversations')) {
+        return []
+      }
+      if (path === '/api/automations') {
+        return [
+          {
+            id: 'auto-1',
+            name: 'Atlas Review',
+            parentCommanderId: 'cmd-1',
+          },
+          {
+            id: 'auto-global',
+            name: 'Global Briefing',
+            parentCommanderId: null,
+          },
+        ]
+      }
+      return {}
+    })
+    mocks.useAgentSessions.mockReturnValue({
+      data: [
+        {
+          id: 'automation-auto-1',
+          name: 'automation-auto-1',
+          created: '2026-04-20T12:00:00.000Z',
+          pid: 4243,
+          status: 'running',
+          agentType: 'codex',
+          sessionType: 'automation',
+          transportType: 'stream',
+          processAlive: true,
+          creator: { kind: 'automation', id: 'auto-1' },
+        },
+        {
+          id: 'automation-global',
+          name: 'automation-global',
+          created: '2026-04-20T12:00:00.000Z',
+          pid: 4244,
+          status: 'running',
+          agentType: 'codex',
+          sessionType: 'automation',
+          transportType: 'stream',
+          processAlive: true,
+          creator: { kind: 'automation', id: 'auto-global' },
+        },
+      ],
+      refetch: vi.fn(async () => ({ data: [] })),
+    })
+
+    await renderRoom()
+
+    await vi.waitFor(() => {
+      const latestProps = mocks.sessionsColumnProps.at(-1)
+      expect(latestProps?.automationSessions).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            id: 'automation-auto-1',
+            label: 'Atlas Review',
+            parentCommanderId: 'cmd-1',
+          }),
+          expect.objectContaining({
+            id: 'automation-global',
+            label: 'Global Briefing',
+            parentCommanderId: null,
+          }),
+        ]),
+      )
+      expect(mocks.centerColumnProps.at(-1)?.automationSessions).toEqual([
+        expect.objectContaining({
+          id: 'automation-auto-1',
+          label: 'Atlas Review',
+          parentCommanderId: 'cmd-1',
+        }),
+      ])
     })
   })
 

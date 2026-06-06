@@ -1,5 +1,5 @@
-import { useState, type ReactNode } from 'react'
-import ReactMarkdown from 'react-markdown'
+import { isValidElement, useEffect, useRef, useState, type ReactNode } from 'react'
+import ReactMarkdown, { defaultUrlTransform } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import {
   AlertTriangle,
@@ -8,12 +8,122 @@ import {
   Check,
   ChevronRight,
   ChevronsUpDown,
+  Copy,
   FileText,
   Loader2,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { SUBAGENT_WORKING_LABEL, type MsgItem } from '../../messages/model'
+import {
+  SUBAGENT_WORKING_LABEL,
+  type MessageImageAttachment,
+  type MsgItem,
+} from '../../messages/model'
 import { formatToolDisplayName, getToolMeta, isAgentAccentColor } from './tool-meta'
+
+const ALLOWED_INLINE_IMAGE_MEDIA_TYPES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp'])
+const INLINE_IMAGE_REFERRER_POLICY = 'no-referrer'
+const INLINE_IMAGE_CLASS = 'msg-inline-image max-h-80 max-w-full rounded border border-[color:var(--hv-border-soft)] object-contain'
+const COPY_FEEDBACK_MS = 1400
+
+function textFromReactNode(node: ReactNode): string {
+  if (typeof node === 'string' || typeof node === 'number') {
+    return String(node)
+  }
+  if (Array.isArray(node)) {
+    return node.map((child) => textFromReactNode(child)).join('')
+  }
+  if (isValidElement(node)) {
+    return textFromReactNode((node.props as { children?: ReactNode }).children)
+  }
+  return ''
+}
+
+async function copyTextToClipboard(text: string): Promise<boolean> {
+  if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text)
+      return true
+    } catch {
+      // Fall through to the textarea fallback.
+    }
+  }
+
+  if (typeof document === 'undefined') {
+    return false
+  }
+
+  const textarea = document.createElement('textarea')
+  textarea.value = text
+  textarea.setAttribute('readonly', '')
+  textarea.style.position = 'fixed'
+  textarea.style.left = '-9999px'
+  textarea.style.top = '0'
+  document.body.appendChild(textarea)
+  textarea.select()
+  try {
+    return document.execCommand('copy')
+  } finally {
+    textarea.remove()
+  }
+}
+
+function QuickCopyButton({
+  text,
+  label,
+  variant = 'surface',
+  className,
+}: {
+  text: string
+  label: string
+  variant?: 'surface' | 'plain'
+  className?: string
+}) {
+  const [copied, setCopied] = useState(false)
+  const feedbackTimerRef = useRef<number | null>(null)
+  const copyable = text.trim().length > 0
+
+  useEffect(() => () => {
+    if (feedbackTimerRef.current !== null) {
+      window.clearTimeout(feedbackTimerRef.current)
+    }
+  }, [])
+
+  if (!copyable) {
+    return null
+  }
+
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      title={copied ? 'Copied' : label}
+      className={cn(
+        variant === 'plain'
+          ? 'msg-copy-button inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-[color:var(--hv-fg-muted)] transition hover:bg-[var(--hv-bg-sunken)] hover:text-[color:var(--hv-fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--hv-accent-info)]'
+          : 'msg-copy-button inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-[color:var(--hv-border-soft)] bg-[var(--hv-bg-raised)] text-[color:var(--hv-fg-muted)] shadow-sm transition hover:bg-[var(--hv-bg-sunken)] hover:text-[color:var(--hv-fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--hv-accent-info)]',
+        copied && 'text-[color:var(--hv-accent-success)]',
+        className,
+      )}
+      onClick={async (event) => {
+        event.preventDefault()
+        event.stopPropagation()
+        if (!(await copyTextToClipboard(text))) {
+          return
+        }
+        setCopied(true)
+        if (feedbackTimerRef.current !== null) {
+          window.clearTimeout(feedbackTimerRef.current)
+        }
+        feedbackTimerRef.current = window.setTimeout(() => {
+          setCopied(false)
+          feedbackTimerRef.current = null
+        }, COPY_FEEDBACK_MS)
+      }}
+    >
+      {copied ? <Check size={13} /> : <Copy size={13} />}
+    </button>
+  )
+}
 
 function normalizeWorkspaceFileHref(href?: string): string | null {
   const raw = href?.trim()
@@ -21,6 +131,9 @@ function normalizeWorkspaceFileHref(href?: string): string | null {
     return null
   }
   if (/^https?:\/\//iu.test(raw) || raw.startsWith('#') || raw.startsWith('mailto:')) {
+    return null
+  }
+  if (raw.startsWith('/api/workspace/raw?')) {
     return null
   }
   try {
@@ -40,6 +153,54 @@ function normalizeWorkspaceFileHref(href?: string): string | null {
     return stripWorkspaceSourceLocationSuffix(decodeURIComponent(raw))
   }
   return null
+}
+
+function normalizeDataImageSrc(src: string): string | null {
+  const match = /^data:([^;,]+);base64,/iu.exec(src)
+  const mediaType = match?.[1]?.toLowerCase()
+  return mediaType && ALLOWED_INLINE_IMAGE_MEDIA_TYPES.has(mediaType) ? src : null
+}
+
+function normalizeRenderableImageSrc(src?: string): string | null {
+  const raw = src?.trim()
+  if (!raw) {
+    return null
+  }
+  if (/^https?:\/\//iu.test(raw)) {
+    return raw
+  }
+  if (raw.startsWith('data:')) {
+    return normalizeDataImageSrc(raw)
+  }
+  if (raw.startsWith('/api/workspace/raw?')) {
+    return raw
+  }
+  return null
+}
+
+function markdownUrlTransform(value: string, key: string, node: unknown): string {
+  const tagName = typeof node === 'object' && node !== null && 'tagName' in node
+    ? (node as { tagName?: unknown }).tagName
+    : undefined
+  if (key === 'src' && tagName === 'img') {
+    let filePath: string | null = null
+    try {
+      filePath = normalizeWorkspaceFileHref(value)
+    } catch {
+      filePath = null
+    }
+    return normalizeRenderableImageSrc(value) || filePath ? value : ''
+  }
+  return defaultUrlTransform(value)
+}
+
+function normalizeImageAttachmentSrc(image: MessageImageAttachment): string | null {
+  const mediaType = image.mediaType?.trim().toLowerCase()
+  const data = image.data?.trim()
+  if (mediaType && data && ALLOWED_INLINE_IMAGE_MEDIA_TYPES.has(mediaType)) {
+    return `data:${mediaType};base64,${data}`
+  }
+  return normalizeRenderableImageSrc(image.url)
 }
 
 function stripWorkspaceSourceLocationSuffix(filePath: string): string {
@@ -79,16 +240,108 @@ function WorkspaceFileLink({
   )
 }
 
+function WorkspaceImageReference({
+  filePath,
+  label,
+  onOpenWorkspaceFile,
+}: {
+  filePath: string
+  label?: string
+  onOpenWorkspaceFile?: (path: string) => void
+}) {
+  const displayLabel = label?.trim() || filePath
+  if (onOpenWorkspaceFile) {
+    return (
+      <WorkspaceFileLink filePath={filePath} onOpenWorkspaceFile={onOpenWorkspaceFile}>
+        {displayLabel}
+      </WorkspaceFileLink>
+    )
+  }
+  return (
+    <span className="workspace-file-link inline break-all underline decoration-[color:var(--hv-border-soft)] underline-offset-2">
+      {displayLabel}
+    </span>
+  )
+}
+
+function InlineImage({
+  src,
+  alt,
+  title,
+  className,
+  referrerPolicy,
+}: {
+  src: string
+  alt?: string
+  title?: string
+  className?: string
+  referrerPolicy?: typeof INLINE_IMAGE_REFERRER_POLICY
+}) {
+  return (
+    <img
+      src={src}
+      alt={alt ?? ''}
+      title={title}
+      referrerPolicy={referrerPolicy}
+      loading="lazy"
+      decoding="async"
+      className={cn(INLINE_IMAGE_CLASS, className)}
+    />
+  )
+}
+
+function MessageImage({
+  image,
+  onOpenWorkspaceFile,
+  className,
+  fallbackAlt = 'attachment',
+  referrerPolicy,
+}: {
+  image: MessageImageAttachment
+  onOpenWorkspaceFile?: (path: string) => void
+  className?: string
+  fallbackAlt?: string
+  referrerPolicy?: typeof INLINE_IMAGE_REFERRER_POLICY
+}) {
+  const filePath = normalizeWorkspaceFileHref(image.url)
+  if (filePath) {
+    return (
+      <WorkspaceImageReference
+        filePath={filePath}
+        label={image.alt}
+        onOpenWorkspaceFile={onOpenWorkspaceFile}
+      />
+    )
+  }
+
+  const src = normalizeImageAttachmentSrc(image)
+  if (!src) {
+    return null
+  }
+
+  return (
+    <InlineImage
+      src={src}
+      alt={image.alt ?? fallbackAlt}
+      className={className}
+      referrerPolicy={referrerPolicy}
+    />
+  )
+}
+
 function MarkdownContent({
   text,
   onOpenWorkspaceFile,
+  imageReferrerPolicy,
 }: {
   text: string
   onOpenWorkspaceFile?: (path: string) => void
+  imageReferrerPolicy?: typeof INLINE_IMAGE_REFERRER_POLICY
 }) {
   return (
     <ReactMarkdown
       remarkPlugins={[remarkGfm]}
+      urlTransform={markdownUrlTransform}
       components={{
         a: ({ href, children, node: _node, ...props }) => {
           const filePath = normalizeWorkspaceFileHref(href)
@@ -103,6 +356,49 @@ function MarkdownContent({
             <WorkspaceFileLink filePath={filePath} onOpenWorkspaceFile={onOpenWorkspaceFile}>
               {children}
             </WorkspaceFileLink>
+          )
+        },
+        img: ({ src, alt, title, node: _node, ..._props }) => {
+          const filePath = normalizeWorkspaceFileHref(src)
+          if (filePath) {
+            return (
+              <WorkspaceImageReference
+                filePath={filePath}
+                label={alt}
+                onOpenWorkspaceFile={onOpenWorkspaceFile}
+              />
+            )
+          }
+
+          const safeSrc = normalizeRenderableImageSrc(src)
+          if (!safeSrc) {
+            return alt ? (
+              <span className="msg-inline-image-unavailable break-words">{alt}</span>
+            ) : null
+          }
+
+          return (
+            <InlineImage
+              src={safeSrc}
+              alt={alt ?? ''}
+              title={title}
+              referrerPolicy={imageReferrerPolicy}
+            />
+          )
+        },
+        pre: ({ children, node: _node, ...props }) => {
+          const blockText = textFromReactNode(children).replace(/\n$/u, '')
+          return (
+            <div className="msg-markdown-copy-block group relative">
+              <pre {...props}>
+                {children}
+              </pre>
+              <QuickCopyButton
+                text={blockText}
+                label="Copy markdown block"
+                className="absolute right-2 top-2 bg-[var(--hv-bg-raised)]"
+              />
+            </div>
           )
         },
         code: ({ className, children, node: _node, ...props }) => {
@@ -139,14 +435,124 @@ export function SystemDivider({ text }: { text: string }) {
   if (!text) {
     return null
   }
+  const isAwaitingInputDivider = text.trim().toLowerCase() === 'awaiting input'
 
   return (
-    <div className="message msg-system flex items-center gap-2 px-1 py-1">
+    <div
+      className={cn(
+        'message msg-system flex items-center gap-2 px-1 py-1',
+        isAwaitingInputDivider && 'msg-system--awaiting-input',
+      )}
+    >
       <div className="msg-system-line h-px flex-1 bg-[var(--hv-border-hair)]" />
       <span className="msg-system-text font-mono text-[10px] uppercase tracking-widest text-[color:var(--hv-fg)]">
         {text}
       </span>
       <div className="msg-system-line h-px flex-1 bg-[var(--hv-border-hair)]" />
+    </div>
+  )
+}
+
+function stringifyProviderPayload(value: unknown): string {
+  if (typeof value === 'string') {
+    return value
+  }
+  if (value === undefined || value === null) {
+    return ''
+  }
+  try {
+    return JSON.stringify(value, null, 2)
+  } catch {
+    return String(value)
+  }
+}
+
+export function ProviderActivityBlock({ msg }: { msg: MsgItem }) {
+  const [expanded, setExpanded] = useState(false)
+  const provider = msg.transcript?.source?.provider ?? 'provider'
+  const backend = msg.transcript?.source?.backend ?? 'unknown'
+  const eventType = msg.transcript?.providerEventType
+  const payload = stringifyProviderPayload(msg.transcript?.providerPayload)
+
+  return (
+    <div className="message msg-provider rounded border border-[color:var(--hv-border-soft)] bg-[var(--hv-ink-wash-01)]">
+      <button
+        type="button"
+        onClick={() => setExpanded((previous) => !previous)}
+        className="msg-provider-toggle flex w-full items-center gap-2 px-3 py-2 text-left"
+      >
+        <ChevronsUpDown size={12} className="shrink-0 text-[color:var(--hv-fg-subtle)]" />
+        <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-[color:var(--hv-fg-subtle)]">
+          {provider} / {backend}
+        </span>
+        {eventType && (
+          <span className="rounded-full border border-[color:var(--hv-border-soft)] px-2 py-0.5 font-mono text-[10px] text-[color:var(--hv-fg-muted)]">
+            {eventType}
+          </span>
+        )}
+        <span className="ml-auto truncate text-xs text-[color:var(--hv-fg)]">
+          {msg.text}
+        </span>
+      </button>
+      {expanded && payload && (
+        <pre className="overflow-x-auto border-t border-[color:var(--hv-border-soft)] px-3 py-2 font-mono text-[11px] leading-relaxed text-[color:var(--hv-fg-muted)] whitespace-pre-wrap break-words">
+          {payload}
+        </pre>
+      )}
+    </div>
+  )
+}
+
+export function ProviderActivityGroup({ messages }: { messages: MsgItem[] }) {
+  const [expanded, setExpanded] = useState(false)
+  const providers = Array.from(new Set(messages.map((message) =>
+    message.transcript?.source?.provider ?? 'provider',
+  )))
+  const backends = Array.from(new Set(messages.map((message) =>
+    message.transcript?.source?.backend ?? 'unknown',
+  )))
+  const eventTypes = Array.from(new Set(messages
+    .map((message) => message.transcript?.providerEventType)
+    .filter((value): value is string => Boolean(value))))
+  const providerLabel = providers.length === 1 ? providers[0] ?? 'provider' : 'providers'
+  const backendLabel = backends.length === 1 ? backends[0] ?? 'unknown' : 'mixed'
+  const eventPreview = eventTypes.slice(0, 2).join(', ')
+  const hiddenCount = messages.length
+
+  return (
+    <div className="message msg-provider-group rounded border border-[color:var(--hv-border-soft)] bg-[var(--hv-ink-wash-01)]">
+      <button
+        type="button"
+        onClick={() => setExpanded((previous) => !previous)}
+        className="msg-provider-group-toggle flex w-full items-center gap-2 px-3 py-2 text-left"
+      >
+        <ChevronsUpDown size={12} className="shrink-0 text-[color:var(--hv-fg-subtle)]" />
+        <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-[color:var(--hv-fg-subtle)]">
+          {providerLabel} / {backendLabel}
+        </span>
+        <span className="rounded-full border border-[color:var(--hv-border-soft)] px-2 py-0.5 font-mono text-[10px] text-[color:var(--hv-fg-muted)]">
+          {hiddenCount} events
+        </span>
+        {eventPreview && (
+          <span className="min-w-0 truncate text-xs text-[color:var(--hv-fg)]">
+            {eventPreview}{eventTypes.length > 2 ? '…' : ''}
+          </span>
+        )}
+        <ChevronRight
+          size={12}
+          className={cn(
+            'msg-collapse-icon ml-auto shrink-0 text-[color:var(--hv-fg-subtle)] transition-transform',
+            expanded && 'rotate-90',
+          )}
+        />
+      </button>
+      {expanded && (
+        <div className="msg-provider-group-body space-y-1 border-t border-[color:var(--hv-border-soft)] p-1.5">
+          {messages.map((message) => (
+            <ProviderActivityBlock key={message.id} msg={message} />
+          ))}
+        </div>
+      )}
     </div>
   )
 }
@@ -157,29 +563,45 @@ export function UserMessage({
   onOpenWorkspaceFile,
 }: {
   text: string
-  images?: { mediaType: string; data: string }[]
+  images?: MessageImageAttachment[]
   onOpenWorkspaceFile?: (path: string) => void
 }) {
+  const messageCopyText = text && text !== '[image]' ? text : ''
+
   return (
     <div className="message msg-user-row flex justify-end">
-      <div className="msg-user max-w-[85%] rounded-lg border border-[color:var(--hv-border-soft)] bg-[var(--hv-chat-user-bg,var(--hv-fg))] px-3 py-2 text-sm text-[color:var(--hv-chat-user-fg,var(--hv-fg-inverse))]">
-        {images && images.length > 0 && (
-          <div className="msg-attachments mb-2 flex flex-wrap gap-2">
-            {images.map((image, index) => (
-              <img
-                key={`${image.mediaType}-${index}`}
-                src={`data:${image.mediaType};base64,${image.data}`}
-                className="msg-attachment max-h-48 max-w-xs rounded border border-[color:var(--hv-border-soft)]"
-                alt="attachment"
+      <div className="msg-user-stack flex w-full max-w-[85%] min-w-0 flex-col items-end gap-1">
+        <div className="msg-user w-fit max-w-full rounded-lg border border-[color:var(--hv-border-soft)] bg-[var(--hv-chat-user-bg,var(--hv-fg))] px-3 py-2 text-sm text-[color:var(--hv-chat-user-fg,var(--hv-fg-inverse))]">
+          {images && images.length > 0 && (
+            <div className="msg-attachments mb-2 flex flex-wrap gap-2">
+              {images.map((image, index) => (
+                <MessageImage
+                  key={`${image.mediaType ?? image.url ?? 'image'}-${index}`}
+                  image={image}
+                  onOpenWorkspaceFile={onOpenWorkspaceFile}
+                  className="msg-attachment max-h-48 max-w-xs rounded border border-[color:var(--hv-border-soft)]"
+                  referrerPolicy={INLINE_IMAGE_REFERRER_POLICY}
+                />
+              ))}
+            </div>
+          )}
+          {text && text !== '[image]' ? (
+            <div className="msg-user-md break-words">
+              <MarkdownContent
+                text={text}
+                onOpenWorkspaceFile={onOpenWorkspaceFile}
+                imageReferrerPolicy={INLINE_IMAGE_REFERRER_POLICY}
               />
-            ))}
-          </div>
-        )}
-        {text && text !== '[image]' ? (
-          <div className="msg-user-md break-words">
-            <MarkdownContent text={text} onOpenWorkspaceFile={onOpenWorkspaceFile} />
-          </div>
-        ) : null}
+            </div>
+          ) : null}
+        </div>
+        <div className="msg-message-actions msg-user-actions flex items-center justify-end gap-1 pr-1">
+          <QuickCopyButton
+            text={messageCopyText}
+            label="Copy user message"
+            variant="plain"
+          />
+        </div>
       </div>
     </div>
   )
@@ -314,16 +736,21 @@ export function PlanningBlock({
 
 export function AgentMessage({
   text,
+  images,
   avatarUrl,
   accentColor,
   onOpenWorkspaceFile,
 }: {
   text: string
+  images?: MessageImageAttachment[]
   avatarUrl?: string | null
   accentColor?: string | null
   onOpenWorkspaceFile?: (path: string) => void
 }) {
-  if (!text.trim()) {
+  const hasText = text.trim().length > 0
+  const hasImages = Boolean(images?.length)
+
+  if (!hasText && !hasImages) {
     return null
   }
 
@@ -339,15 +766,44 @@ export function AgentMessage({
           <Bot size={13} />
         )}
       </div>
-      <div
-        className={cn(
-          'msg-agent min-w-0 flex-1 rounded-r-lg rounded-bl-lg border border-[color:var(--hv-border-soft)] border-l-[3px] bg-[var(--hv-bg-raised)] p-3.5',
-          !safeAccent && 'border-l-[color:var(--hv-accent-info)]',
-        )}
-        style={safeAccent ? { borderLeftColor: safeAccent } : undefined}
-      >
-        <div className="msg-agent-md break-words text-[color:var(--hv-fg)]">
-          <MarkdownContent text={text} onOpenWorkspaceFile={onOpenWorkspaceFile} />
+      <div className="msg-agent-stack min-w-0 flex-1">
+        <div
+          className={cn(
+            'msg-agent min-w-0 rounded-r-lg rounded-bl-lg border border-[color:var(--hv-border-soft)] border-l-[3px] bg-[var(--hv-bg-raised)] p-3.5',
+            !safeAccent && 'border-l-[color:var(--hv-accent-info)]',
+          )}
+          style={safeAccent ? { borderLeftColor: safeAccent } : undefined}
+        >
+          {hasText && (
+            <div className="msg-agent-md break-words text-[color:var(--hv-fg)]">
+              <MarkdownContent
+                text={text}
+                onOpenWorkspaceFile={onOpenWorkspaceFile}
+                imageReferrerPolicy={INLINE_IMAGE_REFERRER_POLICY}
+              />
+            </div>
+          )}
+          {images && images.length > 0 && (
+            <div className={cn('msg-agent-attachments flex flex-wrap gap-2', hasText && 'mt-3')}>
+              {images.map((image, index) => (
+                <MessageImage
+                  key={`${image.mediaType ?? image.url ?? 'image'}-${index}`}
+                  image={image}
+                  onOpenWorkspaceFile={onOpenWorkspaceFile}
+                  className="msg-attachment msg-agent-attachment"
+                  fallbackAlt="assistant image"
+                  referrerPolicy={INLINE_IMAGE_REFERRER_POLICY}
+                />
+              ))}
+            </div>
+          )}
+        </div>
+        <div className="msg-message-actions msg-agent-actions mt-1 flex items-center gap-1 pl-1">
+          <QuickCopyButton
+            text={text}
+            label="Copy agent message"
+            variant="plain"
+          />
         </div>
       </div>
     </div>
@@ -403,6 +859,128 @@ function getToolStatusView(status: MsgItem['toolStatus']) {
   }
 }
 
+function pluralize(count: number, singular: string): string {
+  return `${count} ${singular}${count === 1 ? '' : 's'}`
+}
+
+function renderActivityMessage(
+  message: MsgItem,
+  onAnswer: (toolId: string, answers: Record<string, string[]>) => void,
+) {
+  switch (message.kind) {
+    case 'system':
+      return <SystemDivider key={message.id} text={message.text} />
+    case 'tool':
+      return <ToolBlock key={message.id} msg={message} nested onAnswer={onAnswer} />
+    case 'agent':
+      return <AgentMessage key={message.id} text={message.text} images={message.images} />
+    case 'thinking':
+      return <ThinkingBlock key={message.id} text={message.text} />
+    case 'planning':
+      return <PlanningBlock key={message.id} msg={message} />
+    case 'user':
+      return <UserMessage key={message.id} text={message.text} images={message.images} />
+    case 'ask':
+      return (
+        <AskUserQuestionBlock
+          key={message.id}
+          msg={message}
+          onAnswer={onAnswer}
+        />
+      )
+    case 'provider':
+      return <ProviderActivityBlock key={message.id} msg={message} />
+    default:
+      return null
+  }
+}
+
+export function AgentActivityGroup({
+  messages,
+  onAnswer,
+}: {
+  messages: MsgItem[]
+  onAnswer: (toolId: string, answers: Record<string, string[]>) => void
+}) {
+  const [expanded, setExpanded] = useState(false)
+  const tools = messages.filter((message) => message.kind === 'tool')
+  const providers = messages.filter((message) => message.kind === 'provider')
+  const thinking = messages.filter((message) => message.kind === 'thinking')
+  const subagents = tools.filter((message) => message.toolName === 'Agent')
+  const running = tools.filter((tool) => tool.toolStatus === 'running').length
+  const errors = tools.filter((tool) => tool.toolStatus === 'error').length
+  const done = tools.filter((tool) => tool.toolStatus === 'success').length
+
+  const hasSubagents = subagents.length > 0
+  const label = hasSubagents ? pluralize(subagents.length, 'sub-agent') : 'Main agent'
+  const chips = [
+    tools.length > 0 ? pluralize(tools.length, 'tool call') : null,
+    providers.length > 0 ? pluralize(providers.length, 'event') : null,
+    thinking.length > 0 ? 'thinking' : null,
+  ].filter((chip): chip is string => Boolean(chip))
+  const statusLabel =
+    running > 0
+      ? `${running} running`
+      : errors > 0
+        ? `${errors} failed`
+        : done > 0
+          ? 'done'
+          : `${messages.length} items`
+  const statusColor =
+    running > 0
+      ? 'text-[color:var(--hv-accent-warning)]'
+      : errors > 0
+        ? 'text-[color:var(--hv-accent-danger)]'
+        : 'text-[color:var(--hv-accent-success)]'
+
+  return (
+    <div className="message msg-agent-activity rounded border border-[color:var(--hv-border-soft)] bg-[var(--hv-bg-sunken)]">
+      <button
+        type="button"
+        className="msg-agent-activity-toggle flex w-full items-center gap-2 px-2.5 py-1.5 text-left"
+        onClick={() => setExpanded((previous) => !previous)}
+      >
+        <Bot size={12} className="msg-agent-activity-icon shrink-0 text-[color:var(--hv-fg)]" />
+        <span className="msg-agent-activity-label font-mono text-[11px] text-[color:var(--hv-fg)]">
+          {label}
+        </span>
+        {chips.length > 0 && (
+          <span className="msg-agent-activity-summary min-w-0 truncate font-mono text-[10px] text-[color:var(--hv-fg-subtle)]">
+            {chips.join(' · ')}
+          </span>
+        )}
+        <div
+          className={cn(
+            'msg-agent-activity-status ml-auto flex shrink-0 items-center gap-1 font-mono text-[10px]',
+            statusColor,
+          )}
+        >
+          {running > 0 ? (
+            <Loader2 size={10} className="animate-spin" />
+          ) : errors > 0 ? (
+            <AlertTriangle size={10} />
+          ) : (
+            <Check size={10} />
+          )}
+          <span>{statusLabel}</span>
+        </div>
+        <ChevronRight
+          size={12}
+          className={cn(
+            'msg-collapse-icon shrink-0 text-[color:var(--hv-fg)] transition-transform',
+            expanded && 'rotate-90',
+          )}
+        />
+      </button>
+      {expanded && (
+        <div className="msg-agent-activity-body space-y-1 border-t border-[color:var(--hv-border-soft)] p-1.5">
+          {messages.map((message) => renderActivityMessage(message, onAnswer))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function NestedActivity({
   children,
   onAnswer,
@@ -412,32 +990,7 @@ function NestedActivity({
 }) {
   return (
     <div className="msg-tool-activity space-y-1 rounded border border-[color:var(--hv-border-soft)] bg-[var(--hv-bg-sunken)] p-1.5">
-      {children.map((child) => {
-        switch (child.kind) {
-          case 'system':
-            return <SystemDivider key={child.id} text={child.text} />
-          case 'tool':
-            return <ToolBlock key={child.id} msg={child} nested onAnswer={onAnswer} />
-          case 'agent':
-            return <AgentMessage key={child.id} text={child.text} />
-          case 'thinking':
-            return <ThinkingBlock key={child.id} text={child.text} />
-          case 'planning':
-            return <PlanningBlock key={child.id} msg={child} />
-          case 'user':
-            return <UserMessage key={child.id} text={child.text} images={child.images} />
-          case 'ask':
-            return (
-              <AskUserQuestionBlock
-                key={child.id}
-                msg={child}
-                onAnswer={onAnswer}
-              />
-            )
-          default:
-            return null
-        }
-      })}
+      {children.map((child) => renderActivityMessage(child, onAnswer))}
     </div>
   )
 }
@@ -455,7 +1008,7 @@ export function SubagentBlock({
   const hasChildren = children.length > 0
   const hasOutput = Boolean(msg.toolOutput?.trim())
   const hasInput = Boolean(msg.toolInput?.trim())
-  const [expanded, setExpanded] = useState(true)
+  const [expanded, setExpanded] = useState(false)
   const status = getToolStatusView(msg.toolStatus)
   const description = msg.subagentDescription?.trim() || SUBAGENT_WORKING_LABEL
 
@@ -819,7 +1372,11 @@ export function AskUserQuestionBlock({
       const question = questions[i]
       const selected = selections[i] ?? []
       const custom = customTexts[i]?.trim()
-      answers[question.question] = custom ? [...selected, custom] : selected
+      const rawQuestionId = (question as { id?: unknown }).id
+      const answerKey = typeof rawQuestionId === 'string' && rawQuestionId.trim()
+        ? rawQuestionId.trim()
+        : question.question
+      answers[answerKey] = custom ? [...selected, custom] : selected
     }
     onAnswer(msg.toolId ?? '', answers)
   }
@@ -840,14 +1397,14 @@ export function AskUserQuestionBlock({
           <div key={questionIndex} className="msg-ask-question">
             <p className="msg-ask-question-text mb-1.5 text-sm text-[color:var(--hv-fg)]">{question.question}</p>
             <div className="msg-ask-options flex flex-wrap gap-1.5">
-              {question.options.map((option) => {
+              {(Array.isArray(question.options) ? question.options : []).map((option) => {
                 const selected = (selections[questionIndex] ?? []).includes(option.label)
                 return (
                   <button
                     key={option.label}
                     type="button"
                     onClick={() =>
-                      toggleOption(questionIndex, option.label, question.multiSelect)
+                      toggleOption(questionIndex, option.label, question.multiSelect === true)
                     }
                     title={option.description}
                     className={cn(

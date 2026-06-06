@@ -1,5 +1,5 @@
 import express from 'express'
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
@@ -208,6 +208,92 @@ afterEach(async () => {
 })
 
 describe('automations first boot', () => {
+  it('globalizes Atlas hygiene automations in place while preserving history', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'hammurabi-automations-atlas-global-'))
+    tempDirs.push(dataDir)
+    const automationsDir = path.join(dataDir, 'automations')
+    const commanderDataDir = path.join(dataDir, 'commander')
+    await mkdir(automationsDir, { recursive: true })
+
+    const history = [
+      {
+        timestamp: '2026-06-01T04:00:00.000Z',
+        action: 'Run completed',
+        result: 'Cleaned context hygiene.',
+        costUsd: 0.25,
+        durationSec: 42,
+        source: 'schedule',
+      },
+    ]
+    await writeFile(
+      path.join(automationsDir, 'context-hygiene-id.json'),
+      `${JSON.stringify({
+        id: 'context-hygiene-id',
+        operatorId: 'founder-test',
+        parentCommanderId: 'd66a5217-ace6-4f00-b2ac-bbd64a9a7e7e',
+        name: 'context-hygiene',
+        trigger: 'schedule',
+        schedule: '0 4 * * *',
+        instruction: 'Clean context.',
+        agentType: 'claude',
+        permissionMode: 'default',
+        skills: ['context-rot-cleanup'],
+        status: 'active',
+        createdAt: '2026-05-01T00:00:00.000Z',
+        lastRun: '2026-06-01T04:00:00.000Z',
+        totalRuns: 37,
+        totalCostUsd: 9.25,
+        history,
+        memoryPath: path.join(automationsDir, 'context-hygiene-id', 'memory.md'),
+        outputDir: path.join(automationsDir, 'context-hygiene-id'),
+      }, null, 2)}\n`,
+      'utf8',
+    )
+    await writeFile(
+      path.join(automationsDir, 'atlas-other.json'),
+      `${JSON.stringify({
+        id: 'atlas-other',
+        operatorId: 'founder-test',
+        parentCommanderId: 'd66a5217-ace6-4f00-b2ac-bbd64a9a7e7e',
+        name: 'atlas-specific-task',
+        trigger: 'schedule',
+        schedule: '0 12 * * *',
+        instruction: 'Stay scoped.',
+        agentType: 'claude',
+        permissionMode: 'default',
+        skills: [],
+        status: 'active',
+      }, null, 2)}\n`,
+      'utf8',
+    )
+
+    const store = new AutomationStore({
+      dirPath: automationsDir,
+      commanderDataDir,
+    })
+    await store.ensureLoaded()
+
+    const moved = await store.get('context-hygiene-id')
+    expect(moved).toMatchObject({
+      id: 'context-hygiene-id',
+      parentCommanderId: null,
+      totalRuns: 37,
+      totalCostUsd: 9.25,
+      lastRun: '2026-06-01T04:00:00.000Z',
+      history,
+    })
+    expect(await store.get('atlas-other')).toMatchObject({
+      id: 'atlas-other',
+      parentCommanderId: 'd66a5217-ace6-4f00-b2ac-bbd64a9a7e7e',
+    })
+    const written = JSON.parse(await readFile(path.join(automationsDir, 'context-hygiene-id.json'), 'utf8')) as {
+      parentCommanderId?: string | null
+      history?: unknown[]
+    }
+    expect(written.parentCommanderId).toBeNull()
+    expect(written.history).toEqual(history)
+  })
+
   it('keeps automations usable when the scheduler starts before founder setup', async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), 'hammurabi-automations-first-boot-'))
     tempDirs.push(dataDir)

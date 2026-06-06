@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   fetchWorkspaceTree: vi.fn(),
   fetchWorkspaceExpandedTree: vi.fn(),
   fetchWorkspacePathResolution: vi.fn(),
+  downloadWorkspaceFile: vi.fn(),
   saveFile: vi.fn(),
   previewData: null as null | {
     kind: 'text'
@@ -33,11 +34,14 @@ const mocks = vi.hoisted(() => ({
 }))
 
 vi.mock('../../use-workspace', () => ({
+  downloadWorkspaceFile: mocks.downloadWorkspaceFile,
   fetchWorkspaceTree: mocks.fetchWorkspaceTree,
   fetchWorkspaceExpandedTree: mocks.fetchWorkspaceExpandedTree,
   fetchWorkspacePathResolution: mocks.fetchWorkspacePathResolution,
   getWorkspaceSourceKey: (source: WorkspaceSource) =>
     `target:${source.targetId}`,
+  isWorkspaceTargetNotFoundError: (error: unknown) =>
+    error instanceof Error && error.message.includes('Workspace target not found'),
   useWorkspaceActions: () => ({
     createFile: vi.fn(async () => undefined),
     createFolder: vi.fn(async () => undefined),
@@ -108,6 +112,11 @@ import { WorkspacePanel } from '../WorkspacePanel'
 const SOURCE: WorkspaceSource = {
   kind: 'target',
   targetId: 'wt-cmd-1',
+  readOnly: false,
+}
+const LOCATION_SOURCE: WorkspaceSource = {
+  kind: 'target',
+  targetId: 'wt-location-1',
   readOnly: false,
 }
 
@@ -217,6 +226,7 @@ describe('WorkspacePanel add-to-context actions', () => {
     mocks.fetchWorkspaceTree.mockReset()
     mocks.fetchWorkspaceExpandedTree.mockReset()
     mocks.fetchWorkspacePathResolution.mockReset()
+    mocks.downloadWorkspaceFile.mockReset()
     mocks.saveFile.mockReset()
     mocks.previewData = null
     vi.clearAllMocks()
@@ -241,6 +251,50 @@ describe('WorkspacePanel add-to-context actions', () => {
       ;(document.body.querySelector('[aria-label="Add README.md to context"]') as HTMLButtonElement).click()
     })
     expect(onInsertPath).toHaveBeenCalledWith('README.md', 'file')
+  })
+
+  it('downloads file tree rows and disables directory row downloads', async () => {
+    const onInsertPath = vi.fn()
+    mocks.downloadWorkspaceFile.mockResolvedValue(undefined)
+
+    await renderPanel(onInsertPath)
+
+    await vi.waitFor(() => {
+      expect(document.body.querySelector('[aria-label="Download README.md"]')).not.toBeNull()
+      expect(document.body.querySelector('[aria-label="Download src"]')).not.toBeNull()
+    })
+
+    const directoryDownload = document.body.querySelector('[aria-label="Download src"]') as HTMLButtonElement
+    expect(directoryDownload.disabled).toBe(true)
+
+    await act(async () => {
+      ;(document.body.querySelector('[aria-label="Download README.md"]') as HTMLButtonElement).click()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(mocks.downloadWorkspaceFile).toHaveBeenCalledWith(SOURCE, 'README.md', undefined)
+  })
+
+  it('surfaces workspace download failures in the panel', async () => {
+    const onInsertPath = vi.fn()
+    mocks.downloadWorkspaceFile.mockRejectedValueOnce(new Error('Request failed (404): Workspace path not found'))
+
+    await renderPanel(onInsertPath)
+
+    await vi.waitFor(() => {
+      expect(document.body.querySelector('[aria-label="Download README.md"]')).not.toBeNull()
+    })
+
+    await act(async () => {
+      ;(document.body.querySelector('[aria-label="Download README.md"]') as HTMLButtonElement).click()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    await vi.waitFor(() => {
+      expect(document.body.textContent).toContain('Request failed (404): Workspace path not found')
+    })
   })
 
   it('hides hidden workspace entries by default until toggled on', async () => {
@@ -290,6 +344,49 @@ describe('WorkspacePanel add-to-context actions', () => {
     await vi.waitFor(() => {
       expect(document.body.querySelector('[data-testid="workspace-preview-path"]')?.textContent).toBe('docs/spec.md')
     })
+  })
+
+  it('exposes the same download action in the side-preview modal header', async () => {
+    const onInsertPath = vi.fn()
+    mocks.downloadWorkspaceFile.mockResolvedValue(undefined)
+
+    container = document.createElement('div')
+    document.body.appendChild(container)
+    root = createRoot(container)
+
+    await act(async () => {
+      root?.render(
+        <WorkspacePanel
+          source={SOURCE}
+          position="side"
+          variant="dark"
+          requestedPath="README.md"
+          requestedPathToken={1}
+          onInsertPath={onInsertPath}
+        />,
+      )
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    await vi.waitFor(() => {
+      expect(document.body.querySelector('[data-testid="workspace-preview-path"]')?.textContent).toBe('README.md')
+    })
+
+    const dialog = document.body.querySelector('div[role="dialog"]')
+    if (!dialog) {
+      throw new Error('expected side preview modal dialog')
+    }
+    const downloadButton = dialog.querySelector('[aria-label="Download README.md"]') as HTMLButtonElement | null
+    expect(downloadButton).not.toBeNull()
+
+    await act(async () => {
+      downloadButton?.click()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(mocks.downloadWorkspaceFile).toHaveBeenCalledWith(SOURCE, 'README.md', undefined)
   })
 
   it('resolves absolute SVG chat file links to the rendered SVG before expanding the parent directory', async () => {
@@ -359,6 +456,188 @@ describe('WorkspacePanel add-to-context actions', () => {
       expect(mocks.fetchWorkspaceExpandedTree).toHaveBeenCalledWith(SOURCE, 'src')
     })
     expect(document.body.querySelector('[data-testid="workspace-preview-path"]')).toBeNull()
+  })
+
+  it('consumes requested paths once instead of replaying them when the workspace source changes', async () => {
+    const onInsertPath = vi.fn()
+    const onRequestedPathConsumed = vi.fn()
+
+    container = document.createElement('div')
+    document.body.appendChild(container)
+    root = createRoot(container)
+
+    await act(async () => {
+      root?.render(
+        <WorkspacePanel
+          source={SOURCE}
+          position="side"
+          variant="dark"
+          requestedPath="src/app.ts"
+          requestedPathToken={1}
+          onRequestedPathConsumed={onRequestedPathConsumed}
+          onInsertPath={onInsertPath}
+        />,
+      )
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    await vi.waitFor(() => {
+      expect(mocks.fetchWorkspacePathResolution).toHaveBeenCalledWith(SOURCE, 'src/app.ts')
+      expect(mocks.fetchWorkspaceExpandedTree).toHaveBeenCalledWith(SOURCE, 'src')
+      expect(onRequestedPathConsumed).toHaveBeenCalledWith(1)
+    })
+
+    await act(async () => {
+      root?.render(
+        <WorkspacePanel
+          source={LOCATION_SOURCE}
+          position="side"
+          variant="dark"
+          requestedPath="src/app.ts"
+          requestedPathToken={1}
+          onRequestedPathConsumed={onRequestedPathConsumed}
+          onInsertPath={onInsertPath}
+        />,
+      )
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(mocks.fetchWorkspacePathResolution).not.toHaveBeenCalledWith(LOCATION_SOURCE, 'src/app.ts')
+
+    await act(async () => {
+      root?.render(
+        <WorkspacePanel
+          source={LOCATION_SOURCE}
+          position="side"
+          variant="dark"
+          requestedPath="src/app.ts"
+          requestedPathToken={2}
+          onRequestedPathConsumed={onRequestedPathConsumed}
+          onInsertPath={onInsertPath}
+        />,
+      )
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    await vi.waitFor(() => {
+      expect(mocks.fetchWorkspacePathResolution).toHaveBeenCalledWith(LOCATION_SOURCE, 'src/app.ts')
+      expect(onRequestedPathConsumed).toHaveBeenCalledWith(2)
+    })
+  })
+
+  it('cancels stale requested-path resolutions when the source changes', async () => {
+    const onInsertPath = vi.fn()
+    let resolveStalePath!: (value: Awaited<ReturnType<typeof mocks.fetchWorkspacePathResolution>>) => void
+    const stalePathResolution = new Promise<Awaited<ReturnType<typeof mocks.fetchWorkspacePathResolution>>>((resolve) => {
+      resolveStalePath = resolve
+    })
+
+    mocks.fetchWorkspacePathResolution.mockImplementation(async (source: WorkspaceSource, requestedPath: string) => {
+      if (source.targetId === SOURCE.targetId) {
+        return stalePathResolution
+      }
+      return {
+        workspace: createWorkspaceTreeResponse('', []).workspace,
+        requestedPath,
+        path: 'README.md',
+        type: 'file',
+        treePath: '',
+      }
+    })
+
+    container = document.createElement('div')
+    document.body.appendChild(container)
+    root = createRoot(container)
+
+    await act(async () => {
+      root?.render(
+        <WorkspacePanel
+          source={SOURCE}
+          position="side"
+          variant="dark"
+          requestedPath="README.md"
+          requestedPathToken={1}
+          onInsertPath={onInsertPath}
+        />,
+      )
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    await act(async () => {
+      root?.render(
+        <WorkspacePanel
+          source={LOCATION_SOURCE}
+          position="side"
+          variant="dark"
+          requestedPath="README.md"
+          requestedPathToken={1}
+          onInsertPath={onInsertPath}
+        />,
+      )
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    await vi.waitFor(() => {
+      expect(document.body.querySelector('[data-testid="workspace-preview-path"]')?.textContent).toBe('README.md')
+    })
+
+    await act(async () => {
+      resolveStalePath({
+        workspace: createWorkspaceTreeResponse('', []).workspace,
+        requestedPath: 'README.md',
+        path: 'src/app.ts',
+        type: 'file',
+        treePath: 'src',
+      })
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    await vi.waitFor(() => {
+      expect(document.body.querySelector('[data-testid="workspace-preview-path"]')?.textContent).toBe('README.md')
+    })
+  })
+
+  it('reopens a stale target and retries root tree reads once before showing an error', async () => {
+    const onInsertPath = vi.fn()
+    const recoverStaleTarget = vi.fn(async () => LOCATION_SOURCE)
+    mocks.fetchWorkspaceTree
+      .mockRejectedValueOnce(new Error('Request failed (404): {"error":"Workspace target not found"}'))
+      .mockImplementation(async (source: WorkspaceSource, parentPath = '') =>
+        createWorkspaceTreeResponse(parentPath, [
+          { name: `${source.targetId}.md`, path: `${source.targetId}.md`, type: 'file' },
+        ]),
+      )
+
+    container = document.createElement('div')
+    document.body.appendChild(container)
+    root = createRoot(container)
+
+    await act(async () => {
+      root?.render(
+        <WorkspacePanel
+          source={SOURCE}
+          position="embedded"
+          variant="dark"
+          onInsertPath={onInsertPath}
+          onRecoverStaleTarget={recoverStaleTarget}
+        />,
+      )
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    await vi.waitFor(() => {
+      expect(recoverStaleTarget).toHaveBeenCalledWith(SOURCE)
+      expect(mocks.fetchWorkspaceTree).toHaveBeenCalledWith(LOCATION_SOURCE, '')
+      expect(document.body.textContent).toContain('wt-location-1.md')
+    })
+    expect(document.body.textContent).not.toContain('Workspace target not found')
   })
 
   it('keeps the side directory tree scrollable while opening clicked files in a modal', async () => {

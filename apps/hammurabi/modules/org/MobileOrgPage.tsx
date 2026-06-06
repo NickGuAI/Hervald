@@ -1,10 +1,12 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { ChevronRight, Zap } from 'lucide-react'
+import { useAuth } from '@/contexts/AuthContext'
 import { CommanderRow } from '@modules/org/components/CommanderRow'
 import type { OrgNode, OrgTree } from '@modules/org/types'
 import BottomSheet from '@/components/BottomSheet'
 import { AgentAvatar } from '@modules/components/hervald'
+import { resolveFounderAvatarSrc } from '@modules/operators/founder-avatar'
 
 function statusDotClass(status: string) {
   return status === 'running' || status === 'active'
@@ -25,12 +27,20 @@ function statusLabel(status: string, archived: boolean | undefined) {
   return status.charAt(0).toUpperCase() + status.slice(1)
 }
 
+function initials(name?: string | null): string {
+  const source = name?.trim() || 'Founder'
+  const [first = 'F', second = 'O'] = source.split(/\s+/)
+  return `${first.charAt(0)}${second.charAt(0)}`.toUpperCase()
+}
+
 function MobileCommanderTile({
   commander,
+  automationCount,
   selected,
   onSelect,
 }: {
   commander: OrgNode
+  automationCount: number
   selected: boolean
   onSelect: () => void
 }) {
@@ -64,7 +74,10 @@ function MobileCommanderTile({
             <span className="block truncate text-sm font-medium text-[color:var(--hv-fg)]">{commander.displayName}</span>
             <span className="mt-0.5 flex items-center gap-2 text-xs text-[color:var(--hv-fg-subtle)]">
               <span className={`h-2 w-2 rounded-full ${statusDotClass(commander.status)}`} />
-              <span>Commander · {statusLabel(commander.status, commander.archived)}</span>
+              <span>
+                Commander · {statusLabel(commander.status, commander.archived)} · {automationCount} automation
+                {automationCount === 1 ? '' : 's'}
+              </span>
             </span>
           </span>
         </span>
@@ -161,8 +174,10 @@ export function MobileOrgPage({
   getCommanderAutomations: (commanderId: string) => ReadonlyArray<OrgNode>
 }) {
   const navigate = useNavigate()
+  const auth = useAuth()
   const [selectedCommanderId, setSelectedCommanderId] = useState<string | null>(highlightedCommanderId)
   const founder = tree.operator
+  const founderAvatarSrc = resolveFounderAvatarSrc(founder, auth)
   const selectedCommander = commanders.find((commander) => commander.id === selectedCommanderId) ?? null
 
   useEffect(() => {
@@ -209,14 +224,24 @@ export function MobileOrgPage({
         <article className="rounded-[12px] border border-[color:var(--hv-border-hair)] bg-[var(--hv-surface-card)] px-4 py-3">
           <div className="flex items-center justify-between gap-3">
             <div className="flex min-w-0 items-center gap-3">
-              <AgentAvatar
-                commander={{
-                  id: founder.id,
-                  displayName: founder.displayName,
-                  avatarUrl: founder.avatarUrl,
-                }}
-                size={40}
-              />
+              {founderAvatarSrc ? (
+                <AgentAvatar
+                  commander={{
+                    id: founder.id,
+                    displayName: founder.displayName,
+                    avatarUrl: founderAvatarSrc,
+                  }}
+                  size={40}
+                />
+              ) : (
+                <div
+                  data-testid="mobile-founder-avatar-initials"
+                  className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-[color:var(--hv-border-soft)] bg-[var(--hv-bg-raised)] font-display text-base italic text-[color:var(--hv-fg-muted)]"
+                  aria-label={`${founder.displayName} avatar`}
+                >
+                  {initials(founder.displayName)}
+                </div>
+              )}
               <div className="min-w-0">
                 <div className="flex items-center gap-2">
                   <p className="truncate text-base font-medium text-[color:var(--hv-fg)]">{founder.displayName}</p>
@@ -291,6 +316,7 @@ export function MobileOrgPage({
               <MobileCommanderTile
                 key={commander.id}
                 commander={commander}
+                automationCount={getCommanderAutomations(commander.id).length}
                 selected={commander.id === selectedCommanderId}
                 onSelect={() => setSelectedCommanderId(commander.id)}
               />

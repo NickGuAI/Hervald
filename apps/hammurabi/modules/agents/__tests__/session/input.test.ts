@@ -49,6 +49,7 @@ describe('agents/session/input', () => {
 
     expect(parseCodexApprovalDecision('accept')).toBe('accept')
     expect(parseCodexApprovalDecision('decline')).toBe('decline')
+    expect(parseCodexApprovalDecision('cancel')).toBe('cancel')
     expect(parseCodexApprovalDecision('later')).toBeNull()
   })
 

@@ -34,6 +34,7 @@ export interface ApiKeyRecord {
   prefix: string
   createdBy: string
   createdAt: string
+  expiresAt?: string | null
   lastUsedAt: string | null
   scopes: string[]
 }
@@ -43,6 +44,7 @@ export interface CreateApiKeyInput {
   scopes: readonly string[]
   createdBy: string
   now?: Date
+  expiresAt?: Date | null
 }
 
 export interface CreatedApiKey {
@@ -57,7 +59,7 @@ export type ApiKeyVerificationResult =
     }
   | {
       ok: false
-      reason: 'not_found' | 'insufficient_scope'
+      reason: 'not_found' | 'insufficient_scope' | 'expired'
     }
 
 export interface ApiKeyStoreLike {
@@ -96,6 +98,11 @@ function isApiKeyRecord(value: unknown): value is ApiKeyRecord {
     typeof value.prefix === 'string' &&
     typeof value.createdBy === 'string' &&
     typeof value.createdAt === 'string' &&
+    (
+      value.expiresAt === undefined ||
+      value.expiresAt === null ||
+      typeof value.expiresAt === 'string'
+    ) &&
     (value.lastUsedAt === null || typeof value.lastUsedAt === 'string') &&
     isStringArray(value.scopes)
   )
@@ -185,6 +192,19 @@ function normalizeLastUsedWriteIntervalMs(value: number | undefined): number {
   return Math.max(0, Math.floor(value))
 }
 
+function isExpired(expiresAt: string | null | undefined, nowMs: number): boolean {
+  if (!expiresAt) {
+    return false
+  }
+
+  const expiresAtMs = toEpochMs(expiresAt)
+  if (expiresAtMs === null) {
+    return true
+  }
+
+  return nowMs >= expiresAtMs
+}
+
 export class ApiKeyJsonStore implements ApiKeyStoreLike {
   private mutationQueue: Promise<void> = Promise.resolve()
   private readonly pendingLastUsedAtById = new Map<string, number>()
@@ -214,6 +234,7 @@ export class ApiKeyJsonStore implements ApiKeyStoreLike {
       prefix: toKeyPrefix(rawKey),
       createdBy: input.createdBy.trim(),
       createdAt: nowIso,
+      expiresAt: input.expiresAt ? input.expiresAt.toISOString() : null,
       lastUsedAt: null,
       scopes: normalizeScopes(input.scopes),
     }
@@ -272,6 +293,7 @@ export class ApiKeyJsonStore implements ApiKeyStoreLike {
         prefix: rawKey.slice(0, 9),
         createdBy: 'system',
         createdAt: new Date().toISOString(),
+        expiresAt: null,
         lastUsedAt: null,
         scopes: [...DEFAULT_BOOTSTRAP_MASTER_KEY_SCOPES],
       }
@@ -339,6 +361,15 @@ export class ApiKeyJsonStore implements ApiKeyStoreLike {
       }
     }
 
+    const now = options.now ?? new Date()
+    const nowMs = now.getTime()
+    if (isExpired(matchedRecord.expiresAt, nowMs)) {
+      return {
+        ok: false,
+        reason: 'expired',
+      }
+    }
+
     const hasRequiredScopes = requiredScopes.every((scope) =>
       matchedRecord.scopes.includes(scope),
     )
@@ -349,9 +380,7 @@ export class ApiKeyJsonStore implements ApiKeyStoreLike {
       }
     }
 
-    const now = options.now ?? new Date()
     const nowIso = now.toISOString()
-    const nowMs = now.getTime()
     const lastUsedWriteIntervalMs = normalizeLastUsedWriteIntervalMs(
       options.lastUsedWriteIntervalMs,
     )

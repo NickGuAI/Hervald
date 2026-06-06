@@ -14,6 +14,7 @@ import {
 import {
   normalizeClaudeEvent,
 } from '../../event-normalizers/claude.js'
+import { isTranscriptEnvelope } from '../../../../src/types/transcript-envelope.js'
 import { registerProvider } from '../../providers/registry-core.js'
 import {
   asClaudeProviderContext,
@@ -95,6 +96,12 @@ function migrateLegacyClaudeProviderContext(rawProviderContext: unknown) {
 function extractClaudeSessionId(event: StreamJsonEvent | undefined): string | undefined {
   if (!event) {
     return undefined
+  }
+  if (isTranscriptEnvelope(event)) {
+    const sessionId = event.source.sessionId
+    if (typeof sessionId === 'string' && sessionId.trim().length > 0) {
+      return sessionId.trim()
+    }
   }
   const direct = typeof (event as Record<string, unknown>).session_id === 'string'
     ? (event as Record<string, unknown>).session_id as string
@@ -257,6 +264,7 @@ export const claudeProvider: ProviderAdapter = registerProvider({
         conversationId: options.conversationId,
         currentSkillInvocation: options.currentSkillInvocation,
         daemonProcess: options.daemonProcess,
+        providerAuth: options.providerAuth,
       },
       deps,
     )

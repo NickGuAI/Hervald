@@ -78,7 +78,7 @@ export function parseOptionalClaudePermissionMode(
 }
 
 export function parseCodexApprovalDecision(rawDecision: unknown): CodexApprovalDecision | null {
-  if (rawDecision === 'accept' || rawDecision === 'decline') {
+  if (rawDecision === 'accept' || rawDecision === 'decline' || rawDecision === 'cancel') {
     return rawDecision
   }
   return null

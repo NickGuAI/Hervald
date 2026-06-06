@@ -1,13 +1,14 @@
 import type { MsgItem } from '../messages/model'
 import {
+  AgentActivityGroup,
   AgentMessage,
   AskUserQuestionBlock,
   PlanningBlock,
+  ProviderActivityBlock,
   RunningAgentsPanel,
   SystemDivider,
   ThinkingBlock,
   ToolBlock,
-  ToolCallGroup,
   UserMessage,
 } from './session-message-list/blocks'
 import { groupMessages } from './session-message-list/render-items'
@@ -41,8 +42,8 @@ export function SessionMessageList({
     <div className="session-message-list space-y-2">
       <RunningAgentsPanel messages={messages} />
       {groupMessages(messages).map((item) => {
-        if (item.type === 'tool-group') {
-          return <ToolCallGroup key={item.id} tools={item.tools} onAnswer={onAnswer} />
+        if (item.type === 'activity-group') {
+          return <AgentActivityGroup key={item.id} messages={item.messages} onAnswer={onAnswer} />
         }
 
         const message = item.msg
@@ -67,6 +68,7 @@ export function SessionMessageList({
               <AgentMessage
                 key={message.id}
                 text={message.text}
+                images={message.images}
                 avatarUrl={agentAvatarUrl}
                 accentColor={agentAccentColor}
                 onOpenWorkspaceFile={onOpenWorkspaceFile}
@@ -76,6 +78,8 @@ export function SessionMessageList({
             return <ToolBlock key={message.id} msg={message} onAnswer={onAnswer} />
           case 'ask':
             return <AskUserQuestionBlock key={message.id} msg={message} onAnswer={onAnswer} />
+          case 'provider':
+            return <ProviderActivityBlock key={message.id} msg={message} />
           default:
             return null
         }

@@ -129,8 +129,21 @@ describe('prune stale non-human sessions', () => {
       sessionType: 'sentinel',
       creator: { kind: 'sentinel', id: 'sentinel-1' },
     })
+    const completedResumableCommanderWorker = makeLiveSession('worker-completed-resumable', {
+      lastTurnCompleted: true,
+      completedTurnAt: '2026-04-26T08:00:00.000Z',
+      finalResultEvent: { type: 'result', subtype: 'success' } as never,
+    })
 
-    const exitedSentinel = makeExitedSession('sentinel-exited', {
+    const exitedSentinelName = 'sentinel-exited'
+    const exitedSentinel = makeExitedSession(exitedSentinelName, {
+      sessionType: 'sentinel',
+      creator: { kind: 'sentinel', id: 'sentinel-1' },
+    })
+    const exitedResumableCommanderWorkerName = 'worker-exited-resumable'
+    const exitedResumableCommanderWorker = makeExitedSession(exitedResumableCommanderWorkerName)
+    const exitedResumableSentinelName = 'sentinel-exited-resumable'
+    const exitedResumableSentinel = makeExitedSession(exitedResumableSentinelName, {
       sessionType: 'sentinel',
       creator: { kind: 'sentinel', id: 'sentinel-1' },
     })
@@ -141,11 +154,17 @@ describe('prune stale non-human sessions', () => {
         [staleHuman.name, staleHuman],
         [attachedCron.name, attachedCron],
         [resumableSentinel.name, resumableSentinel],
+        [completedResumableCommanderWorker.name, completedResumableCommanderWorker],
       ]),
       exitedStreamSessions: new Map<string, ExitedStreamSessionState>([
-        [exitedSentinel.name, exitedSentinel],
+        [exitedSentinelName, exitedSentinel],
+        [exitedResumableCommanderWorkerName, exitedResumableCommanderWorker],
+        [exitedResumableSentinelName, exitedResumableSentinel],
       ]),
-      isLiveSessionResumeAvailable: vi.fn(async (session: StreamSession) => session.name === 'sentinel-resumable'),
+      isLiveSessionResumeAvailable: vi.fn(async (session: StreamSession) =>
+        session.name === 'sentinel-resumable' || session.name === 'worker-completed-resumable'),
+      isExitedSessionResumeAvailable: vi.fn(async (entry) =>
+        entry.name === 'worker-exited-resumable' || entry.name === 'sentinel-exited-resumable'),
     })
     const { getStaleNonHumanSessionCandidates } = createPersistenceHelpers(ctx)
 
@@ -160,11 +179,25 @@ describe('prune stale non-human sessions', () => {
         reason: 'stale-non-human-ttl',
       }),
       expect.objectContaining({
-        name: exitedSentinel.name,
+        name: completedResumableCommanderWorker.name,
+        sessionType: 'worker',
+        creator: { kind: 'commander', id: 'cmdr-atlas' },
+        lifecycle: 'exited',
+        reason: 'exited-commander-worker-ttl',
+      }),
+      expect.objectContaining({
+        name: exitedSentinelName,
         sessionType: 'sentinel',
         creator: { kind: 'sentinel', id: 'sentinel-1' },
         lifecycle: 'exited',
         reason: 'exited-non-human-ttl',
+      }),
+      expect.objectContaining({
+        name: exitedResumableCommanderWorkerName,
+        sessionType: 'worker',
+        creator: { kind: 'commander', id: 'cmdr-atlas' },
+        lifecycle: 'exited',
+        reason: 'exited-commander-worker-ttl',
       }),
     ])
   })

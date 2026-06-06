@@ -7,6 +7,7 @@ import {
   defaultTelemetryStorePath,
 } from './store.js'
 import { TelemetryHub } from './hub.js'
+import type { TelemetryMetadataFilters } from './hub.js'
 import {
   LocalTelemetryScanner,
   type LocalScannerLike,
@@ -147,6 +148,81 @@ function parseSummaryPeriod(
   }
 }
 
+function parseMetadataFilters(query: Record<string, unknown>): TelemetryMetadataFilters {
+  return {
+    source: firstQueryString(query.source) ?? firstQueryString(query['metadata.source']) ?? undefined,
+    run_id: firstQueryString(query.run_id)
+      ?? firstQueryString(query.runId)
+      ?? firstQueryString(query['metadata.run_id'])
+      ?? undefined,
+    bench: firstQueryString(query.bench) ?? firstQueryString(query['metadata.bench']) ?? undefined,
+    task_id: firstQueryString(query.task_id)
+      ?? firstQueryString(query.taskId)
+      ?? firstQueryString(query['metadata.task_id'])
+      ?? undefined,
+    runner_mode: firstQueryString(query.runner_mode)
+      ?? firstQueryString(query.runnerMode)
+      ?? firstQueryString(query['metadata.runner_mode'])
+      ?? undefined,
+  }
+}
+
+function parseOptionalNumber(value: unknown): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value
+  }
+  if (typeof value === 'string' && value.trim().length > 0) {
+    const parsed = Number(value)
+    return Number.isFinite(parsed) ? parsed : undefined
+  }
+  return undefined
+}
+
+function parseOptionalDate(value: unknown, fallback: Date): Date | null {
+  if (value === undefined) {
+    return fallback
+  }
+  if (typeof value !== 'string' || value.trim().length === 0) {
+    return null
+  }
+  const parsed = new Date(value)
+  return Number.isNaN(parsed.getTime()) ? null : parsed
+}
+
+function parsePrimitiveMetadata(
+  body: Record<string, unknown>,
+): { ok: true; value: TelemetryMetadataFilters & { turn?: number } } | { ok: false; error: string } {
+  const metadata = asObject(body.metadata) ?? {}
+  const turn = parseOptionalNumber(metadata.turn ?? body.turn)
+  if ((metadata.turn ?? body.turn) !== undefined && turn === undefined) {
+    return { ok: false, error: 'metadata.turn must be a finite number when provided' }
+  }
+
+  return {
+    ok: true,
+    value: {
+      source: firstQueryString(metadata.source) ?? firstQueryString(body.source) ?? undefined,
+      run_id: firstQueryString(metadata.run_id)
+        ?? firstQueryString(metadata.runId)
+        ?? firstQueryString(body.run_id)
+        ?? firstQueryString(body.runId)
+        ?? undefined,
+      bench: firstQueryString(metadata.bench) ?? firstQueryString(body.bench) ?? undefined,
+      task_id: firstQueryString(metadata.task_id)
+        ?? firstQueryString(metadata.taskId)
+        ?? firstQueryString(body.task_id)
+        ?? firstQueryString(body.taskId)
+        ?? undefined,
+      runner_mode: firstQueryString(metadata.runner_mode)
+        ?? firstQueryString(metadata.runnerMode)
+        ?? firstQueryString(body.runner_mode)
+        ?? firstQueryString(body.runnerMode)
+        ?? undefined,
+      turn,
+    },
+  }
+}
+
 export function createTelemetryRouterWithHub(
   options: TelemetryRouterOptions = {},
 ): TelemetryRouterResult {
@@ -239,12 +315,66 @@ export function createTelemetryRouterWithHub(
     }
   })
 
-  router.get('/sessions', requireReadAccess, async (_req, res) => {
+  router.post('/ingest', requireWriteAccess, async (req, res) => {
+    const body = asObject(req.body)
+    if (!body) {
+      res.status(400).json({ error: 'JSON body is required' })
+      return
+    }
+
+    const sessionId = firstQueryString(body.sessionId) ?? firstQueryString(body.session_id)
+    if (!sessionId) {
+      res.status(400).json({ error: 'sessionId is required' })
+      return
+    }
+
+    const timestamp = parseOptionalDate(body.timestamp, now())
+    if (!timestamp) {
+      res.status(400).json({ error: 'timestamp must be an ISO timestamp when provided' })
+      return
+    }
+
+    const metadata = parsePrimitiveMetadata(body)
+    if (!metadata.ok) {
+      res.status(400).json({ error: metadata.error })
+      return
+    }
+
+    try {
+      const record = await hub.ingest({
+        sessionId,
+        agentName: firstQueryString(body.agentName) ?? firstQueryString(body.agent_name) ?? 'benchmark-runner',
+        model: firstQueryString(body.model) ?? 'unknown',
+        provider: firstQueryString(body.provider) ?? 'unknown',
+        inputTokens: parseOptionalNumber(body.inputTokens ?? body.input_tokens) ?? 0,
+        outputTokens: parseOptionalNumber(body.outputTokens ?? body.output_tokens) ?? 0,
+        cost: parseOptionalNumber(body.cost ?? body.costUsd ?? body.cost_usd) ?? 0,
+        durationMs: parseOptionalNumber(body.durationMs ?? body.duration_ms) ?? 0,
+        currentTask: firstQueryString(body.currentTask) ?? firstQueryString(body.current_task) ?? 'Benchmark evaluation',
+        timestamp,
+        metadata: metadata.value,
+      })
+      res.status(201).json(record)
+    } catch {
+      res.status(500).json({ error: 'Failed to ingest telemetry record' })
+    }
+  })
+
+  router.get('/sessions', requireReadAccess, async (req, res) => {
     try {
       await hub.ensureReady()
-      res.json(hub.getSessions())
+      res.json(hub.getSessions(now(), parseMetadataFilters(req.query)))
     } catch {
       res.status(500).json({ error: 'Failed to read telemetry sessions' })
+    }
+  })
+
+  router.get('/calls', requireReadAccess, async (req, res) => {
+    try {
+      await hub.ensureReady()
+      res.json(hub.getCalls(parseMetadataFilters(req.query)))
+    } catch {
+      res.status(500).json({ error: 'Failed to read telemetry calls' })
     }
   })
 

@@ -16,7 +16,11 @@ import type { CommanderSessionsInterface } from '../../agents/routes'
 import type { AgentType, SessionSendPayload } from '../../agents/types'
 import type { QueuedMessageImage } from '../../agents/message-queue'
 import { MAX_MESSAGE_IMAGE_COUNT } from '../../agents/message-images'
-import { buildConversationSessionName } from '../routes/conversation-runtime'
+import {
+  buildConversationSessionName,
+  configureDeepThinkingRoutingForTest,
+  resetDeepThinkingRoutingStateForTest,
+} from '../routes/conversation-runtime'
 import { resetConversationRuntimeOverlays } from '../routes/conversation-runtime-state'
 import { CommanderChannelBindingStore, CommanderChannelBindingConflictError } from '../../channels/store'
 import {
@@ -96,6 +100,7 @@ interface MockSessionsFixture {
   iface: CommanderSessionsInterface
   createCalls: Array<Parameters<CommanderSessionsInterface['createCommanderSession']>[0]>
   activeSessions: Map<string, ActiveSessionState>
+  dispatchWorkerCalls: Array<Parameters<CommanderSessionsInterface['dispatchWorkerForCommander']>[0]>
   sendCalls: Array<{
     name: string
     text: string
@@ -106,6 +111,16 @@ interface MockSessionsFixture {
       priority?: 'high' | 'normal' | 'low'
     }
   }>
+  operationCalls: Array<
+    | { kind: 'dispatchWorker'; index: number }
+    | { kind: 'sendToSession'; index: number }
+    | { kind: 'recordSessionEvent'; index: number }
+  >
+  recordedSessionEvents: Array<{
+    name: string
+    event: Record<string, unknown>
+  }>
+  deletedSessions: string[]
   dispose: () => void
 }
 
@@ -118,6 +133,7 @@ async function createTempDir(prefix: string): Promise<string> {
 }
 
 afterEach(async () => {
+  resetDeepThinkingRoutingStateForTest()
   resetConversationRuntimeOverlays()
   resetTranscriptStoreRoot()
   await Promise.all(
@@ -195,9 +211,25 @@ function createTestApiKeyStore(): ApiKeyStoreLike {
 }
 
 function createMockSessionsInterface(
-  options: { attachCodexWatchdogTimer?: boolean } = {},
+  options: {
+    attachCodexWatchdogTimer?: boolean
+    dispatchWorkerResult?: Awaited<ReturnType<CommanderSessionsInterface['dispatchWorkerForCommander']>>
+    dispatchWorkerHandler?: (
+      input: Parameters<CommanderSessionsInterface['dispatchWorkerForCommander']>[0],
+      index: number,
+    ) =>
+      | Awaited<ReturnType<CommanderSessionsInterface['dispatchWorkerForCommander']>>
+      | Promise<Awaited<ReturnType<CommanderSessionsInterface['dispatchWorkerForCommander']>>>
+    workerLastTurnCompleted?: boolean
+    workerOutputText?: (
+      sessionName: string,
+      rawBody: Record<string, unknown>,
+      index: number,
+    ) => string
+  } = {},
 ): MockSessionsFixture {
   const createCalls: Array<Parameters<CommanderSessionsInterface['createCommanderSession']>[0]> = []
+  const dispatchWorkerCalls: Array<Parameters<CommanderSessionsInterface['dispatchWorkerForCommander']>[0]> = []
   const sendCalls: Array<{
     name: string
     text: string
@@ -207,6 +239,9 @@ function createMockSessionsInterface(
       priority?: 'high' | 'normal' | 'low'
     }
   }> = []
+  const operationCalls: MockSessionsFixture['operationCalls'] = []
+  const recordedSessionEvents: MockSessionsFixture['recordedSessionEvents'] = []
+  const deletedSessions: string[] = []
   const activeSessions = new Map<string, ActiveSessionState>()
   const timers: NodeJS.Timeout[] = []
 
@@ -297,8 +332,52 @@ function createMockSessionsInterface(
         clients: new Set(),
       } as unknown as Awaited<ReturnType<CommanderSessionsInterface['replaceCommanderSession']>>
     },
-    async dispatchWorkerForCommander() {
-      return {
+    async dispatchWorkerForCommander(input) {
+      dispatchWorkerCalls.push(input)
+      operationCalls.push({ kind: 'dispatchWorker', index: dispatchWorkerCalls.length - 1 })
+      const callIndex = dispatchWorkerCalls.length - 1
+      const rawBody = input.rawBody && typeof input.rawBody === 'object' && !Array.isArray(input.rawBody)
+        ? input.rawBody as Record<string, unknown>
+        : {}
+      const requestedSessionName = typeof rawBody.name === 'string'
+        ? rawBody.name
+        : `worker-${dispatchWorkerCalls.length}`
+      const configuredResult = options.dispatchWorkerHandler
+        ? await options.dispatchWorkerHandler(input, callIndex)
+        : options.dispatchWorkerResult
+      const responseBody = configuredResult?.body ?? {
+        sessionName: requestedSessionName,
+        sessionType: 'worker',
+        created: true,
+      }
+      const responseSessionName = typeof responseBody.sessionName === 'string'
+        ? responseBody.sessionName
+        : requestedSessionName
+      if ((configuredResult?.status ?? 501) >= 200 && (configuredResult?.status ?? 501) < 300) {
+        const outputText = options.workerOutputText
+          ? options.workerOutputText(responseSessionName, rawBody, callIndex)
+          : `worker output for ${responseSessionName}: ${String(rawBody.task ?? '')}`
+        activeSessions.set(responseSessionName, {
+          kind: 'stream',
+          agentType: typeof rawBody.agentType === 'string' ? rawBody.agentType as AgentType : 'claude',
+          model: typeof rawBody.model === 'string' ? rawBody.model : undefined,
+          events: [
+            assistantTextEvent(
+              dispatchWorkerCalls.length,
+              outputText,
+            ),
+          ],
+          conversationEntryCount: 1,
+          lastTurnCompleted: options.workerLastTurnCompleted ?? true,
+          pendingDirectSendMessages: [],
+          usage: {
+            inputTokens: 1,
+            outputTokens: 1,
+            costUsd: 0,
+          },
+        })
+      }
+      return configuredResult ?? {
         status: 501,
         body: { error: 'dispatchWorkerForCommander is not stubbed for this fixture' },
       }
@@ -323,6 +402,7 @@ function createMockSessionsInterface(
             ...(displayText !== undefined ? { displayText } : {}),
             images,
           })
+      operationCalls.push({ kind: 'sendToSession', index: sendCalls.length - 1 })
       const active = activeSessions.get(name)
       if (active) {
         active.events.push({
@@ -349,7 +429,18 @@ function createMockSessionsInterface(
       }
       return activeSessions.has(name)
     },
+    recordSessionEvent(name, event) {
+      recordedSessionEvents.push({ name, event: event as Record<string, unknown> })
+      operationCalls.push({ kind: 'recordSessionEvent', index: recordedSessionEvents.length - 1 })
+      const active = activeSessions.get(name)
+      if (!active) {
+        return false
+      }
+      active.events.push(event as Record<string, unknown>)
+      return true
+    },
     deleteSession(name) {
+      deletedSessions.push(name)
       activeSessions.delete(name)
     },
     getSession(name) {
@@ -394,7 +485,11 @@ function createMockSessionsInterface(
     iface,
     activeSessions,
     createCalls,
+    dispatchWorkerCalls,
     sendCalls,
+    operationCalls,
+    recordedSessionEvents,
+    deletedSessions,
     dispose: () => {
       for (const timer of timers.splice(0)) {
         clearTimeout(timer)
@@ -559,6 +654,44 @@ async function startConversation(
   })
 }
 
+async function waitForCreateCall(
+  sessions: MockSessionsFixture,
+  index = 0,
+): Promise<Parameters<CommanderSessionsInterface['createCommanderSession']>[0]> {
+  await vi.waitFor(() => expect(sessions.createCalls.length).toBeGreaterThan(index))
+  return sessions.createCalls[index]!
+}
+
+type ActiveConversationPayload = {
+  id: string
+  status: string
+  agentType?: string | null
+  liveSession: Record<string, unknown> | null
+}
+
+async function waitForActiveConversation(
+  baseUrl: string,
+  conversationId: string,
+): Promise<ActiveConversationPayload> {
+  let payload: ActiveConversationPayload | null = null
+  await vi.waitFor(async () => {
+    const response = await fetch(`${baseUrl}/api/conversations/${conversationId}`, {
+      headers: READ_ONLY_AUTH_HEADERS,
+    })
+    expect(response.status).toBe(200)
+    payload = await response.json() as NonNullable<typeof payload>
+    expect(payload).toEqual(expect.objectContaining({
+      id: conversationId,
+      status: 'active',
+      liveSession: expect.any(Object),
+    }))
+  })
+  if (!payload) {
+    throw new Error(`Expected conversation "${conversationId}" to become active`)
+  }
+  return payload
+}
+
 describe('conversation routes', () => {
   it('allows fresh operator write scopes to create conversations', async () => {
     const dir = await createTempDir('hammurabi-commanders-conversation-create-auth-')
@@ -659,7 +792,7 @@ describe('conversation routes', () => {
       }
       expect(payload.source).toBe('transcript')
       expect(payload.limit).toBe(10)
-      expect(payload.nextBefore).toBe('2')
+      expect(payload.nextBefore).toBe('10')
       expect(payload.hasMore).toBe(true)
       expect(payload.totalMessages).toBe(12)
       expect(payload.messages.map((message) => message.text)).toEqual([
@@ -675,8 +808,9 @@ describe('conversation routes', () => {
         'history 11',
       ])
 
+      expect(payload.nextBefore).toBeTruthy()
       const olderResponse = await fetch(
-        `${server.baseUrl}/api/conversations/${CONVERSATION_A}/messages?before=2`,
+        `${server.baseUrl}/api/conversations/${CONVERSATION_A}/messages?before=${payload.nextBefore}`,
         { headers: READ_ONLY_AUTH_HEADERS },
       )
       expect(olderResponse.status).toBe(200)
@@ -714,9 +848,10 @@ describe('conversation routes', () => {
         id: CONVERSATION_A,
         surface: 'ui',
       })).status).toBe(201)
-      expect((await startConversation(server.baseUrl, CONVERSATION_A, {
+      expect([200, 202]).toContain((await startConversation(server.baseUrl, CONVERSATION_A, {
         agentType: 'claude',
-      })).status).toBe(200)
+      })).status)
+      await waitForCreateCall(sessions)
 
       const sessionName = buildConversationSessionName({
         id: CONVERSATION_A,
@@ -783,9 +918,10 @@ describe('conversation routes', () => {
         id: defaultConversationId,
         surface: 'ui',
       })).status).toBe(201)
-      expect((await startConversation(server.baseUrl, defaultConversationId, {
+      expect([200, 202]).toContain((await startConversation(server.baseUrl, defaultConversationId, {
         agentType: 'claude',
-      })).status).toBe(200)
+      })).status)
+      await waitForCreateCall(sessions)
 
       const defaultOnlyActiveResponse = await fetch(
         `${server.baseUrl}/api/commanders/${COMMANDER_A}/conversations/active`,
@@ -813,9 +949,10 @@ describe('conversation routes', () => {
         id: CONVERSATION_A,
         surface: 'api',
       })).status).toBe(201)
-      expect((await startConversation(server.baseUrl, CONVERSATION_A, {
+      expect([200, 202]).toContain((await startConversation(server.baseUrl, CONVERSATION_A, {
         agentType: 'claude',
-      })).status).toBe(200)
+      })).status)
+      await waitForActiveConversation(server.baseUrl, CONVERSATION_A)
 
       const firstActiveResponse = await fetch(
         `${server.baseUrl}/api/commanders/${COMMANDER_A}/conversations/active`,
@@ -968,25 +1105,17 @@ describe('conversation routes', () => {
       const startResponse = await startConversation(server.baseUrl, CONVERSATION_A, {
         agentType: 'claude',
       })
-      expect(startResponse.status).toBe(200)
-      const started = await startResponse.json() as {
-        conversation: {
-          id: string
-          status: string
-          agentType?: string | null
-          liveSession: {
-            name?: string
-          } | null
-        }
-      }
-      expect(started.conversation).toEqual(expect.objectContaining({
+      expect([200, 202]).toContain(startResponse.status)
+      const started = await waitForActiveConversation(server.baseUrl, CONVERSATION_A)
+      expect(started).toEqual(expect.objectContaining({
         id: CONVERSATION_A,
         status: 'active',
         agentType: 'claude',
       }))
-      expect(started.conversation.liveSession?.name).toContain(`-conversation-${CONVERSATION_A}`)
-      expect(sessions.createCalls).toHaveLength(1)
-      expect(sessions.createCalls[0]?.conversationId).toBe(CONVERSATION_A)
+      expect(started.liveSession?.name).toContain(`-conversation-${CONVERSATION_A}`)
+      expect(await waitForCreateCall(sessions)).toEqual(expect.objectContaining({
+        conversationId: CONVERSATION_A,
+      }))
 
       const firstMessageResponse = await fetch(`${server.baseUrl}/api/conversations/${CONVERSATION_A}/message`, {
         method: 'POST',
@@ -1278,6 +1407,376 @@ describe('conversation routes', () => {
     }
   })
 
+  describe('issue #1601 async deep-thinking worker routing', () => {
+    async function startActiveConversationForAdaptiveThinkingTest(
+      tempPrefix: string,
+      sessionOptions: Parameters<typeof createMockSessionsInterface>[0] = {},
+    ): Promise<{
+      server: RunningServer
+      sessions: MockSessionsFixture
+      sessionName: string
+    }> {
+      const dir = await createTempDir(tempPrefix)
+      const storePath = join(dir, 'sessions.json')
+      await seedCommander(storePath, COMMANDER_A)
+
+      const sessions = createMockSessionsInterface({
+        dispatchWorkerResult: {
+          status: 201,
+          body: {
+            sessionType: 'worker',
+            created: true,
+          },
+        },
+        ...sessionOptions,
+      })
+      const server = await startServer({
+        sessionStorePath: storePath,
+        sessionsInterface: sessions.iface,
+      })
+
+      const createResponse = await createConversation(server.baseUrl, COMMANDER_A, {
+        id: CONVERSATION_A,
+        surface: 'api',
+      })
+      expect(createResponse.status).toBe(201)
+
+      const startResponse = await startConversation(server.baseUrl, CONVERSATION_A, {
+        agentType: 'claude',
+      })
+      expect([200, 202]).toContain(startResponse.status)
+      await waitForCreateCall(sessions)
+
+      const sessionName = Array.from(sessions.activeSessions.keys())[0]
+      if (!sessionName) {
+        throw new Error('Expected active conversation session after start')
+      }
+
+      sessions.dispatchWorkerCalls.splice(0)
+      sessions.sendCalls.splice(0)
+      sessions.operationCalls.splice(0)
+      sessions.recordedSessionEvents.splice(0)
+      sessions.deletedSessions.splice(0)
+
+      return { server, sessions, sessionName }
+    }
+
+    async function postConversationMessage(
+      server: RunningServer,
+      message: string,
+    ): Promise<Response> {
+      return fetch(`${server.baseUrl}/api/conversations/${CONVERSATION_A}/message`, {
+        method: 'POST',
+        headers: {
+          ...FULL_AUTH_HEADERS,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({ message }),
+      })
+    }
+
+    function routingStatuses(sessions: MockSessionsFixture): unknown[] {
+      return sessions.recordedSessionEvents
+        .filter((entry) => entry.event.subtype === 'deep_thinking_routing')
+        .map((entry) => entry.event.status)
+    }
+
+    async function waitForRoutingStatus(
+      sessions: MockSessionsFixture,
+      status: string,
+    ): Promise<void> {
+      await vi.waitFor(() => expect(routingStatuses(sessions)).toContain(status))
+    }
+
+    function dispatchedWorkerNames(sessions: MockSessionsFixture): string[] {
+      return sessions.dispatchWorkerCalls
+        .map((call) => {
+          const rawBody = call.rawBody as Record<string, unknown>
+          return typeof rawBody.name === 'string' ? rawBody.name : null
+        })
+        .filter((name): name is string => Boolean(name))
+    }
+
+    it('starts deep-thinking fan-out asynchronously and sends synthesis on success', async () => {
+      configureDeepThinkingRoutingForTest({
+        workerWaitTimeoutMs: 500,
+        workerPollMs: 1,
+        operationScheduleDelayMs: 0,
+      })
+      let releaseFirstDispatch: () => void = () => {}
+      let firstDispatchStarted = false
+      const firstDispatchGate = new Promise<void>((resolve) => {
+        releaseFirstDispatch = resolve
+      })
+      const message = 'think harder about the migration risk and propose the smallest fix.'
+      const { server, sessions, sessionName } = await startActiveConversationForAdaptiveThinkingTest(
+        'hammurabi-commanders-conversation-adaptive-thinking-',
+        {
+          dispatchWorkerHandler: async (input, index) => {
+            if (index === 0) {
+              firstDispatchStarted = true
+              await firstDispatchGate
+            }
+            const rawBody = input.rawBody as Record<string, unknown>
+            return {
+              status: 201,
+              body: {
+                sessionName: rawBody.name,
+                sessionType: 'worker',
+                created: true,
+              },
+            }
+          },
+        },
+      )
+
+      try {
+        const response = await postConversationMessage(server, message)
+
+        expect(response.status).toBe(200)
+        expect(routingStatuses(sessions)).toContain('started')
+        await vi.waitFor(() => expect(firstDispatchStarted).toBe(true))
+        expect(sessions.sendCalls).toHaveLength(0)
+
+        releaseFirstDispatch()
+        await waitForRoutingStatus(sessions, 'completed')
+
+        expect(sessions.dispatchWorkerCalls).toHaveLength(5)
+        expect(sessions.dispatchWorkerCalls).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              commanderId: COMMANDER_A,
+              abortSignal: expect.any(AbortSignal),
+            }),
+          ]),
+        )
+        expect(
+          sessions.dispatchWorkerCalls.every((call) => {
+            const rawBody = call.rawBody as Record<string, unknown>
+            return typeof rawBody.task === 'string' && rawBody.task.includes(message)
+          }),
+        ).toBe(true)
+
+        const synthesisCall = sessions.sendCalls.at(-1)
+        expect(synthesisCall).toEqual(expect.objectContaining({
+          name: sessionName,
+        }))
+        expect(synthesisCall?.text).toMatch(/synthesi[sz]e|synthesis/i)
+        expect(synthesisCall?.text).toContain(message)
+        expect(synthesisCall?.text).toContain('Research worker outputs:')
+        expect(synthesisCall?.text).toContain('Thinking worker outputs:')
+        expect(synthesisCall?.text).toContain('worker output for')
+        const workerNames = dispatchedWorkerNames(sessions)
+        expect(sessions.deletedSessions).toEqual(expect.arrayContaining(workerNames))
+        expect(workerNames.every((name) => !sessions.activeSessions.has(name))).toBe(true)
+      } finally {
+        await server.close()
+      }
+    })
+
+    it('times out incomplete workers and cleans up dispatched worker sessions', async () => {
+      configureDeepThinkingRoutingForTest({
+        workerWaitTimeoutMs: 20,
+        workerPollMs: 1,
+        operationScheduleDelayMs: 0,
+      })
+      const { server, sessions } = await startActiveConversationForAdaptiveThinkingTest(
+        'hammurabi-commanders-conversation-adaptive-timeout-',
+        { workerLastTurnCompleted: false },
+      )
+
+      try {
+        const response = await postConversationMessage(
+          server,
+          'think harder about the migration risk and propose the smallest fix.',
+        )
+
+        expect(response.status).toBe(200)
+        await waitForRoutingStatus(sessions, 'timed_out')
+        expect(sessions.sendCalls).toHaveLength(0)
+        const workerNames = dispatchedWorkerNames(sessions)
+        expect(workerNames).toHaveLength(2)
+        expect(sessions.deletedSessions).toEqual(expect.arrayContaining(workerNames))
+      } finally {
+        await server.close()
+      }
+    })
+
+    it('cancels polling and cleans up workers when the conversation is paused', async () => {
+      configureDeepThinkingRoutingForTest({
+        workerWaitTimeoutMs: 500,
+        workerPollMs: 5,
+        operationScheduleDelayMs: 0,
+      })
+      const { server, sessions, sessionName } = await startActiveConversationForAdaptiveThinkingTest(
+        'hammurabi-commanders-conversation-adaptive-cancel-',
+        { workerLastTurnCompleted: false },
+      )
+
+      try {
+        const response = await postConversationMessage(
+          server,
+          'think harder about the migration risk and propose the smallest fix.',
+        )
+        expect(response.status).toBe(200)
+        await vi.waitFor(() => expect(sessions.dispatchWorkerCalls.length).toBeGreaterThanOrEqual(2))
+
+        const pauseResponse = await fetch(`${server.baseUrl}/api/conversations/${CONVERSATION_A}/pause`, {
+          method: 'POST',
+          headers: FULL_AUTH_HEADERS,
+        })
+
+        expect(pauseResponse.status).toBe(200)
+        await waitForRoutingStatus(sessions, 'cancelled')
+        await vi.waitFor(() => {
+          const workerNames = dispatchedWorkerNames(sessions)
+          expect(workerNames.length).toBeGreaterThan(0)
+          expect(sessions.deletedSessions).toEqual(expect.arrayContaining(workerNames))
+        })
+        expect(sessions.deletedSessions).toContain(sessionName)
+      } finally {
+        await server.close()
+      }
+    })
+
+    it('cleans up already-dispatched workers after partial dispatch failure', async () => {
+      configureDeepThinkingRoutingForTest({
+        workerWaitTimeoutMs: 200,
+        workerPollMs: 1,
+        operationScheduleDelayMs: 0,
+      })
+      const { server, sessions } = await startActiveConversationForAdaptiveThinkingTest(
+        'hammurabi-commanders-conversation-adaptive-partial-failure-',
+        {
+          dispatchWorkerHandler: async (input, index) => {
+            const rawBody = input.rawBody as Record<string, unknown>
+            if (index === 1) {
+              return {
+                status: 503,
+                body: { error: 'worker machine unavailable' },
+              }
+            }
+            return {
+              status: 201,
+              body: {
+                sessionName: rawBody.name,
+                sessionType: 'worker',
+                created: true,
+              },
+            }
+          },
+        },
+      )
+
+      try {
+        const response = await postConversationMessage(
+          server,
+          'think harder about the migration risk and propose the smallest fix.',
+        )
+
+        expect(response.status).toBe(200)
+        await waitForRoutingStatus(sessions, 'failed')
+        expect(sessions.sendCalls).toHaveLength(0)
+        expect(sessions.dispatchWorkerCalls).toHaveLength(2)
+        expect(sessions.deletedSessions).toContain(dispatchedWorkerNames(sessions)[0])
+      } finally {
+        await server.close()
+      }
+    })
+
+    it('caps worker output before building the synthesis prompt', async () => {
+      configureDeepThinkingRoutingForTest({
+        workerWaitTimeoutMs: 500,
+        workerPollMs: 1,
+        operationScheduleDelayMs: 0,
+      })
+      const { server, sessions } = await startActiveConversationForAdaptiveThinkingTest(
+        'hammurabi-commanders-conversation-adaptive-truncation-',
+        {
+          workerOutputText: () => 'x'.repeat(30_000),
+        },
+      )
+
+      try {
+        const response = await postConversationMessage(
+          server,
+          'think harder about the migration risk and propose the smallest fix.',
+        )
+
+        expect(response.status).toBe(200)
+        await waitForRoutingStatus(sessions, 'completed')
+        const synthesisText = sessions.sendCalls.at(-1)?.text ?? ''
+        expect(synthesisText).toContain('[truncated: exceeded deep-thinking prompt budget')
+        expect(synthesisText.length).toBeLessThan(55_000)
+        const thinkingTask = sessions.dispatchWorkerCalls
+          .map((call) => (call.rawBody as Record<string, unknown>).task)
+          .find((task): task is string => typeof task === 'string' && task.includes('Research worker outputs to use:'))
+        expect(thinkingTask).toContain('[truncated: exceeded deep-thinking prompt budget')
+      } finally {
+        await server.close()
+      }
+    })
+
+    it.each([
+      'think harder',
+      '多轮思考',
+    ])('rejects bare deep-thinking trigger without launching workers: %s', async (message) => {
+      configureDeepThinkingRoutingForTest({
+        workerWaitTimeoutMs: 200,
+        workerPollMs: 1,
+        operationScheduleDelayMs: 0,
+      })
+      const { server, sessions } = await startActiveConversationForAdaptiveThinkingTest(
+        'hammurabi-commanders-conversation-adaptive-bare-trigger-',
+      )
+
+      try {
+        const response = await postConversationMessage(server, message)
+
+        expect(response.status).toBe(400)
+        expect(await response.json()).toEqual({
+          error: 'Deep-thinking requests need substantive task text after the trigger phrase.',
+        })
+        expect(routingStatuses(sessions)).toContain('skipped')
+        expect(sessions.dispatchWorkerCalls).toHaveLength(0)
+        expect(sessions.sendCalls).toHaveLength(0)
+      } finally {
+        await server.close()
+      }
+    })
+
+    it.each([
+      'Summarize the current plan and list the next action.',
+      'Format the answer with Round 1: facts, Round 2: risks, and Round 3: next steps.',
+    ])('keeps ordinary or formatting-only prompt on the fast path: %s', async (message) => {
+      const { server, sessions, sessionName } = await startActiveConversationForAdaptiveThinkingTest(
+        'hammurabi-commanders-conversation-adaptive-fast-path-',
+      )
+
+      try {
+        const response = await fetch(`${server.baseUrl}/api/conversations/${CONVERSATION_A}/message`, {
+          method: 'POST',
+          headers: {
+            ...FULL_AUTH_HEADERS,
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify({ message }),
+        })
+
+        expect(response.status).toBe(200)
+        expect(sessions.dispatchWorkerCalls).toHaveLength(0)
+        expect(sessions.sendCalls).toEqual([
+          expect.objectContaining({
+            name: sessionName,
+            text: message,
+          }),
+        ])
+      } finally {
+        await server.close()
+      }
+    })
+  })
+
   it('patches a stopped conversation name, provider, and model without starting it', async () => {
     const dir = await createTempDir('hammurabi-commanders-conversation-patch-')
     const storePath = join(dir, 'sessions.json')
@@ -1299,7 +1798,8 @@ describe('conversation routes', () => {
       const startResponse = await startConversation(server.baseUrl, CONVERSATION_A, {
         agentType: 'claude',
       })
-      expect(startResponse.status).toBe(200)
+      expect([200, 202]).toContain(startResponse.status)
+      await waitForCreateCall(sessions)
 
       const messageResponse = await fetch(`${server.baseUrl}/api/conversations/${CONVERSATION_A}/message`, {
         method: 'POST',
@@ -1351,9 +1851,8 @@ describe('conversation routes', () => {
       const restartResponse = await startConversation(server.baseUrl, CONVERSATION_A, {
         agentType: 'codex',
       })
-      expect(restartResponse.status).toBe(200)
-      expect(sessions.createCalls).toHaveLength(2)
-      expect(sessions.createCalls[1]).toEqual(expect.objectContaining({
+      expect([200, 202]).toContain(restartResponse.status)
+      expect(await waitForCreateCall(sessions, 1)).toEqual(expect.objectContaining({
         agentType: 'codex',
         model: 'gpt-5.5',
         resumeProviderContext: expect.objectContaining({
@@ -1440,9 +1939,10 @@ describe('conversation routes', () => {
         id: CONVERSATION_A,
         surface: 'api',
       })).status).toBe(201)
-      expect((await startConversation(server.baseUrl, CONVERSATION_A, {
+      expect([200, 202]).toContain((await startConversation(server.baseUrl, CONVERSATION_A, {
         agentType: 'claude',
-      })).status).toBe(200)
+      })).status)
+      await waitForCreateCall(sessions)
 
       const sessionName = Array.from(sessions.activeSessions.keys())[0]
       expect(sessionName).toBeDefined()
@@ -1518,7 +2018,8 @@ describe('conversation routes', () => {
       const startResponse = await startConversation(server.baseUrl, CONVERSATION_A, {
         agentType: 'claude',
       })
-      expect(startResponse.status).toBe(200)
+      expect([200, 202]).toContain(startResponse.status)
+      await waitForCreateCall(sessions)
 
       const sessionName = buildConversationSessionName({
         id: CONVERSATION_A,
@@ -1691,19 +2192,17 @@ describe('conversation routes', () => {
       const startResponse = await startConversation(server.baseUrl, CONVERSATION_A, {
         agentType: 'claude',
       })
-      expect(startResponse.status).toBe(200)
-      expect(await startResponse.json()).toEqual({
-        conversation: expect.objectContaining({
-          id: CONVERSATION_A,
-          status: 'active',
-          agentType: 'claude',
-          liveSession: expect.objectContaining({
-            name: expect.stringContaining(`-conversation-${CONVERSATION_A}`),
-          }),
+      expect([200, 202]).toContain(startResponse.status)
+      const started = await waitForActiveConversation(server.baseUrl, CONVERSATION_A)
+      expect(started).toEqual(expect.objectContaining({
+        id: CONVERSATION_A,
+        status: 'active',
+        agentType: 'claude',
+        liveSession: expect.objectContaining({
+          name: expect.stringContaining(`-conversation-${CONVERSATION_A}`),
         }),
-      })
-      expect(sessions.createCalls).toHaveLength(1)
-      expect(sessions.createCalls[0]).toEqual(expect.objectContaining({
+      }))
+      expect(await waitForCreateCall(sessions)).toEqual(expect.objectContaining({
         agentType: 'claude',
         conversationId: CONVERSATION_A,
       }))
@@ -1903,8 +2402,8 @@ describe('conversation routes', () => {
       expect(createResponse.status).toBe(201)
 
       const startResponse = await startConversation(server.baseUrl, CONVERSATION_A, {})
-      expect(startResponse.status).toBe(200)
-      expect(sessions.createCalls[0]).toEqual(expect.objectContaining({
+      expect([200, 202]).toContain(startResponse.status)
+      expect(await waitForCreateCall(sessions)).toEqual(expect.objectContaining({
         agentType: 'codex',
         model: 'gpt-5.4',
         conversationId: CONVERSATION_A,
@@ -1939,8 +2438,8 @@ describe('conversation routes', () => {
       const startResponse = await startConversation(server.baseUrl, CONVERSATION_A, {
         agentType: 'codex',
       })
-      expect(startResponse.status).toBe(200)
-      expect(sessions.createCalls[0]).toEqual(expect.objectContaining({
+      expect([200, 202]).toContain(startResponse.status)
+      expect(await waitForCreateCall(sessions)).toEqual(expect.objectContaining({
         agentType: 'codex',
         model: 'gpt-5.4',
         conversationId: CONVERSATION_A,
@@ -1976,8 +2475,8 @@ describe('conversation routes', () => {
       const startResponse = await startConversation(server.baseUrl, CONVERSATION_A, {
         agentType: 'codex',
       })
-      expect(startResponse.status).toBe(200)
-      expect(sessions.createCalls[0]).toEqual(expect.objectContaining({
+      expect([200, 202]).toContain(startResponse.status)
+      expect(await waitForCreateCall(sessions)).toEqual(expect.objectContaining({
         agentType: 'codex',
         model: 'gpt-5.5',
         conversationId: CONVERSATION_A,
@@ -2013,8 +2512,8 @@ describe('conversation routes', () => {
         agentType: 'codex',
         model: 'gpt-5.5',
       })
-      expect(startResponse.status).toBe(200)
-      expect(sessions.createCalls[0]).toEqual(expect.objectContaining({
+      expect([200, 202]).toContain(startResponse.status)
+      expect(await waitForCreateCall(sessions)).toEqual(expect.objectContaining({
         agentType: 'codex',
         model: 'gpt-5.5',
         conversationId: CONVERSATION_A,
@@ -2066,9 +2565,8 @@ describe('conversation routes', () => {
         agentType: 'claude',
         maxThinkingTokens: 64000,
       })
-      expect(validResponse.status).toBe(200)
-      expect(sessions.createCalls).toHaveLength(1)
-      expect(sessions.createCalls[0]).toEqual(expect.objectContaining({
+      expect([200, 202]).toContain(validResponse.status)
+      expect(await waitForCreateCall(sessions)).toEqual(expect.objectContaining({
         maxThinkingTokens: 64000,
       }))
     } finally {
@@ -2102,20 +2600,16 @@ describe('conversation routes', () => {
       const startResponse = await startConversation(server.baseUrl, CONVERSATION_A, {
         agentType: 'codex',
       })
-      expect(startResponse.status).toBe(200)
-      const startPayload = await startResponse.json() as {
-        conversation: {
-          liveSession: Record<string, unknown> | null
-        }
-      }
-      expect(startPayload.conversation.liveSession).toEqual(expect.objectContaining({
+      expect([200, 202]).toContain(startResponse.status)
+      const startPayload = await waitForActiveConversation(server.baseUrl, CONVERSATION_A)
+      expect(startPayload.liveSession).toEqual(expect.objectContaining({
         agentType: 'codex',
         model: 'gpt-5.4',
         name: expect.stringContaining(`-conversation-${CONVERSATION_A}`),
       }))
-      expect(startPayload.conversation.liveSession).not.toHaveProperty('codexTurnWatchdogTimer')
-      expect(startPayload.conversation.liveSession).not.toHaveProperty('queuedMessageRetryTimer')
-      expect(startPayload.conversation.liveSession).not.toHaveProperty('process')
+      expect(startPayload.liveSession).not.toHaveProperty('codexTurnWatchdogTimer')
+      expect(startPayload.liveSession).not.toHaveProperty('queuedMessageRetryTimer')
+      expect(startPayload.liveSession).not.toHaveProperty('process')
 
       const activeResponse = await fetch(
         `${server.baseUrl}/api/commanders/${COMMANDER_A}/conversations/active`,
@@ -2172,15 +2666,12 @@ describe('conversation routes', () => {
         id: CONVERSATION_A,
         surface: 'ui',
       })).status).toBe(201)
-      expect((await startConversation(server.baseUrl, CONVERSATION_A, {
+      const startResponse = await startConversation(server.baseUrl, CONVERSATION_A, {
         agentType: 'claude',
-      })).status).toBe(200)
-
-      const activeResponse = await fetch(`${server.baseUrl}/api/conversations/${CONVERSATION_A}`, {
-        headers: READ_ONLY_AUTH_HEADERS,
       })
-      expect(activeResponse.status).toBe(200)
-      const active = await activeResponse.json() as {
+      expect([200, 202]).toContain(startResponse.status)
+
+      let active: {
         canonicalOrder: number
         displayState: {
           hasLiveSession: boolean
@@ -2196,6 +2687,19 @@ describe('conversation routes', () => {
           media: { supported: boolean; reason: string | null }
         } | null
         allowedActions: Record<string, boolean>
+      } | null = null
+
+      await vi.waitFor(async () => {
+        const activeResponse = await fetch(`${server.baseUrl}/api/conversations/${CONVERSATION_A}`, {
+          headers: READ_ONLY_AUTH_HEADERS,
+        })
+        expect(activeResponse.status).toBe(200)
+        active = await activeResponse.json() as NonNullable<typeof active>
+        expect(active.displayState.hasLiveSession).toBe(true)
+      })
+
+      if (!active) {
+        throw new Error('Expected conversation to become active after start')
       }
       expect(active).toEqual(expect.objectContaining({
         canonicalOrder: 0,
@@ -2370,9 +2874,10 @@ describe('conversation routes', () => {
           id: entry.id,
           surface: 'ui',
         })).status).toBe(201)
-        expect((await startConversation(server.baseUrl, entry.id, {
+        expect([200, 202]).toContain((await startConversation(server.baseUrl, entry.id, {
           agentType: entry.agentType,
-        })).status).toBe(200)
+        })).status)
+        await waitForActiveConversation(server.baseUrl, entry.id)
 
         const response = await fetch(`${server.baseUrl}/api/conversations/${entry.id}`, {
           headers: READ_ONLY_AUTH_HEADERS,
@@ -2434,9 +2939,10 @@ describe('conversation routes', () => {
         id: CONVERSATION_A,
         surface: 'ui',
       })).status).toBe(201)
-      expect((await startConversation(server.baseUrl, CONVERSATION_A, {
+      expect([200, 202]).toContain((await startConversation(server.baseUrl, CONVERSATION_A, {
         agentType: 'claude',
-      })).status).toBe(200)
+      })).status)
+      await waitForCreateCall(sessions)
 
       const liveSessionName = buildConversationSessionName({
         id: CONVERSATION_A,
@@ -2498,7 +3004,8 @@ describe('conversation routes', () => {
       const firstStart = await startConversation(server.baseUrl, CONVERSATION_A, {
         agentType: 'claude',
       })
-      expect(firstStart.status).toBe(200)
+      expect([200, 202]).toContain(firstStart.status)
+      await waitForActiveConversation(server.baseUrl, CONVERSATION_A)
 
       const secondStart = await startConversation(server.baseUrl, CONVERSATION_A, {
         agentType: 'claude',
@@ -2595,7 +3102,22 @@ describe('conversation routes', () => {
       const startResponse = await startConversation(server.baseUrl, CONVERSATION_A, {
         agentType: 'codex',
       })
-      expect(startResponse.status).toBe(200)
+      expect([200, 202]).toContain(startResponse.status)
+      await vi.waitFor(async () => {
+        const detailResponse = await fetch(`${server.baseUrl}/api/conversations/${CONVERSATION_A}`, {
+          headers: READ_ONLY_AUTH_HEADERS,
+        })
+        expect(detailResponse.status).toBe(200)
+        expect(await detailResponse.json()).toEqual(expect.objectContaining({
+          id: CONVERSATION_A,
+          status: 'active',
+          runtimeState: 'active',
+          websocketReady: true,
+          liveSession: expect.objectContaining({
+            agentType: 'codex',
+          }),
+        }))
+      })
 
       const image = { mediaType: 'image/png', data: Buffer.from('image-bytes').toString('base64') }
       const messageResponse = await fetch(`${server.baseUrl}/api/conversations/${CONVERSATION_A}/message`, {
@@ -2701,8 +3223,10 @@ describe('conversation routes', () => {
       const startSecond = await startConversation(server.baseUrl, CONVERSATION_B, {
         agentType: 'claude',
       })
-      expect(startFirst.status).toBe(200)
-      expect(startSecond.status).toBe(200)
+      expect([200, 202]).toContain(startFirst.status)
+      expect([200, 202]).toContain(startSecond.status)
+      await waitForActiveConversation(server.baseUrl, CONVERSATION_A)
+      await waitForActiveConversation(server.baseUrl, CONVERSATION_B)
 
       const pauseResponse = await fetch(`${server.baseUrl}/api/conversations/${CONVERSATION_A}/pause`, {
         method: 'POST',
@@ -2801,9 +3325,10 @@ describe('conversation routes', () => {
         id: CONVERSATION_A,
         surface: 'api',
       })).status).toBe(201)
-      expect((await startConversation(server.baseUrl, CONVERSATION_A, {
+      expect([200, 202]).toContain((await startConversation(server.baseUrl, CONVERSATION_A, {
         agentType: 'claude',
-      })).status).toBe(200)
+      })).status)
+      await waitForCreateCall(sessions)
 
       const archive = await fetch(`${server.baseUrl}/api/conversations/${CONVERSATION_A}/archive`, {
         method: 'POST',
@@ -3055,12 +3580,14 @@ describe('conversation routes', () => {
         id: CONVERSATION_B,
         surface: 'api',
       })).status).toBe(201)
-      expect((await startConversation(server.baseUrl, CONVERSATION_A, {
+      expect([200, 202]).toContain((await startConversation(server.baseUrl, CONVERSATION_A, {
         agentType: 'claude',
-      })).status).toBe(200)
-      expect((await startConversation(server.baseUrl, CONVERSATION_B, {
+      })).status)
+      expect([200, 202]).toContain((await startConversation(server.baseUrl, CONVERSATION_B, {
         agentType: 'claude',
-      })).status).toBe(200)
+      })).status)
+      await waitForActiveConversation(server.baseUrl, CONVERSATION_A)
+      await waitForActiveConversation(server.baseUrl, CONVERSATION_B)
 
       // Both per-conversation sessions exist on the live interface.
       const sessionNameA = `commander-${COMMANDER_A}-conversation-${CONVERSATION_A}`

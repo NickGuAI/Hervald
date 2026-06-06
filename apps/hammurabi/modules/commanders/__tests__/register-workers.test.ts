@@ -205,7 +205,11 @@ async function startServer(
 
 async function seedCommander(
   storePath: string,
-  options: { agentType?: 'claude' | 'codex' | 'gemini' | 'opencode'; model?: string | null } = {},
+  options: {
+    agentType?: 'claude' | 'codex' | 'gemini' | 'opencode'
+    model?: string | null
+    cwd?: string
+  } = {},
 ): Promise<void> {
   await writeFile(
     storePath,
@@ -219,6 +223,7 @@ async function seedCommander(
             state: 'idle',
             created: '2026-02-20T00:00:00.000Z',
             agentType: options.agentType ?? 'claude',
+            cwd: options.cwd ?? '/Users/yugu/Desktop/TheG/example-repo',
             lastHeartbeat: null,
             ...(options.model !== undefined ? { model: options.model } : {}),
             taskSource: { owner: 'NickGuAI', repo: 'example-repo', label: 'commander' },
@@ -391,7 +396,7 @@ describe('POST /api/commanders/:id/workers', () => {
     }
   })
 
-  it('applies commander default model when the request omits model', async () => {
+  it('applies commander model, host, and cwd defaults when the request omits them', async () => {
     const dir = await createTempDir('hammurabi-register-workers-commander-model-default-')
     const storePath = join(dir, 'sessions.json')
     await seedCommander(storePath, { agentType: 'codex', model: 'gpt-5.4' })
@@ -416,7 +421,10 @@ describe('POST /api/commanders/:id/workers', () => {
       )
       expect(response.status).toBe(201)
       expect(dispatchCalls).toHaveLength(1)
-      expect((dispatchCalls[0]?.rawBody as Record<string, unknown>).model).toBe('gpt-5.4')
+      const body = dispatchCalls[0]?.rawBody as Record<string, unknown>
+      expect(body.model).toBe('gpt-5.4')
+      expect(body.host).toBe('host-a')
+      expect(body.cwd).toBe('/Users/yugu/Desktop/TheG/example-repo')
     } finally {
       await server.close()
     }
@@ -443,12 +451,17 @@ describe('POST /api/commanders/:id/workers', () => {
             name: 'worker-uses-request-model',
             agentType: 'codex',
             model: 'gpt-5.5',
+            host: 'host-b',
+            cwd: '/tmp/benchmark-worker',
           }),
         },
       )
       expect(response.status).toBe(201)
       expect(dispatchCalls).toHaveLength(1)
-      expect((dispatchCalls[0]?.rawBody as Record<string, unknown>).model).toBe('gpt-5.5')
+      const body = dispatchCalls[0]?.rawBody as Record<string, unknown>
+      expect(body.model).toBe('gpt-5.5')
+      expect(body.host).toBe('host-b')
+      expect(body.cwd).toBe('/tmp/benchmark-worker')
     } finally {
       await server.close()
     }

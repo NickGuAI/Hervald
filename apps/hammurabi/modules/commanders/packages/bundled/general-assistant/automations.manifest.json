@@ -1,0 +1,31 @@
+{
+  "automations": [
+    {
+      "id": "daily-briefing",
+      "label": "Daily briefing",
+      "purpose": "Prepare a morning priorities, calendar, and inbox briefing.",
+      "trigger": "schedule",
+      "schedule": "0 7 * * 1-5",
+      "status": "paused",
+      "instruction": "Generate a concise daily briefing with current priorities, calendar context, waiting items, and recommended next actions. Read prior memory and the last run report before writing new carry-forward items.",
+      "skills": [
+        "daily-briefing"
+      ],
+      "seedMemory": "This automation is a paused marketplace preset for general assistants. Enable it after confirming the preferred delivery channel and briefing time."
+    },
+    {
+      "id": "weekly-follow-up-review",
+      "label": "Weekly follow-up review",
+      "purpose": "Review reminders, mail, calendar, and prior briefs for unresolved follow-through.",
+      "trigger": "schedule",
+      "schedule": "0 18 * * 5",
+      "status": "paused",
+      "instruction": "Review this week's reminders, calendar, prior daily briefings, and visible follow-up notes. Produce a short unresolved-items list with owner, due date if known, and recommended next step. Do not send messages or modify external systems without explicit approval.",
+      "skills": [
+        "gog",
+        "daily-briefing"
+      ],
+      "seedMemory": "This automation is a paused marketplace preset for weekly administrative follow-through."
+    }
+  ]
+}

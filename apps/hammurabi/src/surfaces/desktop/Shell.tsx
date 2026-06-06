@@ -14,6 +14,7 @@ import {
   useMobileShellChromeState,
 } from '@/surfaces/mobile/MobileShell'
 import type { FrontendNavItem } from '@/types'
+import { ApprovalNotificationCenter } from '@modules/approvals/ApprovalNotificationCenter'
 import { TopBar } from './TopBar'
 import type { TopBarCounts } from './TopBar'
 
@@ -70,6 +71,8 @@ export function Shell({ modules, children }: ShellProps) {
       <div className="hidden md:block">
         <TopBar modules={modules} counts={counts} />
       </div>
+
+      <ApprovalNotificationCenter />
 
       {/* Main content — add bottom padding on mobile for the tab bar + safe-area.
           overflowX:hidden contains horizontal overflow at the architectural

@@ -1,5 +1,7 @@
 import {
   createGeminiTurnState,
+  mapGeminiPromptResponseToTranscriptEnvelopes,
+  mapGeminiToTranscriptEnvelopes,
   normalizeGeminiPromptResponse,
   normalizeGeminiSessionUpdate,
 } from '../../event-normalizers/gemini.js'
@@ -33,6 +35,7 @@ import {
   toExitBasedCompletedSession,
 } from '../../session/state.js'
 import { GeminiAcpRuntime } from '../../launchers/runtimes.js'
+import type { ProviderSpawnAuth } from '../../provider-auth.js'
 import type {
   AnySession,
   ClaudePermissionMode,
@@ -58,6 +61,7 @@ export interface GeminiSessionDeps {
     sessionName: string,
     machine?: MachineConfig,
     model?: string,
+    providerAuth?: ProviderSpawnAuth,
   ) => GeminiAcpRuntimeHandle
   schedulePersistedSessionsWrite(): void
   setCompletedSession(sessionName: string, session: CompletedSession): void
@@ -133,7 +137,10 @@ export async function startGeminiTurn(
       sessionId: resumeSessionId,
       prompt: [{ type: 'text', text: promptText }],
     })
-    const finalEvents = normalizeGeminiPromptResponse(result, session.geminiTurnState)
+    const finalEvents = mapGeminiPromptResponseToTranscriptEnvelopes(
+      result,
+      session.geminiTurnState ?? createGeminiTurnState(),
+    )
     for (const event of finalEvents) {
       deps.appendEvent(session, event)
       deps.broadcastEvent(session, event)
@@ -294,8 +301,9 @@ export async function createGeminiAcpSession(
   deps.clearExitedSession(sessionName)
 
   const runtimeFactory = deps.runtimeFactory
-    ?? ((name: string, machine?: MachineConfig, model?: string) => new GeminiAcpRuntime(name, machine, model))
-  const runtime = runtimeFactory(sessionName, options.machine, options.model)
+    ?? ((name: string, machine?: MachineConfig, model?: string, providerAuth?: ProviderSpawnAuth) =>
+      new GeminiAcpRuntime(name, machine, model, undefined, providerAuth))
+  const runtime = runtimeFactory(sessionName, options.machine, options.model, options.providerAuth)
   const initializedAt = new Date().toISOString()
   const sessionCwd = cwd || process.env.HOME || '/tmp'
 
@@ -380,6 +388,7 @@ export async function createGeminiAcpSession(
       sessionId: resumeSessionId,
       runtime,
     }),
+    providerAuthSnapshot: options.providerAuth?.snapshot,
     adapter: createGeminiSessionAdapter(deps),
     resumedFrom: options.resumedFrom,
     geminiPendingSystemPrompt: buildGeminiSystemPrompt(options.systemPrompt, options.maxTurns),
@@ -403,7 +412,7 @@ export async function createGeminiAcpSession(
       if (!actionPolicyGate) {
         const unavailableEvent: StreamJsonEvent = {
           type: 'system',
-          text: 'Hammurabi approval gate is unavailable. Gemini request denied.',
+          text: 'Hervald approval gate is unavailable. Gemini request denied.',
         }
         deps.appendEvent(session, unavailableEvent)
         deps.broadcastEvent(session, unavailableEvent)
@@ -439,15 +448,14 @@ export async function createGeminiAcpSession(
     }
     const payload = asObject(params)
     trackGeminiToolCallSnapshot(session, asObject(payload?.update))
-    const normalized = normalizeGeminiSessionUpdate(
+    const normalized = mapGeminiToTranscriptEnvelopes(
       payload?.update,
       session.geminiTurnState ?? createGeminiTurnState(),
     )
-    if (!normalized) {
+    if (normalized.length === 0) {
       return
     }
-    const events = Array.isArray(normalized) ? normalized : [normalized]
-    for (const event of events) {
+    for (const event of normalized) {
       deps.appendEvent(session, event)
       deps.broadcastEvent(session, event)
     }

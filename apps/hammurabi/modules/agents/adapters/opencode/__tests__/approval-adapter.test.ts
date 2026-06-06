@@ -59,9 +59,11 @@ describe('opencodeApprovalAdapter', () => {
 
     expect(opencodeApprovalAdapter.toUnifiedRequest(rawEvent, session)).toEqual({
       source: 'opencode',
-      toolName: 'gmail.send',
+      toolName: 'mcp__opencode__unknown_mcp',
       toolInput: {
         title: 'gmail.send',
+        kind: 'mcp',
+        identityIncomplete: true,
         content: [
           {
             type: 'text',
@@ -78,6 +80,13 @@ describe('opencodeApprovalAdapter', () => {
         requestId: 17,
         method: 'session/request_permission',
         toolCallId: 'tool-call-1',
+        provider: 'opencode',
+        toolKind: 'mcp',
+        title: 'gmail.send',
+        interaction: 'mcp_permission',
+        serverName: 'opencode',
+        tool: 'unknown_mcp',
+        identityIncomplete: true,
       },
     })
 
@@ -137,5 +146,42 @@ describe('opencodeApprovalAdapter', () => {
       }),
     )
     expect(rawEvent.replyDeps.schedulePersistedSessionsWrite).toHaveBeenCalledTimes(1)
+  })
+
+  it('uses structured OpenCode MCP server and tool identity when present', () => {
+    const session = buildOpenCodeSession()
+    const rawEvent = buildOpenCodeRawEvent()
+    rawEvent.toolCall = {
+      ...rawEvent.toolCall,
+      serverName: 'gmail',
+      toolName: 'send_email',
+      arguments: {
+        to: 'matt.feroz@example.com',
+        subject: 'Structured OpenCode',
+      },
+    }
+
+    expect(opencodeApprovalAdapter.toUnifiedRequest(rawEvent, session)).toEqual({
+      source: 'opencode',
+      toolName: 'mcp__gmail__send_email',
+      toolInput: {
+        to: 'matt.feroz@example.com',
+        subject: 'Structured OpenCode',
+      },
+      sessionName: 'opencode-worker-1',
+      fallbackSessionName: 'opencode-worker-1',
+      providerContext: {
+        requestId: 17,
+        method: 'session/request_permission',
+        toolCallId: 'tool-call-1',
+        provider: 'opencode',
+        toolKind: 'mcp',
+        title: 'gmail.send',
+        interaction: 'mcp_permission',
+        serverName: 'gmail',
+        tool: 'send_email',
+        identityIncomplete: false,
+      },
+    })
   })
 })

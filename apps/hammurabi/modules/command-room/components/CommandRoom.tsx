@@ -43,6 +43,7 @@ import { ModalFormContainer } from '@modules/components/ModalFormContainer'
 import type {
   AgentSession,
   AgentType,
+  SessionCreator,
   SessionQueueSnapshot,
   SessionTransportType,
 } from '@/types'
@@ -116,9 +117,11 @@ import { WorkspacePanel } from '@modules/workspace/components/WorkspacePanel'
 import {
   fetchWorkspacePathResolution,
   getWorkspaceSourceKey,
+  isWorkspaceTargetNotFoundError,
   openWorkspaceTarget,
   type WorkspacePendingFileAnnotation,
   type WorkspaceSource,
+  type WorkspaceSourceRecovery,
 } from '@modules/workspace/use-workspace'
 import type { WorkspaceContextPayload, WorkspaceTreeNode } from '@modules/workspace/types'
 import type { SessionComposerSubmitPayload } from '@modules/agents/components/SessionComposer'
@@ -159,6 +162,23 @@ const RIGHT_PANEL_TABS = [
 const SUMI_BUTTON_RADIUS = '2px 12px 2px 12px'
 const WORKSPACE_OPEN_STORAGE_KEY = 'hervald.command-room.workspace-open'
 type WorkspacePanelDefault = 'open' | 'closed' | 'last-used'
+type WorkspaceTargetOrigin = 'auto' | 'manual'
+type WorkspaceTargetState = {
+  targetId: string
+  label: string
+  readOnly: boolean
+}
+type WorkspaceOwner = {
+  key: string
+  input: {
+    conversationId?: string
+    sessionName?: string
+    commanderId?: string
+  }
+}
+type WorkspaceTargetOpenOptions = {
+  onlyIfCurrentTargetId?: string
+}
 type SessionGroup = 'workers' | 'automation'
 const GLOBAL_COMMANDER_ROW: Commander = {
   id: GLOBAL_COMMANDER_ID,
@@ -265,8 +285,22 @@ export function resolveWorkspaceSource({
 function resolveSessionGroup(session: {
   name?: unknown
   sessionType?: unknown
+  creator?: unknown
 }): SessionGroup {
-  if (session.sessionType === 'sentinel' || session.sessionType === 'cron') {
+  if (
+    session.sessionType === 'sentinel'
+    || session.sessionType === 'cron'
+    || session.sessionType === 'automation'
+  ) {
+    return 'automation'
+  }
+
+  const creator = resolveSessionCreator(session)
+  if (
+    creator?.kind === 'sentinel'
+    || creator?.kind === 'cron'
+    || creator?.kind === 'automation'
+  ) {
     return 'automation'
   }
   return 'workers'
@@ -311,9 +345,90 @@ interface HervaldCommanderSession extends CommanderSession {
 interface HervaldAgentSession extends AgentSession {
   id?: string
   lastActivityAt?: string
+  parentCommanderId?: string | null
 }
 
-function mapAgentSessionToChatSession(session: HervaldAgentSession): ChatSession {
+interface CommandRoomAutomationRecord {
+  id: string
+  name: string
+  parentCommanderId?: string | null
+}
+
+function normalizeCommandRoomAutomationRecord(value: unknown): CommandRoomAutomationRecord | null {
+  if (!isRecord(value)) {
+    return null
+  }
+  const id = typeof value.id === 'string' ? value.id.trim() : ''
+  const name = typeof value.name === 'string' ? value.name.trim() : ''
+  if (!id || !name) {
+    return null
+  }
+  const parentCommanderId = value.parentCommanderId === null
+    ? null
+    : typeof value.parentCommanderId === 'string' && value.parentCommanderId.trim()
+      ? value.parentCommanderId.trim()
+      : undefined
+  return {
+    id,
+    name,
+    ...(parentCommanderId !== undefined ? { parentCommanderId } : {}),
+  }
+}
+
+async function fetchCommandRoomAutomations(): Promise<CommandRoomAutomationRecord[]> {
+  const payload = await fetchJson<unknown>('/api/automations')
+  if (!Array.isArray(payload)) {
+    return []
+  }
+  return payload.flatMap((item) => {
+    const automation = normalizeCommandRoomAutomationRecord(item)
+    return automation ? [automation] : []
+  })
+}
+
+function resolveSessionCreator(session: {
+  creator?: unknown
+}): SessionCreator | undefined {
+  if (!isRecord(session.creator)) {
+    return undefined
+  }
+
+  const kind = typeof session.creator.kind === 'string'
+    ? session.creator.kind
+    : null
+  if (
+    kind !== 'human'
+    && kind !== 'commander'
+    && kind !== 'cron'
+    && kind !== 'sentinel'
+    && kind !== 'automation'
+  ) {
+    return undefined
+  }
+
+  const id = typeof session.creator.id === 'string' && session.creator.id.trim().length > 0
+    ? session.creator.id.trim()
+    : undefined
+  return id ? { kind, id } : { kind }
+}
+
+function resolveSessionParentCommanderId(session: {
+  parentCommanderId?: unknown
+}): string | null | undefined {
+  if (session.parentCommanderId === null) {
+    return null
+  }
+  if (typeof session.parentCommanderId !== 'string') {
+    return undefined
+  }
+  const parentCommanderId = session.parentCommanderId.trim()
+  return parentCommanderId ? parentCommanderId : null
+}
+
+function mapAgentSessionToChatSession(
+  session: HervaldAgentSession,
+  automationsById?: ReadonlyMap<string, CommandRoomAutomationRecord>,
+): ChatSession {
   const spawnedBy = typeof session.spawnedBy === 'string'
     ? session.spawnedBy
     : null
@@ -321,11 +436,18 @@ function mapAgentSessionToChatSession(session: HervaldAgentSession): ChatSession
     ? session.processAlive
     : undefined
   const sessionName = String(session.name || session.id || '')
+  const creator = resolveSessionCreator(session)
+  const automation = creator?.kind === 'automation' && creator.id
+    ? automationsById?.get(creator.id)
+    : undefined
+  const sessionParentCommanderId = resolveSessionParentCommanderId(session)
 
   return {
     id: sessionName,
     name: sessionName,
-    label: typeof session.label === 'string' ? session.label : undefined,
+    label: typeof session.label === 'string'
+      ? session.label
+      : automation?.name,
     created: typeof session.created === 'string' ? session.created : new Date(0).toISOString(),
     pid: typeof session.pid === 'number' ? session.pid : 0,
     age: formatSessionAge(session.lastActivityAt),
@@ -338,6 +460,8 @@ function mapAgentSessionToChatSession(session: HervaldAgentSession): ChatSession
     lastActivityAt: typeof session.lastActivityAt === 'string' ? session.lastActivityAt : undefined,
     cwd: typeof session.cwd === 'string' ? session.cwd : undefined,
     host: typeof session.host === 'string' ? session.host : undefined,
+    creator,
+    parentCommanderId: automation ? (automation.parentCommanderId ?? null) : sessionParentCommanderId,
     spawnedBy: spawnedBy ?? undefined,
     spawnedWorkers: Array.isArray(session.spawnedWorkers)
       ? session.spawnedWorkers.filter((worker): worker is string => typeof worker === 'string')
@@ -425,11 +549,7 @@ export function CommandRoom() {
   const activeTab = resolvePanelTab(panelParam)
   const [workspaceOpen, setWorkspaceOpen] = useState(false)
   const appliedWorkspaceDefaultRef = useRef<string | null>(null)
-  const [workspaceTarget, setWorkspaceTarget] = useState<{
-    targetId: string
-    label: string
-    readOnly: boolean
-  } | null>(null)
+  const [workspaceTarget, setWorkspaceTarget] = useState<WorkspaceTargetState | null>(null)
   const [workspaceRequestedPath, setWorkspaceRequestedPath] = useState<{
     path: string
     token: number
@@ -437,6 +557,18 @@ export function CommandRoom() {
   const [contextFilePaths, setContextFilePaths] = useState<string[]>([])
   const [contextDirectoryPaths, setContextDirectoryPaths] = useState<string[]>([])
   const [contextFileAnnotations, setContextFileAnnotations] = useState<WorkspacePendingFileAnnotation[]>([])
+  const commanderSelectionRequestRef = useRef(0)
+  const manualConversationSelectionRef = useRef(0)
+  const selectedCommanderIdRef = useRef('')
+  const workspaceTargetRef = useRef<WorkspaceTargetState | null>(null)
+  const workspaceOwnerRef = useRef<WorkspaceOwner | null>(null)
+  const workspaceOwnerKeyRef = useRef<string | null>(null)
+  const workspaceTargetVersionRef = useRef(0)
+  const workspaceTargetOriginRef = useRef<{
+    ownerKey: string | null
+    origin: WorkspaceTargetOrigin
+  } | null>(null)
+  const workspaceFileOpenRequestRef = useRef(0)
   const [showCreateCommanderForm, setShowCreateCommanderForm] = useState(false)
   const [showCreateSessionForm, setShowCreateSessionForm] = useState(false)
   const [showAddWorkerForm, setShowAddWorkerForm] = useState(false)
@@ -465,6 +597,29 @@ export function CommandRoom() {
   const setCommanderSelection = commanderState.setSelectedCommanderId
   const isGlobalScope = !selectedChatSessionId && isGlobalCommanderId(selectedCommanderId)
   const agentSessions = rawAgentSessions as HervaldAgentSession[]
+  useEffect(() => {
+    selectedCommanderIdRef.current = selectedCommanderId
+  }, [selectedCommanderId])
+  const requiresAutomationOwnershipJoin = useMemo(
+    () => agentSessions.some((session) => {
+      const creator = resolveSessionCreator(session)
+      return creator?.kind === 'automation' && Boolean(creator.id)
+    }),
+    [agentSessions],
+  )
+  const automationDefinitionsQuery = useQuery({
+    queryKey: ['automations', 'command-room', 'ownership'],
+    queryFn: fetchCommandRoomAutomations,
+    enabled: requiresAutomationOwnershipJoin,
+    staleTime: 30_000,
+    retry: false,
+  })
+  const automationDefinitionsById = useMemo(
+    () => new Map(
+      (automationDefinitionsQuery.data ?? []).map((automation) => [automation.id, automation] as const),
+    ),
+    [automationDefinitionsQuery.data],
+  )
   const urlCommanderIsKnown = Boolean(
     normalizedCommanderParam === GLOBAL_COMMANDER_ID
       || (
@@ -485,17 +640,18 @@ export function CommandRoom() {
       && normalizedConversationParam !== selectedConversationId,
   )
   const urlSelectionPending = urlCommanderSelectionPending || urlConversationSelectionPending
-  const selectedCommanderConversationScope = !urlSelectionPending
-    && selectedCommanderId
-    && !isGlobalCommanderId(selectedCommanderId)
-    ? selectedCommanderId
-    : null
+  const conversationListCommanderScope = normalizedCommanderParam
+    && !isGlobalCommanderId(normalizedCommanderParam)
+    && urlCommanderIsKnown
+    ? normalizedCommanderParam
+    : selectedCommanderId && !isGlobalCommanderId(selectedCommanderId)
+      ? selectedCommanderId
+      : null
   const {
     conversations,
     selectedConversation: selectedConversationRecord,
-    isLoading: conversationsLoading,
   } = useConversations(
-    selectedCommanderConversationScope,
+    conversationListCommanderScope,
     urlSelectionPending ? null : selectedConversationId,
   )
   const visibleConversations = useMemo(
@@ -532,9 +688,7 @@ export function CommandRoom() {
       const spawnedBy = typeof session.spawnedBy === 'string'
         ? session.spawnedBy
         : null
-      const creator = typeof session.creator === 'object' && session.creator !== null
-        ? session.creator
-        : undefined
+      const creator = resolveSessionCreator(session)
       const semanticSessionType = typeof session.sessionType === 'string'
         ? session.sessionType
         : null
@@ -546,7 +700,7 @@ export function CommandRoom() {
         processAlive,
       })
       const sessionName = String(session.name || session.id || '')
-      const nextSession = mapAgentSessionToChatSession(session)
+      const nextSession = mapAgentSessionToChatSession(session, automationDefinitionsById)
 
       if (creator?.kind === 'commander') {
         nextWorkers.push({
@@ -579,7 +733,7 @@ export function CommandRoom() {
       workerSessions: nextWorkerSessions,
       automationSessions: nextAutomationSessions,
     }
-  }, [agentSessions])
+  }, [agentSessions, automationDefinitionsById])
   const approvals = useMemo(() => pendingApprovals.flatMap((approval) => {
     if (!isRecord(approval)) {
       return []
@@ -606,11 +760,33 @@ export function CommandRoom() {
   const selectedStandaloneSession = availableSessions.find((session) => session.id === selectedChatSessionId) ?? null
   const selectedConversationSession = mapConversationLiveSession(selectedConversation)
   const conversationSelectionSettling = urlSelectionPending
-    || conversationsLoading
     || Boolean(selectedConversationId && !selectedConversationRecord)
   const activeStandaloneSession = selectedStandaloneSession
   const activeConversationSession = selectedConversationSession
   const activeChatSession = activeStandaloneSession ?? activeConversationSession
+  const workspaceOwner = useMemo<WorkspaceOwner | null>(() => {
+    const standaloneSessionName = activeStandaloneSession?.id ?? null
+    const fallbackCommanderId = !isGlobalScope && selectedCommanderId ? selectedCommanderId : null
+    if (selectedConversationId) {
+      return {
+        key: `conversation:${selectedConversationId}`,
+        input: { conversationId: selectedConversationId },
+      }
+    }
+    if (standaloneSessionName) {
+      return {
+        key: `session:${standaloneSessionName}`,
+        input: { sessionName: standaloneSessionName },
+      }
+    }
+    if (fallbackCommanderId) {
+      return {
+        key: `commander:${fallbackCommanderId}`,
+        input: { commanderId: fallbackCommanderId },
+      }
+    }
+    return null
+  }, [activeStandaloneSession?.id, isGlobalScope, selectedCommanderId, selectedConversationId])
   const selectedConversationWebSocketReady = conversationWebSocketReady(selectedConversation)
   const streamSessionName = activeStandaloneSession?.id
     ?? (!conversationSelectionSettling ? selectedConversationSession?.name : undefined)
@@ -759,27 +935,22 @@ export function CommandRoom() {
   }, [globalCommanderRoute.panelParam, panelParam, searchParamsString, setSearchParams])
 
   const handleSelectCommanderId = useCallback(async (commanderId: string) => {
-    // Per issue 1362 contract: a single user click → a single backend lookup →
-    // an atomic URL+state write. No effect-driven re-selection loop. The
-    // previous polling-based design caused image-6/image-7 oscillation
-    // because state and URL settled on different ticks.
+    // Per issue 1362 contract: selection still comes from explicit clicks and a
+    // single backend active-chat lookup. The visible commander switch commits
+    // first; the lookup applies later only if this click is still current.
     setRequestedNewChatCommanderId(null)
     setSelectedChatSessionId(null)
+    const requestId = commanderSelectionRequestRef.current + 1
+    commanderSelectionRequestRef.current = requestId
+    const manualSelectionVersion = manualConversationSelectionRef.current
 
     const isGlobal = commanderId === GLOBAL_COMMANDER_ID
-    let activeChatId: string | null = null
-    if (!isGlobal) {
-      try {
-        const active = await queryClient.fetchQuery({
-          queryKey: commanderActiveConversationQueryKey(commanderId),
-          queryFn: () => fetchCommanderActiveConversation(commanderId),
-          staleTime: ACTIVE_CONVERSATION_FETCH_STALE_MS,
-        })
-        activeChatId = active?.id ?? null
-      } catch {
-        activeChatId = null
-      }
-    }
+    const activeQueryKey = commanderActiveConversationQueryKey(commanderId)
+    const activeQueryState = !isGlobal
+      ? queryClient.getQueryState<ConversationRecord | null>(activeQueryKey)
+      : undefined
+    const cachedActiveChatId = activeQueryState?.data?.id ?? null
+    const hasCachedActiveChat = Boolean(activeQueryState?.dataUpdatedAt)
 
     const nextParams = new URLSearchParams(searchParamsString)
     nextParams.set(
@@ -791,15 +962,58 @@ export function CommandRoom() {
     } else {
       nextParams.delete(globalCommanderRoute.panelParam)
     }
-    if (activeChatId) {
-      nextParams.set(commandRoomLaunch.conversationParam, activeChatId)
-    } else {
+    if (cachedActiveChatId) {
+      nextParams.set(commandRoomLaunch.conversationParam, cachedActiveChatId)
+    } else if (nextParams.has(commandRoomLaunch.conversationParam)) {
       nextParams.delete(commandRoomLaunch.conversationParam)
     }
     setSearchParams(nextParams, { replace: true })
 
-    setSelectedConversationId(activeChatId)
+    setSelectedConversationId(cachedActiveChatId)
+    selectedCommanderIdRef.current = commanderId
     setCommanderSelection(commanderId)
+
+    if (isGlobal || hasCachedActiveChat) {
+      return
+    }
+
+    void queryClient.fetchQuery({
+      queryKey: activeQueryKey,
+      queryFn: () => fetchCommanderActiveConversation(commanderId),
+      staleTime: ACTIVE_CONVERSATION_FETCH_STALE_MS,
+    }).then((active) => {
+      if (
+        commanderSelectionRequestRef.current !== requestId
+        || manualConversationSelectionRef.current !== manualSelectionVersion
+        || selectedCommanderIdRef.current !== commanderId
+      ) {
+        return
+      }
+
+      const activeChatId = active?.id ?? null
+      const currentParams = new URLSearchParams(window.location.search)
+      currentParams.set(commandRoomLaunch.commanderParam, commanderId)
+      currentParams.delete(globalCommanderRoute.panelParam)
+      if (activeChatId) {
+        currentParams.set(commandRoomLaunch.conversationParam, activeChatId)
+      } else {
+        currentParams.delete(commandRoomLaunch.conversationParam)
+      }
+      setSearchParams(currentParams, { replace: true })
+      setSelectedConversationId(activeChatId)
+    }).catch(() => {
+      if (
+        commanderSelectionRequestRef.current !== requestId
+        || manualConversationSelectionRef.current !== manualSelectionVersion
+        || selectedCommanderIdRef.current !== commanderId
+      ) {
+        return
+      }
+      const currentParams = new URLSearchParams(window.location.search)
+      currentParams.delete(commandRoomLaunch.conversationParam)
+      setSearchParams(currentParams, { replace: true })
+      setSelectedConversationId(null)
+    })
   }, [
     commandRoomLaunch.commanderParam,
     commandRoomLaunch.conversationParam,
@@ -816,6 +1030,7 @@ export function CommandRoom() {
     conversationId: string,
     commanderId = selectedCommanderId,
   ) => {
+    manualConversationSelectionRef.current += 1
     setRequestedNewChatCommanderId(null)
     setSelectedConversationId(conversationId)
     setSelectedChatSessionId(null)
@@ -839,6 +1054,7 @@ export function CommandRoom() {
   const handleClearConversationSelection = useCallback((
     commanderId = selectedCommanderId,
   ) => {
+    manualConversationSelectionRef.current += 1
     setRequestedNewChatCommanderId(null)
     setSelectedConversationId(null)
     setSelectedChatSessionId(null)
@@ -896,6 +1112,93 @@ export function CommandRoom() {
     })
   }, [])
 
+  const adoptWorkspaceTarget = useCallback((
+    target: WorkspaceTargetState | null,
+    origin: WorkspaceTargetOrigin,
+    ownerKey: string | null,
+  ) => {
+    workspaceTargetVersionRef.current += 1
+    workspaceTargetRef.current = target
+    workspaceTargetOriginRef.current = target
+      ? { ownerKey, origin }
+      : null
+    setWorkspaceTarget(target)
+  }, [])
+
+  const openCurrentWorkspaceOwnerTarget = useCallback(async (
+    origin: WorkspaceTargetOrigin = 'auto',
+    options: WorkspaceTargetOpenOptions = {},
+  ): Promise<WorkspaceTargetState | null> => {
+    const currentOwner = workspaceOwnerRef.current
+    const owner = currentOwner?.key === workspaceOwner?.key
+      ? currentOwner
+      : workspaceOwner
+    if (!owner) {
+      adoptWorkspaceTarget(null, origin, null)
+      return null
+    }
+    const ownerKeyAtStart = owner.key
+    const targetVersionAtStart = workspaceTargetVersionRef.current
+    const openedTarget = await openWorkspaceTarget(owner.input)
+    if (workspaceOwnerKeyRef.current !== ownerKeyAtStart) {
+      return null
+    }
+    const currentTargetAfterOpen = workspaceTargetRef.current
+    if (options.onlyIfCurrentTargetId) {
+      if (currentTargetAfterOpen?.targetId !== options.onlyIfCurrentTargetId) {
+        return null
+      }
+    } else if (workspaceTargetVersionRef.current !== targetVersionAtStart) {
+      return workspaceTargetRef.current
+    }
+    const nextTarget = {
+      targetId: openedTarget.targetId,
+      label: openedTarget.label,
+      readOnly: openedTarget.isReadOnly,
+    }
+    adoptWorkspaceTarget(nextTarget, origin, owner.key)
+    return nextTarget
+  }, [adoptWorkspaceTarget, workspaceOwner])
+
+  const recoverStaleWorkspaceTarget = useCallback<WorkspaceSourceRecovery>(async (staleSource) => {
+    const currentTarget = workspaceTargetRef.current
+    if (!currentTarget || currentTarget.targetId !== staleSource.targetId) {
+      return null
+    }
+    const recoveredTarget = await openCurrentWorkspaceOwnerTarget('auto', {
+      onlyIfCurrentTargetId: staleSource.targetId,
+    })
+    return recoveredTarget
+      ? {
+          kind: 'target',
+          targetId: recoveredTarget.targetId,
+          label: recoveredTarget.label,
+          readOnly: recoveredTarget.readOnly,
+        }
+      : null
+  }, [openCurrentWorkspaceOwnerTarget])
+
+  useEffect(() => {
+    workspaceTargetRef.current = workspaceTarget
+  }, [workspaceTarget])
+
+  useEffect(() => {
+    workspaceOwnerRef.current = workspaceOwner
+  }, [workspaceOwner])
+
+  useEffect(() => {
+    const nextOwnerKey = workspaceOwner?.key ?? null
+    if (workspaceOwnerKeyRef.current === nextOwnerKey) {
+      return
+    }
+    workspaceOwnerKeyRef.current = nextOwnerKey
+    workspaceTargetVersionRef.current += 1
+    workspaceTargetOriginRef.current = null
+    workspaceTargetRef.current = null
+    setWorkspaceTarget(null)
+    setWorkspaceRequestedPath(null)
+  }, [workspaceOwner?.key])
+
   const handleAddWorkspaceContextPath = useCallback((contextPath: string, type: WorkspaceTreeNode['type'] = 'file') => {
     const normalizedPath = contextPath.trim().replace(/\/+$/u, '')
     if (!normalizedPath) {
@@ -923,81 +1226,125 @@ export function CommandRoom() {
     if (!trimmedPath) {
       return
     }
+    const requestId = workspaceFileOpenRequestRef.current + 1
+    workspaceFileOpenRequestRef.current = requestId
+    const ownerKeyAtStart = workspaceOwner?.key ?? null
+    const isCurrentRequest = () => (
+      workspaceFileOpenRequestRef.current === requestId
+      && workspaceOwnerKeyRef.current === ownerKeyAtStart
+    )
 
     handleActiveTabChange('chat')
     setWorkspaceOpenPreference(true)
 
-    let target = workspaceTarget
+    let target = workspaceTargetRef.current
     if (!target?.targetId) {
-      const standaloneSessionName = activeStandaloneSession?.id ?? null
-      const fallbackCommanderId = !isGlobalScope && selectedCommanderId ? selectedCommanderId : null
-      if (!selectedConversationId && !standaloneSessionName && !fallbackCommanderId) {
+      if (!workspaceOwner) {
         setWorkspaceRequestedPath({
           path: trimmedPath,
-          token: Date.now(),
+          token: requestId,
         })
         return
       }
 
       try {
-        const openedTarget = await openWorkspaceTarget(
-          selectedConversationId
-            ? { conversationId: selectedConversationId }
-            : standaloneSessionName
-              ? { sessionName: standaloneSessionName }
-              : { commanderId: fallbackCommanderId! },
-        )
-        target = {
-          targetId: openedTarget.targetId,
-          label: openedTarget.label,
-          readOnly: openedTarget.isReadOnly,
+        target = await openCurrentWorkspaceOwnerTarget('auto')
+        if (!isCurrentRequest()) {
+          return
         }
-        setWorkspaceTarget(target)
       } catch {
-        setWorkspaceTarget(null)
+        if (!isCurrentRequest()) {
+          return
+        }
+        adoptWorkspaceTarget(null, 'auto', workspaceOwner.key)
         setWorkspaceRequestedPath({
           path: trimmedPath,
-          token: Date.now(),
+          token: requestId,
         })
         return
       }
     }
 
+    if (!target?.targetId) {
+      if (!isCurrentRequest()) {
+        return
+      }
+      setWorkspaceRequestedPath({
+        path: trimmedPath,
+        token: requestId,
+      })
+      return
+    }
+
     try {
-      const resolvedPath = await fetchWorkspacePathResolution({
-        kind: 'target',
-        targetId: target.targetId,
-        label: target.label,
-        readOnly: target.readOnly,
-      }, trimmedPath)
+      let resolutionTarget = target
+      let resolvedPath
+      try {
+        resolvedPath = await fetchWorkspacePathResolution({
+          kind: 'target',
+          targetId: resolutionTarget.targetId,
+          label: resolutionTarget.label,
+          readOnly: resolutionTarget.readOnly,
+        }, trimmedPath)
+      } catch (error) {
+        if (!isWorkspaceTargetNotFoundError(error)) {
+          throw error
+        }
+        const recoveredTarget = await openCurrentWorkspaceOwnerTarget('auto')
+        if (!isCurrentRequest()) {
+          return
+        }
+        if (!recoveredTarget) {
+          throw error
+        }
+        resolutionTarget = recoveredTarget
+        resolvedPath = await fetchWorkspacePathResolution({
+          kind: 'target',
+          targetId: recoveredTarget.targetId,
+          label: recoveredTarget.label,
+          readOnly: recoveredTarget.readOnly,
+        }, trimmedPath)
+      }
+      if (!isCurrentRequest()) {
+        return
+      }
       const resolvedTarget = resolvedPath.targetId
         ? {
             targetId: resolvedPath.targetId,
-            label: resolvedPath.targetLabel ?? target.label,
-            readOnly: resolvedPath.targetReadOnly ?? target.readOnly,
+            label: resolvedPath.targetLabel ?? resolutionTarget.label,
+            readOnly: resolvedPath.targetReadOnly ?? resolutionTarget.readOnly,
           }
-        : target
-      setWorkspaceTarget(resolvedTarget)
+        : resolutionTarget
+      if (resolvedPath.targetId) {
+        adoptWorkspaceTarget(resolvedTarget, 'manual', workspaceOwner?.key ?? null)
+      }
       setWorkspaceRequestedPath({
         path: resolvedPath.path,
-        token: Date.now(),
+        token: requestId,
       })
       return
     } catch {
+      if (!isCurrentRequest()) {
+        return
+      }
       setWorkspaceRequestedPath({
         path: trimmedPath,
-        token: Date.now(),
+        token: requestId,
       })
     }
   }, [
-    activeStandaloneSession?.id,
+    adoptWorkspaceTarget,
     handleActiveTabChange,
-    isGlobalScope,
-    selectedCommanderId,
-    selectedConversationId,
+    openCurrentWorkspaceOwnerTarget,
     setWorkspaceOpenPreference,
-    workspaceTarget,
+    workspaceOwner,
   ])
+
+  const handleWorkspaceRequestedPathConsumed = useCallback((token: number) => {
+    setWorkspaceRequestedPath((current) => (
+      current?.token === token ? null : current
+    ))
+  }, [])
 
   const handleRemoveContextFilePath = useCallback((filePath: string) => {
     setContextFilePaths((current) => current.filter((entry) => entry !== filePath))
@@ -1081,32 +1428,37 @@ export function CommandRoom() {
 
   useEffect(() => {
     let cancelled = false
-    const standaloneSessionName = activeStandaloneSession?.id ?? null
-    const fallbackCommanderId = !isGlobalScope && selectedCommanderId ? selectedCommanderId : null
-    if (!selectedConversationId && !standaloneSessionName && !fallbackCommanderId) {
-      setWorkspaceTarget(null)
+    const owner = workspaceOwner
+    if (!owner) {
+      adoptWorkspaceTarget(null, 'auto', null)
       return
     }
+    const targetVersionAtStart = workspaceTargetVersionRef.current
 
     void (async () => {
       try {
-        const target = await openWorkspaceTarget(
-          selectedConversationId
-            ? { conversationId: selectedConversationId }
-            : standaloneSessionName
-              ? { sessionName: standaloneSessionName }
-              : { commanderId: fallbackCommanderId! },
-        )
-        if (!cancelled) {
-          setWorkspaceTarget({
-            targetId: target.targetId,
-            label: target.label,
-            readOnly: target.isReadOnly,
-          })
+        const target = await openWorkspaceTarget(owner.input)
+        if (cancelled || workspaceOwnerKeyRef.current !== owner.key) {
+          return
         }
+        const currentOrigin = workspaceTargetOriginRef.current
+        if (currentOrigin?.origin === 'manual' && currentOrigin.ownerKey === owner.key) {
+          return
+        }
+        if (workspaceTargetVersionRef.current !== targetVersionAtStart) {
+          return
+        }
+        adoptWorkspaceTarget({
+          targetId: target.targetId,
+          label: target.label,
+          readOnly: target.isReadOnly,
+        }, 'auto', owner.key)
       } catch {
-        if (!cancelled) {
-          setWorkspaceTarget(null)
+        if (!cancelled && workspaceOwnerKeyRef.current === owner.key) {
+          const currentOrigin = workspaceTargetOriginRef.current
+          if (currentOrigin?.origin !== 'manual') {
+            adoptWorkspaceTarget(null, 'auto', owner.key)
+          }
         }
       }
     })()
@@ -1114,7 +1466,7 @@ export function CommandRoom() {
     return () => {
       cancelled = true
     }
-  }, [activeStandaloneSession?.id, isGlobalScope, selectedCommanderId, selectedConversationId])
+  }, [adoptWorkspaceTarget, workspaceOwner])
 
   useEffect(() => {
     if (!workspaceSource) {
@@ -1405,6 +1757,9 @@ export function CommandRoom() {
       worker.creator?.kind === 'commander'
       && worker.creator.id?.trim() === selectedCommanderId.trim()
     ),
+  )
+  const commanderAutomationSessions = automationSessions.filter(
+    (session) => session.parentCommanderId === selectedCommanderId.trim(),
   )
   const commanderApprovals = approvals.filter(
     (a) => a.commanderId === selectedCommanderId,
@@ -1821,7 +2176,7 @@ export function CommandRoom() {
         handleClearConversationSelection()
       }
     } catch (error) {
-      setSessionActionError(formatError(error, 'Failed to close conversation'))
+      setSessionActionError(formatError(error, 'Failed to archive conversation'))
       throw error
     }
   }, [
@@ -1992,6 +2347,8 @@ export function CommandRoom() {
           onAddAnnotationContext={handleAddContextFileAnnotation}
           requestedPath={workspaceRequestedPath?.path ?? null}
           requestedPathToken={workspaceRequestedPath?.token ?? 0}
+          onRequestedPathConsumed={handleWorkspaceRequestedPathConsumed}
+          onRecoverStaleTarget={recoverStaleWorkspaceTarget}
         />
       )
     }
@@ -2045,6 +2402,7 @@ export function CommandRoom() {
         commanders={mobileCommanders}
         commanderSessions={commanderState.commanders}
         workers={workers}
+        automationSessions={automationSessions}
         pendingApprovals={pendingApprovals}
         selectedCommanderId={selectedCommanderId || null}
         onSelectCommanderId={handleSelectCommanderId}
@@ -2089,6 +2447,8 @@ export function CommandRoom() {
         onOpenWorkspaceFile={handleOpenWorkspaceFilePath}
         workspaceRequestedPath={workspaceRequestedPath?.path ?? null}
         workspaceRequestedPathToken={workspaceRequestedPath?.token ?? 0}
+        onWorkspaceRequestedPathConsumed={handleWorkspaceRequestedPathConsumed}
+        onRecoverStaleWorkspaceTarget={recoverStaleWorkspaceTarget}
         workspaceSource={workspaceSource}
         onCreateChatForCommander={handleRequestNewChatForCommander}
         onCreateConversation={handleCreateChatForCommander}
@@ -2164,6 +2524,7 @@ export function CommandRoom() {
             kind: w.kind ?? 'worker',
             state: w.state || 'idle',
           }))}
+          automationSessions={commanderAutomationSessions}
           activeTab={activeTab}
           setActiveTab={handleActiveTabChange}
           onCloseActiveChat={() => setSelectedChatSessionId(null)}

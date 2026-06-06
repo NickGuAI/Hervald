@@ -1,0 +1,32 @@
+{
+  "automations": [
+    {
+      "id": "weekly-research-distill",
+      "label": "Weekly research distill",
+      "purpose": "Distill the week's research and debriefs into durable knowledge.",
+      "trigger": "schedule",
+      "schedule": "0 18 * * 5",
+      "status": "paused",
+      "instruction": "Review the week's research reports, debriefs, and knowledge-search outputs. Distill reusable findings into a concise report and list candidate durable-domain updates. Do not overwrite domain knowledge unless explicitly instructed.",
+      "skills": [
+        "knowledge-search",
+        "domain-distill"
+      ],
+      "seedMemory": "This automation is a paused marketplace preset for research commanders. It should preserve source links and avoid speculative claims."
+    },
+    {
+      "id": "monthly-research-backlog-review",
+      "label": "Monthly research backlog review",
+      "purpose": "Find stale or high-value research threads that need consolidation, publication, or closure.",
+      "trigger": "schedule",
+      "schedule": "0 16 1 * *",
+      "status": "paused",
+      "instruction": "Review open research threads, saved reports, and debrief action items. Identify stale threads, high-value work ready to publish, and topics that should be closed. Produce a prioritized backlog review with evidence links.",
+      "skills": [
+        "wide-research",
+        "knowledge-search"
+      ],
+      "seedMemory": "This automation is a paused marketplace preset for monthly research backlog hygiene."
+    }
+  ]
+}

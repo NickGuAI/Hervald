@@ -17,11 +17,13 @@ import type {
   CodexSessionRuntimeHandle,
   MachineConfig,
 } from '../../types.js'
+import type { ProviderSpawnAuth } from '../../provider-auth.js'
 import {
   parseCodexProtocolPayload,
   toCodexProtocolMessage,
 } from './protocol.js'
 import {
+  killCodexRuntimeProcess,
   spawnDaemonCodexRuntime,
   spawnLocalCodexRuntime,
   spawnRemoteCodexRuntime,
@@ -66,6 +68,7 @@ export class CodexSessionRuntime implements CodexSessionRuntimeHandle {
     handleOwningSessionFailure: (failure: CodexRuntimeFailure) => void,
     spawnImpl: typeof spawn = spawn,
     private readonly daemonRegistry?: Pick<MachineDaemonRegistry, 'spawnProcess'>,
+    private readonly providerAuth?: ProviderSpawnAuth,
   ) {
     this.sessionName = sessionName
     this.machine = isRemoteMachine(machine) ? machine : null
@@ -125,20 +128,40 @@ export class CodexSessionRuntime implements CodexSessionRuntimeHandle {
     try {
       const payload = parseCodexProtocolPayload(payloadText)
       const protocolMessage = toCodexProtocolMessage(payload)
-      if (protocolMessage && payload.threadId) {
-        const listeners = this.notificationListeners.get(payload.threadId)
-        if (!listeners) {
+      if (protocolMessage && payload.threadIds && payload.threadIds.length > 0) {
+        let delivered = false
+        for (const threadId of payload.threadIds) {
+          const listeners = this.notificationListeners.get(threadId)
+          if (!listeners) {
+            continue
+          }
+          delivered = true
+          for (const cb of listeners) {
+            cb(protocolMessage)
+          }
+        }
+        if (delivered) {
           return
         }
-
-        for (const cb of listeners) {
-          cb(protocolMessage)
-        }
-        return
       }
 
-      if (protocolMessage && !payload.threadId) {
-        this.log('info', 'Codex protocol message has method but no threadId; routing without per-thread listener', {
+      if (protocolMessage && (!payload.threadIds || payload.threadIds.length === 0)) {
+        const isSingleThreadFallbackCandidate =
+          protocolMessage.method.startsWith('turn/')
+          || protocolMessage.method.startsWith('item/')
+          || protocolMessage.method === 'mcpserver/elicitation/request'
+          || protocolMessage.method === 'mcpServer/elicitation/request'
+        if (isSingleThreadFallbackCandidate) {
+          const listenerEntries = Array.from(this.notificationListeners.entries())
+            .filter(([, listeners]) => listeners.size > 0)
+          if (listenerEntries.length === 1) {
+            for (const cb of listenerEntries[0][1]) {
+              cb(protocolMessage)
+            }
+            return
+          }
+        }
+        this.log('info', 'Codex protocol message has method but no routable thread identifiers', {
           method: protocolMessage.method,
           requestId: typeof payload.id === 'number' ? payload.id : null,
           payloadSnippet: truncateLogText(payloadText, 400),
@@ -212,9 +235,13 @@ export class CodexSessionRuntime implements CodexSessionRuntimeHandle {
 
     const cpEmitter = cp as unknown as NodeJS.EventEmitter
     cpEmitter.on('exit', (code: number | null, signal: string | null) => {
-      const detail = signal
+      const baseDetail = signal
         ? `Codex runtime exited with signal ${signal}`
         : `Codex runtime exited with code ${code ?? -1}`
+      const stderrDetail = this.stderrTail.length > 0
+        ? `; stderr: ${truncateLogText(this.stderrTail.join(' | '), 800)}`
+        : ''
+      const detail = `${baseDetail}${stderrDetail}`
       const failure: CodexRuntimeTerminalFailure = {
         reason: detail,
         exitCode: typeof code === 'number' ? code : 1,
@@ -412,20 +439,23 @@ export class CodexSessionRuntime implements CodexSessionRuntimeHandle {
       this.stderrTail = []
       this.lastTerminalFailure = null
       if (this.machine) {
-        const process = spawnRemoteCodexRuntime(this.machine, this.spawnImpl)
+        const process = spawnRemoteCodexRuntime(this.machine, this.spawnImpl, this.providerAuth)
         this.attachProcess(process)
         this.log('info', 'Spawned remote Codex runtime process')
       } else if (this.daemonMachine) {
         if (!this.daemonRegistry) {
           throw new Error(`Daemon machine "${this.daemonMachine.id}" is not connected`)
         }
-        const process = spawnDaemonCodexRuntime(this.daemonMachine, this.daemonRegistry)
+        const process = spawnDaemonCodexRuntime(this.daemonMachine, this.daemonRegistry, this.providerAuth)
         this.attachProcess(process)
         this.log('info', 'Spawned daemon Codex runtime process')
       } else {
-        const { port, process } = await spawnLocalCodexRuntime(this.spawnImpl)
+        const { port, process: childProcess } = await spawnLocalCodexRuntime(this.spawnImpl, {
+          ...process.env,
+          ...this.providerAuth?.env,
+        })
         this.port = port
-        this.attachProcess(process)
+        this.attachProcess(childProcess)
         this.log('info', 'Spawned Codex sidecar process')
       }
     }
@@ -612,7 +642,7 @@ export class CodexSessionRuntime implements CodexSessionRuntimeHandle {
       }
 
       try {
-        runtimeProcess.kill('SIGTERM')
+        killCodexRuntimeProcess(runtimeProcess, 'SIGTERM')
       } catch {
         // Best effort.
       }
@@ -624,7 +654,7 @@ export class CodexSessionRuntime implements CodexSessionRuntimeHandle {
 
       this.log('warn', 'Codex runtime did not exit after SIGTERM; escalating to SIGKILL', { timeoutMs })
       try {
-        runtimeProcess.kill('SIGKILL')
+        killCodexRuntimeProcess(runtimeProcess, 'SIGKILL')
       } catch {
         // Process may have exited.
       }
@@ -652,7 +682,7 @@ export class CodexSessionRuntime implements CodexSessionRuntimeHandle {
     this.notificationListeners.clear()
     if (this.process) {
       try {
-        this.process.kill('SIGTERM')
+        killCodexRuntimeProcess(this.process, 'SIGTERM')
       } catch {
         // Best effort.
       }

@@ -78,10 +78,6 @@ async function getFounderForUser(
 ) {
   const founder = await store.getFounder()
   if (founder) {
-    if (founder.avatarUrl?.trim()) {
-      return founder
-    }
-
     const avatarUrl = resolveFounderAvatarBackfillUrl(founder, user)
     if (!avatarUrl) {
       return founder

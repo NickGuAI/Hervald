@@ -3,6 +3,8 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
+  buildCodexAppServerInvocation,
+  buildCodexRuntimeEnv,
   buildSshArgs,
   buildTailscalePingArgs,
   createMachineRegistryStore,
@@ -227,5 +229,45 @@ describe('agents/machines: registry defaults', () => {
     await Promise.all(
       tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })),
     )
+  })
+})
+
+describe('agents/machines: Codex runtime environment', () => {
+  it('disables inherited OTEL export and model overrides for Codex app-server children', () => {
+    const env = buildCodexRuntimeEnv({
+      PATH: '/usr/bin',
+      OPENAI_API_KEY: 'sk-test',
+      ANTHROPIC_MODEL: 'claude-opus-4-6',
+      ANTHROPIC_DEFAULT_OPUS_MODEL: 'claude-opus-4-6',
+      ANTHROPIC_DEFAULT_SONNET_MODEL: 'claude-sonnet-4-5',
+      OTEL_EXPORTER_OTLP_ENDPOINT: 'https://hervald.gehirn.ai/v1',
+      OTEL_EXPORTER_OTLP_HEADERS: 'authorization=Bearer stale',
+      OTEL_LOGS_EXPORTER: 'otlp',
+      OTEL_SDK_DISABLED: 'false',
+    })
+
+    expect(env.PATH).toBe('/usr/bin')
+    expect(env.OPENAI_API_KEY).toBe('sk-test')
+    expect(env.ANTHROPIC_MODEL).toBeUndefined()
+    expect(env.ANTHROPIC_DEFAULT_OPUS_MODEL).toBeUndefined()
+    expect(env.ANTHROPIC_DEFAULT_SONNET_MODEL).toBeUndefined()
+    expect(env.OTEL_EXPORTER_OTLP_ENDPOINT).toBeUndefined()
+    expect(env.OTEL_EXPORTER_OTLP_HEADERS).toBeUndefined()
+    expect(env.OTEL_SDK_DISABLED).toBe('true')
+    expect(env.OTEL_LOGS_EXPORTER).toBe('none')
+    expect(env.OTEL_METRICS_EXPORTER).toBe('none')
+    expect(env.OTEL_TRACES_EXPORTER).toBe('none')
+  })
+
+  it('builds remote Codex app-server commands with telemetry disabled on the target shell', () => {
+    const invocation = buildCodexAppServerInvocation('stdio://')
+
+    expect(invocation).toContain('unset ANTHROPIC_MODEL')
+    expect(invocation).toContain('OTEL_EXPORTER_OTLP_ENDPOINT')
+    expect(invocation).toContain('export OTEL_SDK_DISABLED=true')
+    expect(invocation).toContain('OTEL_LOGS_EXPORTER=none')
+    expect(invocation).toContain('OTEL_METRICS_EXPORTER=none')
+    expect(invocation).toContain('OTEL_TRACES_EXPORTER=none')
+    expect(invocation).toContain("codex app-server --listen 'stdio://'")
   })
 })

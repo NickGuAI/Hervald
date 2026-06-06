@@ -5,13 +5,24 @@ import {
   migratedProviderContextChanged,
 } from './providers/provider-context-migration.js'
 import { writeJsonFileAtomically } from '../json-file.js'
+import {
+  isTranscriptEnvelope,
+  type TranscriptEnvelope,
+} from '../../src/types/transcript-envelope.js'
+import type { StreamJsonEvent } from './types.js'
+import { isTranscriptTurnEndRecord } from './transcript-records.js'
 
-export interface TranscriptEvent {
-  type: string
+export type TranscriptEvent = {
+  type?: string
   [key: string]: unknown
-}
+} | TranscriptEnvelope
 
 export type TranscriptMeta = Record<string, unknown>
+
+export interface TranscriptTailPage {
+  events: TranscriptEvent[]
+  hasMore: boolean
+}
 
 import { resolveModuleDataDir } from '../data-dir.js'
 
@@ -81,9 +92,13 @@ function parseTranscriptEvent(raw: Buffer): TranscriptEvent | null {
 
   try {
     const parsed = JSON.parse(trimmed) as unknown
-    return parsed && typeof parsed === 'object' && typeof (parsed as { type?: unknown }).type === 'string'
-      ? parsed as TranscriptEvent
-      : null
+    if (!parsed || typeof parsed !== 'object') {
+      return null
+    }
+    if (typeof (parsed as { type?: unknown }).type === 'string') {
+      return parsed as TranscriptEvent
+    }
+    return isTranscriptEnvelope(parsed) ? parsed : null
   } catch {
     return null
   }
@@ -115,15 +130,22 @@ export async function appendTranscriptEvent(sessionName: string, event: Transcri
   })
 }
 
-export async function readTranscriptTail(sessionName: string, maxTurns: number): Promise<TranscriptEvent[]> {
+async function readTranscriptTailPageInternal(
+  sessionName: string,
+  maxTurns: number,
+  maxEvents?: number,
+): Promise<TranscriptTailPage> {
   const transcriptPath = resolveTranscriptPath(sessionName)
   const turnsToKeep = Math.max(0, Math.floor(maxTurns))
+  const eventsToKeep = maxEvents === undefined
+    ? Number.POSITIVE_INFINITY
+    : Math.max(0, Math.floor(maxEvents))
   try {
     const fileHandle = await open(transcriptPath, 'r')
     try {
       const { size } = await fileHandle.stat()
       if (size === 0) {
-        return []
+        return { events: [], hasMore: false }
       }
 
       const chunkSize = 64 * 1024
@@ -151,7 +173,7 @@ export async function readTranscriptTail(sessionName: string, maxTurns: number):
           if (!parsed) {
             continue
           }
-          if (parsed.type === 'result') {
+          if (isTranscriptTurnEndRecord(parsed as StreamJsonEvent)) {
             if (completedTurnsKept >= turnsToKeep) {
               reachedBoundary = true
               break
@@ -159,6 +181,10 @@ export async function readTranscriptTail(sessionName: string, maxTurns: number):
             completedTurnsKept += 1
           }
           eventsInReverse.push(parsed)
+          if (eventsInReverse.length >= eventsToKeep) {
+            reachedBoundary = true
+            break
+          }
         }
 
         remainder = combined.subarray(0, lineEnd)
@@ -167,8 +193,8 @@ export async function readTranscriptTail(sessionName: string, maxTurns: number):
       if (!reachedBoundary && remainder.length > 0) {
         const parsed = parseTranscriptEvent(remainder)
         if (parsed) {
-          if (parsed.type !== 'result' || completedTurnsKept < turnsToKeep) {
-            if (parsed.type === 'result') {
+          if (!isTranscriptTurnEndRecord(parsed as StreamJsonEvent) || completedTurnsKept < turnsToKeep) {
+            if (isTranscriptTurnEndRecord(parsed as StreamJsonEvent)) {
               completedTurnsKept += 1
             }
             eventsInReverse.push(parsed)
@@ -176,16 +202,33 @@ export async function readTranscriptTail(sessionName: string, maxTurns: number):
         }
       }
 
-      return eventsInReverse.reverse()
+      return {
+        events: eventsInReverse.reverse(),
+        hasMore: reachedBoundary,
+      }
     } finally {
       await fileHandle.close()
     }
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-      return []
+      return { events: [], hasMore: false }
     }
     throw error
   }
+}
+
+export async function readTranscriptTail(sessionName: string, maxTurns: number): Promise<TranscriptEvent[]> {
+  return (await readTranscriptTailPageInternal(sessionName, maxTurns)).events
+}
+
+export async function readTranscriptTailPage(
+  sessionName: string,
+  options: {
+    maxTurns: number
+    maxEvents: number
+  },
+): Promise<TranscriptTailPage> {
+  return readTranscriptTailPageInternal(sessionName, options.maxTurns, options.maxEvents)
 }
 
 export async function readTranscriptEvents(sessionName: string): Promise<TranscriptEvent[]> {

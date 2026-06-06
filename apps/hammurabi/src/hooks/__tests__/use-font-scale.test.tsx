@@ -174,16 +174,25 @@ describe('useFontScale', () => {
 
     await renderHookHarness()
     await flushMicrotasks()
+    await vi.waitFor(() => {
+      expect(latestFontScale?.fontScale).toBe(1)
+    })
 
     await act(async () => {
       latestFontScale?.setFontScale(1.1)
     })
     await flushMicrotasks()
+    await vi.waitFor(() => {
+      expect(resolveFirstPatch).not.toBeNull()
+    })
 
     await act(async () => {
       latestFontScale?.setFontScale(1.2)
     })
     await flushMicrotasks()
+    await vi.waitFor(() => {
+      expect(resolveSecondPatch).not.toBeNull()
+    })
 
     await act(async () => {
       latestServerScale = 1.2
@@ -191,15 +200,19 @@ describe('useFontScale', () => {
     })
     await flushMicrotasks()
 
-    expect(latestFontScale?.fontScale).toBe(1.2)
-    expect(document.documentElement.style.getPropertyValue('--hv-font-scale')).toBe('1.2')
+    await vi.waitFor(() => {
+      expect(latestFontScale?.fontScale).toBe(1.2)
+      expect(document.documentElement.style.getPropertyValue('--hv-font-scale')).toBe('1.2')
+    })
 
     await act(async () => {
       resolveFirstPatch?.(createSettings(1.1))
     })
     await flushMicrotasks()
 
-    expect(latestFontScale?.fontScale).toBe(1.2)
-    expect(document.documentElement.style.getPropertyValue('--hv-font-scale')).toBe('1.2')
+    await vi.waitFor(() => {
+      expect(latestFontScale?.fontScale).toBe(1.2)
+      expect(document.documentElement.style.getPropertyValue('--hv-font-scale')).toBe('1.2')
+    })
   })
 })

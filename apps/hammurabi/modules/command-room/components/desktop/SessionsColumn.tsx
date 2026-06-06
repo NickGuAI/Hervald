@@ -34,6 +34,7 @@ export interface ChatSession extends AgentSession {
   /** Human-readable age string, e.g. "2d", "3h". */
   age?: string
   lastActivityAt?: string
+  parentCommanderId?: string | null
 }
 
 interface SessionsColumnProps {
@@ -521,11 +522,15 @@ function CommanderNewChatRow({
 function CommanderTeamDropdown({
   commander,
   workers,
+  automationSessions,
   approvals,
+  onSelectChat,
 }: {
   commander: Commander
   workers: Worker[]
+  automationSessions: ChatSession[]
   approvals: Approval[]
+  onSelectChat?: (id: string) => void
 }) {
   const [open, setOpen] = useState(false)
   const teamMembers = workers.filter((worker) => (
@@ -533,6 +538,10 @@ function CommanderTeamDropdown({
     && worker.creator?.kind === 'commander'
     && worker.creator.id === commander.id
   ))
+  const commanderAutomationSessions = automationSessions.filter(
+    (session) => session.parentCommanderId === commander.id,
+  )
+  const totalMembers = teamMembers.length + commanderAutomationSessions.length
 
   if (commander.isVirtual) {
     return null
@@ -561,13 +570,25 @@ function CommanderTeamDropdown({
       >
         <span style={{ fontSize: 10, width: 8 }}>{open ? '▾' : '▸'}</span>
         <span style={{ flex: 1 }}>Team</span>
-        <span>· {teamMembers.length}</span>
+        <span>· {totalMembers}</span>
         {approvals.length > 0 && (
           <span style={{ color: 'var(--vermillion-seal)' }}>{approvals.length}</span>
         )}
       </button>
       {open && (
         <div style={{ padding: '0 20px 6px 48px' }}>
+          <div
+            className="font-body"
+            style={{
+              padding: '4px 0',
+              color: 'var(--hv-fg-subtle)',
+              fontSize: 'calc(10px * var(--hv-font-scale, 1))',
+              letterSpacing: '0.12em',
+              textTransform: 'uppercase',
+            }}
+          >
+            Workers
+          </div>
           {teamMembers.length > 0 ? teamMembers.map((worker) => (
             <div
               key={worker.id}
@@ -596,6 +617,57 @@ function CommanderTeamDropdown({
               }}
             >
               No delegated workers.
+            </div>
+          )}
+
+          <div
+            className="font-body"
+            style={{
+              padding: '10px 0 4px',
+              color: 'var(--hv-fg-subtle)',
+              fontSize: 'calc(10px * var(--hv-font-scale, 1))',
+              letterSpacing: '0.12em',
+              textTransform: 'uppercase',
+            }}
+          >
+            Automations
+          </div>
+          {commanderAutomationSessions.length > 0 ? commanderAutomationSessions.map((session) => (
+            <button
+              key={session.id}
+              type="button"
+              className="font-mono"
+              data-testid="commander-team-automation-row"
+              onClick={() => onSelectChat?.(session.id)}
+              style={{
+                width: '100%',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: 8,
+                padding: '5px 0',
+                border: 'none',
+                background: 'transparent',
+                color: 'var(--hv-fg-faint)',
+                cursor: onSelectChat ? 'pointer' : 'default',
+                textAlign: 'left',
+                fontSize: 'calc(11px * var(--hv-font-scale, 1))',
+              }}
+            >
+              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {session.label ?? session.name}
+              </span>
+              <span style={{ flexShrink: 0 }}>{session.status ?? 'idle'}</span>
+            </button>
+          )) : (
+            <div
+              style={{
+                padding: '4px 0 8px',
+                color: 'var(--hv-fg-faint)',
+                fontSize: 'calc(11px * var(--hv-font-scale, 1))',
+              }}
+            >
+              No commander-local automations.
             </div>
           )}
         </div>
@@ -1020,13 +1092,13 @@ function ConversationChatRow({
                   {canArchive && onArchive && (
                     <button
                       type="button"
-                      data-testid="commander-chat-close-button"
+                      data-testid="commander-chat-archive-button"
                       onClick={() => {
                         void handleArchive()
                       }}
                       style={menuItemStyle}
                     >
-                      Close
+                      Archive
                     </button>
                   )}
 
@@ -1202,8 +1274,13 @@ export function SessionsColumn({
     fontScaleStep,
     isSaving: isFontScaleSaving,
   } = useFontScale()
+  const globalAutomationSessions = automationSessions.filter(
+    (session) => session.creator?.kind === 'automation'
+      ? session.parentCommanderId === null
+      : session.parentCommanderId == null,
+  )
   const mergedAutomationSessions = automationSessions.length > 0
-    ? automationSessions
+    ? globalAutomationSessions
     : [...cronSessions, ...sentinelSessions]
 
   useEffect(() => {
@@ -1312,7 +1389,9 @@ export function SessionsColumn({
                   <CommanderTeamDropdown
                     commander={c}
                     workers={workers}
+                    automationSessions={automationSessions}
                     approvals={approvals.filter((a) => a.commanderId === c.id)}
+                    onSelectChat={onSelectChat}
                   />
                 )}
 

@@ -15,7 +15,10 @@ const mocks = vi.hoisted(() => ({
 }))
 
 vi.mock('@/lib/api', () => ({
+  buildRequestHeaders: vi.fn(async () => new Headers()),
+  fetchJson: vi.fn(),
   getAccessToken: mocks.getAccessToken,
+  isAuthRecoveryRequiredError: () => false,
 }))
 
 let root: Root | null = null
@@ -84,19 +87,21 @@ describe('workspace mobile preview fixes', () => {
       />,
     )
 
-    const desktopBody = document.body.querySelector('[data-testid="workspace-preview-desktop-body"]')
-    const mobileBody = document.body.querySelector('[data-testid="workspace-preview-mobile-body"]')
+    await vi.waitFor(() => {
+      const desktopBody = document.body.querySelector('[data-testid="workspace-preview-desktop-body"]')
+      const mobileBody = document.body.querySelector('[data-testid="workspace-preview-mobile-body"]')
 
-    expect(desktopBody?.classList.contains('min-h-0')).toBe(true)
-    expect(desktopBody?.classList.contains('flex-1')).toBe(true)
-    expect(desktopBody?.classList.contains('p-3')).toBe(true)
-    expect(desktopBody?.classList.contains('flex')).toBe(true)
-    expect(desktopBody?.classList.contains('flex-col')).toBe(true)
-    expect(mobileBody?.classList.contains('min-h-0')).toBe(true)
-    expect(mobileBody?.classList.contains('flex-1')).toBe(true)
-    expect(mobileBody?.classList.contains('p-2')).toBe(true)
-    expect(mobileBody?.classList.contains('flex')).toBe(true)
-    expect(mobileBody?.classList.contains('flex-col')).toBe(true)
+      expect(desktopBody?.classList.contains('min-h-0')).toBe(true)
+      expect(desktopBody?.classList.contains('flex-1')).toBe(true)
+      expect(desktopBody?.classList.contains('p-3')).toBe(true)
+      expect(desktopBody?.classList.contains('flex')).toBe(true)
+      expect(desktopBody?.classList.contains('flex-col')).toBe(true)
+      expect(mobileBody?.classList.contains('min-h-0')).toBe(true)
+      expect(mobileBody?.classList.contains('flex-1')).toBe(true)
+      expect(mobileBody?.classList.contains('p-2')).toBe(true)
+      expect(mobileBody?.classList.contains('flex')).toBe(true)
+      expect(mobileBody?.classList.contains('flex-col')).toBe(true)
+    })
   })
 
   it('renders PDF previews inline for target workspaces', async () => {

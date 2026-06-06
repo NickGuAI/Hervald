@@ -242,6 +242,35 @@ describe('CenterColumn redesign', () => {
     expect(document.body.textContent).toContain('⌘K workspace')
   })
 
+  it('shows commander-local automations in the delegated overview strip', async () => {
+    await render(
+      <CenterColumn
+        {...buildProps({
+          workers: [{
+            id: 'worker-1',
+            name: 'reviewer',
+            kind: 'worker',
+            state: 'running',
+          }],
+          automationSessions: [{
+            id: 'auto-atlas',
+            name: 'auto-atlas',
+            label: 'Atlas Review',
+            created: '2026-05-15T12:00:00.000Z',
+            pid: 4242,
+            status: 'active',
+            parentCommanderId: 'atlas-id',
+          }],
+        })}
+      />,
+    )
+
+    expect(document.body.querySelector('[data-testid="delegated-subagents-strip"]')?.textContent)
+      .toContain('Delegated · 1 sub-agents · 1 automations')
+    expect(document.body.querySelector('[data-testid="commander-center-automation-chip"]')?.textContent)
+      .toBe('Atlas Review')
+  })
+
   it('opens the shared queue panel from the desktop composer queue button', async () => {
     await render(
       <CenterColumn

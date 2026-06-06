@@ -20,6 +20,7 @@ interface ApiKeyView {
   prefix: string
   createdBy: string
   createdAt: string
+  expiresAt: string | null
   lastUsedAt: string | null
   scopes: string[]
 }
@@ -37,9 +38,36 @@ function toApiKeyView(record: Awaited<ReturnType<ApiKeyJsonStore['listKeys']>>[n
     prefix: record.prefix,
     createdBy: record.createdBy,
     createdAt: record.createdAt,
+    expiresAt: record.expiresAt ?? null,
     lastUsedAt: record.lastUsedAt,
     scopes: record.scopes,
   }
+}
+
+const MOBILE_PAIRING_SCOPES: readonly ApiKeyScope[] = [
+  'agents:read',
+  'agents:write',
+  'commanders:read',
+  'commanders:write',
+  'services:read',
+  'services:write',
+  'skills:read',
+  'telemetry:read',
+]
+
+const MOBILE_PAIRING_SCOPE_SET = new Set<string>(MOBILE_PAIRING_SCOPES)
+const DEFAULT_MOBILE_PAIRING_TTL_MS = 30 * 24 * 60 * 60 * 1000
+
+function readAuthenticatedScopes(user: Express.Request['user']): string[] {
+  const scopes = user?.metadata?.scopes
+  if (!Array.isArray(scopes)) {
+    return []
+  }
+  return scopes.filter((scope): scope is string => typeof scope === 'string')
+}
+
+function mobileScopesForCredential(user: Express.Request['user']): string[] {
+  return readAuthenticatedScopes(user).filter((scope) => MOBILE_PAIRING_SCOPE_SET.has(scope))
 }
 
 function parseName(value: unknown): string | null {
@@ -69,6 +97,53 @@ function parseScopes(value: unknown): ApiKeyScope[] | null {
   }
 
   return value
+}
+
+function parseMobilePairingScopes(value: unknown): ApiKeyScope[] | null {
+  if (value === undefined) {
+    return [...MOBILE_PAIRING_SCOPES]
+  }
+
+  const scopes = parseScopes(value)
+  if (!scopes || scopes.length === 0) {
+    return null
+  }
+
+  if (!scopes.every((scope) => MOBILE_PAIRING_SCOPE_SET.has(scope))) {
+    return null
+  }
+
+  return [...new Set(scopes)]
+}
+
+function parseExpiresAt(value: unknown, requestNow: Date): Date | null | undefined {
+  if (value === undefined || value === null || value === '') {
+    return null
+  }
+
+  if (typeof value !== 'string') {
+    return undefined
+  }
+
+  const expiresAt = new Date(value)
+  if (!Number.isFinite(expiresAt.getTime()) || expiresAt.getTime() <= requestNow.getTime()) {
+    return undefined
+  }
+
+  return expiresAt
+}
+
+function parseExpiresInSeconds(value: unknown, requestNow: Date): Date | null {
+  if (value === undefined || value === null || value === '') {
+    return new Date(requestNow.getTime() + DEFAULT_MOBILE_PAIRING_TTL_MS)
+  }
+
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+    return null
+  }
+
+  const expiresAt = new Date(requestNow.getTime() + Math.floor(value * 1000))
+  return Number.isFinite(expiresAt.getTime()) ? expiresAt : null
 }
 
 function parseProviderApiKey(value: unknown): string | null {
@@ -112,6 +187,13 @@ export function createApiKeysRouter(options: ApiKeysRouterOptions = {}): Router 
     apiKeyStore: store,
     requiredApiKeyScopes: ['services:write'],
   })
+  const mobileCredentialAuth = combinedAuth({
+    ...options,
+    apiKeyStore: store,
+    requiredApiKeyScopes: [],
+    requiredAuth0Permissions: MOBILE_PAIRING_SCOPES,
+    auth0PermissionMode: 'any',
+  })
 
   router.post('/keys', masterKeyAuth, async (req, res) => {
     const name = parseName(req.body?.name)
@@ -128,12 +210,20 @@ export function createApiKeysRouter(options: ApiKeysRouterOptions = {}): Router 
       return
     }
 
+    const requestNow = now()
+    const expiresAt = parseExpiresAt(req.body?.expiresAt, requestNow)
+    if (expiresAt === undefined) {
+      res.status(400).json({ error: 'expiresAt must be a future ISO timestamp when provided' })
+      return
+    }
+
     try {
       const created = await store.createKey({
         name,
         scopes,
         createdBy: req.user?.email ?? req.user?.id ?? 'unknown',
-        now: now(),
+        now: requestNow,
+        expiresAt,
       })
 
       res.status(201).json({
@@ -143,6 +233,62 @@ export function createApiKeysRouter(options: ApiKeysRouterOptions = {}): Router 
     } catch {
       res.status(500).json({ error: 'Failed to create API key' })
     }
+  })
+
+  router.post('/mobile/pairing', masterKeyAuth, async (req, res) => {
+    const name = req.body?.name === undefined
+      ? 'Hervald Mobile Pairing'
+      : parseName(req.body.name)
+    if (!name) {
+      res.status(400).json({ error: 'name must be a non-empty string when provided' })
+      return
+    }
+
+    const scopes = parseMobilePairingScopes(req.body?.scopes)
+    if (!scopes) {
+      res.status(400).json({
+        error: `scopes must be a non-empty subset of mobile pairing scopes: ${MOBILE_PAIRING_SCOPES.join(', ')}`,
+      })
+      return
+    }
+
+    const requestNow = now()
+    const expiresAt = parseExpiresInSeconds(req.body?.expiresInSeconds, requestNow)
+    if (!expiresAt) {
+      res.status(400).json({ error: 'expiresInSeconds must be a positive number when provided' })
+      return
+    }
+
+    try {
+      const created = await store.createKey({
+        name,
+        scopes,
+        createdBy: req.user?.email ?? req.user?.id ?? 'unknown',
+        now: requestNow,
+        expiresAt,
+      })
+
+      res.status(201).json({
+        ...toApiKeyView(created.record),
+        key: created.key,
+      })
+    } catch {
+      res.status(500).json({ error: 'Failed to create mobile pairing credential' })
+    }
+  })
+
+  router.get('/mobile/verify', mobileCredentialAuth, (req, res) => {
+    const credentialScopes = req.authMode === 'api-key'
+      ? mobileScopesForCredential(req.user)
+      : [...MOBILE_PAIRING_SCOPES]
+    if (credentialScopes.length === 0) {
+      res.status(403).json({ error: 'Insufficient API key scope' })
+      return
+    }
+    res.json({
+      ok: true,
+      requiredScopes: credentialScopes,
+    })
   })
 
   router.get('/keys', masterKeyAuth, async (_req, res) => {

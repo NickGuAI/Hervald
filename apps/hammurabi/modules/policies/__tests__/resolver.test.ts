@@ -126,4 +126,37 @@ describe('resolveActionPolicy — compound Bash commands', () => {
     expect(resolved.matchedBy).toBe('mcp')
     expect(resolved.decision).toBe('review')
   })
+
+  it('matches exact Codex Apps Gmail send tools as send-email', () => {
+    const resolved = resolveActionPolicy({
+      toolName: 'mcp__codex_apps__gmail_send_email',
+      toolInput: { to: 'test@example.com', subject: 'hi' },
+      policyView: DEFAULT_POLICY_VIEW,
+    })
+    expect(resolved.action?.id).toBe('send-email')
+    expect(resolved.matchedBy).toBe('mcp')
+    expect(resolved.decision).toBe('review')
+  })
+
+  it('does not auto-approve unknown Codex Apps MCP tools as internal safe MCP', () => {
+    const resolved = resolveActionPolicy({
+      toolName: 'mcp__codex_apps__unknown_external_action',
+      toolInput: { target: 'external' },
+      policyView: DEFAULT_POLICY_VIEW,
+    })
+    expect(resolved.action?.id).not.toBe('internal:safe-mcp')
+    expect(resolved.matchedBy).toBe('fallback')
+    expect(resolved.decision).toBe('review')
+  })
+
+  it('does not auto-approve unknown OpenCode MCP permissions as internal safe MCP', () => {
+    const resolved = resolveActionPolicy({
+      toolName: 'mcp__opencode__unknown_mcp',
+      toolInput: { title: 'External MCP action', identityIncomplete: true },
+      policyView: DEFAULT_POLICY_VIEW,
+    })
+    expect(resolved.action?.id).not.toBe('internal:safe-mcp')
+    expect(resolved.matchedBy).toBe('fallback')
+    expect(resolved.decision).toBe('review')
+  })
 })

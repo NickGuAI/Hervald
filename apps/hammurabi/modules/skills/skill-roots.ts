@@ -70,14 +70,15 @@ export async function resolveAgentSkillsDirCandidates(
   const candidates: string[] = []
   pushUnique(candidates, env[AGENT_SKILLS_DIR_ENV])
 
+  pushUnique(candidates, path.join(cwd, 'agent-skills'))
+  pushUnique(candidates, path.join(cwd, '..', 'agent-skills'))
+  pushUnique(candidates, path.join(cwd, '..', '..', 'agent-skills'))
+
   const installedAppDir = await readInstalledAppDir()
   if (installedAppDir) {
     pushUnique(candidates, path.join(installedAppDir, '..', '..', 'agent-skills'))
   }
 
-  pushUnique(candidates, path.join(cwd, 'agent-skills'))
-  pushUnique(candidates, path.join(cwd, '..', 'agent-skills'))
-  pushUnique(candidates, path.join(cwd, '..', '..', 'agent-skills'))
   pushUnique(candidates, path.join(homedir(), 'Hervald', 'agent-skills'))
   pushUnique(candidates, path.join(homedir(), 'App', 'agent-skills'))
 

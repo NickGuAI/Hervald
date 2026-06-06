@@ -30,6 +30,7 @@ import type { MachineDaemonPairCommand } from '@/types'
 import {
   buildMachineDaemonPendingDisplayDto,
 } from '@modules/agents/machine-daemon-dtos'
+import { resolveFounderAvatarSrc } from '@modules/operators/founder-avatar'
 import { useFounderProfile } from '@modules/operators/hooks/useFounderProfile'
 import { DEFAULT_ACTION_POLICY_SETTINGS } from '@modules/policies/settings-defaults'
 import TelemetryPreviewCard from '@modules/telemetry/components/TelemetryPreviewCard'
@@ -725,7 +726,7 @@ export function MobileSettings() {
   const profile: MobileSettingsProfile = {
     displayName: founder?.displayName ?? user?.name ?? 'Operator',
     email: founder?.email ?? user?.email ?? 'Signed in with an API key',
-    picture: founder?.avatarUrl ?? user?.picture ?? null,
+    picture: resolveFounderAvatarSrc(founder, auth),
     onSignOut: auth?.signOut,
   }
   const section = activeSectionFromPath(location.pathname, sections)

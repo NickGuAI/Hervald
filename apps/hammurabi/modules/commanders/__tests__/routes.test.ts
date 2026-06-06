@@ -23,6 +23,7 @@ import type { ClaudeEffortLevel } from '../../claude-effort'
 import type { AgentType, StreamJsonEvent } from '../../agents/types'
 import type { PlanApprovalDecision } from '../../../src/types/hammurabi-events'
 import { COMMANDER_WIZARD_START_MESSAGE } from '../templates/wizard-prompt'
+import { AutomationStore } from '../../automations/store'
 
 vi.setConfig({ testTimeout: 60_000 })
 
@@ -579,6 +580,168 @@ describe('commanders routes', () => {
       expect(workflow).not.toContain(`hammurabi memory find --commander ${created.id}`)
       expect(workflow).toContain(`hammurabi memory save --commander ${created.id}`)
       expect(workflow).toContain('.memory/MEMORY.md')
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('creates benchmark commanders with built-in defaults and bootstrap files', async () => {
+    const dir = await createTempDir('hammurabi-commanders-benchmark-create-')
+    const storePath = join(dir, 'sessions.json')
+    const memoryBasePath = join(dir, 'memory')
+    const automationStore = new AutomationStore({
+      dirPath: join(dir, 'automations'),
+      commanderDataDir: dir,
+    })
+    const server = await startServer({
+      sessionStorePath: storePath,
+      memoryBasePath,
+      automationStore,
+    })
+
+    try {
+      const response = await fetch(`${server.baseUrl}/api/commanders`, {
+        method: 'POST',
+        headers: {
+          ...AUTH_HEADERS,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          host: 'benchmark-worker',
+          templateId: 'benchmark',
+        }),
+      })
+
+      expect(response.status).toBe(201)
+      const created = (await response.json()) as {
+        id: string
+        displayName: string
+        agentType: string
+        cwd: string
+        maxTurns: number
+        contextMode: string
+        contextConfig?: { fatPinInterval?: number }
+        taskSource: { owner: string; repo: string; label?: string } | null
+        heartbeat: { intervalMs: number }
+        templateId?: string
+      }
+      expect(created.displayName).toBe('Benchmark Commander')
+      expect(created.agentType).toBe('codex')
+      expect(created.cwd).toBe('/home/builder/App/benchmarks/hammurabi')
+      expect(created.maxTurns).toBe(300)
+      expect(created.contextMode).toBe('fat')
+      expect(created.contextConfig).toEqual({ fatPinInterval: 2 })
+      expect(created.taskSource).toEqual({
+        owner: 'NickGuAI',
+        repo: 'Hervald',
+        label: 'benchmark',
+      })
+      expect(created.heartbeat.intervalMs).toBe(30 * 60_000)
+      expect(created.templateId).toBe('benchmark')
+
+      const persisted = JSON.parse(await readFile(storePath, 'utf8')) as {
+        sessions: Array<{
+          id: string
+          agentType?: string
+          cwd?: string
+          maxTurns?: number
+          contextMode?: string
+          contextConfig?: { fatPinInterval?: number }
+          taskSource?: { owner: string; repo: string; label?: string }
+          templateId?: string
+        }>
+      }
+      expect(persisted.sessions[0]).toEqual(expect.objectContaining({
+        id: created.id,
+        agentType: 'codex',
+        cwd: '/home/builder/App/benchmarks/hammurabi',
+        maxTurns: 300,
+        contextMode: 'fat',
+        contextConfig: { fatPinInterval: 2 },
+        taskSource: {
+          owner: 'NickGuAI',
+          repo: 'Hervald',
+          label: 'benchmark',
+        },
+        templateId: 'benchmark',
+      }))
+
+      const commanderRoot = join(memoryBasePath, created.id)
+      const commanderMd = await readFile(join(commanderRoot, 'COMMANDER.md'), 'utf8')
+      expect(commanderMd).toContain('You are Benchmark Commander.')
+      expect(commanderMd).toContain('Benchmark-only commander.')
+      expect(commanderMd).not.toContain('maxTurns:')
+      expect(commanderMd).not.toContain('contextMode:')
+      await expect(readFile(join(commanderRoot, 'WORKSPACE.md'), 'utf8')).resolves.toContain(
+        'Issue label: `benchmark`',
+      )
+      await expect(readFile(join(commanderRoot, 'SKILLS.md'), 'utf8')).resolves.toContain(
+        'benchmark-runner',
+      )
+      await expect(readFile(join(commanderRoot, '.memory', 'MEMORY.md'), 'utf8')).resolves.toContain(
+        'Durable eval facts only',
+      )
+      await expect(readFile(
+        join(commanderRoot, '.memory', 'working-memory.md'),
+        'utf8',
+      )).resolves.toContain('Active benchmark scratch notes')
+
+      const automations = await automationStore.list({ parentCommanderId: created.id })
+      expect(automations).toHaveLength(4)
+      const automationSummaries = automations
+        .map((automation) => ({
+          name: automation.name,
+          trigger: automation.trigger,
+          schedule: automation.schedule,
+          templateId: automation.templateId,
+          parentCommanderId: automation.parentCommanderId,
+          agentType: automation.agentType,
+          machine: automation.machine,
+          workDir: automation.workDir,
+        }))
+        .sort((left, right) => String(left.templateId).localeCompare(String(right.templateId)))
+      expect(automationSummaries).toEqual([
+        {
+          name: 'Benchmark dashboard refresh',
+          trigger: 'manual',
+          schedule: undefined,
+          templateId: 'benchmark-dashboard-refresh',
+          parentCommanderId: created.id,
+          agentType: 'codex',
+          machine: 'benchmark-worker',
+          workDir: '/home/builder/App/benchmarks/hammurabi',
+        },
+        {
+          name: 'Benchmark release gate',
+          trigger: 'manual',
+          schedule: undefined,
+          templateId: 'benchmark-release-gate',
+          parentCommanderId: created.id,
+          agentType: 'codex',
+          machine: 'benchmark-worker',
+          workDir: '/home/builder/App/benchmarks/hammurabi',
+        },
+        {
+          name: 'Benchmark smoke benchmark',
+          trigger: 'schedule',
+          schedule: '0 3 * * *',
+          templateId: 'benchmark-smoke',
+          parentCommanderId: created.id,
+          agentType: 'codex',
+          machine: 'benchmark-worker',
+          workDir: '/home/builder/App/benchmarks/hammurabi',
+        },
+        {
+          name: 'Benchmark weekly baseline',
+          trigger: 'schedule',
+          schedule: '0 4 * * 1',
+          templateId: 'benchmark-weekly-baseline',
+          parentCommanderId: created.id,
+          agentType: 'codex',
+          machine: 'benchmark-worker',
+          workDir: '/home/builder/App/benchmarks/hammurabi',
+        },
+      ])
     } finally {
       await server.close()
     }
@@ -2418,6 +2581,36 @@ describe('commanders routes', () => {
       const commanderId = created.id
       const defaultConversationId = buildDefaultCommanderConversationId(commanderId)
       const secondConversationId = '33333333-3333-4333-8333-333333333333'
+      const triggerHeartbeat = async (body: Record<string, unknown>) => {
+        let payload: { conversationId: string } | null = null
+        await vi.waitFor(async () => {
+          const response = await fetch(`${server.baseUrl}/api/commanders/${commanderId}/heartbeat`, {
+            method: 'POST',
+            headers: {
+              ...AUTH_HEADERS,
+              'content-type': 'application/json',
+            },
+            body: JSON.stringify(body),
+          })
+          const nextPayload = await response.json() as { conversationId?: string; error?: string }
+          if (
+            response.status === 409
+            && typeof nextPayload.error === 'string'
+            && nextPayload.error.includes('heartbeat is already in flight')
+          ) {
+            throw new Error(nextPayload.error)
+          }
+          expect(response.status).toBe(200)
+          if (typeof nextPayload.conversationId !== 'string') {
+            throw new Error(`Heartbeat trigger response did not include conversationId: ${JSON.stringify(nextPayload)}`)
+          }
+          payload = { conversationId: nextPayload.conversationId }
+        })
+        if (!payload) {
+          throw new Error('Heartbeat trigger did not return a payload')
+        }
+        return payload
+      }
 
       const startResponse = await fetch(`${server.baseUrl}/api/commanders/${commanderId}/start`, {
         method: 'POST',
@@ -2485,17 +2678,9 @@ describe('commanders routes', () => {
       })
       expect(messageResponse.status).toBe(200)
 
-      const firstTriggerResponse = await fetch(`${server.baseUrl}/api/commanders/${commanderId}/heartbeat`, {
-        method: 'POST',
-        headers: {
-          ...AUTH_HEADERS,
-          'content-type': 'application/json',
-        },
-        body: JSON.stringify({
-          conversationId: defaultConversationId,
-        }),
-      })
-      expect(firstTriggerResponse.status).toBe(200)
+      expect(await triggerHeartbeat({ conversationId: defaultConversationId })).toEqual(expect.objectContaining({
+        conversationId: defaultConversationId,
+      }))
 
       await vi.waitFor(async () => {
         const conversationsResponse = await fetch(
@@ -2510,16 +2695,7 @@ describe('commanders routes', () => {
         expect(conversations.find((conversation) => conversation.id === secondConversationId)?.heartbeatTickCount).toBe(0)
       })
 
-      const defaultTriggerResponse = await fetch(`${server.baseUrl}/api/commanders/${commanderId}/heartbeat`, {
-        method: 'POST',
-        headers: {
-          ...AUTH_HEADERS,
-          'content-type': 'application/json',
-        },
-        body: JSON.stringify({}),
-      })
-      expect(defaultTriggerResponse.status).toBe(200)
-      expect(await defaultTriggerResponse.json()).toEqual(expect.objectContaining({
+      expect(await triggerHeartbeat({})).toEqual(expect.objectContaining({
         conversationId: secondConversationId,
       }))
 
@@ -2536,17 +2712,9 @@ describe('commanders routes', () => {
         expect(conversations.find((conversation) => conversation.id === secondConversationId)?.heartbeatTickCount).toBe(1)
       })
 
-      const secondTriggerResponse = await fetch(`${server.baseUrl}/api/commanders/${commanderId}/heartbeat`, {
-        method: 'POST',
-        headers: {
-          ...AUTH_HEADERS,
-          'content-type': 'application/json',
-        },
-        body: JSON.stringify({
-          conversationId: secondConversationId,
-        }),
-      })
-      expect(secondTriggerResponse.status).toBe(200)
+      expect(await triggerHeartbeat({ conversationId: secondConversationId })).toEqual(expect.objectContaining({
+        conversationId: secondConversationId,
+      }))
 
       await vi.waitFor(async () => {
         const conversationsResponse = await fetch(

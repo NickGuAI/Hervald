@@ -12,6 +12,7 @@ import {
   normalizeClaudeMaxThinkingTokens,
 } from '../../../claude-max-thinking-tokens.js'
 import { normalizeClaudeEvent } from '../../event-normalizers/claude.js'
+import { bridgeLegacyEventToTranscriptEnvelopes } from '../../transcript-legacy-bridge.js'
 import {
   buildLoginShellCommand,
   prepareDaemonMachineLaunchEnvironment,
@@ -20,6 +21,11 @@ import {
   isDaemonMachine,
   isRemoteMachine,
 } from '../../machines.js'
+import {
+  isProviderAuthRequiredText,
+  mergeProviderSpawnAuthIntoLaunch,
+} from '../../provider-auth.js'
+import type { PreparedMachineLaunchEnvironment } from '../../machine-credentials.js'
 import type { MachineDaemonRegistry } from '../../daemon/registry.js'
 import {
   cloneActiveSkillInvocation,
@@ -72,6 +78,7 @@ export interface ClaudeStreamSessionDeps {
   internalToken?: string
   writeToStdin(session: StreamSession, data: string): boolean
   writeTranscriptMeta(session: StreamSession): void
+  markProviderAuthRequired?(session: StreamSession, detail: string): Promise<unknown> | unknown
 }
 
 function buildPromptContent(
@@ -160,6 +167,25 @@ export function buildClaudePromptAudit(
   }
 }
 
+function scrubInheritedClaudeOAuth(
+  prepared: PreparedMachineLaunchEnvironment,
+  keepManagedOAuth: boolean,
+): PreparedMachineLaunchEnvironment {
+  if (keepManagedOAuth) {
+    return prepared
+  }
+  const env: NodeJS.ProcessEnv = { ...prepared.env, CLAUDE_CODE_OAUTH_TOKEN: undefined }
+  const sshSendEnvKeys = prepared.sshSendEnvKeys.filter((key) => {
+    const value = env[key]
+    if (typeof value === 'string' && value.startsWith('CLAUDE_CODE_OAUTH_TOKEN=')) {
+      env[key] = undefined
+      return false
+    }
+    return true
+  })
+  return { ...prepared, env, sshSendEnvKeys }
+}
+
 export function createClaudeSessionAdapter(
   deps: Pick<
     ClaudeStreamSessionDeps,
@@ -243,9 +269,16 @@ export function createClaudeStreamSession(
   const localSpawnCwd = process.env.HOME || '/tmp'
   const requestedCwd = cwd ?? machine?.cwd
   const sessionCwd = requestedCwd ?? localSpawnCwd
-  const preparedLaunch = daemon
-    ? prepareDaemonMachineLaunchEnvironment(machine)
-    : prepareMachineLaunchEnvironment(machine, process.env)
+  const preparedLaunch = scrubInheritedClaudeOAuth(
+    mergeProviderSpawnAuthIntoLaunch(
+      daemon
+        ? prepareDaemonMachineLaunchEnvironment(machine)
+        : prepareMachineLaunchEnvironment(machine, process.env),
+      options.providerAuth,
+      machine,
+    ),
+    Boolean(options.providerAuth?.env?.CLAUDE_CODE_OAUTH_TOKEN),
+  )
   const remoteClaude = buildClaudeShellInvocation(args, adaptiveThinking, maxThinkingTokens, appendSystemPrompt)
   const remoteStreamCmd = buildLoginShellCommand(
     remoteClaude,
@@ -291,6 +324,9 @@ export function createClaudeStreamSession(
   const spawnEnv = buildClaudeSpawnEnv(preparedLaunch.env, adaptiveThinking, maxThinkingTokens, {
     internalToken: deps.internalToken,
   })
+  if (!options.providerAuth?.env?.CLAUDE_CODE_OAUTH_TOKEN) {
+    spawnEnv.CLAUDE_CODE_OAUTH_TOKEN = undefined
+  }
   spawnEnv.HAMMURABI_SESSION_NAME = sessionName
 
   const childProcess: ChildProcess = daemon
@@ -358,6 +394,7 @@ export function createClaudeStreamSession(
       adaptiveThinking,
       maxThinkingTokens,
     }),
+    providerAuthSnapshot: options.providerAuth?.snapshot,
     activeTurnId: undefined,
     adapter: createClaudeSessionAdapter(deps),
     resumedFrom: options.resumedFrom,
@@ -381,14 +418,16 @@ export function createClaudeStreamSession(
       if (!trimmed) continue
       try {
         const event = JSON.parse(trimmed) as StreamJsonEvent
-        const normalized = normalizeClaudeEvent(event) as StreamJsonEvent | StreamJsonEvent[] | null
+        const normalized = normalizeClaudeEvent(event as never) as StreamJsonEvent | StreamJsonEvent[] | null
         if (!normalized) {
           continue
         }
         const events = Array.isArray(normalized) ? normalized : [normalized]
         for (const normalizedEvent of events) {
-          deps.appendEvent(session, normalizedEvent)
-          deps.broadcastEvent(session, normalizedEvent)
+          for (const envelope of bridgeLegacyEventToTranscriptEnvelopes(normalizedEvent as never)) {
+            deps.appendEvent(session, envelope)
+            deps.broadcastEvent(session, envelope)
+          }
         }
       } catch {
         // Skip unparseable lines from the CLI.
@@ -411,14 +450,16 @@ export function createClaudeStreamSession(
     }
     try {
       const event = JSON.parse(remaining) as StreamJsonEvent
-      const normalized = normalizeClaudeEvent(event) as StreamJsonEvent | StreamJsonEvent[] | null
+      const normalized = normalizeClaudeEvent(event as never) as StreamJsonEvent | StreamJsonEvent[] | null
       if (!normalized) {
         return
       }
       const events = Array.isArray(normalized) ? normalized : [normalized]
       for (const normalizedEvent of events) {
-        deps.appendEvent(session, normalizedEvent)
-        deps.broadcastEvent(session, normalizedEvent)
+        for (const envelope of bridgeLegacyEventToTranscriptEnvelopes(normalizedEvent as never)) {
+          deps.appendEvent(session, envelope)
+          deps.broadcastEvent(session, envelope)
+        }
       }
     } catch {
       // Ignore unparseable trailing data — same policy as the 'data' handler.
@@ -541,6 +582,9 @@ export function createClaudeStreamSession(
     }
     deps.appendEvent(session, stderrEvent)
     deps.broadcastEvent(session, stderrEvent)
+    if (isProviderAuthRequiredText(text)) {
+      void deps.markProviderAuthRequired?.(session, text)
+    }
   })
 
   const cpEmitter = childProcess as unknown as NodeJS.EventEmitter

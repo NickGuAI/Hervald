@@ -3,6 +3,7 @@ import express from 'express'
 import { EventEmitter } from 'node:events'
 import { createServer, type Server } from 'node:http'
 import { WebSocket } from 'ws'
+import type { TranscriptionProvider } from '@gehirn/transcription'
 import type { ApiKeyStoreLike } from '../../api-keys/store'
 import type {
   OpenAITranscriptionKeyStatus,
@@ -75,6 +76,57 @@ class MockRealtimeClient
 }
 
 const MIN_COMMIT_AUDIO_BYTES = 4800
+
+async function waitForMessage(
+  received: Array<{ type: string; text?: string; message?: string }>,
+  type: string,
+  timeoutMs = 1000,
+): Promise<void> {
+  const startedAt = Date.now()
+  while (!received.some((message) => message.type === type)) {
+    if (Date.now() - startedAt > timeoutMs) {
+      throw new Error(`Timed out waiting for ${type} message`)
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10))
+  }
+}
+
+async function waitForCondition(predicate: () => boolean, timeoutMs = 1000): Promise<void> {
+  const startedAt = Date.now()
+  while (!predicate()) {
+    if (Date.now() - startedAt > timeoutMs) {
+      throw new Error('Timed out waiting for condition')
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10))
+  }
+}
+
+async function openRealtimeSocket(server: RunningServer): Promise<{
+  ws: WebSocket
+  received: Array<{ type: string; text?: string; message?: string }>
+}> {
+  const wsUrl =
+    server.baseUrl.replace('http://', 'ws://') +
+    '/api/realtime/transcription?api_key=test-key'
+  const ws = new WebSocket(wsUrl)
+  const received: Array<{ type: string; text?: string; message?: string }> = []
+  ws.on('message', (data) => {
+    received.push(JSON.parse(data.toString()) as { type: string; text?: string; message?: string })
+  })
+
+  await new Promise<void>((resolve, reject) => {
+    ws.once('open', () => resolve())
+    ws.once('error', reject)
+    ws.once('unexpected-response', (_request, response) => {
+      reject(new Error(`Unexpected websocket status ${response.statusCode}`))
+    })
+  })
+
+  ws.send(JSON.stringify({ type: 'start' }))
+  await waitForMessage(received, 'ready')
+
+  return { ws, received }
+}
 
 async function startServer(
   options: Partial<RealtimeProxyOptions> = {},
@@ -172,18 +224,7 @@ describe('realtime proxy websocket', () => {
       createClient: () => mockClient,
     })
 
-    const wsUrl =
-      server.baseUrl.replace('http://', 'ws://') +
-      '/api/realtime/transcription?api_key=test-key'
-    const ws = new WebSocket(wsUrl)
-
-    await new Promise<void>((resolve, reject) => {
-      ws.once('open', () => resolve())
-      ws.once('error', reject)
-      ws.once('unexpected-response', (_request, response) => {
-        reject(new Error(`Unexpected websocket status ${response.statusCode}`))
-      })
-    })
+    const { ws, received } = await openRealtimeSocket(server)
 
     const closed = new Promise<{ code: number; reason: string }>((resolve, reject) => {
       ws.once('close', (code, reason) => {
@@ -193,12 +234,18 @@ describe('realtime proxy websocket', () => {
     })
 
     ws.send(Buffer.alloc(MIN_COMMIT_AUDIO_BYTES - 1))
-    ws.send(JSON.stringify({ type: 'stop' }))
+    ws.send(JSON.stringify({ type: 'commit' }))
 
     const closeEvent = await closed
     expect(closeEvent).toEqual({
       code: 1000,
       reason: 'Recording too short',
+    })
+    expect(received).toContainEqual({
+      type: 'error',
+      code: 'audio_too_short',
+      message: 'Recording too short',
+      bytesAppended: MIN_COMMIT_AUDIO_BYTES - 1,
     })
     expect(mockClient.commitAudioBuffer).not.toHaveBeenCalled()
 
@@ -211,18 +258,7 @@ describe('realtime proxy websocket', () => {
       createClient: () => mockClient,
     })
 
-    const wsUrl =
-      server.baseUrl.replace('http://', 'ws://') +
-      '/api/realtime/transcription?api_key=test-key'
-    const ws = new WebSocket(wsUrl)
-
-    await new Promise<void>((resolve, reject) => {
-      ws.once('open', () => resolve())
-      ws.once('error', reject)
-      ws.once('unexpected-response', (_request, response) => {
-        reject(new Error(`Unexpected websocket status ${response.statusCode}`))
-      })
-    })
+    const { ws } = await openRealtimeSocket(server)
 
     const finalMessage = new Promise<{ type: string; text: string }>((resolve, reject) => {
       ws.on('message', (data) => {
@@ -235,7 +271,7 @@ describe('realtime proxy websocket', () => {
     })
 
     ws.send(Buffer.alloc(MIN_COMMIT_AUDIO_BYTES))
-    ws.send(JSON.stringify({ type: 'stop' }))
+    ws.send(JSON.stringify({ type: 'commit' }))
 
     const payload = await finalMessage
     expect(payload).toEqual({
@@ -252,63 +288,124 @@ describe('realtime proxy websocket', () => {
     await server.close()
   })
 
-  it('keeps connection open across multiple VAD final events', async () => {
+  it('ignores pre-commit final events so pause fragments are not surfaced as transcript text', async () => {
     const mockClient = new MockRealtimeClient()
-    // Override commitAudioBuffer to not emit final automatically
     mockClient.commitAudioBuffer = vi.fn()
     const server = await startServer({
       createClient: () => mockClient,
     })
 
-    const wsUrl =
-      server.baseUrl.replace('http://', 'ws://') +
-      '/api/realtime/transcription?api_key=test-key'
-    const ws = new WebSocket(wsUrl)
+    const { ws, received } = await openRealtimeSocket(server)
 
-    // Attach message listener before open to avoid missing the ready message
-    const received: Array<{ type: string; text?: string }> = []
-    ws.on('message', (data) => {
-      received.push(JSON.parse(data.toString()) as { type: string; text?: string })
-    })
-
-    await new Promise<void>((resolve, reject) => {
-      ws.once('open', () => resolve())
-      ws.once('error', reject)
-      ws.once('unexpected-response', (_request, response) => {
-        reject(new Error(`Unexpected websocket status ${response.statusCode}`))
-      })
-    })
-
-    // Wait for the ready message from the proxy
-    await new Promise<void>((resolve) => {
-      if (received.some((m) => m.type === 'ready')) {
-        resolve()
-        return
-      }
-      const onMsg = () => {
-        if (received.some((m) => m.type === 'ready')) {
-          ws.off('message', onMsg)
-          resolve()
-        }
-      }
-      ws.on('message', onMsg)
-    })
-
-    // Simulate two VAD segments (speaker pauses mid-utterance)
     mockClient.emit('final', 'first segment')
     mockClient.emit('final', 'second segment')
-
-    // Give messages time to arrive
     await new Promise((resolve) => setTimeout(resolve, 50))
 
     const finals = received.filter((m) => m.type === 'final')
-    expect(finals).toEqual([
-      { type: 'final', text: 'first segment' },
-      { type: 'final', text: 'second segment' },
-    ])
-
-    // Connection should still be open after multiple finals
+    expect(finals).toEqual([])
     expect(ws.readyState).toBe(WebSocket.OPEN)
+
+    ws.send(Buffer.alloc(MIN_COMMIT_AUDIO_BYTES))
+    ws.send(JSON.stringify({ type: 'commit' }))
+    await waitForCondition(() => mockClient.commitAudioBuffer.mock.calls.length === 1)
+    mockClient.emit('final', 'first segment second segment')
+    await waitForMessage(received, 'final')
+
+    expect(received.filter((m) => m.type === 'final')).toEqual([
+      { type: 'final', text: 'first segment second segment' },
+    ])
+    expect(mockClient.commitAudioBuffer).toHaveBeenCalledOnce()
+
+    ws.close()
+    await server.close()
+  })
+
+  it('passes prompt and merged terms into the realtime provider on start', async () => {
+    const mockClient = new MockRealtimeClient()
+    const clientOptions: Array<Parameters<NonNullable<RealtimeProxyOptions['createClient']>>[0]> = []
+    const server = await startServer({
+      createClient: (options) => {
+        clientOptions.push(options)
+        return mockClient
+      },
+    })
+
+    const wsUrl =
+      server.baseUrl.replace('http://', 'ws://') +
+      '/api/realtime/transcription?api_key=test-key&prompt=Preserve%20issue%20terms&term=VoiceFlow&terms=Kubernetes,gRPC'
+    const ws = new WebSocket(wsUrl)
+    const received: Array<{ type: string; text?: string; message?: string }> = []
+    ws.on('message', (data) => {
+      received.push(JSON.parse(data.toString()) as { type: string; text?: string; message?: string })
+    })
+    await new Promise<void>((resolve, reject) => {
+      ws.once('open', () => resolve())
+      ws.once('error', reject)
+    })
+    ws.send(JSON.stringify({ type: 'start' }))
+    await waitForMessage(received, 'ready')
+
+    expect(clientOptions).toHaveLength(1)
+    expect(clientOptions[0]).toMatchObject({
+      apiKey: 'sk-test-openai',
+      language: 'en',
+      model: 'gpt-4o-transcribe',
+    })
+    expect(clientOptions[0]?.terms).toContain('Hammurabi')
+    expect(clientOptions[0]?.terms).toContain('VoiceFlow')
+    expect(clientOptions[0]?.terms).toContain('Kubernetes')
+    expect(clientOptions[0]?.terms).toContain('gRPC')
+    expect(clientOptions[0]?.prompt).toContain('Preserve issue terms')
+    expect(clientOptions[0]?.prompt).toContain('VoiceFlow')
+
+    ws.close()
+    await server.close()
+  })
+
+  it('retries empty live finalization once from preserved PCM audio', async () => {
+    const mockClient = new MockRealtimeClient()
+    mockClient.commitAudioBuffer = vi.fn()
+    const retryProvider: TranscriptionProvider = {
+      provider: 'mock',
+      transcribe: vi.fn(async (_audioPath, options) => ({
+        title: 'retry',
+        segments: [{ content: 'retried Hammurabi transcript' }],
+        summary: 'retried Hammurabi transcript',
+        readability: JSON.stringify(options),
+      })),
+    }
+    const server = await startServer({
+      createClient: () => mockClient,
+      retryTranscriptionProvider: retryProvider,
+      finalizeTimeoutMs: 5,
+    })
+
+    const { ws, received } = await openRealtimeSocket(server)
+    ws.send(Buffer.alloc(MIN_COMMIT_AUDIO_BYTES, 1))
+    ws.send(JSON.stringify({ type: 'commit' }))
+    await waitForMessage(received, 'final')
+
+    expect(received).toContainEqual({
+      type: 'final',
+      text: 'retried Hammurabi transcript',
+    })
+    expect(mockClient.commitAudioBuffer).toHaveBeenCalledOnce()
+    expect(retryProvider.transcribe).toHaveBeenCalledOnce()
+    expect(vi.mocked(retryProvider.transcribe).mock.calls[0]?.[0]).toMatch(/voice-note\.wav$/)
+    expect(vi.mocked(retryProvider.transcribe).mock.calls[0]?.[1]).toEqual(
+      expect.objectContaining({
+        model: 'gpt-4o-transcribe',
+        language: 'en',
+        prompt: expect.stringContaining('Hammurabi'),
+        terms: expect.arrayContaining(['Hammurabi', 'Gehirn', 'Claude Code', 'OpenCode', 'PMAI', 'Kubernetes', 'gRPC']),
+        metadata: expect.objectContaining({
+          source: 'realtime',
+          retryReason: 'live-finalization-timeout',
+          pcm16Bytes: MIN_COMMIT_AUDIO_BYTES,
+          mimeType: 'audio/wav',
+        }),
+      }),
+    )
 
     ws.close()
     await server.close()
@@ -316,55 +413,33 @@ describe('realtime proxy websocket', () => {
 
   it('drops transient upstream commit-race errors without sending an error frame or closing the browser websocket', async () => {
     const mockClient = new MockRealtimeClient()
+    mockClient.commitAudioBuffer = vi.fn()
     const server = await startServer({
       createClient: () => mockClient,
     })
 
-    const wsUrl =
-      server.baseUrl.replace('http://', 'ws://') +
-      '/api/realtime/transcription?api_key=test-key'
-    const ws = new WebSocket(wsUrl)
-    const received: Array<{ type: string; text?: string; message?: string }> = []
-    ws.on('message', (data) => {
-      received.push(JSON.parse(data.toString()) as { type: string; text?: string; message?: string })
-    })
-
-    await new Promise<void>((resolve, reject) => {
-      ws.once('open', () => resolve())
-      ws.once('error', reject)
-      ws.once('unexpected-response', (_request, response) => {
-        reject(new Error(`Unexpected websocket status ${response.statusCode}`))
-      })
-    })
-
-    await new Promise<void>((resolve) => {
-      if (received.some((message) => message.type === 'ready')) {
-        resolve()
-        return
-      }
-      const onMessage = () => {
-        if (received.some((message) => message.type === 'ready')) {
-          ws.off('message', onMessage)
-          resolve()
-        }
-      }
-      ws.on('message', onMessage)
-    })
+    const { ws, received } = await openRealtimeSocket(server)
+    ws.send(Buffer.alloc(MIN_COMMIT_AUDIO_BYTES))
+    ws.send(JSON.stringify({ type: 'commit' }))
+    await waitForCondition(() => mockClient.commitAudioBuffer.mock.calls.length === 1)
 
     mockClient.emit('error', {
       code: 'audio_buffer_too_small',
       message:
         'Error committing input audio buffer: buffer too small. Expected at least 100ms of audio.',
     })
-    mockClient.emit('final', 'transcript after transient error')
     await new Promise((resolve) => setTimeout(resolve, 50))
 
     expect(received.some((message) => message.type === 'error')).toBe(false)
+    expect(ws.readyState).toBe(WebSocket.OPEN)
+
+    mockClient.emit('final', 'transcript after transient error')
+    await new Promise((resolve) => setTimeout(resolve, 50))
+
     expect(received).toContainEqual({
       type: 'final',
       text: 'transcript after transient error',
     })
-    expect(ws.readyState).toBe(WebSocket.OPEN)
 
     ws.close()
     await server.close()

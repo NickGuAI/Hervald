@@ -301,4 +301,44 @@ describe('module graph frontend bindings', () => {
       )
     }
   })
+
+  it('keeps desktop nav manifest order aligned with the top bar sequence', () => {
+    const orderedDesktopNav = HAMMURABI_MODULE_GRAPH.flatMap((module) =>
+      module.ui.routes.flatMap((route) => {
+        const nav = route.nav
+        const surfaces = nav?.surfaces ?? route.surfaces
+        if (!nav || nav.hidden || !surfaces.includes('desktop')) {
+          return []
+        }
+
+        return [
+          {
+            label: nav.label,
+            group: nav.group,
+            order: nav.order ?? Number.MAX_SAFE_INTEGER,
+          },
+        ]
+      }),
+    ).sort((left, right) => left.order - right.order)
+
+    const primaryNav = orderedDesktopNav.filter((item) => (item.group ?? 'primary') === 'primary')
+    const secondaryNav = orderedDesktopNav.filter((item) => item.group === 'secondary')
+    const secondaryNavOrder = secondaryNav.length > 0
+      ? Math.min(...secondaryNav.map((item) => item.order))
+      : Number.MAX_SAFE_INTEGER
+    const topBarLabels = [
+      ...primaryNav.filter((item) => item.order < secondaryNavOrder).map((item) => item.label),
+      ...(secondaryNav.length > 0 ? ['Ops'] : []),
+      ...primaryNav.filter((item) => item.order >= secondaryNavOrder).map((item) => item.label),
+    ]
+
+    expect(topBarLabels).toEqual([
+      'Org',
+      'Command Room',
+      'Marketplace',
+      'Ops',
+      'Channels',
+      'Settings',
+    ])
+  })
 })

@@ -3,7 +3,7 @@
 import { act, createElement } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { WorkspaceSource } from '../../../workspace/use-workspace'
+import type { WorkspaceSource, WorkspaceSourceRecovery } from '../../../workspace/use-workspace'
 import { useWorkspaceOverlayTree } from '../workspace-overlay/use-workspace-overlay-tree'
 
 const mocks = vi.hoisted(() => ({
@@ -18,6 +18,8 @@ vi.mock('../../../workspace/use-workspace', () => ({
   fetchWorkspaceExpandedTree: mocks.fetchWorkspaceExpandedTree,
   fetchWorkspacePathResolution: mocks.fetchWorkspacePathResolution,
   getWorkspaceSourceKey: (source: WorkspaceSource) => `target:${source.targetId}`,
+  isWorkspaceTargetNotFoundError: (error: unknown) =>
+    error instanceof Error && error.message.includes('Workspace target not found'),
   useWorkspaceFilePreview: mocks.useWorkspaceFilePreview,
 }))
 
@@ -27,6 +29,10 @@ type HarnessProps = {
   query: string
   filesTabActive: boolean
   onSelectFile: ReturnType<typeof vi.fn>
+  requestedPath?: string | null
+  requestedPathToken?: number
+  onRequestedPathConsumed?: (token: number) => void
+  onRecoverStaleTarget?: WorkspaceSourceRecovery
 }
 
 type HookState = ReturnType<typeof useWorkspaceOverlayTree>
@@ -343,6 +349,44 @@ describe('useWorkspaceOverlayTree', () => {
       AGENT_SOURCE,
       'home/builder/App/apps/hammurabi/docs/diagrams',
     )
+
+    await harness.cleanup()
+  })
+
+  it('consumes requested paths once instead of replaying them when the mobile workspace source changes', async () => {
+    const onRequestedPathConsumed = vi.fn()
+    const harness = await createHarness({
+      requestedPath: 'README.md',
+      requestedPathToken: 1,
+      onRequestedPathConsumed,
+    })
+
+    await waitForCondition(
+      () => mocks.fetchWorkspacePathResolution.mock.calls.some(([source]) => (
+        (source as WorkspaceSource).targetId === AGENT_SOURCE.targetId
+      )),
+      'expected requested path to resolve against the first source',
+    )
+    await waitForCondition(
+      () => onRequestedPathConsumed.mock.calls.some(([token]) => token === 1),
+      'expected requested path to be consumed',
+    )
+
+    await harness.rerender({ source: COMMANDER_SOURCE })
+
+    expect(mocks.fetchWorkspacePathResolution.mock.calls.some(([source]) => (
+      (source as WorkspaceSource).targetId === COMMANDER_SOURCE.targetId
+    ))).toBe(false)
+
+    await harness.rerender({ requestedPathToken: 2 })
+
+    await waitForCondition(
+      () => mocks.fetchWorkspacePathResolution.mock.calls.some(([source]) => (
+        (source as WorkspaceSource).targetId === COMMANDER_SOURCE.targetId
+      )),
+      'expected a new requested-path token to resolve against the new source',
+    )
+    expect(onRequestedPathConsumed).toHaveBeenCalledWith(2)
 
     await harness.cleanup()
   })

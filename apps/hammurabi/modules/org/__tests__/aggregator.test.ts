@@ -296,6 +296,39 @@ describe('buildOrgTree', () => {
     ])
   })
 
+  it('keeps operator-level automations global while scoping commander automations by parentCommanderId', async () => {
+    const atlas = createCommander({ id: 'cmdr-atlas', displayName: 'Atlas' })
+    const borealis = createCommander({ id: 'cmdr-borealis', displayName: 'Borealis' })
+    const tree = await buildOrgTree(createDeps({
+      commanders: [atlas, borealis],
+      automations: [
+        createAutomation({
+          id: 'auto-global',
+          parentCommanderId: null,
+          name: 'daily-briefing',
+        }),
+        createAutomation({
+          id: 'auto-atlas',
+          parentCommanderId: atlas.id,
+          name: 'atlas-review',
+        }),
+        createAutomation({
+          id: 'auto-borealis',
+          parentCommanderId: borealis.id,
+          name: 'borealis-retro',
+        }),
+      ],
+    }))
+
+    expect(tree.automations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: 'auto-global', parentId: 'founder-1' }),
+        expect.objectContaining({ id: 'auto-atlas', parentId: atlas.id }),
+        expect.objectContaining({ id: 'auto-borealis', parentId: borealis.id }),
+      ]),
+    )
+  })
+
   it('falls back to zeroed conversation aggregates when the conversation store fails', async () => {
     const commander = createCommander()
     const tree = await buildOrgTree(createDeps({

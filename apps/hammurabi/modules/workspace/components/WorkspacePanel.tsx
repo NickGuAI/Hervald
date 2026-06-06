@@ -3,15 +3,18 @@ import { FolderOpen, GitBranch, Loader2, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { WorkspaceTreeNode } from '../types'
 import {
+  downloadWorkspaceFile,
   fetchWorkspaceExpandedTree,
   fetchWorkspacePathResolution,
   fetchWorkspaceTree,
   getWorkspaceSourceKey,
+  isWorkspaceTargetNotFoundError,
   useWorkspaceActions,
   useWorkspaceFilePreview,
   useWorkspaceGitLog,
   useWorkspaceGitStatus,
   type WorkspaceSource,
+  type WorkspaceSourceRecovery,
   type WorkspacePendingFileAnnotation,
 } from '../use-workspace'
 import { WorkspaceFilePreview } from './WorkspaceFilePreview'
@@ -56,6 +59,8 @@ export function WorkspacePanel({
   refreshToken = 0,
   requestedPath,
   requestedPathToken = 0,
+  onRequestedPathConsumed,
+  onRecoverStaleTarget,
 }: {
   source: WorkspaceSource
   position?: 'side' | 'compact' | 'embedded'
@@ -66,6 +71,8 @@ export function WorkspacePanel({
   refreshToken?: number
   requestedPath?: string | null
   requestedPathToken?: number
+  onRequestedPathConsumed?: (token: number) => void
+  onRecoverStaleTarget?: WorkspaceSourceRecovery
 }) {
   const sourceKey = getWorkspaceSourceKey(source)
   const actions = useWorkspaceActions(source)
@@ -80,14 +87,26 @@ export function WorkspacePanel({
   const [showHiddenEntries, setShowHiddenEntries] = useState(false)
   const [busyLabel, setBusyLabel] = useState<string | null>(null)
   const [panelError, setPanelError] = useState<string | null>(null)
+  const [downloadError, setDownloadError] = useState<{ path: string; message: string } | null>(null)
+  const [downloadingPath, setDownloadingPath] = useState<string | null>(null)
   const [draftContent, setDraftContent] = useState('')
   const [isInitializingGit, setIsInitializingGit] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const addFeedbackTimersRef = useRef<number[]>([])
-  const requestedSelectionRef = useRef<{ path: string; token: number } | null>(null)
+  const requestedSelectionRef = useRef<{ path: string } | null>(null)
+  const handledRequestedPathRef = useRef<{ path: string; token: number } | null>(null)
 
-  const gitStatusQuery = useWorkspaceGitStatus(source, isOpen && activeTab === 'changes')
-  const gitLogQuery = useWorkspaceGitLog(source, isOpen && activeTab === 'changes')
+  const gitStatusQuery = useWorkspaceGitStatus(
+    source,
+    isOpen && activeTab === 'changes',
+    onRecoverStaleTarget,
+  )
+  const gitLogQuery = useWorkspaceGitLog(
+    source,
+    isOpen && activeTab === 'changes',
+    15,
+    onRecoverStaleTarget,
+  )
 
   const modalOpen = position === 'side' && Boolean(previewModalPath)
   const visibleNodesByParent = useMemo(() => {
@@ -112,6 +131,7 @@ export function WorkspacePanel({
     source,
     selectedPreviewPath,
     isOpen && activeTab === 'files',
+    onRecoverStaleTarget,
   )
   const refetchPreview = previewQuery.refetch
   const currentDirectoryPath = useMemo(() => {
@@ -141,6 +161,8 @@ export function WorkspacePanel({
     requestedSelectionRef.current = null
     setDraftContent('')
     setPanelError(null)
+    setDownloadError(null)
+    setDownloadingPath(null)
     setActiveTab('files')
     clearAddFeedbackTimers()
   }, [clearAddFeedbackTimers, sourceKey])
@@ -154,13 +176,44 @@ export function WorkspacePanel({
     setDraftContent(nextContent)
   }, [previewQuery.data?.content, previewQuery.data?.kind])
 
-  async function loadDirectory(parentPath = '', expand = false): Promise<void> {
+  async function readWorkspaceWithRecovery<T>(
+    read: (readSource: WorkspaceSource) => Promise<T>,
+  ): Promise<{ result: T; source: WorkspaceSource }> {
+    try {
+      return { result: await read(source), source }
+    } catch (error) {
+      if (!onRecoverStaleTarget || !isWorkspaceTargetNotFoundError(error)) {
+        throw error
+      }
+      const recoveredSource = await onRecoverStaleTarget(source)
+      if (!recoveredSource) {
+        throw error
+      }
+      return { result: await read(recoveredSource), source: recoveredSource }
+    }
+  }
+
+  async function loadDirectory(
+    parentPath = '',
+    expand = false,
+    sourceOverride?: WorkspaceSource,
+  ): Promise<void> {
     setLoadingPaths((prev) => new Set(prev).add(parentPath))
     setPanelError(null)
     try {
-      const response = expand
-        ? await fetchWorkspaceExpandedTree(source, parentPath)
-        : await fetchWorkspaceTree(source, parentPath)
+      const response = sourceOverride
+        ? (
+            expand
+              ? await fetchWorkspaceExpandedTree(sourceOverride, parentPath)
+              : await fetchWorkspaceTree(sourceOverride, parentPath)
+          )
+        : (
+            await readWorkspaceWithRecovery((readSource) => (
+              expand
+                ? fetchWorkspaceExpandedTree(readSource, parentPath)
+                : fetchWorkspaceTree(readSource, parentPath)
+            ))
+          ).result
       setNodesByParent((prev) => ({
         ...prev,
         [response.parentPath]: response.nodes,
@@ -212,7 +265,21 @@ export function WorkspacePanel({
     if (!rawRequestedPath) {
       return
     }
+    const handledRequestedPath = handledRequestedPathRef.current
+    if (
+      handledRequestedPath?.path === rawRequestedPath
+      && handledRequestedPath.token === requestedPathToken
+    ) {
+      return
+    }
     let cancelled = false
+    const markRequestedPathConsumed = () => {
+      handledRequestedPathRef.current = {
+        path: rawRequestedPath,
+        token: requestedPathToken,
+      }
+      onRequestedPathConsumed?.(requestedPathToken)
+    }
 
     setActiveTab('files')
     setIsOpen(true)
@@ -221,21 +288,24 @@ export function WorkspacePanel({
 
     void (async () => {
       try {
-        const resolvedPath = await fetchWorkspacePathResolution(source, rawRequestedPath)
+        const { result: resolvedPath, source: resolvedSource } = await readWorkspaceWithRecovery(
+          (readSource) => fetchWorkspacePathResolution(readSource, rawRequestedPath),
+        )
         if (cancelled) {
           return
         }
         setSelectedPath(resolvedPath.path)
         requestedSelectionRef.current = {
           path: resolvedPath.path,
-          token: requestedPathToken,
         }
-        if (resolvedPath.treePath && !nodesByParent[resolvedPath.treePath]) {
-          void loadDirectory(resolvedPath.treePath, true)
+        if (resolvedPath.treePath) {
+          void loadDirectory(resolvedPath.treePath, true, resolvedSource)
         }
+        markRequestedPathConsumed()
       } catch (error) {
         if (!cancelled) {
           setPanelError(error instanceof Error ? error.message : 'Failed to open workspace path')
+          markRequestedPathConsumed()
         }
       }
     })()
@@ -243,14 +313,13 @@ export function WorkspacePanel({
     return () => {
       cancelled = true
     }
-  }, [requestedPath, requestedPathToken])
+  }, [onRequestedPathConsumed, requestedPath, requestedPathToken, sourceKey])
 
   useEffect(() => {
     const requestedSelection = requestedSelectionRef.current
     if (
       !requestedSelection
       || requestedSelection.path !== selectedPath
-      || requestedSelection.token !== requestedPathToken
     ) {
       return
     }
@@ -265,13 +334,15 @@ export function WorkspacePanel({
       if (!nodesByParent[selectedNode.path]) {
         void loadDirectory(selectedNode.path, true)
       }
+      requestedSelectionRef.current = null
       return
     }
 
     if (position === 'side') {
       setPreviewModalPath(selectedNode.path)
     }
-  }, [nodesByParent, position, requestedPathToken, selectedNode, selectedPath])
+    requestedSelectionRef.current = null
+  }, [nodesByParent, position, selectedNode, selectedPath])
 
   async function runBusyTask(label: string, task: () => Promise<void>): Promise<void> {
     setBusyLabel(label)
@@ -304,6 +375,7 @@ export function WorkspacePanel({
 
   const handleSelectPath = useCallback((path: string) => {
     setSelectedPath(path)
+    setDownloadError(null)
     const node = findNode(nodesByParent, path)
     if (position === 'side') {
       if (node?.type === 'directory') {
@@ -313,6 +385,34 @@ export function WorkspacePanel({
       }
     }
   }, [nodesByParent, position])
+
+  const handleDownloadPath = useCallback(async (
+    path: string,
+    knownType?: WorkspaceTreeNode['type'],
+  ): Promise<void> => {
+    const nodeType = knownType ?? findNode(nodesByParent, path)?.type
+    if (nodeType !== 'file') {
+      const message = 'Directories cannot be downloaded as single files'
+      setPanelError(message)
+      setDownloadError({ path, message })
+      return
+    }
+
+    setBusyLabel('Downloading file…')
+    setPanelError(null)
+    setDownloadError(null)
+    setDownloadingPath(path)
+    try {
+      await downloadWorkspaceFile(source, path, onRecoverStaleTarget)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to download workspace file'
+      setPanelError(message)
+      setDownloadError({ path, message })
+    } finally {
+      setBusyLabel(null)
+      setDownloadingPath(null)
+    }
+  }, [nodesByParent, onRecoverStaleTarget, source])
 
   function promptForName(label: string): string | null {
     if (typeof window === 'undefined') {
@@ -471,8 +571,11 @@ export function WorkspacePanel({
       error={previewError}
       readOnly={Boolean(source.readOnly)}
       saving={busyLabel === 'Saving file…'}
+      downloading={Boolean(previewModalPath && downloadingPath === previewModalPath)}
+      downloadError={previewModalPath && downloadError?.path === previewModalPath ? downloadError.message : null}
       onClose={() => setPreviewModalPath(null)}
       onRefresh={() => void refetchPreview()}
+      onDownload={previewModalPath ? () => void handleDownloadPath(previewModalPath, 'file') : undefined}
       onInsertPath={onInsertPath ? handleAddPath : undefined}
       onAddAnnotationContext={onAddAnnotationContext}
       onDraftChange={setDraftContent}
@@ -560,12 +663,15 @@ export function WorkspacePanel({
             readOnly={Boolean(source.readOnly)}
             currentDirectoryPath={currentDirectoryPath}
             selectedPath={selectedPath}
+            selectedType={selectedNode?.type ?? null}
             busyLabel={busyLabel}
+            downloading={Boolean(selectedPath && downloadingPath === selectedPath)}
             variant={variant}
             onRefresh={() => void refreshWorkspace()}
             onUpload={() => fileInputRef.current?.click()}
             onNewFile={() => void handleCreateFile()}
             onNewFolder={() => void handleCreateFolder()}
+            onDownloadSelected={selectedPath ? () => void handleDownloadPath(selectedPath, selectedNode?.type) : undefined}
           />
           <input
             ref={fileInputRef}
@@ -597,6 +703,8 @@ export function WorkspacePanel({
                     onSelectPath={handleSelectPath}
                     onToggleDirectory={(path) => void handleToggleDirectory(path)}
                     onAddPath={onInsertPath ? handleAddPath : undefined}
+                    onDownloadPath={(path, knownType) => void handleDownloadPath(path, knownType)}
+                    downloadingPath={downloadingPath}
                     variant={variant}
                   />
                 </div>
@@ -617,8 +725,10 @@ export function WorkspacePanel({
                   error={previewError}
                   readOnly={Boolean(source.readOnly)}
                   saving={busyLabel === 'Saving file…'}
+                  downloading={Boolean(selectedPreviewPath && downloadingPath === selectedPreviewPath)}
                   onDraftChange={setDraftContent}
                   onSave={() => void handleSave()}
+                  onDownload={selectedPreviewPath ? () => void handleDownloadPath(selectedPreviewPath, 'file') : undefined}
                   onRename={() => void handleRename()}
                   onDelete={() => void handleDelete()}
                   onInsertPath={onInsertPath ? handleAddPath : undefined}

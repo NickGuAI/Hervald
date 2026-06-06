@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Script to launch Hammurabi (monitoring dashboard) in tmux
+# Script to launch Hervald in tmux
 
 # Colors and symbols
 GREEN='\033[0;32m'
@@ -18,7 +18,12 @@ ensure_hermetic_launch_env "$@"
 
 
 APP_DIR="$MONOREPO_DIR/apps/hammurabi"
-PORT=20001
+PUBLIC_SHELL_PORT=20001
+PUBLIC_SHELL_DOMAIN="hervald.gehirn.ai"
+PRIVATE_API_PORT=20009
+PRIVATE_BIND_HOST="127.0.0.1"
+PORT=""
+PORT_EXPLICIT=0
 SESSION_NAME="server-hammurabi"
 MODE="prod"
 SESSION_NAME_EXPLICIT=0
@@ -28,9 +33,11 @@ print_usage() {
 Usage: launch_hammurabi.sh [--dev] [--port <port>] [--session-name <name>]
 
   --dev                  Run the tmux-managed dev server (pnpm run dev)
-  --port <port>          Override listener port (default: 20001)
+  --port <port>          Override listener port (dev default: 20001, prod default: 20009)
   --session-name <name>  Override tmux session name
   -h, --help             Show this help
+
+Production mode launches the private API runtime for the split-shell deployment.
 EOF
 }
 
@@ -43,10 +50,12 @@ while [[ $# -gt 0 ]]; do
         --port)
             [[ $# -ge 2 ]] || fail "--port requires a value"
             PORT="$2"
+            PORT_EXPLICIT=1
             shift 2
             ;;
         --port=*)
             PORT="${1#*=}"
+            PORT_EXPLICIT=1
             shift
             ;;
         --session-name)
@@ -70,12 +79,24 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-[[ "$PORT" =~ ^[0-9]+$ ]] || fail "Invalid port: $PORT"
-[ "$PORT" -gt 0 ] || fail "Invalid port: $PORT"
 [ -n "$SESSION_NAME" ] || fail "Session name must be non-empty"
 
 if [ "$MODE" = "dev" ] && [ "$SESSION_NAME_EXPLICIT" -eq 0 ]; then
     SESSION_NAME="server-hammurabi-dev"
+fi
+
+if [ "$PORT_EXPLICIT" -eq 0 ]; then
+    if [ "$MODE" = "dev" ]; then
+        PORT="$PUBLIC_SHELL_PORT"
+    else
+        PORT="$PRIVATE_API_PORT"
+    fi
+fi
+
+[[ "$PORT" =~ ^[0-9]+$ ]] || fail "Invalid port: $PORT"
+[ "$PORT" -gt 0 ] || fail "Invalid port: $PORT"
+if [ "$MODE" = "prod" ] && [ "$PORT" -eq "$PUBLIC_SHELL_PORT" ]; then
+    fail "Refusing to run the Hervald API on public shell port $PUBLIC_SHELL_PORT. Use a private port behind Caddy, e.g. --port $PRIVATE_API_PORT."
 fi
 
 RUN_COMMAND="pnpm run start"
@@ -134,7 +155,7 @@ wait_for_service_health() {
     local health_url="http://127.0.0.1:${health_port}/api/health"
     HEALTH_READY=false
 
-    echo -n -e "${YELLOW}Waiting for Hammurabi health on port ${health_port}"
+    echo -n -e "${YELLOW}Waiting for Hervald health on port ${health_port}"
     for i in {1..60}; do
         echo -n "."
         sleep 1
@@ -153,13 +174,20 @@ launch_tmux_service() {
     local target_session="$1"
     local target_port="$2"
     local target_background_runtimes="${3:-1}"
+    local target_stop_active_sessions_on_boot="${4:-0}"
+    local target_host="${5:-}"
+    local host_env=""
+
+    if [ -n "$target_host" ]; then
+        host_env="HAMMURABI_HOST=$target_host "
+    fi
 
     tmux new-session -d -s "$target_session" -c "$APP_DIR" \
         "echo \"Build: $LAUNCH_COMMIT ($LAUNCH_BRANCH) @ $LAUNCH_TIME\" && \
          set -a && source .env && set +a && \
          while true; do \
            set -o pipefail; \
-           NODE_ENV=$NODE_ENV_VALUE PORT=$target_port HAMMURABI_BACKGROUND_RUNTIMES=$target_background_runtimes LAUNCH_COMMIT=$LAUNCH_COMMIT $RUN_COMMAND 2>&1 | tee -a \"$LAUNCH_LOG_FILE\"; \
+           ${host_env}NODE_ENV=$NODE_ENV_VALUE PORT=$target_port HAMMURABI_BACKGROUND_RUNTIMES=$target_background_runtimes HAMMURABI_STOP_ACTIVE_SESSIONS_ON_BOOT=$target_stop_active_sessions_on_boot LAUNCH_COMMIT=$LAUNCH_COMMIT $RUN_COMMAND 2>&1 | tee -a \"$LAUNCH_LOG_FILE\"; \
            EXIT_CODE=\${PIPESTATUS[0]}; \
            if [ \"\$EXIT_CODE\" -eq 0 ]; then \
              echo \"[INFO] \$(date -u +%Y-%m-%dT%H:%M:%SZ) Server exited cleanly (\$EXIT_CODE) - restarting in 5s\" | tee -a \"$LAUNCH_LOG_FILE\"; \
@@ -174,7 +202,7 @@ init_launch_log "hammurabi" "$APP_DIR"
 
 clear
 echo -e "${CYAN}╔════════════════════════════════════════╗${NC}"
-echo -e "${CYAN}║      ⚖️  Hammurabi Launcher ⚖️          ║${NC}"
+echo -e "${CYAN}║       ⚖️  Hervald Launcher ⚖️           ║${NC}"
 echo -e "${CYAN}╚════════════════════════════════════════╝${NC}"
 echo
 
@@ -189,12 +217,12 @@ else
 fi
 
 # Check app directory
-echo -n -e "${YELLOW}Checking Hammurabi source...${NC}"
+echo -n -e "${YELLOW}Checking Hervald source...${NC}"
 if [ -d "$APP_DIR" ] && [ -f "$APP_DIR/package.json" ]; then
     echo -e " ${GREEN}${CHECKMARK}${NC}"
 else
     echo -e " ${RED}${CROSS}${NC}"
-    echo -e "${RED}Hammurabi directory not found at $APP_DIR${NC}"
+    echo -e "${RED}Hervald source directory not found at $APP_DIR${NC}"
     exit 1
 fi
 
@@ -263,8 +291,8 @@ if [ "$MODE" = "prod" ]; then
     fi
     echo -e " ${GREEN}${CHECKMARK} (free)${NC}"
 
-    echo -e "${GREEN}Launching Hammurabi background-disabled candidate on port $CANDIDATE_PORT before touching live listener...${NC}"
-    launch_tmux_service "$CANDIDATE_SESSION_NAME" "$CANDIDATE_PORT" "0"
+    echo -e "${GREEN}Launching Hervald background-disabled private API candidate on port $CANDIDATE_PORT before touching live listener...${NC}"
+    launch_tmux_service "$CANDIDATE_SESSION_NAME" "$CANDIDATE_PORT" "0" "0" "$PRIVATE_BIND_HOST"
     wait_for_service_health "$CANDIDATE_PORT" "$CANDIDATE_SESSION_NAME"
     if ! $HEALTH_READY; then
         tmux kill-session -t "$CANDIDATE_SESSION_NAME" 2>/dev/null || true
@@ -287,17 +315,21 @@ echo -e " ${GREEN}${CHECKMARK} (free)${NC}"
 
 # Launch in tmux
 echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo -e "${GREEN}Launching Hammurabi (${RUN_LABEL})...${NC}"
+echo -e "${GREEN}Launching Hervald (${RUN_LABEL})...${NC}"
 echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
-launch_tmux_service "$SESSION_NAME" "$PORT" "1"
+if [ "$MODE" = "prod" ]; then
+    launch_tmux_service "$SESSION_NAME" "$PORT" "1" "1" "$PRIVATE_BIND_HOST"
+else
+    launch_tmux_service "$SESSION_NAME" "$PORT" "1" "1"
+fi
 
 # Wait for health after the new listener starts.
 wait_for_service_health "$PORT" "$SESSION_NAME"
 tmux kill-session -t "$CANDIDATE_SESSION_NAME" 2>/dev/null || true
 
 # Report status
-echo -n -e "${YELLOW}Hammurabi health /api/health...${NC}"
+echo -n -e "${YELLOW}Hervald health /api/health...${NC}"
 if $HEALTH_READY; then
     echo -e " ${GREEN}${CHECKMARK}${NC}"
     echo "[INFO] $(date -u +%Y-%m-%dT%H:%M:%SZ) /api/health returned 200 on port $PORT" >> "$LAUNCH_LOG_FILE"
@@ -309,18 +341,25 @@ fi
 # Final status
 if tmux has-session -t "$SESSION_NAME" 2>/dev/null && $HEALTH_READY; then
     finalize_launch_log "running"
-    echo -e "\n${GREEN}${CHECKMARK} Hammurabi is running!${NC}"
+    echo -e "\n${GREEN}${CHECKMARK} Hervald is running!${NC}"
     echo -e "\n${CYAN}╔════════════════════════════════════════╗${NC}"
     echo -e "${CYAN}║          SERVICE INFORMATION           ║${NC}"
     echo -e "${CYAN}╠════════════════════════════════════════╣${NC}"
-    echo -e "${CYAN}║${NC} Local:     ${GREEN}http://localhost:$PORT${NC}       ${CYAN}║${NC}"
-    echo -e "${CYAN}║${NC} Public:    ${GREEN}https://hervald.gehirn.ai${NC} ${CYAN}║${NC}"
-    echo -e "${CYAN}║${NC} Health:    ${GREEN}/api/health${NC}                 ${CYAN}║${NC}"
+    if [ "$MODE" = "prod" ]; then
+        echo -e "${CYAN}║${NC} API:       ${GREEN}http://127.0.0.1:$PORT/api/health${NC} ${CYAN}║${NC}"
+        echo -e "${CYAN}║${NC} Shell:     ${GREEN}https://$PUBLIC_SHELL_DOMAIN/healthz${NC} ${CYAN}║${NC}"
+    else
+        echo -e "${CYAN}║${NC} Local:     ${GREEN}http://localhost:$PORT${NC}       ${CYAN}║${NC}"
+        echo -e "${CYAN}║${NC} Health:    ${GREEN}/api/health${NC}                 ${CYAN}║${NC}"
+    fi
     echo -e "${CYAN}║${NC} Session:   ${YELLOW}$SESSION_NAME${NC}          ${CYAN}║${NC}"
     echo -e "${CYAN}║${NC} Commit:    ${YELLOW}$LAUNCH_COMMIT${NC} (${BLUE}$LAUNCH_BRANCH${NC})${CYAN}║${NC}"
     echo -e "${CYAN}║${NC} Launched:  ${YELLOW}$LAUNCH_TIME${NC}  ${CYAN}║${NC}"
     echo -e "${CYAN}║${NC} Logs:      ${YELLOW}$LAUNCH_LOG_DIR${NC}  ${CYAN}║${NC}"
     echo -e "${CYAN}╚════════════════════════════════════════╝${NC}"
+    if [ "$MODE" = "prod" ]; then
+        echo -e "${YELLOW}Run split-shell check:${NC} ${BLUE}bash $MONOREPO_DIR/operations/deploy/ec2/check-hammurabi-split-shell.sh --domain $PUBLIC_SHELL_DOMAIN --service-port $PORT --shell-port $PUBLIC_SHELL_PORT${NC}"
+    fi
     echo -e "\n${YELLOW}Commands:${NC}"
     echo -e "  ${GREEN}▸${NC} Attach:  ${BLUE}tmux attach -t $SESSION_NAME${NC}"
     echo -e "  ${GREEN}▸${NC} Tail:    ${BLUE}tail -f $LAUNCH_LOG_FILE${NC}"
@@ -328,7 +367,7 @@ if tmux has-session -t "$SESSION_NAME" 2>/dev/null && $HEALTH_READY; then
     echo -e "  ${GREEN}▸${NC} Stop:    ${BLUE}tmux kill-session -t $SESSION_NAME${NC}"
 else
     finalize_launch_log "failed"
-    echo -e "\n${RED}${CROSS} Failed to start Hammurabi!${NC}"
+    echo -e "\n${RED}${CROSS} Failed to start Hervald!${NC}"
     if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
         echo -e "${YELLOW}The tmux session exists, but /api/health did not return 200 before timeout.${NC}"
     else

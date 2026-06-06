@@ -191,6 +191,7 @@ export const codexProvider: ProviderAdapter = registerProvider({
         creator: options.creator,
         conversationId: options.conversationId,
         currentSkillInvocation: options.currentSkillInvocation,
+        providerAuth: options.providerAuth,
       },
       deps,
     )

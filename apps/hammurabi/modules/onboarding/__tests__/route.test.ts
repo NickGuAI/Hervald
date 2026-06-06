@@ -6,10 +6,12 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { ApiKeyRecord, ApiKeyStoreLike } from '../../../server/api-keys/store'
 import type { ProviderAdapter } from '../../agents/providers/provider-adapter'
+import { AutomationStore } from '../../automations/store'
 import { CommanderSessionStore } from '../../commanders/store'
 import { ConversationStore } from '../../commanders/conversation-store'
 import { GAIA_COMMANDER_AVATAR_URL } from '../../commanders/commander-profile'
 import { OrgIdentityStore } from '../../org-identity/store'
+import { OperatorStore } from '../../operators/store'
 import { createOnboardingRouter } from '../route'
 
 const AUTH_HEADERS = {
@@ -17,9 +19,11 @@ const AUTH_HEADERS = {
 }
 
 const tempDirs: string[] = []
+const previousHammurabiDataDir = process.env.HAMMURABI_DATA_DIR
 
 interface RunningServer {
   baseUrl: string
+  automationStore: AutomationStore
   close: () => Promise<void>
 }
 
@@ -105,23 +109,29 @@ async function startServer(dataDir: string): Promise<RunningServer> {
   const app = express()
   app.use(express.json())
   const commanderDataDir = join(dataDir, 'commander')
+  process.env.HAMMURABI_DATA_DIR = dataDir
+  const operatorStore = new OperatorStore(join(dataDir, 'operators.json'))
+  await operatorStore.saveFounder({
+    id: 'founder-1',
+    kind: 'founder',
+    displayName: 'Nick Gu',
+    email: 'nick@example.com',
+    avatarUrl: null,
+    createdAt: '2026-05-20T00:00:00.000Z',
+  })
+  const sessionStore = new CommanderSessionStore(join(commanderDataDir, 'sessions.json'))
+  const conversationStore = new ConversationStore(commanderDataDir)
+  const automationStore = new AutomationStore({
+    dirPath: join(dataDir, 'automations'),
+    commanderDataDir,
+  })
   app.use('/api/onboarding', createOnboardingRouter({
     apiKeyStore: apiKeyStore(),
-    operatorStore: {
-      async getFounder() {
-        return {
-          id: 'founder-1',
-          kind: 'founder',
-          displayName: 'Nick Gu',
-          email: 'nick@example.com',
-          avatarUrl: null,
-          createdAt: '2026-05-20T00:00:00.000Z',
-        }
-      },
-    },
+    operatorStore,
     orgIdentityStore: new OrgIdentityStore(join(dataDir, 'org.json')),
-    sessionStore: new CommanderSessionStore(join(commanderDataDir, 'sessions.json')),
-    conversationStore: new ConversationStore(commanderDataDir),
+    sessionStore,
+    conversationStore,
+    automationStore,
     commanderDataDir,
     providerRegistry: {
       listProviders: () => [testProvider()],
@@ -147,6 +157,7 @@ async function startServer(dataDir: string): Promise<RunningServer> {
   }
   return {
     baseUrl: `http://127.0.0.1:${address.port}`,
+    automationStore,
     close: async () => {
       if (typeof server.closeAllConnections === 'function') {
         server.closeAllConnections()
@@ -162,6 +173,11 @@ async function startServer(dataDir: string): Promise<RunningServer> {
 }
 
 afterEach(async () => {
+  if (previousHammurabiDataDir === undefined) {
+    delete process.env.HAMMURABI_DATA_DIR
+  } else {
+    process.env.HAMMURABI_DATA_DIR = previousHammurabiDataDir
+  }
   await Promise.all(tempDirs.splice(0).map((directory) => rm(directory, { recursive: true, force: true })))
 })
 
@@ -280,6 +296,14 @@ describe('onboarding route', () => {
         totalCount: 3,
         skipped: false,
       })
+      expect((await server.automationStore.list()).map((automation) => automation.templateId).sort()).toEqual([
+        'engineering-manager:issue-triage-sweep',
+        'engineering-manager:release-drift-review',
+        'general-assistant:daily-briefing',
+        'general-assistant:weekly-follow-up-review',
+        'research-intelligence-analyst:monthly-research-backlog-review',
+        'research-intelligence-analyst:weekly-research-distill',
+      ])
 
       const second = await fetch(`${server.baseUrl}/api/onboarding/actions/seed-starter-workforce`, {
         method: 'POST',
@@ -295,6 +319,7 @@ describe('onboarding route', () => {
         totalCount: 3,
         skipped: false,
       })
+      expect(await server.automationStore.list()).toHaveLength(6)
     } finally {
       await server.close()
     }

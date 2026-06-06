@@ -394,6 +394,69 @@ describe('SessionsColumn conversations', () => {
     expect(row?.querySelector('[data-testid="commander-chat-provider-menu-button"]')).toBeNull()
   })
 
+  it('shows an archive action in the row menu and archives via the archive-named selector', async () => {
+    const onArchiveConversation = vi.fn()
+    container = document.createElement('div')
+    document.body.appendChild(container)
+    root = createRoot(container)
+
+    flushSync(() => {
+      root?.render(
+        createElement(SessionsColumn, {
+          selectedCommanderId: 'atlas',
+          onSelectCommander: vi.fn(),
+          onCreateCommander: vi.fn(),
+          onCreateWorker: vi.fn(),
+          onCreateSession: vi.fn(),
+          selectedChatId: 'conv-idle',
+          onSelectChat: vi.fn(),
+          onSelectConversation: vi.fn(),
+          onArchiveConversation,
+          commanders: [
+            {
+              id: 'atlas',
+              name: 'Atlas',
+              status: 'running',
+            },
+          ],
+          conversations: [buildConversation('conv-idle', 'idle')],
+          workers: [],
+          approvals: [],
+          workerSessions: [],
+          cronSessions: [],
+          sentinelSessions: [],
+        }),
+      )
+    })
+
+    const row = container.querySelector<HTMLDivElement>(
+      '[data-testid="commander-chat-row"][data-conversation-id="conv-idle"]',
+    )
+    const actionsButton = row?.querySelector<HTMLButtonElement>(
+      '[data-testid="commander-chat-actions-button"]',
+    )
+    expect(actionsButton).toBeInstanceOf(HTMLButtonElement)
+
+    flushSync(() => {
+      actionsButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    const archiveButton = row?.querySelector<HTMLButtonElement>(
+      '[data-testid="commander-chat-archive-button"]',
+    )
+    expect(archiveButton?.textContent).toContain('Archive')
+    expect(row?.querySelector('[data-testid="commander-chat-close-button"]')).toBeNull()
+
+    flushSync(() => {
+      archiveButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    await Promise.resolve()
+
+    expect(onArchiveConversation).toHaveBeenCalledTimes(1)
+    expect(onArchiveConversation).toHaveBeenCalledWith('conv-idle')
+  })
+
   it('nests each commander\'s chats under the commander block (chats only render for the selected commander)', async () => {
     container = document.createElement('div')
     document.body.appendChild(container)

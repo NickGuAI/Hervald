@@ -1,5 +1,6 @@
 import { AgentAvatar } from '@modules/components/hervald'
 import { cn } from '@/lib/utils'
+import { resolveFounderAvatarSrc } from '@modules/operators/founder-avatar'
 import type { Operator } from '../../operators/types'
 
 export function OperatorCard({
@@ -9,6 +10,8 @@ export function OperatorCard({
   operator: Operator
   className?: string
 }) {
+  const avatarSrc = resolveFounderAvatarSrc(operator, null)
+
   return (
     <article className={cn(
       'rounded-[16px] border-2 border-[color:var(--hv-border-firm)] bg-[var(--hv-surface-card)] px-5 py-4',
@@ -20,7 +23,7 @@ export function OperatorCard({
             commander={{
               id: operator.id,
               displayName: operator.displayName,
-              avatarUrl: operator.avatarUrl,
+              avatarUrl: avatarSrc,
             }}
             size={48}
           />

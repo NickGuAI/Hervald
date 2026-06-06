@@ -6,13 +6,23 @@ import { createRoot, type Root } from 'react-dom/client'
 import { describe, expect, it } from 'vitest'
 import type { StreamEvent } from '@/types'
 import type { MsgItem } from '../session-messages'
+import { normalizeClaudeEvent } from '../../event-normalizers/claude'
+import { mapCodexToTranscriptEnvelopes } from '../../event-normalizers/codex'
+import {
+  createOpenCodeTurnState,
+  mapOpenCodePromptResponseToTranscriptEnvelopes,
+  mapOpenCodeToTranscriptEnvelopes,
+} from '../../event-normalizers/opencode'
+import { bridgeLegacyEventToTranscriptEnvelopes } from '../../transcript-legacy-bridge'
 import { useStreamEventProcessor } from '../use-stream-event-processor'
 
 type Harness = {
   cleanup: () => void
+  hydrateReplayMessages: (messages: MsgItem[], replayEvents: StreamEvent[]) => void
   dispatchReplayEvent: (event: StreamEvent) => void
   dispatchLiveEvent: (event: StreamEvent) => void
   getMessages: () => MsgItem[]
+  getIsStreaming: () => boolean
 }
 
 function createHarness(): Harness {
@@ -21,12 +31,16 @@ function createHarness(): Harness {
 
   const root: Root = createRoot(container)
   let processEventRef: ((event: StreamEvent, isReplay?: boolean) => void) | undefined
+  let hydrateReplayMessagesRef: ((messages: MsgItem[], replayEvents: StreamEvent[]) => void) | undefined
   let messagesRef: MsgItem[] = []
+  let isStreamingRef = false
 
   function HarnessComponent() {
-    const { processEvent, messages } = useStreamEventProcessor()
+    const { hydrateReplayMessages, isStreaming, processEvent, messages } = useStreamEventProcessor()
     processEventRef = processEvent
+    hydrateReplayMessagesRef = hydrateReplayMessages
     messagesRef = messages
+    isStreamingRef = isStreaming
     return null
   }
 
@@ -39,6 +53,14 @@ function createHarness(): Harness {
   }
 
   return {
+    hydrateReplayMessages(messages: MsgItem[], replayEvents: StreamEvent[]) {
+      if (!hydrateReplayMessagesRef) {
+        throw new Error('expected replay hydrator to initialize')
+      }
+      flushSync(() => {
+        hydrateReplayMessagesRef!(messages, replayEvents)
+      })
+    },
     dispatchReplayEvent(event: StreamEvent) {
       flushSync(() => {
         processEventRef!(event, true)
@@ -51,6 +73,9 @@ function createHarness(): Harness {
     },
     getMessages() {
       return messagesRef
+    },
+    getIsStreaming() {
+      return isStreamingRef
     },
     cleanup() {
       flushSync(() => {
@@ -76,7 +101,385 @@ const codexSource = {
   backend: 'rpc' as const,
 }
 
+function dispatchBridgedClaudeReplayEvent(
+  harness: Harness,
+  event: { type: string; [key: string]: unknown },
+) {
+  const normalized = normalizeClaudeEvent(event as never)
+  const normalizedEvents = normalized === null
+    ? []
+    : (Array.isArray(normalized) ? normalized : [normalized])
+  for (const normalizedEvent of normalizedEvents) {
+    for (const envelope of bridgeLegacyEventToTranscriptEnvelopes(normalizedEvent as never)) {
+      harness.dispatchReplayEvent(envelope as StreamEvent)
+    }
+  }
+}
+
+describe('useStreamEventProcessor assistant tail-repeat handling', () => {
+  it('appends late Codex item/agentMessage/delta chunks to the finalized assistant message', () => {
+    const harness = createHarness()
+    const baseParams = {
+      threadId: 'thread-codex-tail',
+      turnId: 'turn-codex-tail',
+      itemId: 'msg-codex-tail',
+    }
+    const replayEvents = [
+      ...mapCodexToTranscriptEnvelopes('item/started', {
+        threadId: baseParams.threadId,
+        turnId: baseParams.turnId,
+        item: { id: baseParams.itemId, type: 'agentMessage' },
+      }),
+      ...mapCodexToTranscriptEnvelopes('item/agentMessage/delta', {
+        ...baseParams,
+        delta: 'Codex final ',
+      }),
+      ...mapCodexToTranscriptEnvelopes('item/completed', {
+        threadId: baseParams.threadId,
+        turnId: baseParams.turnId,
+        item: { id: baseParams.itemId, type: 'agentMessage' },
+      }),
+    ] as StreamEvent[]
+    const lateDelta = mapCodexToTranscriptEnvelopes('item/agentMessage/delta', {
+      ...baseParams,
+      delta: 'tail',
+    })[0] as StreamEvent
+
+    for (const event of replayEvents) {
+      harness.dispatchLiveEvent(event)
+    }
+    expect(harness.getIsStreaming()).toBe(false)
+
+    harness.dispatchLiveEvent(lateDelta)
+
+    const agentMessages = harness.getMessages().filter((message) => message.kind === 'agent')
+    expect(agentMessages).toHaveLength(1)
+    expect(agentMessages[0]?.text).toBe('Codex final tail')
+    expect(harness.getIsStreaming()).toBe(false)
+
+    harness.cleanup()
+  })
+
+  it('hydrates projected replay messages without creating a second tail-only live block', () => {
+    const harness = createHarness()
+    const baseParams = {
+      threadId: 'thread-hydrated-tail',
+      turnId: 'turn-hydrated-tail',
+      itemId: 'msg-hydrated-tail',
+    }
+    const replayEvents = [
+      ...mapCodexToTranscriptEnvelopes('item/started', {
+        threadId: baseParams.threadId,
+        turnId: baseParams.turnId,
+        item: { id: baseParams.itemId, type: 'agentMessage' },
+      }),
+      ...mapCodexToTranscriptEnvelopes('item/agentMessage/delta', {
+        ...baseParams,
+        delta: 'Hydrated answer',
+      }),
+      ...mapCodexToTranscriptEnvelopes('item/completed', {
+        threadId: baseParams.threadId,
+        turnId: baseParams.turnId,
+        item: { id: baseParams.itemId, type: 'agentMessage' },
+      }),
+    ] as StreamEvent[]
+    const projectedMessages: MsgItem[] = [{
+      id: 'msg-1',
+      kind: 'agent',
+      text: 'Hydrated answer',
+    }]
+
+    harness.hydrateReplayMessages(projectedMessages, replayEvents)
+    harness.dispatchLiveEvent(mapCodexToTranscriptEnvelopes('item/agentMessage/delta', {
+      ...baseParams,
+      delta: ' tail',
+    })[0] as StreamEvent)
+
+    const agentMessages = harness.getMessages().filter((message) => message.kind === 'agent')
+    expect(agentMessages).toEqual([
+      expect.objectContaining({
+        id: 'msg-1',
+        text: 'Hydrated answer tail',
+      }),
+    ])
+
+    harness.cleanup()
+  })
+
+  it('appends late Claude bridged content_block_delta text to the existing assistant block', () => {
+    const harness = createHarness()
+    const events = [
+      ...bridgeLegacyEventToTranscriptEnvelopes({
+        type: 'content_block_start',
+        source: { provider: 'claude', backend: 'cli' },
+        index: 0,
+        content_block: { type: 'text' },
+      }),
+      ...bridgeLegacyEventToTranscriptEnvelopes({
+        type: 'content_block_delta',
+        source: { provider: 'claude', backend: 'cli' },
+        index: 0,
+        delta: { type: 'text_delta', text: 'Claude final ' },
+      }),
+      ...bridgeLegacyEventToTranscriptEnvelopes({
+        type: 'content_block_stop',
+        source: { provider: 'claude', backend: 'cli' },
+        index: 0,
+      }),
+      ...bridgeLegacyEventToTranscriptEnvelopes({
+        type: 'content_block_delta',
+        source: { provider: 'claude', backend: 'cli' },
+        index: 0,
+        delta: { type: 'text_delta', text: 'tail' },
+      }),
+    ] as StreamEvent[]
+
+    for (const event of events) {
+      harness.dispatchLiveEvent(event)
+    }
+
+    const agentMessages = harness.getMessages().filter((message) => message.kind === 'agent')
+    expect(agentMessages).toHaveLength(1)
+    expect(agentMessages[0]?.text).toBe('Claude final tail')
+
+    harness.cleanup()
+  })
+
+  it('appends late OpenCode agent_message_chunk text to the completed chunk block', () => {
+    const harness = createHarness()
+    const state = createOpenCodeTurnState()
+    const firstChunk = mapOpenCodeToTranscriptEnvelopes({
+      sessionUpdate: 'agent_message_chunk',
+      sessionId: 'opencode-tail-session',
+      content: { type: 'text', text: 'OpenCode final ' },
+    }, state)
+    const completion = mapOpenCodePromptResponseToTranscriptEnvelopes({
+      stopReason: 'end_turn',
+    }, state)
+    const lateChunk = mapOpenCodeToTranscriptEnvelopes({
+      sessionUpdate: 'agent_message_chunk',
+      sessionId: 'opencode-tail-session',
+      content: { type: 'text', text: 'tail' },
+    }, state)
+
+    for (const event of [...firstChunk, ...completion, ...lateChunk] as StreamEvent[]) {
+      harness.dispatchLiveEvent(event)
+    }
+
+    const agentMessages = harness.getMessages().filter((message) => message.kind === 'agent')
+    expect(agentMessages).toHaveLength(1)
+    expect(agentMessages[0]?.text).toBe('OpenCode final tail')
+
+    harness.cleanup()
+  })
+})
+
 describe('useStreamEventProcessor replay user handling', () => {
+  it('renders live v2 transcript envelopes with tool and provider activity state', () => {
+    const harness = createHarness()
+
+    harness.dispatchLiveEvent({
+      schemaVersion: 2,
+      id: 'env-msg-start',
+      time: '2026-05-27T00:00:00.000Z',
+      source: { provider: 'codex', backend: 'rpc', rawEventType: 'item/started' },
+      turnId: 'turn-live-1',
+      itemId: 'msg-live-1',
+      ev: { type: 'message.start', role: 'assistant' },
+    })
+    harness.dispatchLiveEvent({
+      schemaVersion: 2,
+      id: 'env-msg-delta',
+      time: '2026-05-27T00:00:01.000Z',
+      source: { provider: 'codex', backend: 'rpc', rawEventType: 'item/agentMessage/delta' },
+      turnId: 'turn-live-1',
+      itemId: 'msg-live-1',
+      ev: { type: 'message.delta', text: 'live transcript envelope', channel: 'final' },
+    })
+    harness.dispatchLiveEvent({
+      schemaVersion: 2,
+      id: 'env-tool-start',
+      time: '2026-05-27T00:00:02.000Z',
+      source: { provider: 'opencode', backend: 'acp', rawEventType: 'tool_call' },
+      turnId: 'turn-live-1',
+      itemId: 'tool-live-1',
+      ev: { type: 'tool.start', toolCallId: 'tool-live-1', name: 'read', input: { path: 'README.md' } },
+    })
+    harness.dispatchLiveEvent({
+      schemaVersion: 2,
+      id: 'env-provider-raw',
+      time: '2026-05-27T00:00:03.000Z',
+      source: { provider: 'codex', backend: 'rpc', rawEventType: 'thread/custom' },
+      turnId: 'turn-live-1',
+      ev: { type: 'provider.raw', method: 'thread/custom', payload: { future: true } },
+    })
+
+    expect(harness.getMessages()).toEqual([
+      expect.objectContaining({
+        kind: 'agent',
+        text: 'live transcript envelope',
+        transcript: expect.objectContaining({
+          source: expect.objectContaining({ provider: 'codex' }),
+          itemId: 'msg-live-1',
+        }),
+      }),
+      expect.objectContaining({
+        kind: 'tool',
+        toolName: 'read',
+        toolStatus: 'running',
+        transcript: expect.objectContaining({
+          source: expect.objectContaining({ provider: 'opencode' }),
+          itemId: 'tool-live-1',
+        }),
+      }),
+      expect.objectContaining({
+        kind: 'provider',
+        text: 'codex raw: thread/custom',
+      }),
+    ])
+
+    harness.cleanup()
+  })
+
+  it('renders bridged Claude Code Agent child events under the Agent block', () => {
+    const harness = createHarness()
+
+    dispatchBridgedClaudeReplayEvent(harness, {
+      type: 'assistant',
+      message: {
+        id: 'assistant-agent',
+        role: 'assistant',
+        content: [{
+          type: 'tool_use',
+          id: 'toolu_parent',
+          name: 'Agent',
+          input: { description: 'Investigate flaky chat rendering' },
+        }],
+      },
+    })
+    dispatchBridgedClaudeReplayEvent(harness, {
+      type: 'system',
+      subtype: 'task_progress',
+      tool_use_id: 'toolu_parent',
+      task_id: 'task-1',
+      subagent_type: 'general-purpose',
+      task_description: 'Investigate flaky chat rendering',
+      description: 'Running nested investigation',
+      last_tool_name: 'Read',
+    })
+    dispatchBridgedClaudeReplayEvent(harness, {
+      type: 'assistant',
+      parent_tool_use_id: 'toolu_parent',
+      message: {
+        id: 'assistant-child-tool',
+        role: 'assistant',
+        content: [{
+          type: 'tool_use',
+          id: 'toolu_child',
+          name: 'Read',
+          input: { file_path: 'apps/hammurabi/README.md' },
+        }],
+      },
+    })
+    dispatchBridgedClaudeReplayEvent(harness, {
+      type: 'user',
+      parent_tool_use_id: 'toolu_parent',
+      message: {
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: 'toolu_child', content: 'file contents' }],
+      },
+    })
+    dispatchBridgedClaudeReplayEvent(harness, {
+      type: 'assistant',
+      parent_tool_use_id: 'toolu_parent',
+      message: {
+        id: 'assistant-child-text',
+        role: 'assistant',
+        content: [{ type: 'text', text: 'Nested answer after tool result.' }],
+      },
+    })
+
+    const messages = harness.getMessages()
+    expect(messages).toHaveLength(1)
+    expect(messages[0]).toEqual(expect.objectContaining({
+      kind: 'tool',
+      toolId: 'toolu_parent',
+      toolName: 'Agent',
+      subagentDescription: 'Investigate flaky chat rendering',
+      transcript: expect.objectContaining({ subagentId: 'toolu_parent' }),
+    }))
+    expect(messages[0]?.children).toEqual([
+      expect.objectContaining({
+        kind: 'provider',
+        text: 'Running nested investigation [Read]',
+        transcript: expect.objectContaining({
+          subagentId: 'toolu_parent',
+          providerPayload: expect.objectContaining({
+            subtype: 'task_progress',
+            tool_use_id: 'toolu_parent',
+            task_id: 'task-1',
+          }),
+        }),
+      }),
+      expect.objectContaining({
+        kind: 'tool',
+        toolId: 'toolu_child',
+        toolName: 'Read',
+        toolStatus: 'success',
+        toolFile: 'apps/hammurabi/README.md',
+        toolOutput: 'file contents',
+        transcript: expect.objectContaining({ subagentId: 'toolu_parent' }),
+      }),
+      expect.objectContaining({
+        kind: 'agent',
+        text: 'Nested answer after tool result.',
+        transcript: expect.objectContaining({ subagentId: 'toolu_parent' }),
+      }),
+    ])
+
+    harness.cleanup()
+  })
+
+  it('promotes legacy Codex raw agentMessage delta envelopes into assistant chat text', () => {
+    const harness = createHarness()
+
+    harness.dispatchReplayEvent({
+      schemaVersion: 2,
+      id: 'env-legacy-raw-delta-1',
+      time: '2026-05-29T00:00:00.000Z',
+      source: { provider: 'codex', backend: 'rpc', rawEventType: 'item/agentMessage/delta' },
+      turnId: 'turn-legacy-1',
+      itemId: 'msg-legacy-1',
+      ev: {
+        type: 'provider.raw',
+        method: 'item/agentMessage/delta',
+        payload: { delta: 'Final ' },
+      },
+    })
+    harness.dispatchReplayEvent({
+      schemaVersion: 2,
+      id: 'env-legacy-raw-delta-2',
+      time: '2026-05-29T00:00:01.000Z',
+      source: { provider: 'codex', backend: 'rpc', rawEventType: 'item/agentMessage/delta' },
+      turnId: 'turn-legacy-1',
+      itemId: 'msg-legacy-1',
+      ev: {
+        type: 'provider.raw',
+        method: 'item/agentMessage/delta',
+        payload: { delta: 'answer' },
+      },
+    })
+
+    expect(harness.getMessages()).toEqual([
+      expect.objectContaining({
+        kind: 'agent',
+        text: 'Final answer',
+      }),
+    ])
+
+    harness.cleanup()
+  })
+
   it('suppresses internal Agent replay prompts while preserving human user messages', () => {
     const harness = createHarness()
 
@@ -184,6 +587,202 @@ describe('useStreamEventProcessor replay user handling', () => {
       text: 'human message with screenshot',
       images: [{ mediaType: 'image/png', data: 'abc123' }],
     })
+
+    harness.cleanup()
+  })
+
+  it('normalizes assistant image blocks into agent message images during replay and live processing', () => {
+    const harness = createHarness()
+    const makeAssistantImageEvent = (
+      id: string,
+      text: string,
+      mediaType: string,
+      data: string,
+    ): StreamEvent => ({
+      type: 'assistant',
+      message: {
+        id,
+        role: 'assistant',
+        content: [
+          { type: 'text', text },
+          {
+            type: 'image',
+            source: { type: 'base64', media_type: mediaType, data },
+          },
+        ],
+      },
+    } as StreamEvent)
+
+    harness.dispatchReplayEvent(makeAssistantImageEvent(
+      'assistant-image-replay',
+      'Replay chart ready',
+      'image/png',
+      'replay-image-base64',
+    ))
+    harness.dispatchLiveEvent(makeAssistantImageEvent(
+      'assistant-image-live',
+      'Live chart ready',
+      'image/webp',
+      'live-image-base64',
+    ))
+
+    const agentMessages = harness.getMessages().filter((msg) => msg.kind === 'agent')
+    expect(agentMessages).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'agent',
+        text: 'Replay chart ready',
+      }),
+      expect.objectContaining({
+        kind: 'agent',
+        text: 'Live chart ready',
+      }),
+      expect.objectContaining({
+        kind: 'agent',
+        images: [{ mediaType: 'image/png', data: 'replay-image-base64' }],
+      }),
+      expect.objectContaining({
+        kind: 'agent',
+        images: [{ mediaType: 'image/webp', data: 'live-image-base64' }],
+      }),
+    ]))
+
+    harness.cleanup()
+  })
+
+  it('normalizes image payloads from v2 tool and provider transcript events', () => {
+    const harness = createHarness()
+
+    harness.dispatchReplayEvent({
+      schemaVersion: 2,
+      id: 'env-tool-start-image',
+      time: '2026-05-27T00:00:00.000Z',
+      source: { provider: 'codex', backend: 'rpc', rawEventType: 'item/started' },
+      itemId: 'tool-image-1',
+      ev: {
+        type: 'tool.start',
+        toolCallId: 'tool-image-1',
+        name: 'GenerateImage',
+        input: { prompt: 'chart' },
+      },
+    })
+    harness.dispatchReplayEvent({
+      schemaVersion: 2,
+      id: 'env-tool-end-image',
+      time: '2026-05-27T00:00:01.000Z',
+      source: { provider: 'codex', backend: 'rpc', rawEventType: 'item/completed' },
+      itemId: 'tool-image-1',
+      ev: {
+        type: 'tool.end',
+        toolCallId: 'tool-image-1',
+        status: 'ok',
+        result: {
+          content: [{
+            type: 'image',
+            alt: 'tool chart',
+            source: { media_type: 'image/png', data: 'tool-result-image' },
+          }],
+        },
+      },
+    })
+    harness.dispatchReplayEvent({
+      schemaVersion: 2,
+      id: 'env-provider-raw-image',
+      time: '2026-05-27T00:00:02.000Z',
+      source: { provider: 'codex', backend: 'rpc', rawEventType: 'item/generated' },
+      ev: {
+        type: 'provider.raw',
+        method: 'item/generated',
+        payload: {
+          item: {
+            content: [{
+              type: 'output_image',
+              alt: 'raw generated image',
+              image_url: 'https://example.test/generated.webp',
+            }],
+          },
+        },
+      },
+    })
+    harness.dispatchReplayEvent({
+      schemaVersion: 2,
+      id: 'env-provider-activity-image',
+      time: '2026-05-27T00:00:03.000Z',
+      source: { provider: 'codex', backend: 'rpc', rawEventType: 'artifact/ready' },
+      ev: {
+        type: 'provider.activity',
+        title: 'Artifact ready',
+        data: {
+          images: [{
+            alt: 'artifact chart',
+            url: '/api/workspace/raw?path=charts%2Fartifact.png',
+          }],
+        },
+      },
+    })
+
+    const agentImages = harness
+      .getMessages()
+      .filter((msg) => msg.kind === 'agent')
+      .flatMap((msg) => msg.images ?? [])
+
+    expect(agentImages).toEqual(expect.arrayContaining([
+      { mediaType: 'image/png', data: 'tool-result-image', alt: 'tool chart' },
+      { url: 'https://example.test/generated.webp', alt: 'raw generated image' },
+      { url: '/api/workspace/raw?path=charts%2Fartifact.png', alt: 'artifact chart' },
+    ]))
+
+    harness.cleanup()
+  })
+
+  it('normalizes structured legacy tool result images into agent attachments', () => {
+    const harness = createHarness()
+
+    harness.dispatchReplayEvent({
+      type: 'assistant',
+      message: {
+        id: 'assistant-tool-image',
+        role: 'assistant',
+        content: [{
+          type: 'tool_use',
+          id: 'tool-image-legacy',
+          name: 'GenerateImage',
+          input: { prompt: 'chart' },
+        }],
+      },
+    })
+    harness.dispatchReplayEvent({
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [{
+          type: 'tool_result',
+          tool_use_id: 'tool-image-legacy',
+          content: JSON.stringify({
+            content: [{
+              type: 'image',
+              alt: 'legacy tool chart',
+              source: { media_type: 'image/jpeg', data: 'legacy-tool-result-image' },
+            }],
+          }),
+        }],
+      },
+    })
+
+    expect(harness.getMessages()).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'tool',
+        toolName: 'GenerateImage',
+        toolStatus: 'success',
+      }),
+      expect.objectContaining({
+        kind: 'agent',
+        images: [{
+          mediaType: 'image/jpeg',
+          data: 'legacy-tool-result-image',
+          alt: 'legacy tool chart',
+        }],
+      }),
+    ]))
 
     harness.cleanup()
   })
@@ -352,6 +951,13 @@ describe('useStreamEventProcessor replay user handling', () => {
     }
 
     harness.dispatchReplayEvent(event)
+    harness.dispatchLiveEvent({
+      schemaVersion: 2,
+      id: 'env-status-between-user-echoes',
+      time: '2026-05-29T00:00:00.000Z',
+      source: { provider: 'codex', backend: 'rpc', rawEventType: 'thread/status/changed' },
+      ev: { type: 'provider.activity', title: 'Thread status changed' },
+    })
     harness.dispatchLiveEvent(event)
     harness.dispatchLiveEvent(event)
 
@@ -362,6 +968,225 @@ describe('useStreamEventProcessor replay user handling', () => {
       expect.objectContaining({
         kind: 'user',
         text: 'queued follow-up that actually started',
+      }),
+    ])
+    expect(harness.getMessages()).toEqual([
+      expect.objectContaining({ kind: 'user' }),
+      expect.objectContaining({ kind: 'provider', text: 'Thread status changed' }),
+    ])
+
+    harness.cleanup()
+  })
+
+  it('does not render duplicate queued_message echoes across an empty Codex turn placeholder', () => {
+    const harness = createHarness()
+    const event: StreamEvent = {
+      type: 'user',
+      subtype: 'queued_message',
+      message: {
+        role: 'user',
+        content: 'status',
+      },
+    }
+
+    harness.dispatchLiveEvent(event)
+    harness.dispatchLiveEvent({
+      schemaVersion: 2,
+      id: 'env-status-active',
+      time: '2026-05-29T00:00:00.000Z',
+      source: { provider: 'codex', backend: 'rpc', rawEventType: 'thread/status/changed' },
+      ev: { type: 'provider.activity', title: 'Thread status changed' },
+    })
+    harness.dispatchLiveEvent({
+      schemaVersion: 2,
+      id: 'env-empty-turn-start',
+      time: '2026-05-29T00:00:01.000Z',
+      source: { provider: 'codex', backend: 'rpc', rawEventType: 'turn/started' },
+      turnId: 'turn-status',
+      ev: { type: 'message.start', role: 'assistant' },
+    })
+    harness.dispatchLiveEvent({
+      schemaVersion: 2,
+      id: 'env-user-start',
+      time: '2026-05-29T00:00:02.000Z',
+      source: { provider: 'codex', backend: 'rpc', rawEventType: 'item/started' },
+      turnId: 'turn-status',
+      itemId: 'user-status',
+      ev: {
+        type: 'provider.activity',
+        title: 'User message item started',
+        detail: 'userMessage',
+      },
+    })
+    harness.dispatchLiveEvent(event)
+
+    const statusMessages = harness.getMessages().filter((message) => (
+      message.kind === 'user' && message.text === 'status'
+    ))
+    expect(statusMessages).toHaveLength(1)
+
+    harness.cleanup()
+  })
+
+  it('preserves repeated queued_message text after an assistant response', () => {
+    const harness = createHarness()
+    const event: StreamEvent = {
+      type: 'user',
+      subtype: 'queued_message',
+      message: {
+        role: 'user',
+        content: 'same follow-up after reply',
+      },
+    }
+
+    harness.dispatchReplayEvent(event)
+    harness.dispatchLiveEvent({
+      type: 'assistant',
+      message: {
+        role: 'assistant',
+        content: [{ type: 'text', text: 'assistant reply separates turns' }],
+      },
+    })
+    harness.dispatchLiveEvent(event)
+
+    const repeatedUserMessages = harness.getMessages().filter((message) => (
+      message.kind === 'user' && message.text === 'same follow-up after reply'
+    ))
+    expect(repeatedUserMessages).toHaveLength(2)
+
+    harness.cleanup()
+  })
+
+  it('renders v2 bridged plan approval requests as answerable asks', () => {
+    const harness = createHarness()
+
+    harness.dispatchReplayEvent({
+      schemaVersion: 2,
+      id: 'env-plan-approval',
+      time: '2026-05-27T00:00:00.000Z',
+      source: { provider: 'claude', backend: 'cli', rawEventType: 'plan_approval' },
+      itemId: 'plan-1',
+      ev: {
+        type: 'approval.request',
+        toolCallId: 'plan-1',
+        interactionKind: 'plan_approval',
+        prompt: '1. Inspect\n2. Patch',
+        request: {
+          interactionKind: 'plan_approval',
+          toolName: 'ExitPlanMode',
+          approveLabel: 'Approve',
+          rejectLabel: 'Reject',
+          customResponseLabel: 'Respond',
+        },
+      },
+    } as StreamEvent)
+
+    expect(harness.getMessages()).toEqual([
+      expect.objectContaining({
+        kind: 'ask',
+        toolId: 'plan-1',
+        toolName: 'ExitPlanMode',
+        askInteractionKind: 'plan_approval',
+        askAnswered: false,
+        planApprovalPlan: '1. Inspect\n2. Patch',
+        planApprovalApproveLabel: 'Approve',
+        planApprovalRejectLabel: 'Reject',
+        planApprovalCustomResponseLabel: 'Respond',
+      }),
+    ])
+
+    harness.cleanup()
+  })
+
+  it('keeps bridged v2 Claude thinking deltas on one reasoning row', () => {
+    const harness = createHarness()
+
+    harness.dispatchReplayEvent({
+      schemaVersion: 2,
+      id: 'env-thinking-1',
+      time: '2026-05-27T00:00:00.000Z',
+      source: { provider: 'claude', backend: 'cli', rawEventType: 'content_block_delta' },
+      itemId: 'content-block-0',
+      ev: { type: 'thinking.delta', text: 'first ' },
+    } as StreamEvent)
+    harness.dispatchReplayEvent({
+      schemaVersion: 2,
+      id: 'env-thinking-2',
+      time: '2026-05-27T00:00:01.000Z',
+      source: { provider: 'claude', backend: 'cli', rawEventType: 'content_block_delta' },
+      itemId: 'content-block-0',
+      ev: { type: 'thinking.delta', text: 'second' },
+    } as StreamEvent)
+
+    const thinkingMessages = harness.getMessages().filter((msg) => msg.kind === 'thinking')
+    expect(thinkingMessages).toEqual([
+      expect.objectContaining({
+        kind: 'thinking',
+        text: 'first second',
+        transcript: expect.objectContaining({
+          itemId: 'content-block-0',
+          source: expect.objectContaining({ provider: 'claude' }),
+        }),
+      }),
+    ])
+
+    harness.cleanup()
+  })
+
+  it('preserves bridged v2 Claude planning enter, proposal, and decision semantics', () => {
+    const harness = createHarness()
+
+    harness.dispatchReplayEvent({
+      schemaVersion: 2,
+      id: 'env-plan-enter',
+      time: '2026-05-27T00:00:00.000Z',
+      source: { provider: 'claude', backend: 'cli', rawEventType: 'planning' },
+      ev: { type: 'plan.update', plan: { action: 'enter' } },
+    } as StreamEvent)
+    harness.dispatchReplayEvent({
+      schemaVersion: 2,
+      id: 'env-plan-proposed',
+      time: '2026-05-27T00:00:01.000Z',
+      source: { provider: 'claude', backend: 'cli', rawEventType: 'planning' },
+      itemId: 'plan-tool',
+      ev: {
+        type: 'plan.update',
+        plan: { action: 'proposed', plan: '1. Patch\n2. Test' },
+        toolCallId: 'plan-tool',
+      },
+    } as StreamEvent)
+    harness.dispatchReplayEvent({
+      schemaVersion: 2,
+      id: 'env-plan-decision',
+      time: '2026-05-27T00:00:02.000Z',
+      source: { provider: 'claude', backend: 'cli', rawEventType: 'planning' },
+      itemId: 'plan-tool',
+      ev: {
+        type: 'plan.update',
+        plan: {
+          action: 'decision',
+          approved: false,
+          message: 'Need one more regression test before proceeding.',
+        },
+        toolCallId: 'plan-tool',
+      },
+    } as StreamEvent)
+
+    expect(harness.getMessages().filter((msg) => msg.kind === 'planning')).toEqual([
+      expect.objectContaining({
+        kind: 'planning',
+        planningAction: 'enter',
+      }),
+      expect.objectContaining({
+        kind: 'planning',
+        planningAction: 'proposed',
+        planningPlan: '1. Patch\n2. Test',
+      }),
+      expect.objectContaining({
+        kind: 'planning',
+        planningAction: 'decision',
+        planningApproved: false,
+        planningMessage: 'Need one more regression test before proceeding.',
       }),
     ])
 

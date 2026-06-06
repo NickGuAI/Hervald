@@ -5,7 +5,11 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { ApiKeyStoreLike } from '../../../server/api-keys/store'
-import { GAIA_COMMANDER_AVATAR_URL } from '../../commanders/commander-profile'
+import {
+  ASINA_COMMANDER_AVATAR_URL,
+  GAIA_COMMANDER_AVATAR_URL,
+  writeCommanderUiProfile,
+} from '../../commanders/commander-profile'
 import { CommanderSessionStore } from '../../commanders/store'
 import { ConversationStore } from '../../commanders/conversation-store'
 import { createDefaultHeartbeatConfig } from '../../commanders/heartbeat'
@@ -609,6 +613,57 @@ describe('org route', () => {
       })
       expect(payload.commanders[0].profile).not.toHaveProperty('borderColor')
       expect(payload.commanders[0].profile).not.toHaveProperty('accentColor')
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('uses the bundled stock avatar fallback on org surfaces for legacy installed package commanders', async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), 'hammurabi-org-route-'))
+    tempDirs.push(dataDir)
+    process.env.HAMMURABI_DATA_DIR = dataDir
+
+    const commanderDataDir = join(dataDir, 'commander')
+    const commanderId = '00000000-0000-4000-a000-000000000124'
+    const sessionStore = new CommanderSessionStore(join(commanderDataDir, 'sessions.json'))
+    await sessionStore.create({
+      id: commanderId,
+      host: 'asina',
+      state: 'idle',
+      created: '2026-05-08T00:00:00.000Z',
+      agentType: 'claude',
+      effort: 'medium',
+      heartbeat: createDefaultHeartbeatConfig(),
+      maxTurns: 20,
+      contextMode: 'thin',
+      taskSource: null,
+      templateId: 'engineering-manager',
+    })
+    await writeCommanderUiProfile(commanderId, commanderDataDir, {
+      speakingTone: 'Strategic',
+    })
+
+    const server = await startServer(dataDir, { realCommanderStores: true })
+
+    try {
+      const response = await fetch(`${server.baseUrl}/api/org`, {
+        headers: AUTH0_HEADERS,
+      })
+
+      expect(response.status).toBe(200)
+      const payload = await response.json() as {
+        commanders: Array<{
+          id: string
+          templateId?: string | null
+          avatarUrl?: string | null
+        }>
+      }
+      expect(payload.commanders).toHaveLength(1)
+      expect(payload.commanders[0]).toMatchObject({
+        id: commanderId,
+        templateId: 'engineering-manager',
+        avatarUrl: ASINA_COMMANDER_AVATAR_URL,
+      })
     } finally {
       await server.close()
     }

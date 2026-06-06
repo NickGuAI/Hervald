@@ -1,10 +1,11 @@
 import express from 'express'
 import { createServer, type Server } from 'node:http'
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { ApiKeyStoreLike } from '../../../server/api-keys/store'
+import type { WorkspaceCommandRunner } from '../../workspace/git'
 import { createWorkspaceRouter } from '../../workspace/routes'
 import { resolveWorkspaceRoot } from '../../workspace/resolver'
 import type { WorkspaceResolverCapability } from '../../workspace/capability'
@@ -160,7 +161,27 @@ describe('workspace routes', () => {
       { headers: AUTH_HEADERS },
     )
     expect(rawResponse.status).toBe(200)
+    expect(rawResponse.headers.get('content-disposition')).toBeNull()
     expect(await rawResponse.text()).toBe('Unified workspace\n')
+
+    const downloadResponse = await fetch(
+      `${server.baseUrl}/api/workspace/raw?targetId=wt-test&path=README.md&download=1`,
+      { headers: AUTH_HEADERS },
+    )
+    expect(downloadResponse.status).toBe(200)
+    expect(downloadResponse.headers.get('content-disposition')).toMatch(/attachment; filename="README\.md"/u)
+    expect(await downloadResponse.text()).toBe('Unified workspace\n')
+
+    await writeFile(join(workspaceDir, 'docs', 'unsafe "name".txt'), 'download me\n', 'utf8')
+    const safeNameResponse = await fetch(
+      `${server.baseUrl}/api/workspace/raw?targetId=wt-test&path=${
+        encodeURIComponent('docs/unsafe "name".txt')
+      }&download=1`,
+      { headers: AUTH_HEADERS },
+    )
+    expect(safeNameResponse.status).toBe(200)
+    expect(safeNameResponse.headers.get('content-disposition')).toContain('unsafe _name_.txt')
+    expect(await safeNameResponse.text()).toBe('download me\n')
 
     const gitStatusResponse = await fetch(
       `${server.baseUrl}/api/workspace/git/status?targetId=wt-test`,
@@ -204,6 +225,103 @@ describe('workspace routes', () => {
     expect(saveResponse.status).toBe(200)
     await expect(saveResponse.json()).resolves.toMatchObject({ path: 'README.md' })
     await expect(readFile(join(workspaceDir, 'README.md'), 'utf8')).resolves.toBe('Saved through target\n')
+  })
+
+  it('serves remote raw downloads through the command runner with attachment headers', async () => {
+    const remoteRootPath = '/remote/workspace'
+    const remoteRelativePath = 'docs/unsafe "name".txt'
+    const remoteAbsolutePath = `${remoteRootPath}/${remoteRelativePath}`
+    const remoteBytes = Buffer.from('remote download bytes\n', 'utf8')
+    const runnerCalls: Array<{ command: string; args: string[] }> = []
+    const commandRunner: WorkspaceCommandRunner = {
+      exec: async (command, args) => {
+        runnerCalls.push({ command, args })
+        expect(command).toBe('bash')
+        const script = args[1] ?? ''
+        const targetPath = args[3]
+        expect(targetPath).toBe(remoteAbsolutePath)
+
+        if (script.includes('printf "%s\\n" "$resolved"')) {
+          return { stdout: `${remoteAbsolutePath}\n`, stderr: '' }
+        }
+        if (script.includes('expectation="$2"')) {
+          expect(args[4]).toBe('file')
+          return { stdout: '', stderr: '' }
+        }
+        if (script.trim() === 'base64 < "$1"') {
+          return { stdout: remoteBytes.toString('base64'), stderr: '' }
+        }
+
+        throw new Error(`Unexpected remote command script: ${script}`)
+      },
+    }
+    const remoteMachine = {
+      id: 'machine-1',
+      label: 'Remote Machine',
+      host: 'remote.example.test',
+    }
+    const remoteWorkspace = {
+      source: {
+        kind: 'target' as const,
+        id: 'wt-remote',
+        label: 'remote:/remote/workspace',
+        host: remoteMachine.id,
+        readOnly: true,
+      },
+      rootPath: remoteRootPath,
+      rootName: 'workspace',
+      gitRoot: null,
+      readOnly: true,
+      isRemote: true,
+      machine: remoteMachine,
+    }
+    const resolver: WorkspaceResolverCapability = {
+      open: async () => {
+        throw new Error('not used')
+      },
+      resolveTarget: async (targetId) => {
+        expect(targetId).toBe('wt-remote')
+        return {
+          target: {
+            targetId,
+            label: 'remote:/remote/workspace',
+            host: remoteMachine.id,
+            rootPath: remoteRootPath,
+            readOnly: true,
+            machine: remoteMachine,
+          },
+          workspace: remoteWorkspace,
+          commandRunner,
+          host: remoteMachine.id,
+          rootPath: remoteRootPath,
+          machine: remoteMachine,
+          readOnly: true,
+        }
+      },
+    }
+    server = await startWorkspaceServer(resolver)
+
+    const inlineResponse = await fetch(
+      `${server.baseUrl}/api/workspace/raw?targetId=wt-remote&path=${encodeURIComponent(remoteRelativePath)}`,
+      { headers: AUTH_HEADERS },
+    )
+    expect(inlineResponse.status).toBe(200)
+    expect(inlineResponse.headers.get('content-disposition')).toBeNull()
+    expect(Buffer.from(await inlineResponse.arrayBuffer()).equals(remoteBytes)).toBe(true)
+
+    const downloadResponse = await fetch(
+      `${server.baseUrl}/api/workspace/raw?targetId=wt-remote&path=${
+        encodeURIComponent(remoteRelativePath)
+      }&download=1`,
+      { headers: AUTH_HEADERS },
+    )
+    expect(downloadResponse.status).toBe(200)
+    const contentDisposition = downloadResponse.headers.get('content-disposition')
+    expect(contentDisposition).toContain('attachment')
+    expect(contentDisposition).toContain('unsafe _name_.txt')
+    expect(Buffer.from(await downloadResponse.arrayBuffer()).equals(remoteBytes)).toBe(true)
+
+    expect(runnerCalls.filter((call) => call.args[1]?.trim() === 'base64 < "$1"')).toHaveLength(2)
   })
 
   it('retargets absolute chat file links that live outside the active workspace root', async () => {
@@ -293,6 +411,195 @@ describe('workspace routes', () => {
       targetReadOnly: false,
       path: 'final_report.md',
       type: 'file',
+      treePath: '',
+    })
+  })
+
+  it('retargets symlinked absolute chat file links to the real file root', async () => {
+    workspaceDir = await mkdtemp(join(tmpdir(), 'hammurabi-workspace-route-'))
+    externalDir = await mkdtemp(join(tmpdir(), 'hammurabi-workspace-external-'))
+    const linkDir = join(externalDir, 'links')
+    const realDir = join(externalDir, 'real')
+    const realFilePath = join(realDir, 'final_report.md')
+    const symlinkFilePath = join(linkDir, 'final_report.md')
+    await mkdir(linkDir, { recursive: true })
+    await mkdir(realDir, { recursive: true })
+    await writeFile(join(workspaceDir, 'README.md'), 'Current workspace\n', 'utf8')
+    await writeFile(realFilePath, '# External report\n', 'utf8')
+    await symlink(realFilePath, symlinkFilePath)
+
+    const workspace = await resolveWorkspaceRoot({
+      rootPath: workspaceDir,
+      source: {
+        kind: 'target',
+        id: 'wt-test',
+        label: 'local',
+      },
+    })
+    const realWorkspace = await resolveWorkspaceRoot({
+      rootPath: realDir,
+      source: {
+        kind: 'target',
+        id: 'wt-real',
+        label: `local:${realDir}`,
+      },
+    })
+    const resolver: WorkspaceResolverCapability = {
+      open: async (input) => {
+        expect(input.hostHint).toBe('local')
+        expect(input.pathHint).toBe(realWorkspace.rootPath)
+        expect(input.authorizationConversationId).toBe('conversation-scope')
+        return {
+          targetId: 'wt-real',
+          label: `local:${realWorkspace.rootPath}`,
+          host: 'local',
+          rootPath: realWorkspace.rootPath,
+          readOnly: false,
+        }
+      },
+      resolveTarget: async (targetId) => {
+        if (targetId === 'wt-real') {
+          return {
+            target: {
+              targetId,
+              label: `local:${realWorkspace.rootPath}`,
+              host: 'local',
+              rootPath: realWorkspace.rootPath,
+              readOnly: false,
+            },
+            workspace: realWorkspace,
+            host: 'local',
+            rootPath: realWorkspace.rootPath,
+            readOnly: false,
+          }
+        }
+
+        expect(targetId).toBe('wt-test')
+        return {
+          target: {
+            targetId,
+            label: 'local',
+            conversationId: 'conversation-scope',
+            host: 'local',
+            rootPath: workspaceDir!,
+            readOnly: false,
+          },
+          workspace,
+          host: 'local',
+          rootPath: workspace.rootPath,
+          readOnly: false,
+        }
+      },
+    }
+    server = await startWorkspaceServer(resolver)
+
+    const resolvedPathResponse = await fetch(
+      `${server.baseUrl}/api/workspace/resolve-path?targetId=wt-test&path=${
+        encodeURIComponent(symlinkFilePath)
+      }`,
+      { headers: AUTH_HEADERS },
+    )
+
+    expect(resolvedPathResponse.status).toBe(200)
+    await expect(resolvedPathResponse.json()).resolves.toMatchObject({
+      targetId: 'wt-real',
+      targetLabel: `local:${realWorkspace.rootPath}`,
+      targetReadOnly: false,
+      path: 'final_report.md',
+      type: 'file',
+      treePath: '',
+    })
+  })
+
+  it('retargets symlinked absolute chat directory links to the real directory root', async () => {
+    workspaceDir = await mkdtemp(join(tmpdir(), 'hammurabi-workspace-route-'))
+    externalDir = await mkdtemp(join(tmpdir(), 'hammurabi-workspace-external-'))
+    const realDir = join(externalDir, 'real-dir')
+    const symlinkDirPath = join(workspaceDir, 'linked-real-dir')
+    await mkdir(realDir, { recursive: true })
+    await writeFile(join(workspaceDir, 'README.md'), 'Current workspace\n', 'utf8')
+    await writeFile(join(realDir, 'final_report.md'), '# External report\n', 'utf8')
+    await symlink(realDir, symlinkDirPath)
+
+    const workspace = await resolveWorkspaceRoot({
+      rootPath: workspaceDir,
+      source: {
+        kind: 'target',
+        id: 'wt-test',
+        label: 'local',
+      },
+    })
+    const realWorkspace = await resolveWorkspaceRoot({
+      rootPath: realDir,
+      source: {
+        kind: 'target',
+        id: 'wt-real-dir',
+        label: `local:${realDir}`,
+      },
+    })
+    const resolver: WorkspaceResolverCapability = {
+      open: async (input) => {
+        expect(input.hostHint).toBe('local')
+        expect(input.pathHint).toBe(realWorkspace.rootPath)
+        expect(input.authorizationConversationId).toBe('conversation-scope')
+        return {
+          targetId: 'wt-real-dir',
+          label: `local:${realWorkspace.rootPath}`,
+          host: 'local',
+          rootPath: realWorkspace.rootPath,
+          readOnly: false,
+        }
+      },
+      resolveTarget: async (targetId) => {
+        if (targetId === 'wt-real-dir') {
+          return {
+            target: {
+              targetId,
+              label: `local:${realWorkspace.rootPath}`,
+              host: 'local',
+              rootPath: realWorkspace.rootPath,
+              readOnly: false,
+            },
+            workspace: realWorkspace,
+            host: 'local',
+            rootPath: realWorkspace.rootPath,
+            readOnly: false,
+          }
+        }
+
+        expect(targetId).toBe('wt-test')
+        return {
+          target: {
+            targetId,
+            label: 'local',
+            conversationId: 'conversation-scope',
+            host: 'local',
+            rootPath: workspaceDir!,
+            readOnly: false,
+          },
+          workspace,
+          host: 'local',
+          rootPath: workspace.rootPath,
+          readOnly: false,
+        }
+      },
+    }
+    server = await startWorkspaceServer(resolver)
+
+    const resolvedPathResponse = await fetch(
+      `${server.baseUrl}/api/workspace/resolve-path?targetId=wt-test&path=${
+        encodeURIComponent(symlinkDirPath)
+      }`,
+      { headers: AUTH_HEADERS },
+    )
+
+    expect(resolvedPathResponse.status).toBe(200)
+    await expect(resolvedPathResponse.json()).resolves.toMatchObject({
+      targetId: 'wt-real-dir',
+      targetLabel: `local:${realWorkspace.rootPath}`,
+      targetReadOnly: false,
+      path: '',
+      type: 'directory',
       treePath: '',
     })
   })

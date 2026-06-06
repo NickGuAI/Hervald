@@ -47,6 +47,18 @@ export function registerWorkerRoutes(
                     ? { model: commander.model }
                     : {}
                 ),
+                ...(
+                  !Object.prototype.hasOwnProperty.call(req.body, 'host')
+                  && commander.host !== undefined
+                    ? { host: commander.host }
+                    : {}
+                ),
+                ...(
+                  !Object.prototype.hasOwnProperty.call(req.body, 'cwd')
+                  && commander.cwd !== undefined
+                    ? { cwd: commander.cwd }
+                    : {}
+                ),
               }
             : req.body
         ),

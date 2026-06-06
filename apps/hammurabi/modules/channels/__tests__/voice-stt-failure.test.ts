@@ -38,6 +38,9 @@ describe('voice STT failure handling', () => {
         conversation,
         adapter: createMockAdapter('whatsapp', true),
         message: '',
+        env: {
+          HAMMURABI_DATA_DIR: stores.dataRoot,
+        } as NodeJS.ProcessEnv,
       })
 
       expect(result).toEqual({ ok: false, reason: 'transcription-failed' })

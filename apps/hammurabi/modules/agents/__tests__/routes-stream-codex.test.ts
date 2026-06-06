@@ -7,6 +7,7 @@ import { CommanderSessionStore, type CommanderSession } from '../../commanders/s
 import { ActionPolicyGate } from '../../policies/action-policy-gate'
 import { ApprovalCoordinator } from '../../policies/pending-store'
 import { PolicyStore } from '../../policies/store'
+import { ProviderAuthStore } from '../provider-auth'
 import type { PtySpawner } from '../routes'
 import { DEFAULT_CODEX_MODEL_ID } from '../adapters/codex/models'
 import {
@@ -54,6 +55,23 @@ const ALWAYS_ON_CODEX_APPROVAL_POLICY = {
   },
 } as const
 
+async function createReadyCodexProviderAuthStore(scopeId = 'api-key') {
+  const dir = await mkdtemp(join(tmpdir(), 'hammurabi-codex-auth-'))
+  const store = new ProviderAuthStore(join(dir, 'provider-secrets.json'))
+  await store.putToken('codex', scopeId, {
+    access: 'test-codex-access-token',
+    expiresAt: 4102444800000,
+    updatedAt: '2026-01-01T00:00:00.000Z',
+  })
+
+  return {
+    store,
+    cleanup: async () => {
+      await rm(dir, { recursive: true, force: true })
+    },
+  }
+}
+
 function buildCodexThreadReadResult(item: Record<string, unknown>) {
   return {
     thread: {
@@ -81,6 +99,7 @@ describe("stream sessions", () => {
 
   it('creates remote codex stream sessions over ssh', async () => {
       const sidecar = installMockCodexSidecar()
+      const providerAuth = await createReadyCodexProviderAuthStore()
       const registry = await createTempMachinesRegistry({
         machines: [
           {
@@ -92,7 +111,10 @@ describe("stream sessions", () => {
           },
         ],
       })
-      const server = await startServer({ machinesFilePath: registry.filePath })
+      const server = await startServer({
+        machinesFilePath: registry.filePath,
+        providerAuthStore: providerAuth.store,
+      })
 
       try {
         const response = await fetch(`${server.baseUrl}/api/agents/sessions`, {
@@ -139,12 +161,16 @@ describe("stream sessions", () => {
         expect(remoteCommand).toContain('codex')
         expect(remoteCommand).toContain('app-server')
         expect(remoteCommand).toContain('stdio://')
+        expect(remoteCommand).toContain('OTEL_EXPORTER_OTLP_ENDPOINT')
+        expect(remoteCommand).toContain('OTEL_SDK_DISABLED=true')
+        expect(remoteCommand).toContain('OTEL_LOGS_EXPORTER=none')
         expect(sidecar.getRequests('thread/start')).toHaveLength(1)
         expect(sidecar.getRequests('turn/start')).toHaveLength(1)
       } finally {
         await sidecar.closeServer()
         await server.close()
         await registry.cleanup()
+        await providerAuth.cleanup()
       }
     })
 
@@ -294,6 +320,11 @@ describe("stream sessions", () => {
             ANTHROPIC_MODEL: undefined,
             ANTHROPIC_DEFAULT_OPUS_MODEL: undefined,
             ANTHROPIC_DEFAULT_SONNET_MODEL: undefined,
+            OTEL_EXPORTER_OTLP_ENDPOINT: undefined,
+            OTEL_SDK_DISABLED: 'true',
+            OTEL_LOGS_EXPORTER: 'none',
+            OTEL_METRICS_EXPORTER: 'none',
+            OTEL_TRACES_EXPORTER: 'none',
           }),
         }))
 
@@ -2653,7 +2684,7 @@ describe("stream sessions", () => {
           const unhandledEvent = received.find(
             (event) => event.type === 'system'
               && event.text?.includes('item/connector/requestApproval')
-              && event.text?.includes('Hammurabi automatically declined'),
+              && event.text?.includes('Hervald automatically declined'),
           )
           expect(unhandledEvent).toBeDefined()
         })
@@ -2671,7 +2702,7 @@ describe("stream sessions", () => {
       }
     })
 
-  it('normalizes Codex MCP elicitation requests into answerable plan approval blocks', async () => {
+  it('routes Codex Apps MCP elicitations through policy approvals instead of plan approvals', async () => {
       const sidecar = installMockCodexSidecar()
       const server = await startServer({
         codexTurnWatchdogTimeoutMs: 40,
@@ -2701,6 +2732,7 @@ describe("stream sessions", () => {
             mode: 'default',
             transportType: 'stream',
             agentType: 'codex',
+            cwd: '/tmp/hammurabi-codex-mcp',
           }),
         })
         expect(createResponse.status).toBe(201)
@@ -2724,30 +2756,371 @@ describe("stream sessions", () => {
         })
         expect(sendResponse.status).toBe(200)
 
-        sidecar.emitServerRequest(912, 'mcpserver/elicitation/request', {
+        sidecar.emitNotification('item/started', {
           threadId: 'thread-1',
-          message: 'Continue with the implementation plan?',
-          requestedSchema: {
-            type: 'object',
-            properties: {
-              response: { type: 'string', title: 'Response' },
+          turnId: 'turn-1',
+          item: {
+            id: 'mcp-email-1',
+            type: 'mcpToolCall',
+            server: 'codex_apps',
+            tool: 'gmail_send_email',
+            arguments: {
+              to: 'matt.feroz@example.com',
+              subject: 'Need approval',
+              body: 'Can you review the deployment note?',
+              attachments: ['/tmp/deployment-note.pdf', '/tmp/context.txt'],
             },
-            required: ['response'],
           },
         })
 
+        sidecar.emitServerRequest(912, 'mcpserver/elicitation/request', {
+          threadId: 'thread-1',
+          message: 'Allow Gmail to send an email?',
+          requestedSchema: { type: 'object', properties: {} },
+        })
+
+        let approvalId = ''
+        await vi.waitFor(async () => {
+          const approvals = await server.approvalCoordinator.listPending()
+          expect(approvals).toHaveLength(1)
+          approvalId = approvals[0].id
+          expect(approvals[0]).toEqual(expect.objectContaining({
+            source: 'codex',
+            actionId: 'send-email',
+            toolName: 'mcp__codex_apps__gmail_send_email',
+            sessionId: 'codex-mcp-elicitation',
+          }))
+          expect(approvals[0].context.details).toEqual(expect.objectContaining({
+            Provider: 'codex',
+            Connector: 'codex_apps',
+            Tool: 'gmail_send_email',
+            To: 'matt.feroz@example.com',
+            Subject: 'Need approval',
+            Attachments: '/tmp/deployment-note.pdf, /tmp/context.txt',
+            'Attachment Count': '2',
+            Session: 'codex-mcp-elicitation',
+            CWD: '/tmp/hammurabi-codex-mcp',
+            'Request ID': '912',
+          }))
+        })
+
+        expect(received.some((event) => event.type === 'plan_approval')).toBe(false)
+
+        await new Promise((resolve) => setTimeout(resolve, 80))
+        expect(received.some(
+          (event) => event.type === 'system'
+            && typeof event.text === 'string'
+            && event.text.includes('Codex turn is stale'),
+        )).toBe(false)
+
+        await server.approvalCoordinator.resolve(approvalId, 'approve')
+
         await vi.waitFor(() => {
-          const planApproval = received.find((event) => event.type === 'plan_approval')
-          expect(planApproval).toEqual(expect.objectContaining({
-            toolId: 'codex-mcp-elicitation-912',
-            toolName: 'Codex MCP Elicitation',
-            plan: expect.stringContaining('Continue with the implementation plan?'),
-            providerContext: expect.objectContaining({
-              provider: 'codex',
-              answerFormat: 'codex.mcp_elicitation',
-              requestId: 912,
+          const sidecarResponse = sidecar.getResponseById(912)
+          expect(sidecarResponse?.result).toEqual({
+            action: 'accept',
+            content: {},
+          })
+        })
+
+        ws.close()
+      } finally {
+        await sidecar.closeServer()
+        await server.close()
+      }
+    })
+
+  it('maps rejected Codex Apps MCP elicitation approvals to Codex decline responses', async () => {
+      const sidecar = installMockCodexSidecar()
+      const server = await startServer({
+        codexTurnWatchdogTimeoutMs: 40,
+      })
+
+      try {
+        sidecar.setThreadReadResult({
+          thread: {
+            id: 'thread-1',
+            turns: [
+              {
+                id: 'turn-1',
+                status: 'inProgress',
+              },
+            ],
+          },
+        })
+
+        const createResponse = await fetch(`${server.baseUrl}/api/agents/sessions`, {
+          method: 'POST',
+          headers: {
+            ...AUTH_HEADERS,
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify({
+            name: 'codex-mcp-elicitation-reject',
+            mode: 'default',
+            transportType: 'stream',
+            agentType: 'codex',
+          }),
+        })
+        expect(createResponse.status).toBe(201)
+
+        const sendResponse = await fetch(`${server.baseUrl}/api/agents/sessions/codex-mcp-elicitation-reject/send`, {
+          method: 'POST',
+          headers: {
+            ...AUTH_HEADERS,
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify({ text: 'send the gmail note' }),
+        })
+        expect(sendResponse.status).toBe(200)
+
+        sidecar.emitNotification('item/started', {
+          threadId: 'thread-1',
+          turnId: 'turn-1',
+          item: {
+            id: 'mcp-email-reject-1',
+            type: 'mcpToolCall',
+            server: 'codex_apps',
+            tool: 'gmail_send_email',
+            arguments: {
+              to: 'matt.feroz@example.com',
+              subject: 'Reject this',
+              body: 'This should not send.',
+            },
+          },
+        })
+
+        sidecar.emitServerRequest(914, 'mcpserver/elicitation/request', {
+          threadId: 'thread-1',
+          message: 'Allow Gmail to send an email?',
+          requestedSchema: {
+            type: 'object',
+            properties: {
+              approved: { type: 'boolean', title: 'Approved' },
+            },
+          },
+        })
+
+        let approvalId = ''
+        await vi.waitFor(async () => {
+          const approvals = await server.approvalCoordinator.listPending()
+          expect(approvals).toHaveLength(1)
+          approvalId = approvals[0].id
+          expect(approvals[0]).toEqual(expect.objectContaining({
+            actionId: 'send-email',
+            toolName: 'mcp__codex_apps__gmail_send_email',
+            sessionId: 'codex-mcp-elicitation-reject',
+          }))
+        })
+
+        await server.approvalCoordinator.resolve(approvalId, 'reject')
+
+        await vi.waitFor(() => {
+          const sidecarResponse = sidecar.getResponseById(914)
+          expect(sidecarResponse?.result).toEqual({
+            action: 'decline',
+          })
+        })
+      } finally {
+        await sidecar.closeServer()
+        await server.close()
+      }
+    })
+
+  it('maps cancelled Codex Apps MCP elicitation policy decisions to Codex cancel responses', async () => {
+      const sidecar = installMockCodexSidecar()
+      const enforceAndWait = vi.fn(async () => ({
+        actionId: 'send-email',
+        actionLabel: 'Send Email',
+        decision: 'cancel' as const,
+        policyDecision: 'review' as const,
+        sessionContext: null,
+      }))
+      const actionPolicyGate = { enforceAndWait } as unknown as ActionPolicyGate
+      const server = await startServer({
+        codexTurnWatchdogTimeoutMs: 40,
+        getActionPolicyGate: () => actionPolicyGate,
+      })
+
+      try {
+        sidecar.setThreadReadResult({
+          thread: {
+            id: 'thread-1',
+            turns: [
+              {
+                id: 'turn-1',
+                status: 'inProgress',
+              },
+            ],
+          },
+        })
+
+        const createResponse = await fetch(`${server.baseUrl}/api/agents/sessions`, {
+          method: 'POST',
+          headers: {
+            ...AUTH_HEADERS,
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify({
+            name: 'codex-mcp-elicitation-cancel',
+            mode: 'default',
+            transportType: 'stream',
+            agentType: 'codex',
+          }),
+        })
+        expect(createResponse.status).toBe(201)
+
+        const sendResponse = await fetch(`${server.baseUrl}/api/agents/sessions/codex-mcp-elicitation-cancel/send`, {
+          method: 'POST',
+          headers: {
+            ...AUTH_HEADERS,
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify({ text: 'send the gmail note, unless cancelled' }),
+        })
+        expect(sendResponse.status).toBe(200)
+
+        sidecar.emitNotification('item/started', {
+          threadId: 'thread-1',
+          turnId: 'turn-1',
+          item: {
+            id: 'mcp-email-cancel-1',
+            type: 'mcpToolCall',
+            server: 'codex_apps',
+            tool: 'gmail_send_email',
+            arguments: {
+              to: 'matt.feroz@example.com',
+              subject: 'Cancel this',
+              body: 'This should be cancelled.',
+            },
+          },
+        })
+
+        sidecar.emitServerRequest(916, 'mcpserver/elicitation/request', {
+          threadId: 'thread-1',
+          message: 'Allow Gmail to send an email?',
+          requestedSchema: { type: 'object', properties: {} },
+        })
+
+        await vi.waitFor(() => {
+          expect(enforceAndWait).toHaveBeenCalledWith(expect.objectContaining({
+            source: 'codex',
+            toolName: 'mcp__codex_apps__gmail_send_email',
+            toolInput: expect.objectContaining({
+              to: 'matt.feroz@example.com',
+              subject: 'Cancel this',
             }),
           }))
+          const sidecarResponse = sidecar.getResponseById(916)
+          expect(sidecarResponse?.result).toEqual({
+            action: 'cancel',
+          })
+        })
+
+        expect(await server.approvalCoordinator.listPending()).toEqual([])
+      } finally {
+        await sidecar.closeServer()
+        await server.close()
+      }
+    })
+
+  it('declines Codex Apps MCP elicitations when the policy gate is unavailable without stale-turn noise', async () => {
+      const sidecar = installMockCodexSidecar()
+      const server = await startServer({
+        codexTurnWatchdogTimeoutMs: 40,
+        getActionPolicyGate: () => null,
+      })
+
+      try {
+        sidecar.setThreadReadResult({
+          thread: {
+            id: 'thread-1',
+            turns: [
+              {
+                id: 'turn-1',
+                status: 'inProgress',
+              },
+            ],
+          },
+        })
+
+        const createResponse = await fetch(`${server.baseUrl}/api/agents/sessions`, {
+          method: 'POST',
+          headers: {
+            ...AUTH_HEADERS,
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify({
+            name: 'codex-mcp-elicitation-no-gate',
+            mode: 'default',
+            transportType: 'stream',
+            agentType: 'codex',
+          }),
+        })
+        expect(createResponse.status).toBe(201)
+
+        const ws = await connectWs(server.baseUrl, 'codex-mcp-elicitation-no-gate')
+        const received: Array<Record<string, unknown>> = []
+        ws.on('message', (data) => {
+          const parsed = JSON.parse(data.toString()) as Record<string, unknown>
+          if (parsed.type !== 'replay') {
+            received.push(parsed)
+          }
+        })
+
+        const sendResponse = await fetch(`${server.baseUrl}/api/agents/sessions/codex-mcp-elicitation-no-gate/send`, {
+          method: 'POST',
+          headers: {
+            ...AUTH_HEADERS,
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify({ text: 'send the gmail note' }),
+        })
+        expect(sendResponse.status).toBe(200)
+
+        sidecar.emitNotification('item/started', {
+          threadId: 'thread-1',
+          turnId: 'turn-1',
+          item: {
+            id: 'mcp-email-no-gate-1',
+            type: 'mcpToolCall',
+            server: 'codex_apps',
+            tool: 'gmail_send_email',
+            arguments: {
+              to: 'matt.feroz@example.com',
+              subject: 'No gate',
+              body: 'This should be declined.',
+            },
+          },
+        })
+
+        sidecar.emitServerRequest(915, 'mcpserver/elicitation/request', {
+          threadId: 'thread-1',
+          message: 'Allow Gmail to send an email?',
+          requestedSchema: { type: 'object', properties: {} },
+        })
+
+        await vi.waitFor(() => {
+          const sidecarResponse = sidecar.getResponseById(915)
+          expect(sidecarResponse?.result).toEqual({
+            action: 'decline',
+          })
+        })
+
+        sidecar.emitNotification('turn/completed', {
+          threadId: 'thread-1',
+          turn: { id: 'turn-1' },
+        })
+        sidecar.setThreadReadResult({
+          thread: {
+            id: 'thread-1',
+            turns: [
+              {
+                id: 'turn-1',
+                status: 'completed',
+              },
+            ],
+          },
         })
 
         await new Promise((resolve) => setTimeout(resolve, 80))
@@ -2757,30 +3130,100 @@ describe("stream sessions", () => {
             && event.text.includes('Codex turn is stale'),
         )).toBe(false)
 
+        ws.close()
+      } finally {
+        await sidecar.closeServer()
+        await server.close()
+      }
+    })
+
+  it('keeps schema-backed Codex MCP elicitations as user questions', async () => {
+      const sidecar = installMockCodexSidecar()
+      const server = await startServer({
+        codexTurnWatchdogTimeoutMs: 40,
+      })
+
+      try {
+        const createResponse = await fetch(`${server.baseUrl}/api/agents/sessions`, {
+          method: 'POST',
+          headers: {
+            ...AUTH_HEADERS,
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify({
+            name: 'codex-mcp-user-question',
+            mode: 'default',
+            transportType: 'stream',
+            agentType: 'codex',
+          }),
+        })
+        expect(createResponse.status).toBe(201)
+
+        const ws = await connectWs(server.baseUrl, 'codex-mcp-user-question')
+        const received: Array<Record<string, unknown>> = []
+        ws.on('message', (data) => {
+          const parsed = JSON.parse(data.toString()) as Record<string, unknown>
+          if (parsed.type !== 'replay') {
+            received.push(parsed)
+          }
+        })
+
+        const sendResponse = await fetch(`${server.baseUrl}/api/agents/sessions/codex-mcp-user-question/send`, {
+          method: 'POST',
+          headers: {
+            ...AUTH_HEADERS,
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify({ text: 'ask for the missing value' }),
+        })
+        expect(sendResponse.status).toBe(200)
+
+        sidecar.emitServerRequest(913, 'mcpserver/elicitation/request', {
+          threadId: 'thread-1',
+          message: 'Which values should Codex use?',
+          requestedSchema: {
+            type: 'object',
+            properties: {
+              to: { type: 'string', title: 'Recipient' },
+              subject: { type: 'string', title: 'Subject' },
+              body: { type: 'string', title: 'Message Body' },
+            },
+            required: ['to', 'subject', 'body'],
+          },
+        })
+
+        await vi.waitFor(() => {
+          const question = received.find(
+            (event) => event.schemaVersion === 2
+              && (event.ev as { type?: string; interactionKind?: string } | undefined)?.type === 'approval.request'
+              && (event.ev as { interactionKind?: string } | undefined)?.interactionKind === 'ask_user_question',
+          )
+          expect(question).toBeDefined()
+        })
+
+        expect(received.some((event) => event.type === 'plan_approval')).toBe(false)
+        expect(await server.approvalCoordinator.listPending()).toEqual([])
+
         ws.send(JSON.stringify({
           type: 'tool_answer',
-          toolId: 'codex-mcp-elicitation-912',
+          toolId: 'codex-mcp-elicitation-913',
           answers: {
-            decision: ['approve'],
-            message: ['Continue.'],
+            to: ['daniel@example.com'],
+            subject: ['Next week'],
+            body: ['Hey Daniel'],
           },
         }))
 
         await vi.waitFor(() => {
-          const sidecarResponse = sidecar.getResponseById(912)
+          const sidecarResponse = sidecar.getResponseById(913)
           expect(sidecarResponse?.result).toEqual({
             action: 'accept',
             content: {
-              response: 'Continue.',
+              to: 'daniel@example.com',
+              subject: 'Next week',
+              body: 'Hey Daniel',
             },
           })
-        })
-
-        await vi.waitFor(() => {
-          const ack = received.find(
-            (event) => event.type === 'tool_answer_ack' && event.toolId === 'codex-mcp-elicitation-912',
-          )
-          expect(ack).toBeDefined()
         })
 
         ws.close()
@@ -3199,19 +3642,22 @@ describe("stream sessions", () => {
         const ws = new WebSocket(wsUrl)
         const replayPromise = new Promise<{
           type: string
-          events: Array<{ type: string; usage?: unknown; usage_is_total?: boolean }>
+          events: Array<{ type?: string; schemaVersion?: number; ev?: { type?: string; data?: unknown }; source?: unknown }>
+          envelopes?: Array<{ schemaVersion?: number; ev?: { type?: string; data?: unknown }; source?: unknown }>
           usage: { inputTokens: number; outputTokens: number; costUsd: number }
         }>((resolve) => {
           ws.on('message', (data) => {
             const parsed = JSON.parse(data.toString()) as {
               type: string
-              events?: Array<{ type: string; usage?: unknown; usage_is_total?: boolean }>
+              events?: Array<{ type?: string; schemaVersion?: number; ev?: { type?: string; data?: unknown }; source?: unknown }>
+              envelopes?: Array<{ schemaVersion?: number; ev?: { type?: string; data?: unknown }; source?: unknown }>
               usage?: { inputTokens: number; outputTokens: number; costUsd: number }
             }
             if (parsed.type === 'replay' && parsed.events && parsed.usage) {
               resolve({
                 type: parsed.type,
                 events: parsed.events,
+                envelopes: parsed.envelopes,
                 usage: parsed.usage,
               })
             }
@@ -3229,10 +3675,29 @@ describe("stream sessions", () => {
           outputTokens: 33,
           costUsd: 0.11,
         })
-        const usageEvent = replay.events.find((event) => event.type === 'message_delta')
-        expect(usageEvent).toMatchObject({
-          usage: { input_tokens: 90, output_tokens: 33 },
-          usage_is_total: true,
+        expect(replay.events).toEqual([
+          expect.objectContaining({
+            schemaVersion: 2,
+          }),
+        ])
+        const usageEnvelope = replay.envelopes?.find((event) => event.ev?.type === 'provider.activity')
+        expect(usageEnvelope).toMatchObject({
+          schemaVersion: 2,
+          source: expect.objectContaining({
+            provider: 'codex',
+            backend: 'rpc',
+            sessionId: 'thread-1',
+            rawEventType: 'thread/tokenUsage/updated',
+          }),
+          ev: {
+            type: 'provider.activity',
+            title: 'Token usage updated',
+            data: {
+              usage: { input_tokens: 90, output_tokens: 33 },
+              usage_is_total: true,
+              total_cost_usd: 0.11,
+            },
+          },
         })
 
         ws.close()

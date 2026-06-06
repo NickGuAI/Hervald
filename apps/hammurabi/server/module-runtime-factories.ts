@@ -16,6 +16,7 @@ import {
   createCommandersRuntime,
 } from '../modules/commanders/runtime.js'
 import { createConversationRuntime } from '../modules/conversation/runtime.js'
+import { createEvalRuntime } from '../modules/eval/runtime.js'
 import { createModuleGraphRuntime } from '../modules/module-graph/runtime.js'
 import { createOnboardingRuntime } from '../modules/onboarding/runtime.js'
 import { createOperatorsRuntime } from '../modules/operators/runtime.js'
@@ -64,6 +65,7 @@ const RUNTIME_SETUP_FACTORIES: readonly ModuleRuntimeFactory[] = [
   createRealtimeRuntime,
   createSkillsRuntime,
   createModuleGraphRuntime,
+  createEvalRuntime,
 ]
 
 const RUNTIME_MOUNT_ORDER = [
@@ -83,6 +85,7 @@ const RUNTIME_MOUNT_ORDER = [
   'settings',
   'automations',
   'telemetry',
+  'eval',
   'realtime',
   'skills',
 ] as const

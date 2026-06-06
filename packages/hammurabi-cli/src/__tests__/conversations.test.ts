@@ -298,6 +298,7 @@ describe('hammurabi root help', () => {
       const output = stdoutSpy.mock.calls.map(([chunk]) => String(chunk)).join('')
       expect(output).toContain('hammurabi conversations <command>')
       expect(output).toContain('hammurabi automation <command>')
+      expect(output).toContain('hammurabi eval <command>')
       expect(output).not.toContain('hammurabi cron <command>')
       expect(output).not.toContain('hammurabi sentinel <command>')
     } finally {

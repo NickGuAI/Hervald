@@ -202,11 +202,29 @@ export function MobileChatView({
   const { data: providers = [] } = useProviderRegistry()
   const scrollContainerRef = useRef<HTMLDivElement>(null)
   const scrollTimeoutRef = useRef<number | null>(null)
+  const scrollSelectionGuardTimeoutRef = useRef<number | null>(null)
+  const selectedConversationIdRef = useRef<string | null>(selectedConversationId)
+  const scrollSelectionGuardRef = useRef<{
+    previousId: string
+    selectedId: string
+  } | null>(null)
+  const transcriptCacheRef = useRef<Map<string, MsgItem[]>>(new Map())
   const [isCreatingConversation, setIsCreatingConversation] = useState(false)
+
+  const clearScrollSelectionGuard = useCallback(() => {
+    scrollSelectionGuardRef.current = null
+    if (scrollSelectionGuardTimeoutRef.current !== null) {
+      window.clearTimeout(scrollSelectionGuardTimeoutRef.current)
+      scrollSelectionGuardTimeoutRef.current = null
+    }
+  }, [])
 
   useEffect(() => () => {
     if (scrollTimeoutRef.current !== null) {
       window.clearTimeout(scrollTimeoutRef.current)
+    }
+    if (scrollSelectionGuardTimeoutRef.current !== null) {
+      window.clearTimeout(scrollSelectionGuardTimeoutRef.current)
     }
   }, [])
 
@@ -235,12 +253,63 @@ export function MobileChatView({
       ?? null
   }, [conversationMode, selectedConversationId, visibleConversations])
   const activeConversationId = activeConversation?.id ?? null
+  if (conversationMode) {
+    const visibleConversationIds = new Set(visibleConversations.map((conversation) => conversation.id))
+    Array.from(transcriptCacheRef.current.keys()).forEach((conversationId) => {
+      if (!visibleConversationIds.has(conversationId)) {
+        transcriptCacheRef.current.delete(conversationId)
+      }
+    })
+    if (
+      activeConversationId
+      && (
+        transcript.length > 0
+        || !transcriptCacheRef.current.has(activeConversationId)
+      )
+    ) {
+      transcriptCacheRef.current.set(activeConversationId, transcript)
+    }
+  } else {
+    transcriptCacheRef.current.clear()
+  }
   const activeConversationIndex = useMemo(
     () => activeConversationId
       ? visibleConversations.findIndex((conversation) => conversation.id === activeConversationId)
       : -1,
     [activeConversationId, visibleConversations],
   )
+
+  useEffect(() => {
+    const previousConversationId = selectedConversationIdRef.current
+    if (previousConversationId === selectedConversationId) {
+      return
+    }
+
+    selectedConversationIdRef.current = selectedConversationId
+    if (scrollTimeoutRef.current !== null) {
+      window.clearTimeout(scrollTimeoutRef.current)
+      scrollTimeoutRef.current = null
+    }
+    if (
+      previousConversationId
+      && selectedConversationId
+      && previousConversationId !== selectedConversationId
+    ) {
+      scrollSelectionGuardRef.current = {
+        previousId: previousConversationId,
+        selectedId: selectedConversationId,
+      }
+      if (scrollSelectionGuardTimeoutRef.current !== null) {
+        window.clearTimeout(scrollSelectionGuardTimeoutRef.current)
+      }
+      scrollSelectionGuardTimeoutRef.current = window.setTimeout(() => {
+        scrollSelectionGuardRef.current = null
+        scrollSelectionGuardTimeoutRef.current = null
+      }, 300)
+    } else {
+      clearScrollSelectionGuard()
+    }
+  }, [clearScrollSelectionGuard, selectedConversationId])
 
   const scrollToConversation = useCallback((conversationId: string | null) => {
     if (!conversationId) {
@@ -268,34 +337,58 @@ export function MobileChatView({
     scrollToConversation(activeConversationId)
   }, [activeConversationId, activeConversationIndex, scrollToConversation])
 
+  const selectConversationFromScroll = useCallback(() => {
+    const container = scrollContainerRef.current
+    if (!container || container.clientWidth <= 0) {
+      return
+    }
+    const nextIndex = Math.max(
+      0,
+      Math.min(
+        visibleConversations.length - 1,
+        Math.round(container.scrollLeft / container.clientWidth),
+      ),
+    )
+    const nextConversation = visibleConversations[nextIndex]
+    if (!nextConversation) {
+      return
+    }
+    const selectionGuard = scrollSelectionGuardRef.current
+    if (
+      selectionGuard
+      && nextConversation.id === selectionGuard.previousId
+      && nextConversation.id !== selectedConversationIdRef.current
+    ) {
+      return
+    }
+    if (
+      selectionGuard
+      && nextConversation.id !== selectionGuard.previousId
+      && nextConversation.id !== selectionGuard.selectedId
+    ) {
+      clearScrollSelectionGuard()
+    }
+    if (nextConversation.id !== selectedConversationIdRef.current) {
+      onSelectConversationId?.(nextConversation.id)
+    }
+  }, [
+    clearScrollSelectionGuard,
+    onSelectConversationId,
+    visibleConversations,
+  ])
+
   const handleCarouselScroll = useCallback(() => {
     if (!conversationMode || visibleConversations.length <= 1) {
       return
     }
+    selectConversationFromScroll()
     if (scrollTimeoutRef.current !== null) {
       window.clearTimeout(scrollTimeoutRef.current)
     }
     scrollTimeoutRef.current = window.setTimeout(() => {
-      const container = scrollContainerRef.current
-      if (!container || container.clientWidth <= 0) {
-        return
-      }
-      const nextIndex = Math.max(
-        0,
-        Math.min(
-          visibleConversations.length - 1,
-          Math.round(container.scrollLeft / container.clientWidth),
-        ),
-      )
-      const nextConversation = visibleConversations[nextIndex]
-      if (!nextConversation) {
-        return
-      }
-      if (nextConversation.id !== selectedConversationId) {
-        onSelectConversationId?.(nextConversation.id)
-      }
+      selectConversationFromScroll()
     }, 100)
-  }, [conversationMode, onSelectConversationId, selectedConversationId, visibleConversations])
+  }, [conversationMode, selectConversationFromScroll, visibleConversations.length])
 
   const resolveFallbackConversationId = useCallback((conversationId: string) => {
     const currentIndex = visibleConversations.findIndex((conversation) => conversation.id === conversationId)
@@ -503,6 +596,9 @@ export function MobileChatView({
       >
         {visibleConversations.map((conversation) => {
           const isActive = conversation.id === activeConversationId
+          const conversationMessages = isActive
+            ? transcript
+            : transcriptCacheRef.current.get(conversation.id) ?? []
           return (
             <div
               key={conversation.id}
@@ -523,7 +619,7 @@ export function MobileChatView({
                 wsStatus={isActive ? wsStatus : null}
                 costUsd={isActive ? costUsd : undefined}
                 durationSec={isActive ? durationSec : undefined}
-                messages={isActive ? transcript : []}
+                messages={conversationMessages}
                 hasOlderMessages={isActive && hasOlderMessages}
                 loadingOlderMessages={isActive && loadingOlderMessages}
                 onLoadOlderMessages={isActive ? onLoadOlderMessages : undefined}

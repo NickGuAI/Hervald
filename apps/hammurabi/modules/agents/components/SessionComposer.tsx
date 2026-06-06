@@ -2,6 +2,7 @@ import {
   forwardRef,
   useImperativeHandle,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type ChangeEvent,
@@ -13,6 +14,7 @@ import { ArrowUp, BrainCircuit, ListChecks, ListPlus, Mic, Paperclip, Plus, X, Z
 import { useOpenAITranscription, useOpenAITranscriptionConfig } from '@/hooks/use-openai-transcription'
 import { useSpeechRecognition } from '@/hooks/use-speech-recognition'
 import { useComposerAbilities } from '@/hooks/use-composer-abilities'
+import { useComposerSkillSlots } from '@/hooks/use-composer-skill-slots'
 import type { AgentType, SessionQueueSnapshot } from '@/types'
 import { cn } from '@/lib/utils'
 import { getQueuePendingCount } from '../queue-state'
@@ -75,6 +77,7 @@ export interface SessionComposerHandle {
 }
 
 const MAX_PENDING_IMAGES = 5
+type SkillsPickerMode = 'insert' | 'quick-slot'
 
 function basename(filePath: string): string {
   const cleanPath = filePath.endsWith('/') ? filePath.slice(0, -1) : filePath
@@ -85,13 +88,13 @@ function basename(filePath: string): string {
 
 export const SessionComposer = forwardRef<SessionComposerHandle, SessionComposerProps>(function SessionComposer({
   sessionName,
+  agentType,
   theme = 'light',
   variant = 'desktop',
   placeholder = 'Send a message...',
   disabled = false,
   disabledMessage,
   sendReady = true,
-  isStreaming = false,
   contextFilePaths = [],
   contextDirectoryPaths = [],
   contextFileAnnotations = [],
@@ -120,7 +123,7 @@ export const SessionComposer = forwardRef<SessionComposerHandle, SessionComposer
     clearDraft,
   } = useSessionDraft(sessionName)
   const [pendingImages, setPendingImages] = useState<SessionComposerImage[]>([])
-  const [showSkills, setShowSkills] = useState(false)
+  const [skillsPickerMode, setSkillsPickerMode] = useState<SkillsPickerMode | null>(null)
   const [showQueuePanel, setShowQueuePanel] = useState(false)
   const [selectedAbilityIds, setSelectedAbilityIds] = useState<string[]>([])
   const [showCustomAbilityForm, setShowCustomAbilityForm] = useState(false)
@@ -134,9 +137,20 @@ export const SessionComposer = forwardRef<SessionComposerHandle, SessionComposer
     removeCustomAbility,
     isSaving: isSavingComposerAbility,
   } = useComposerAbilities()
+  const {
+    primarySkillName,
+    setPrimarySkillName,
+    clearPrimarySkillName,
+    isSaving: isSavingSkillSlot,
+  } = useComposerSkillSlots()
   const { data: realtimeTranscriptionConfig } = useOpenAITranscriptionConfig()
+  const realtimeTranscriptionTerms = useMemo(
+    () => [sessionName, agentType].filter((term): term is string => typeof term === 'string' && term.length > 0),
+    [agentType, sessionName],
+  )
   const openAITranscription = useOpenAITranscription({
     enabled: Boolean(realtimeTranscriptionConfig?.openaiConfigured),
+    terms: realtimeTranscriptionTerms,
   })
   const speechRecognition = useSpeechRecognition()
   const activeTranscription =
@@ -157,6 +171,7 @@ export const SessionComposer = forwardRef<SessionComposerHandle, SessionComposer
   const queueMaxSize = typeof queueSnapshot?.maxSize === 'number' ? queueSnapshot.maxSize : 0
   const canOpenQueuePanel = !disabled && queueMaxSize > 0
   const showMobileQueueButton = isMobileVariant && canOpenQueuePanel
+  const showMobileQueueDraftButton = isMobileVariant && canOpenQueuePanel && queueDraftsSupported
   const queueButtonLabel = queueMaxSize > 0
     ? `Queue ${totalQueuedCount}/${queueMaxSize}`
     : 'Queue'
@@ -166,20 +181,9 @@ export const SessionComposer = forwardRef<SessionComposerHandle, SessionComposer
     && (inputText.trim().length > 0 || pendingImages.length > 0 || hasContextAttachments)
   )
   const canSend = !disabled && sendReady && (inputText.trim().length > 0 || pendingImages.length > 0 || hasContextAttachments)
-  const primaryActionUsesQueue = isMobileVariant && isStreaming && queueDraftsSupported
-  const primaryActionDisabled = primaryActionUsesQueue ? !canQueueDraft : !canSend
-  const primaryActionLabel = primaryActionUsesQueue
-    ? 'Add to queue'
-    : isMobileVariant
-      ? 'Send message'
-      : 'Send'
-  const primaryActionTitle = primaryActionUsesQueue
-    ? 'Add to queue'
-    : !sendReady && !disabled
-      ? 'Connecting…'
-      : isMobileVariant
-        ? 'Send message'
-        : 'Send'
+  const primaryActionDisabled = !canSend
+  const primaryActionLabel = isMobileVariant ? 'Send message' : 'Send'
+  const primaryActionTitle = !sendReady && !disabled ? 'Connecting…' : primaryActionLabel
   const queueButtonTitle = canOpenQueuePanel
     ? 'Open queue'
     : !queueDraftsSupported
@@ -191,6 +195,7 @@ export const SessionComposer = forwardRef<SessionComposerHandle, SessionComposer
       ? 'Enter send · Tab queue'
       : 'Enter send'
   const selectedAbilities = composerAbilities.filter((ability) => selectedAbilityIds.includes(ability.id))
+  const showSkills = skillsPickerMode !== null
 
   useImperativeHandle(ref, () => ({
     seedText(nextText: string) {
@@ -201,7 +206,7 @@ export const SessionComposer = forwardRef<SessionComposerHandle, SessionComposer
       fileInputRef.current?.click()
     },
     openSkillsPicker() {
-      setShowSkills(true)
+      setSkillsPickerMode('insert')
     },
   }), [focusTextarea, setInputText])
 
@@ -323,7 +328,7 @@ export const SessionComposer = forwardRef<SessionComposerHandle, SessionComposer
     setInputText(event.target.value)
     const textarea = event.target
     textarea.style.height = 'auto'
-    textarea.style.height = `${Math.min(textarea.scrollHeight, 120)}px`
+    textarea.style.height = `${Math.min(textarea.scrollHeight, isMobileVariant ? 148 : 120)}px`
   }
 
   function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
@@ -375,6 +380,29 @@ export const SessionComposer = forwardRef<SessionComposerHandle, SessionComposer
     ))
   }
 
+  function skillCommand(skillName: string): string {
+    return `/${skillName.trim().replace(/^\/+/u, '')}`
+  }
+
+  function applySkillCommand(command: string) {
+    const normalizedCommand = command.trim()
+    if (!normalizedCommand) {
+      return
+    }
+
+    setInputText((current) => {
+      const trimmed = current.trim()
+      if (!trimmed) {
+        return `${normalizedCommand} `
+      }
+      if (trimmed === normalizedCommand || trimmed.startsWith(`${normalizedCommand} `)) {
+        return current
+      }
+      return `${normalizedCommand} ${trimmed}`
+    })
+    focusTextarea()
+  }
+
   function abilityIcon(ability: ComposerAbility) {
     if (ability.id === 'think-hard') {
       return <BrainCircuit size={14} />
@@ -399,6 +427,56 @@ export const SessionComposer = forwardRef<SessionComposerHandle, SessionComposer
       return
     }
     setSelectedAbilityIds((current) => current.filter((id) => id !== abilityId))
+  }
+
+  function renderQuickSkillSlot() {
+    const configuredSkill = primarySkillName?.trim() || null
+    const disabledSlot = disabled || isSavingSkillSlot
+
+    if (!configuredSkill) {
+      return (
+        <span className="composer-ability-chip">
+          <button
+            type="button"
+            className="composer-ability-btn"
+            onClick={() => setSkillsPickerMode('quick-slot')}
+            aria-label="Configure quick skill slot"
+            title="Configure quick skill slot"
+            disabled={disabledSlot}
+          >
+            <Plus size={14} />
+            <span>Skill Slot</span>
+          </button>
+        </span>
+      )
+    }
+
+    const command = skillCommand(configuredSkill)
+    return (
+      <span className="composer-ability-chip">
+        <button
+          type="button"
+          className="composer-ability-btn composer-ability-btn--with-remove"
+          onClick={() => applySkillCommand(command)}
+          aria-label={`Apply ${command} skill`}
+          title={`Apply ${command}`}
+          disabled={disabledSlot}
+        >
+          <Zap size={14} />
+          <span>{command}</span>
+        </button>
+        <button
+          type="button"
+          className="composer-ability-remove-btn"
+          onClick={() => void clearPrimarySkillName()}
+          aria-label={`Clear ${command} quick skill slot`}
+          title={`Clear ${command}`}
+          disabled={disabledSlot}
+        >
+          <X size={12} />
+        </button>
+      </span>
+    )
   }
 
   function renderAbilityActions() {
@@ -473,7 +551,7 @@ export const SessionComposer = forwardRef<SessionComposerHandle, SessionComposer
   }
 
   return (
-    <div className="hervald-session-composer">
+    <div className={cn('hervald-session-composer', isMobileVariant && 'hervald-session-composer--mobile')}>
       <div className="input-bar">
         {hasContextAttachments && (
           <div className="flex flex-wrap gap-1.5 px-1 pb-1">
@@ -608,37 +686,56 @@ export const SessionComposer = forwardRef<SessionComposerHandle, SessionComposer
 
         {isMobileVariant ? (
           <>
-            <div className="composer-field-stack">
+            <div className="composer-field-stack composer-field-stack--mobile">
               {renderComposerField()}
             </div>
 
             <div className="composer-row composer-row--mobile">
-              <button
-                type="button"
-                className="composer-add-btn"
-                onClick={onOpenAddToChat}
-                aria-label="Add to chat"
-                title="Add to chat"
-                disabled={disabled}
-              >
-                <Plus size={18} />
-              </button>
-
-              {showMobileQueueButton && (
+              <div className="composer-mobile-utility-actions">
                 <button
                   type="button"
-                  className="composer-queue-btn composer-queue-btn--mobile"
-                  onClick={() => setShowQueuePanel(true)}
-                  aria-label="Open queue"
-                  title={queueButtonLabel}
+                  className="composer-add-btn"
+                  onClick={onOpenAddToChat}
+                  aria-label="Add to chat"
+                  title="Add to chat"
+                  disabled={disabled}
                 >
-                  {queueButtonLabel}
+                  <Plus size={18} />
                 </button>
-              )}
 
-              <div className="composer-mobile-actions">
+                {showMobileQueueButton && (
+                  <button
+                    type="button"
+                    className="composer-queue-btn composer-queue-btn--mobile"
+                    onClick={() => setShowQueuePanel(true)}
+                    aria-label="Open queue"
+                    title={queueButtonLabel}
+                  >
+                    <ListChecks size={16} />
+                    <span>{totalQueuedCount}/{queueMaxSize}</span>
+                  </button>
+                )}
+
+                {showMobileQueueDraftButton && (
+                  <button
+                    type="button"
+                    className="composer-queue-message-btn"
+                    onClick={() => {
+                      void handleQueueDraft()
+                    }}
+                    disabled={!canQueueDraft}
+                    aria-label="Queue message"
+                    title={canQueueDraft ? 'Queue message' : 'Type a message to queue'}
+                  >
+                    <ListPlus size={18} />
+                  </button>
+                )}
+
+                {renderQuickSkillSlot()}
                 {renderAbilityActions()}
+              </div>
 
+              <div className="composer-mobile-primary-actions">
                 {isMicSupported && (
                   <button
                     type="button"
@@ -655,19 +752,15 @@ export const SessionComposer = forwardRef<SessionComposerHandle, SessionComposer
 
                 <button
                   type="button"
-                  className={cn('send-btn', primaryActionUsesQueue && 'send-btn--queue')}
+                  className="send-btn"
                   onClick={() => {
-                    if (primaryActionUsesQueue) {
-                      void handleQueueDraft()
-                      return
-                    }
                     void handleSend()
                   }}
                   disabled={primaryActionDisabled}
                   aria-label={primaryActionLabel}
                   title={primaryActionTitle}
                 >
-                  {primaryActionUsesQueue ? <ListPlus size={18} /> : <ArrowUp size={18} />}
+                  <ArrowUp size={18} />
                 </button>
               </div>
             </div>
@@ -697,13 +790,14 @@ export const SessionComposer = forwardRef<SessionComposerHandle, SessionComposer
                     'composer-icon-btn p-2 transition-colors disabled:cursor-not-allowed disabled:opacity-40',
                     showSkills ? 'text-[var(--msg-text)]' : 'text-[var(--msg-text-muted)] hover:text-[var(--msg-text)]',
                   )}
-                  onClick={() => setShowSkills(true)}
+                  onClick={() => setSkillsPickerMode('insert')}
                   aria-label="Skills"
                   disabled={disabled}
                 >
                   <Zap size={18} />
                 </button>
 
+                {renderQuickSkillSlot()}
                 {renderAbilityActions()}
 
                 {isMicSupported && (
@@ -770,10 +864,14 @@ export const SessionComposer = forwardRef<SessionComposerHandle, SessionComposer
         variant="hervald"
         theme={theme}
         onSelectSkill={(command) => {
+          if (skillsPickerMode === 'quick-slot') {
+            return setPrimarySkillName(command)
+          }
           setInputText(`${command} `)
           focusTextarea()
+          return true
         }}
-        onClose={() => setShowSkills(false)}
+        onClose={() => setSkillsPickerMode(null)}
       />
 
       <QueuePanel

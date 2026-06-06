@@ -56,6 +56,12 @@ export const moduleComponentBindings: FrontendModuleBinding[] = [
     component: () => import('@modules/telemetry/page'),
   },
   {
+    name: 'eval',
+    routeId: 'eval.ui',
+    componentKey: 'modules/eval/page',
+    component: () => import('@modules/eval/page'),
+  },
+  {
     name: 'policies',
     routeId: 'policies.ui',
     componentKey: 'modules/policies/page',

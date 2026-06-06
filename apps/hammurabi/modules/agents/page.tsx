@@ -29,6 +29,7 @@ import {
   type ClaudeMaxThinkingTokens,
 } from '../claude-max-thinking-tokens.js'
 import { NewSessionForm } from './components/NewSessionForm'
+import { ProviderAuthPanel } from './components/ProviderAuthPanel'
 import { DEFAULT_SESSION_TAB, filterSessionsByTab, SESSION_TABS, type SessionTab } from './session-tab'
 import { MobileSessionView } from './page-shell/MobileSessionView'
 import { SessionCard } from './page-shell/SessionCard'
@@ -328,6 +329,8 @@ export default function AgentsPage() {
               {showNewSessionForm ? 'Close' : 'New Session'}
             </button>
           </div>
+
+          <ProviderAuthPanel />
 
           {isMobile ? (
             <DismissibleOverlay

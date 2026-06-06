@@ -11,7 +11,12 @@ import { createModules } from './module-registry.js'
 import { mountDeclaredBodyParsers } from './module-http-mount.js'
 import { createWebSocketUpgradeResolver } from './websocket-upgrade-resolver.js'
 import { isCorsOriginAllowed, parseAllowedCorsOrigins } from './cors.js'
+import {
+  resetActiveRuntimeStateForLaunch,
+  shouldStopActiveSessionsOnBoot,
+} from './launch-state-reset.js'
 import { createInstallScriptRouter } from './routes/install-script.js'
+import { configureHttpServerTimeouts } from './http-server-timeouts.js'
 import { AppSettingsStore } from '../modules/settings/store.js'
 import type { AppTheme } from '../modules/settings/types.js'
 
@@ -58,11 +63,25 @@ process.on('unhandledRejection', (reason) => {
 
 const app = express()
 const port = parseInt(process.env.PORT ?? '20001', 10)
+const host = process.env.HAMMURABI_HOST?.trim() || undefined
 const backgroundRuntimeMode = process.env.HAMMURABI_BACKGROUND_RUNTIMES?.trim().toLowerCase()
 const backgroundRuntimesEnabled = !['0', 'false', 'no'].includes(backgroundRuntimeMode ?? '')
 const allowedCorsOrigins = parseAllowedCorsOrigins(process.env.HAMMURABI_ALLOWED_ORIGINS)
 const apiKeyStore = new ApiKeyJsonStore()
 const appSettingsStore = new AppSettingsStore()
+
+if (shouldStopActiveSessionsOnBoot(process.env.HAMMURABI_STOP_ACTIVE_SESSIONS_ON_BOOT)) {
+  const resetResult = await resetActiveRuntimeStateForLaunch()
+  logInfo(
+    `[launch] Stopped stale active state before module init: ` +
+    `${resetResult.streamSessionsStopped} stream session(s), ` +
+    `${resetResult.conversationsStopped} conversation(s), ` +
+    `${resetResult.commanderSessionsStopped} commander session(s)`,
+  )
+  for (const error of resetResult.errors) {
+    logWarn(`[launch] Failed to stop stale active state for ${error}`)
+  }
+}
 
 void bootstrapDefaultMasterKey(apiKeyStore, {
   logWarn,
@@ -175,6 +194,7 @@ if (process.env.NODE_ENV === 'production' && existsSync(distDir)) {
 }
 
 const server = createServer(app)
+const httpServerTimeouts = configureHttpServerTimeouts(server)
 const websocketUpgradeResolver = createWebSocketUpgradeResolver(
   moduleGraph.mountPlan.websockets.flatMap((declaration) => {
     const ownerModule = modules.find((module) => module.name === declaration.ownerModuleId)
@@ -210,7 +230,7 @@ async function shutdownModules(): Promise<void> {
   }
 }
 
-server.listen(port, () => {
+server.listen(port, host, () => {
   for (const signal of ['SIGTERM', 'SIGINT'] as const) {
     process.on(signal, () => {
       if (isShuttingDown) {
@@ -246,7 +266,11 @@ server.listen(port, () => {
   const heapTotalMb = (memory.heapTotal / 1024 / 1024).toFixed(0)
 
   logInfo('Hammurabi server started')
-  logInfo(`Node ${process.version} | PID ${process.pid} | Port ${port}`)
+  logInfo(`Node ${process.version} | PID ${process.pid} | Host ${host ?? '0.0.0.0'} | Port ${port}`)
   logInfo(`Memory: RSS ${rssMb}MB | Heap ${heapUsedMb}/${heapTotalMb}MB`)
+  logInfo(
+    `HTTP timeouts: keepAlive=${httpServerTimeouts.keepAliveTimeoutMs}ms | ` +
+    `headers=${httpServerTimeouts.headersTimeoutMs}ms`,
+  )
   logInfo(`Build: ${buildVersion} | Modules: ${moduleNames}`)
 })

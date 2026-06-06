@@ -1,10 +1,15 @@
 import { describe, expect, it, vi } from 'vitest'
 import WebSocket from 'ws'
 import {
+  buildOpenAIRealtimeTranscriptionSessionUpdate,
   MIN_AUDIO_BUFFER_BYTES,
   OpenAIRealtimeClient,
   isTransientCommitRaceError,
 } from '../openai-realtime'
+import {
+  buildVoiceTranscriptionContext,
+  MAX_TRANSCRIPTION_PROMPT_LENGTH,
+} from '../../voice/transcription-context'
 
 function createSocketMock() {
   return {
@@ -36,6 +41,53 @@ function collectSentEventTypes(ws: WebSocket): string[] {
 }
 
 describe('OpenAIRealtimeClient commit guard', () => {
+  it('builds transcription sessions with prompt context and manual turn finalization', () => {
+    const context = buildVoiceTranscriptionContext({
+      prompt: 'Preserve domain terms from the command room.',
+      terms: ['Hammurabi', 'Gehirn', 'Claude Code', 'OpenCode', 'PMAI', 'Kubernetes', 'gRPC'],
+    })
+
+    const event = buildOpenAIRealtimeTranscriptionSessionUpdate(context) as {
+      session: {
+        audio: {
+          input: {
+            transcription: {
+              model: string
+              prompt: string
+              language: string
+            }
+            turn_detection: unknown
+          }
+        }
+      }
+    }
+
+    expect(event.session.audio.input.transcription.model).toBe('gpt-4o-transcribe')
+    expect(event.session.audio.input.transcription.language).toBe('en')
+    expect(event.session.audio.input.transcription.prompt).toContain('Hammurabi')
+    expect(event.session.audio.input.transcription.prompt).toContain('Claude Code')
+    expect(event.session.audio.input.transcription.prompt).toContain('gRPC')
+    expect(event.session.audio.input.turn_detection).toBeNull()
+  })
+
+  it('uses prepared transcription context without wrapping the prompt a second time', () => {
+    const context = buildVoiceTranscriptionContext({
+      terms: [
+        'commander-d66a5217-ace6-4f00-b2ac-bbd64a9a7e7e-conversation-63da28e7-a05c-43bc-8248-ade7427ba245',
+        'codex',
+      ],
+    })
+    const client = new OpenAIRealtimeClient({
+      apiKey: 'sk-test',
+      transcriptionContext: context,
+    })
+    const resolvedClient = client as unknown as { prompt: string }
+
+    expect(context.prompt.length).toBeLessThanOrEqual(MAX_TRANSCRIPTION_PROMPT_LENGTH)
+    expect(resolvedClient.prompt).toBe(context.prompt)
+    expect(resolvedClient.prompt).not.toContain(`Operator context: ${context.prompt}`)
+  })
+
   it('blocks commit and emits audio_too_short until enough audio has been appended', () => {
     const client = new OpenAIRealtimeClient({ apiKey: 'sk-test' })
     const ws = createSocketMock()

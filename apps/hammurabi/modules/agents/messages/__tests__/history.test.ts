@@ -72,6 +72,93 @@ describe('mapStreamEventsToMessages', () => {
     expect(messages[0]?.text).not.toContain('<workspace-')
   })
 
+  it('dedupes queued user echoes separated by provider status activity', () => {
+    const messages = mapStreamEventsToMessages([
+      {
+        type: 'user',
+        subtype: 'queued_message',
+        message: {
+          role: 'user',
+          content: 'repeat-safe prompt',
+        },
+      },
+      {
+        schemaVersion: 2,
+        id: 'env-status-between-user-echoes',
+        time: '2026-05-29T00:00:00.000Z',
+        source: { provider: 'codex', backend: 'rpc', rawEventType: 'thread/status/changed' },
+        ev: { type: 'provider.activity', title: 'Thread status changed' },
+      },
+      {
+        type: 'user',
+        subtype: 'queued_message',
+        message: {
+          role: 'user',
+          content: 'repeat-safe prompt',
+        },
+      },
+    ] as StreamJsonEvent[])
+
+    expect(messages).toEqual([
+      expect.objectContaining({ kind: 'user', text: 'repeat-safe prompt' }),
+      expect.objectContaining({ kind: 'provider', text: 'Thread status changed' }),
+    ])
+  })
+
+  it('dedupes queued user echoes separated by an empty Codex turn placeholder', () => {
+    const messages = mapStreamEventsToMessages([
+      {
+        type: 'user',
+        subtype: 'queued_message',
+        message: {
+          role: 'user',
+          content: 'status',
+        },
+      },
+      {
+        schemaVersion: 2,
+        id: 'env-status-active',
+        time: '2026-05-29T00:00:00.000Z',
+        source: { provider: 'codex', backend: 'rpc', rawEventType: 'thread/status/changed' },
+        ev: { type: 'provider.activity', title: 'Thread status changed' },
+      },
+      {
+        schemaVersion: 2,
+        id: 'env-empty-turn-start',
+        time: '2026-05-29T00:00:01.000Z',
+        source: { provider: 'codex', backend: 'rpc', rawEventType: 'turn/started' },
+        turnId: 'turn-status',
+        ev: { type: 'message.start', role: 'assistant' },
+      },
+      {
+        schemaVersion: 2,
+        id: 'env-user-start',
+        time: '2026-05-29T00:00:02.000Z',
+        source: { provider: 'codex', backend: 'rpc', rawEventType: 'item/started' },
+        turnId: 'turn-status',
+        itemId: 'user-status',
+        ev: {
+          type: 'provider.activity',
+          title: 'User message item started',
+          detail: 'userMessage',
+        },
+      },
+      {
+        type: 'user',
+        subtype: 'queued_message',
+        message: {
+          role: 'user',
+          content: 'status',
+        },
+      },
+    ] as StreamJsonEvent[])
+
+    const statusMessages = messages.filter((message) => (
+      message.kind === 'user' && message.text === 'status'
+    ))
+    expect(statusMessages).toHaveLength(1)
+  })
+
   it('merges Codex completed reasoning into the active thinking row', () => {
     const started = normalizeCodexEvent('item/started', {
       item: { id: 'reasoning-1', type: 'reasoning' },
@@ -159,6 +246,129 @@ describe('mapStreamEventsToMessages', () => {
 
     expect(messages).toEqual([
       expect.objectContaining({ kind: 'thinking', text: 'visible fallback' }),
+    ])
+  })
+
+  it('projects v2 transcript envelopes through the same reducer path as live events', () => {
+    const messages = mapStreamEventsToMessages([
+      {
+        schemaVersion: 2,
+        id: 'env-turn-start',
+        time: '2026-05-27T00:00:00.000Z',
+        source: { provider: 'codex', backend: 'rpc', rawEventType: 'turn/started' },
+        turnId: 'turn-1',
+        ev: { type: 'turn.start', role: 'assistant' },
+      },
+      {
+        schemaVersion: 2,
+        id: 'env-message-start',
+        time: '2026-05-27T00:00:01.000Z',
+        source: { provider: 'codex', backend: 'rpc', rawEventType: 'item/started' },
+        turnId: 'turn-1',
+        itemId: 'msg-1',
+        ev: { type: 'message.start', role: 'assistant' },
+      },
+      {
+        schemaVersion: 2,
+        id: 'env-message-delta',
+        time: '2026-05-27T00:00:02.000Z',
+        source: { provider: 'codex', backend: 'rpc', rawEventType: 'item/agentMessage/delta' },
+        turnId: 'turn-1',
+        itemId: 'msg-1',
+        ev: { type: 'message.delta', text: 'Transcript v2 says hi', channel: 'final' },
+      },
+      {
+        schemaVersion: 2,
+        id: 'env-tool-start',
+        time: '2026-05-27T00:00:03.000Z',
+        source: { provider: 'codex', backend: 'rpc', rawEventType: 'item/started' },
+        turnId: 'turn-1',
+        itemId: 'tool-1',
+        ev: { type: 'tool.start', toolCallId: 'tool-1', name: 'Bash', input: { command: 'pwd' } },
+      },
+      {
+        schemaVersion: 2,
+        id: 'env-tool-delta',
+        time: '2026-05-27T00:00:04.000Z',
+        source: { provider: 'codex', backend: 'rpc', rawEventType: 'item/commandExecution/outputDelta' },
+        turnId: 'turn-1',
+        itemId: 'tool-1',
+        ev: { type: 'tool.delta', toolCallId: 'tool-1', output: '/tmp/project\n', status: 'running' },
+      },
+      {
+        schemaVersion: 2,
+        id: 'env-provider-raw',
+        time: '2026-05-27T00:00:05.000Z',
+        source: { provider: 'codex', backend: 'rpc', rawEventType: 'thread/custom' },
+        turnId: 'turn-1',
+        ev: { type: 'provider.raw', method: 'thread/custom', payload: { keep: true } },
+      },
+    ] as StreamJsonEvent[])
+
+    expect(messages).toEqual([
+      expect.objectContaining({
+        kind: 'agent',
+        text: 'Transcript v2 says hi',
+        transcript: expect.objectContaining({
+          source: expect.objectContaining({ provider: 'codex', backend: 'rpc' }),
+          itemId: 'msg-1',
+        }),
+      }),
+      expect.objectContaining({
+        kind: 'tool',
+        toolName: 'Bash',
+        toolInput: 'pwd',
+        toolOutput: '/tmp/project\n',
+        transcript: expect.objectContaining({
+          itemId: 'tool-1',
+          providerEventType: 'item/commandExecution/outputDelta',
+        }),
+      }),
+      expect.objectContaining({
+        kind: 'provider',
+        text: 'codex raw: thread/custom',
+        transcript: expect.objectContaining({
+          providerPayload: { keep: true },
+        }),
+      }),
+    ])
+  })
+
+  it('projects persisted legacy Codex raw delta envelopes as agent messages', () => {
+    const messages = mapStreamEventsToMessages([
+      {
+        schemaVersion: 2,
+        id: 'env-legacy-delta-1',
+        time: '2026-05-29T00:00:00.000Z',
+        source: { provider: 'codex', backend: 'rpc', rawEventType: 'item/agentMessage/delta' },
+        turnId: 'turn-legacy',
+        itemId: 'msg-legacy',
+        ev: {
+          type: 'provider.raw',
+          method: 'item/agentMessage/delta',
+          payload: { delta: 'Final ' },
+        },
+      },
+      {
+        schemaVersion: 2,
+        id: 'env-legacy-delta-2',
+        time: '2026-05-29T00:00:01.000Z',
+        source: { provider: 'codex', backend: 'rpc', rawEventType: 'item/agentMessage/delta' },
+        turnId: 'turn-legacy',
+        itemId: 'msg-legacy',
+        ev: {
+          type: 'provider.raw',
+          method: 'item/agentMessage/delta',
+          payload: { delta: 'answer' },
+        },
+      },
+    ] as StreamJsonEvent[])
+
+    expect(messages).toEqual([
+      expect.objectContaining({
+        kind: 'agent',
+        text: 'Final answer',
+      }),
     ])
   })
 })

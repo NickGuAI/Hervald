@@ -1,9 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import {
+  ALFRED_COMMANDER_AVATAR_URL,
+  ASINA_COMMANDER_AVATAR_URL,
   DEFAULT_COMMANDER_AVATAR_URL,
+  EINSTEIN_COMMANDER_AVATAR_URL,
   GAIA_COMMANDER_AVATAR_URL,
   LEGACY_GAIA_COMMANDER_AVATAR_URL,
   profileForApiResponse,
+  resolveDefaultCommanderAvatarUrl,
   resolveCommanderAvatarUrl,
   sanitizeUiProfile,
 } from '../commander-profile.js'
@@ -131,5 +135,20 @@ describe('ensureCommanderVisualProfile', () => {
       null,
       { defaultAvatarUrl: GAIA_COMMANDER_AVATAR_URL },
     )).resolves.toBe(GAIA_COMMANDER_AVATAR_URL)
+  })
+
+  it('uses bundled stock avatars for known starter package templates', () => {
+    expect(resolveDefaultCommanderAvatarUrl({ templateId: 'engineering-manager' }))
+      .toBe(ASINA_COMMANDER_AVATAR_URL)
+    expect(resolveDefaultCommanderAvatarUrl({ templateId: 'general-assistant' }))
+      .toBe(ALFRED_COMMANDER_AVATAR_URL)
+    expect(resolveDefaultCommanderAvatarUrl({ templateId: 'research-intelligence-analyst' }))
+      .toBe(EINSTEIN_COMMANDER_AVATAR_URL)
+  })
+
+  it('keeps Gaia and Atlas fallback behavior for non-stock commanders', () => {
+    expect(resolveDefaultCommanderAvatarUrl({ host: 'gaia' })).toBe(GAIA_COMMANDER_AVATAR_URL)
+    expect(resolveDefaultCommanderAvatarUrl({ templateId: 'custom-package' }))
+      .toBe(DEFAULT_COMMANDER_AVATAR_URL)
   })
 })

@@ -1,8 +1,10 @@
 import { EventEmitter } from 'node:events'
 import WebSocket, { type RawData } from 'ws'
-import { LIVE_TRANSCRIPTION_PROMPT } from './prompts.js'
+import {
+  buildVoiceTranscriptionContext,
+  type VoiceTranscriptionContext,
+} from '../voice/transcription-context.js'
 
-const DEFAULT_MODEL = 'gpt-4o-transcribe'
 const REALTIME_URL = 'wss://api.openai.com/v1/realtime?intent=transcription'
 const PCM16_SAMPLE_RATE = 24_000
 const PCM16_BYTES_PER_SAMPLE = 2
@@ -16,6 +18,8 @@ interface OpenAIRealtimeClientOptions {
   model?: string
   language?: string
   prompt?: string
+  terms?: string[]
+  transcriptionContext?: VoiceTranscriptionContext
 }
 
 interface OpenAIRealtimeServerEvent {
@@ -49,10 +53,6 @@ function asNonEmptyString(value: unknown): string | null {
   return normalized.length > 0 ? normalized : null
 }
 
-function isLikelyLanguageCode(value: string): boolean {
-  return /^[a-z]{2}(?:-[A-Z]{2})?$/.test(value)
-}
-
 function getBase64DecodedByteLength(base64Audio: string): number {
   const paddingChars = base64Audio.endsWith('==') ? 2 : base64Audio.endsWith('=') ? 1 : 0
   return Math.floor((base64Audio.length * 3) / 4) - paddingChars
@@ -77,6 +77,34 @@ export function isTransientCommitRaceError(
   )
 }
 
+export function buildOpenAIRealtimeTranscriptionSessionUpdate(
+  context: Pick<VoiceTranscriptionContext, 'model' | 'prompt' | 'language'>,
+): Record<string, unknown> {
+  return {
+    type: 'session.update',
+    session: {
+      type: 'transcription',
+      audio: {
+        input: {
+          format: {
+            type: 'audio/pcm',
+            rate: 24000,
+          },
+          transcription: {
+            model: context.model,
+            prompt: context.prompt,
+            language: context.language,
+          },
+          turn_detection: null,
+          noise_reduction: {
+            type: 'near_field',
+          },
+        },
+      },
+    },
+  }
+}
+
 export class OpenAIRealtimeClient extends EventEmitter {
   private readonly apiKey: string
   private readonly model: string
@@ -89,12 +117,12 @@ export class OpenAIRealtimeClient extends EventEmitter {
 
   constructor(options: OpenAIRealtimeClientOptions) {
     super()
+    const context: VoiceTranscriptionContext =
+      options.transcriptionContext ?? buildVoiceTranscriptionContext(options)
     this.apiKey = options.apiKey.trim()
-    this.model = options.model?.trim() || DEFAULT_MODEL
-    this.prompt = options.prompt?.trim() || LIVE_TRANSCRIPTION_PROMPT
-
-    const normalizedLanguage = options.language?.trim() ?? 'en'
-    this.language = isLikelyLanguageCode(normalizedLanguage) ? normalizedLanguage : 'en'
+    this.model = context.model
+    this.prompt = context.prompt
+    this.language = context.language
   }
 
   async connect(): Promise<void> {
@@ -129,37 +157,11 @@ export class OpenAIRealtimeClient extends EventEmitter {
       ws.on('open', () => {
         this.ws = ws
         this.connected = true
-        this.sendEvent({
-          type: 'session.update',
-          session: {
-            type: 'transcription',
-            audio: {
-              input: {
-                format: {
-                  type: 'audio/pcm',
-                  rate: 24000,
-                },
-                transcription: {
-                  model: this.model,
-                  prompt: this.prompt,
-                  language: this.language,
-                },
-                // Keep server_vad for streaming partial/final events, but make
-                // silence detection less eager so brief pauses do not trigger
-                // rapid empty-buffer auto-commits upstream.
-                turn_detection: {
-                  type: 'server_vad',
-                  threshold: 0.5,
-                  prefix_padding_ms: 300,
-                  silence_duration_ms: 600,
-                },
-                noise_reduction: {
-                  type: 'near_field',
-                },
-              },
-            },
-          },
-        })
+        this.sendEvent(buildOpenAIRealtimeTranscriptionSessionUpdate({
+          model: this.model,
+          prompt: this.prompt,
+          language: this.language,
+        }))
         finish()
       })
 

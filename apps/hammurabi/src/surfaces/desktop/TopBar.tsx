@@ -83,7 +83,7 @@ const tabBase: CSSProperties = {
 const countersStyle: CSSProperties = {
   display: 'flex',
   alignItems: 'center',
-  gap: 16,
+  gap: 12,
   fontSize: 10.5,
   letterSpacing: '0.16em',
   textTransform: 'uppercase',
@@ -135,6 +135,10 @@ function isModuleActive(module: FrontendNavItem, pathname: string) {
   return pathname === module.path || pathname.startsWith(module.path + '/')
 }
 
+function navOrder(module: FrontendNavItem) {
+  return module.order ?? Number.MAX_SAFE_INTEGER
+}
+
 export function TopBar({ modules, counts }: TopBarProps) {
   const location = useLocation()
   const { theme, toggleTheme, isSaving } = useTheme()
@@ -176,8 +180,32 @@ export function TopBar({ modules, counts }: TopBarProps) {
     (m) => !m.hideFromNav && m.navGroup === 'secondary',
   )
   const activeSecondary = secondaryTabs.some((mod) => isModuleActive(mod, location.pathname))
+  const secondaryNavOrder =
+    secondaryTabs.length > 0 ? Math.min(...secondaryTabs.map(navOrder)) : Number.MAX_SAFE_INTEGER
+  const primaryTabsBeforeOverflow = primaryTabs.filter(
+    (mod) => navOrder(mod) < secondaryNavOrder,
+  )
+  const primaryTabsAfterOverflow = primaryTabs.filter(
+    (mod) => navOrder(mod) >= secondaryNavOrder,
+  )
 
   const { running = 0, stale = 0, exited = 0, pending = 0 } = counts || {}
+  const renderPrimaryTab = (mod: FrontendNavItem) => (
+    <NavLink
+      key={mod.name}
+      to={mod.path}
+      className="font-body"
+      style={({ isActive }) => ({
+        ...tabBase,
+        color: 'var(--hv-fg)',
+        borderBottom: isActive
+          ? '1px solid var(--hv-fg)'
+          : '1px solid transparent',
+      })}
+    >
+      {mod.label}
+    </NavLink>
+  )
 
   return (
     <header style={headerStyle}>
@@ -197,22 +225,7 @@ export function TopBar({ modules, counts }: TopBarProps) {
 
       {/* Tab navigation */}
       <nav style={{ display: 'flex', gap: 4, marginRight: 16 }}>
-        {primaryTabs.map((mod) => (
-          <NavLink
-            key={mod.name}
-            to={mod.path}
-            className="font-body"
-            style={({ isActive }) => ({
-              ...tabBase,
-              color: 'var(--hv-fg)',
-              borderBottom: isActive
-                ? '1px solid var(--hv-fg)'
-                : '1px solid transparent',
-            })}
-          >
-            {mod.label}
-          </NavLink>
-        ))}
+        {primaryTabsBeforeOverflow.map(renderPrimaryTab)}
         {secondaryTabs.length > 0 && (
           <div ref={overflowRef} style={{ position: 'relative' }}>
             <button
@@ -254,6 +267,7 @@ export function TopBar({ modules, counts }: TopBarProps) {
             )}
           </div>
         )}
+        {primaryTabsAfterOverflow.map(renderPrimaryTab)}
       </nav>
 
       {/* Status counters */}
@@ -261,6 +275,21 @@ export function TopBar({ modules, counts }: TopBarProps) {
         <span>
           <b style={countValueStyle}>{running}</b> running
         </span>
+        {pending > 0 && (
+          <NavLink
+            to="/approvals"
+            className="font-body"
+            aria-label={`${pending} pending approval${pending === 1 ? '' : 's'}`}
+            style={{
+              color: 'var(--vermillion-seal)',
+              textDecoration: 'none',
+            }}
+          >
+            <b style={{ ...countValueStyle, color: 'var(--vermillion-seal)' }}>{pending}</b>
+            {' '}
+            pending
+          </NavLink>
+        )}
       </div>
 
       <button

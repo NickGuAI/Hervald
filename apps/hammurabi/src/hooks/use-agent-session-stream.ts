@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { getAccessToken, isAuthRecoveryRequiredError } from '@/lib/api'
-import { getWsBase } from '@/lib/api-base'
+import { getFullUrl, getWsBase } from '@/lib/api-base'
 import type { SessionQueueSnapshot, StreamEvent } from '@/types'
 import {
   createWsDirectDispatcher,
@@ -85,7 +85,7 @@ export async function postInputViaHttpFallback(
 ): Promise<boolean> {
   try {
     const token = await getToken()
-    const response = await fetchImpl(`/api/agents/sessions/${encodeURIComponent(sessionName)}/message`, {
+    const response = await fetchImpl(getFullUrl(`/api/agents/sessions/${encodeURIComponent(sessionName)}/message`), {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',

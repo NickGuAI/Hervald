@@ -11,6 +11,7 @@
   "effort": "max",
   "contextMode": "thin",
   "uiProfile": {
+    "avatar": "/assets/commanders/alfred-profile.svg",
     "speakingTone": "Calm executive assistant",
     "portraitStyleId": "sumi-e"
   }

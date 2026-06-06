@@ -1,5 +1,11 @@
 import type { AgentType } from '../../agents/types.js'
 import type { ClaudeEffortLevel } from '../../claude-effort.js'
+import type {
+  AutomationQuestTrigger,
+  AutomationSessionType,
+  AutomationStatus,
+  AutomationTrigger,
+} from '../../automations/types.js'
 import type { CommanderUiProfile } from '../commander-profile.js'
 import type { CommanderContextMode } from '../store.js'
 
@@ -16,6 +22,27 @@ export interface CommanderPackageExample {
   body: string
 }
 
+export interface CommanderPackageAutomation {
+  id: string
+  label: string
+  purpose: string
+  trigger: AutomationTrigger
+  schedule?: string
+  questTrigger?: AutomationQuestTrigger
+  instruction: string
+  agentType?: AgentType
+  status: AutomationStatus
+  description?: string
+  timezone?: string
+  skills: string[]
+  machine?: string
+  workDir?: string
+  model?: string
+  sessionType?: AutomationSessionType
+  seedMemory?: string
+  maxRuns?: number
+}
+
 export interface CommanderPackageDefinition {
   schemaVersion: 1
   id: string
@@ -29,6 +56,7 @@ export interface CommanderPackageDefinition {
   effort: ClaudeEffortLevel
   contextMode: CommanderContextMode
   skills: CommanderPackageSkill[]
+  automations: CommanderPackageAutomation[]
   examples: CommanderPackageExample[]
   commanderMd: string
   onboarding: string

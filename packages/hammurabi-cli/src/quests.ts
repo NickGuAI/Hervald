@@ -58,22 +58,69 @@ interface CreateOptions {
 
 function printUsage(stdout: Writable): void {
   stdout.write('Usage:\n')
-  stdout.write('  hammurabi quests list [--conversation <id>]\n')
+  stdout.write('  hammurabi quests list [--commander <id>] [--conversation <id>]\n')
   stdout.write(
-    '  hammurabi quests create (--instruction "<text>" | --issue <url>) [--cwd <path>] [--mode <mode>] [--agent <type>] [--skills <s1,s2>] [--source <source>] [--note "<text>"]\n',
+    '  hammurabi quests create [--commander <id>] (--instruction "<text>" | --issue <url>) [--cwd <path>] [--mode <mode>] [--agent <type>] [--skills <s1,s2>] [--source <source>] [--note "<text>"]\n',
   )
-  stdout.write('  hammurabi quests delete <id>\n')
-  stdout.write('  hammurabi quests claim <id> [--conversation <id>]\n')
-  stdout.write('  hammurabi quests note <id> "<text>"\n')
-  stdout.write('  hammurabi quests done <id> --note "<text>"\n')
-  stdout.write('  hammurabi quests fail <id> --note "<text>"\n')
-  stdout.write('  hammurabi quests artifact add <id> --type <type> --label <label> --href <href>\n')
-  stdout.write('  hammurabi quests artifact remove <id> <href>\n')
+  stdout.write('  hammurabi quests delete <id> [--commander <id>]\n')
+  stdout.write('  hammurabi quests claim <id> [--commander <id>] [--conversation <id>]\n')
+  stdout.write('  hammurabi quests note <id> [--commander <id>] "<text>"\n')
+  stdout.write('  hammurabi quests done <id> [--commander <id>] --note "<text>"\n')
+  stdout.write('  hammurabi quests fail <id> [--commander <id>] --note "<text>"\n')
+  stdout.write('  hammurabi quests artifact add <id> [--commander <id>] --type <type> --label <label> --href <href>\n')
+  stdout.write('  hammurabi quests artifact remove <id> [--commander <id>] <href>\n')
+  stdout.write('\nOptions:\n')
+  stdout.write('  --commander <id>  Commander ID. Defaults to HAMMURABI_COMMANDER_ID.\n')
 }
 
 function resolveCommanderId(value: string | null | undefined): string | null {
   const trimmed = (value ?? '').trim()
   return trimmed.length > 0 ? trimmed : null
+}
+
+interface QuestGlobalOptions {
+  args: string[]
+  commanderId: string | null
+}
+
+function parseQuestGlobalOptions(args: readonly string[]): QuestGlobalOptions | null {
+  const strippedArgs: string[] = []
+  let commanderId: string | null = null
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index]
+
+    if (arg === '--commander') {
+      if (commanderId !== null) {
+        return null
+      }
+
+      commanderId = resolveCommanderId(args[index + 1])
+      if (!commanderId) {
+        return null
+      }
+
+      index += 1
+      continue
+    }
+
+    if (arg?.startsWith('--commander=')) {
+      if (commanderId !== null) {
+        return null
+      }
+
+      commanderId = resolveCommanderId(arg.slice('--commander='.length))
+      if (!commanderId) {
+        return null
+      }
+
+      continue
+    }
+
+    strippedArgs.push(arg)
+  }
+
+  return { args: strippedArgs, commanderId }
 }
 
 function parseQuestId(value: string | undefined): string | null {
@@ -492,6 +539,7 @@ function parseQuestDetailsListPayload(payload: unknown): QuestDetails[] {
 async function resolveCommandContext(
   dependencies: QuestsCliDependencies,
   stderr: Writable,
+  explicitCommanderId: string | null,
 ): Promise<CommandContext | null> {
   const readConfig = dependencies.readConfig ?? readHammurabiConfig
   const config = await readConfig()
@@ -501,10 +549,10 @@ async function resolveCommandContext(
   }
 
   const commanderId = resolveCommanderId(
-    dependencies.commanderId ?? process.env.HAMMURABI_COMMANDER_ID,
+    explicitCommanderId ?? dependencies.commanderId ?? process.env.HAMMURABI_COMMANDER_ID,
   )
   if (!commanderId) {
-    stderr.write('HAMMURABI_COMMANDER_ID is required.\n')
+    stderr.write('HAMMURABI_COMMANDER_ID is required. Pass --commander <id> or set HAMMURABI_COMMANDER_ID.\n')
     return null
   }
 
@@ -984,7 +1032,14 @@ export async function runQuestsCli(
   const stderr = dependencies.stderr ?? process.stderr
   const fetchImpl = dependencies.fetchImpl ?? fetch
 
-  const command = args[0]
+  const globalOptions = parseQuestGlobalOptions(args)
+  if (!globalOptions) {
+    printUsage(stdout)
+    return 1
+  }
+
+  const commandArgs = globalOptions.args
+  const command = commandArgs[0]
   if (!command) {
     printUsage(stdout)
     return 1
@@ -1004,13 +1059,13 @@ export async function runQuestsCli(
     return 1
   }
 
-  const context = await resolveCommandContext(dependencies, stderr)
+  const context = await resolveCommandContext(dependencies, stderr, globalOptions.commanderId)
   if (!context) {
     return 1
   }
 
   if (command === 'list') {
-    const listOptions = parseListOptions(args)
+    const listOptions = parseListOptions(commandArgs)
     if (!listOptions) {
       printUsage(stdout)
       return 1
@@ -1019,7 +1074,7 @@ export async function runQuestsCli(
   }
 
   if (command === 'create') {
-    const createOptions = parseCreateOptions(args.slice(1))
+    const createOptions = parseCreateOptions(commandArgs.slice(1))
     if (!createOptions) {
       printUsage(stdout)
       return 1
@@ -1028,8 +1083,8 @@ export async function runQuestsCli(
   }
 
   if (command === 'delete') {
-    const questId = parseQuestId(args[1])
-    if (!questId || args.length !== 2) {
+    const questId = parseQuestId(commandArgs[1])
+    if (!questId || commandArgs.length !== 2) {
       printUsage(stdout)
       return 1
     }
@@ -1037,7 +1092,7 @@ export async function runQuestsCli(
   }
 
   if (command === 'claim') {
-    const claimOptions = parseClaimOptions(args)
+    const claimOptions = parseClaimOptions(commandArgs)
     if (!claimOptions) {
       printUsage(stdout)
       return 1
@@ -1053,9 +1108,9 @@ export async function runQuestsCli(
   }
 
   if (command === 'note') {
-    const questId = parseQuestId(args[1])
-    const text = args[2]?.trim() ?? ''
-    if (!questId || text.length === 0 || args.length !== 3) {
+    const questId = parseQuestId(commandArgs[1])
+    const text = commandArgs[2]?.trim() ?? ''
+    if (!questId || text.length === 0 || commandArgs.length !== 3) {
       printUsage(stdout)
       return 1
     }
@@ -1063,8 +1118,8 @@ export async function runQuestsCli(
   }
 
   if (command === 'done' || command === 'fail') {
-    const questId = parseQuestId(args[1])
-    const note = parseNoteOption(args.slice(2))
+    const questId = parseQuestId(commandArgs[1])
+    const note = parseNoteOption(commandArgs.slice(2))
     if (!questId || !note) {
       printUsage(stdout)
       return 1
@@ -1074,15 +1129,15 @@ export async function runQuestsCli(
   }
 
   if (command === 'artifact') {
-    const subCommand = args[1]
-    const questId = parseQuestId(args[2])
+    const subCommand = commandArgs[1]
+    const questId = parseQuestId(commandArgs[2])
     if (!questId) {
       printUsage(stdout)
       return 1
     }
 
     if (subCommand === 'add') {
-      const parsed = parseArtifactAddOptions(args.slice(3))
+      const parsed = parseArtifactAddOptions(commandArgs.slice(3))
       if (!parsed) {
         printUsage(stdout)
         return 1
@@ -1098,8 +1153,8 @@ export async function runQuestsCli(
     }
 
     if (subCommand === 'remove') {
-      const href = args[3]?.trim() ?? ''
-      if (href.length === 0 || args.length !== 4) {
+      const href = commandArgs[3]?.trim() ?? ''
+      if (href.length === 0 || commandArgs.length !== 4) {
         printUsage(stdout)
         return 1
       }

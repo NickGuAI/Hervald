@@ -941,9 +941,15 @@
     justify-content: flex-end;
   }
 
+  .hervald-chat-pane .msg-user-stack {
+    width: 85%;
+    min-width: 0;
+    max-width: 85%;
+  }
+
   .hervald-chat-pane .msg-user {
     width: fit-content;
-    max-width: min(62%, 100%);
+    max-width: 100%;
     padding: 12px 18px;
     border: 1px solid transparent;
     border-radius: var(--hv-radius-carved);
@@ -1213,6 +1219,22 @@
   .hervald-chat-pane .msg-user-md a:hover,
   .hervald-chat-pane .msg-plan-markdown a:hover {
     opacity: 0.85;
+  }
+  .hervald-chat-pane .msg-inline-image,
+  .hervald-chat-pane .msg-attachment {
+    display: block;
+    width: auto;
+    height: auto;
+    max-width: min(100%, 36rem);
+    object-fit: contain;
+  }
+  .hervald-chat-pane .msg-agent-md .msg-inline-image,
+  .hervald-chat-pane .msg-agent-attachment {
+    max-height: min(20rem, 55vh);
+  }
+  .hervald-chat-pane .msg-user-md .msg-inline-image,
+  .hervald-chat-pane .msg-user .msg-attachment {
+    max-height: min(12rem, 45vh);
   }
   .hervald-chat-pane .msg-agent-md blockquote,
   .hervald-chat-pane .msg-user-md blockquote,
@@ -1940,6 +1962,10 @@
   .hervald-session-composer .composer-ability-btn--custom {
     max-width: 110px;
   }
+  .hervald-session-composer .composer-ability-btn--with-remove {
+    border-top-right-radius: 0;
+    border-bottom-right-radius: 0;
+  }
   .hervald-session-composer .composer-ability-remove-btn {
     display: inline-flex;
     align-items: center;
@@ -2126,10 +2152,133 @@
     opacity: 0.4;
     cursor: not-allowed;
   }
-  .hervald-session-composer .send-btn--queue {
-    background: var(--hv-bg-raised);
-    color: var(--hv-fg);
+  .hervald-session-composer--mobile {
+    border-top: 1px solid var(--msg-border);
+    background: var(--msg-surface);
+  }
+  .hervald-session-composer--mobile .input-bar {
+    gap: 8px;
+    padding: 10px 16px calc(8px + env(safe-area-inset-bottom));
+    border-top: 0;
+    background: transparent;
+  }
+  .hervald-session-composer--mobile .composer-row--mobile {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 0 2px;
+  }
+  .hervald-session-composer--mobile .composer-mobile-utility-actions,
+  .hervald-session-composer--mobile .composer-mobile-primary-actions {
+    display: flex;
+    min-width: 0;
+    align-items: center;
+    gap: 6px;
+  }
+  .hervald-session-composer--mobile .composer-mobile-utility-actions {
+    flex: 1;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .hervald-session-composer--mobile .composer-mobile-utility-actions::-webkit-scrollbar {
+    display: none;
+  }
+  .hervald-session-composer--mobile .composer-mobile-primary-actions {
+    flex-shrink: 0;
+  }
+  .hervald-session-composer--mobile .composer-field-stack {
+    flex: 1;
+    min-width: 0;
+    min-height: 56px;
+    padding: 8px 16px;
     border: 1px solid var(--msg-border);
+    border-radius: 8px 22px 8px 22px;
+    background: var(--hv-bg-raised);
+    box-shadow:
+      var(--hv-shadow-lift),
+      0 2px 0 var(--hv-ink-wash-02);
+  }
+  .hervald-session-composer--mobile .input-field {
+    min-height: 38px;
+    max-height: 148px;
+    padding: 7px 0 8px;
+    line-height: 1.45;
+    overflow-y: auto;
+  }
+  .hervald-session-composer--mobile .composer-add-btn,
+  .hervald-session-composer--mobile .composer-queue-message-btn,
+  .hervald-session-composer--mobile .mic-btn,
+  .hervald-session-composer--mobile .send-btn,
+  .hervald-session-composer--mobile .composer-row--mobile .composer-ability-btn {
+    width: 36px;
+    height: 36px;
+    min-height: 36px;
+    border-radius: 999px;
+  }
+  .hervald-session-composer--mobile .composer-add-btn,
+  .hervald-session-composer--mobile .composer-queue-message-btn,
+  .hervald-session-composer--mobile .mic-btn,
+  .hervald-session-composer--mobile .composer-row--mobile .composer-ability-btn {
+    border-color: transparent;
+    background: transparent;
+  }
+  .hervald-session-composer--mobile .composer-add-btn:hover:not(:disabled),
+  .hervald-session-composer--mobile .composer-queue-message-btn:hover:not(:disabled),
+  .hervald-session-composer--mobile .mic-btn:hover:not(:disabled),
+  .hervald-session-composer--mobile .composer-row--mobile .composer-ability-btn:hover:not(:disabled) {
+    background: var(--hv-ink-wash-01);
+  }
+  .hervald-session-composer--mobile .composer-queue-message-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--msg-text-muted);
+    flex-shrink: 0;
+    cursor: pointer;
+    transition: color 0.2s ease, background-color 0.2s ease, transform 0.2s ease;
+  }
+  .hervald-session-composer--mobile .composer-queue-message-btn:active:not(:disabled) {
+    transform: scale(0.92);
+  }
+  .hervald-session-composer--mobile .composer-queue-message-btn:disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+  }
+  .hervald-session-composer--mobile .composer-queue-btn--mobile {
+    min-height: 36px;
+    max-width: 72px;
+    gap: 4px;
+    padding: 0 9px;
+    border-radius: 999px;
+    letter-spacing: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .hervald-session-composer--mobile .composer-queue-btn--mobile span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .hervald-session-composer--mobile .composer-footer {
+    padding: 0 18px;
+  }
+  @media (max-width: 390px) {
+    .hervald-session-composer--mobile .input-bar {
+      padding-left: 10px;
+      padding-right: 10px;
+    }
+    .hervald-session-composer--mobile .composer-row--mobile {
+      gap: 4px;
+      padding: 0;
+    }
+    .hervald-session-composer--mobile .composer-queue-btn--mobile {
+      max-width: 64px;
+      padding: 0 7px;
+    }
+  }
+
+  .session-view-overlay .msg-system--awaiting-input {
+    display: none;
   }
 
   /* ── Session header approvals button ───────────── */

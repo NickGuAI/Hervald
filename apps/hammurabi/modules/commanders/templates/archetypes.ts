@@ -10,9 +10,16 @@ export interface CommanderArchetype {
   id: string
   label: string
   description: string
+  defaultDisplayName?: string
+  defaultAgentType?: string
+  defaultCwd?: string
   defaultIdentityOperatingStyle: string
   defaultHeartbeatMinutes: number
+  defaultMaxTurns?: number
   defaultContextMode: CommanderContextMode
+  defaultContextConfig?: {
+    fatPinInterval?: number
+  }
   suggestedTaskSource?: CommanderArchetypeTaskSource
 }
 
@@ -47,6 +54,27 @@ export const COMMANDER_ARCHETYPES: CommanderArchetype[] = [
       'Operations engineer who monitors system health, manages deployments, and drives incident response with clear updates.',
     defaultHeartbeatMinutes: 5,
     defaultContextMode: 'thin',
+  },
+  {
+    id: 'benchmark',
+    label: 'Benchmark',
+    description: 'Benchmark-only evaluation runs against the Hammurabi benchmark adapters workspace.',
+    defaultDisplayName: 'Benchmark Commander',
+    defaultAgentType: 'codex',
+    defaultCwd: '/home/builder/App/benchmarks/hammurabi',
+    defaultIdentityOperatingStyle:
+      'Benchmark-only commander. Run benchmark tasks exactly as assigned, keep scope limited to benchmark execution and reporting, and avoid taking on unrelated product or operations work.',
+    defaultHeartbeatMinutes: 30,
+    defaultMaxTurns: 300,
+    defaultContextMode: 'fat',
+    defaultContextConfig: {
+      fatPinInterval: 2,
+    },
+    suggestedTaskSource: {
+      owner: 'NickGuAI',
+      repo: 'Hervald',
+      label: 'benchmark',
+    },
   },
   {
     id: 'custom',

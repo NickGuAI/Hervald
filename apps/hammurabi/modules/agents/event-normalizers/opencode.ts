@@ -1,4 +1,7 @@
 import type { HammurabiEvent, HammurabiEventSource, HammurabiUsage } from '../../../src/types/hammurabi-events.js'
+import type { TranscriptEnvelope } from '../../../src/types/transcript-envelope.js'
+import { bridgeLegacyEventToTranscriptEnvelopes } from '../transcript-legacy-bridge.js'
+import { createTranscriptId } from '../transcript-id.js'
 
 const OPENCODE_EVENT_SOURCE: HammurabiEventSource = {
   provider: 'opencode',
@@ -10,6 +13,10 @@ type OpenCodeBlockType = 'text' | 'thinking'
 export interface OpenCodeTurnState {
   nextBlockIndex: number
   openBlock: null | {
+    index: number
+    type: OpenCodeBlockType
+  }
+  lastCompletedBlock?: {
     index: number
     type: OpenCodeBlockType
   }
@@ -71,11 +78,17 @@ function stringifyUnknown(value: unknown): string | undefined {
   }
 }
 
-function closeOpenBlock(state: OpenCodeTurnState): HammurabiEvent[] {
+function closeOpenBlock(
+  state: OpenCodeTurnState,
+  options: { reusableForLateDelta?: boolean } = {},
+): HammurabiEvent[] {
   if (!state.openBlock) {
     return []
   }
-  const { index } = state.openBlock
+  const { index, type } = state.openBlock
+  state.lastCompletedBlock = options.reusableForLateDelta
+    ? { index, type }
+    : undefined
   state.openBlock = null
   return [withOpenCodeSource({ type: 'content_block_stop', index })]
 }
@@ -86,9 +99,16 @@ function openBlock(state: OpenCodeTurnState, type: OpenCodeBlockType): Hammurabi
   }
 
   const events = closeOpenBlock(state)
+  if (!state.openBlock && state.lastCompletedBlock?.type === type) {
+    state.openBlock = state.lastCompletedBlock
+    state.lastCompletedBlock = undefined
+    return events
+  }
+
   const index = state.nextBlockIndex
   state.nextBlockIndex += 1
   state.openBlock = { index, type }
+  state.lastCompletedBlock = undefined
   events.push(withOpenCodeSource({
     type: 'content_block_start',
     index,
@@ -321,6 +341,235 @@ function describeStopReason(stopReason: string | undefined): { result: string; i
   }
 }
 
+function createOpenCodeEnvelope(
+  update: Record<string, unknown>,
+  ev: TranscriptEnvelope['ev'],
+  overrides: Partial<Omit<TranscriptEnvelope, 'schemaVersion' | 'id' | 'time' | 'source' | 'ev'>> = {},
+): TranscriptEnvelope {
+  const sessionUpdate = readTrimmedString(update.sessionUpdate) ?? readTrimmedString(update.type)
+  const itemId = overrides.itemId
+    ?? readTrimmedId(update.id)
+    ?? readTrimmedId(update.toolCallId)
+  const turnId = overrides.turnId
+    ?? readTrimmedId(update.turnId)
+    ?? readTrimmedId(update.sessionId)
+  return {
+    schemaVersion: 2,
+    id: createTranscriptId(),
+    time: new Date().toISOString(),
+    source: {
+      provider: 'opencode',
+      backend: 'acp',
+      ...(readTrimmedString(update.sessionId) ? { sessionId: readTrimmedString(update.sessionId) } : {}),
+      ...(sessionUpdate ? { rawEventType: sessionUpdate } : {}),
+      ...(itemId ? { rawEventId: itemId } : {}),
+    },
+    ...(turnId ? { turnId } : {}),
+    ...(itemId ? { itemId } : {}),
+    ...(overrides.parentId ? { parentId: overrides.parentId } : {}),
+    ...(overrides.subagentId ? { subagentId: overrides.subagentId } : {}),
+    ev,
+  }
+}
+
+function createOpenCodeRawEnvelope(update: Record<string, unknown>): TranscriptEnvelope {
+  return createOpenCodeEnvelope(update, {
+    type: 'provider.raw',
+    method: readTrimmedString(update.sessionUpdate) ?? readTrimmedString(update.type),
+    payload: update,
+  })
+}
+
+function createOpenCodeRawPayloadEnvelope(payload: unknown): TranscriptEnvelope {
+  return {
+    schemaVersion: 2,
+    id: createTranscriptId(),
+    time: new Date().toISOString(),
+    source: {
+      provider: 'opencode',
+      backend: 'acp',
+    },
+    ev: {
+      type: 'provider.raw',
+      payload,
+    },
+  }
+}
+
+function readOpenCodeParentId(part: Record<string, unknown>): string | undefined {
+  return readTrimmedId(part.parentId)
+    ?? readTrimmedId(part.parentPartId)
+    ?? readTrimmedId(part.parentToolCallId)
+    ?? readTrimmedId(asObject(part.parent)?.id)
+}
+
+function mapOpenCodePart(update: Record<string, unknown>, rawPart: unknown): TranscriptEnvelope[] {
+  const part = asObject(rawPart)
+  if (!part) {
+    return [createOpenCodeEnvelope(update, {
+      type: 'provider.raw',
+      method: `${readTrimmedString(update.sessionUpdate) ?? readTrimmedString(update.type) ?? 'message'}/part`,
+      payload: rawPart,
+    })]
+  }
+  const partType = readTrimmedString(part.type)
+  const partId = readTrimmedId(part.id) ?? readTrimmedId(part.toolCallId) ?? createTranscriptId()
+  const subagentId = readTrimmedId(part.subagentId) ?? readTrimmedId(part.agentId)
+  const parentId = readOpenCodeParentId(part)
+  const identity = {
+    itemId: partId,
+    ...(subagentId ? { subagentId } : {}),
+    ...(parentId ? { parentId } : {}),
+  }
+  switch (partType) {
+    case 'text':
+      return typeof part.text === 'string' && part.text.length > 0
+        ? [createOpenCodeEnvelope(update, { type: 'message.delta', text: part.text, channel: 'final' }, identity)]
+        : []
+    case 'reasoning':
+      return typeof part.text === 'string' && part.text.length > 0
+        ? [createOpenCodeEnvelope(update, { type: 'thinking.delta', text: part.text }, identity)]
+        : []
+    case 'file':
+    case 'patch':
+      return [createOpenCodeEnvelope(update, {
+        type: 'file.change',
+        path: readTrimmedString(part.path) ?? readTrimmedString(part.file) ?? '',
+        action: partType,
+        data: part,
+      }, identity)]
+    case 'tool':
+    case 'task':
+    case 'subtask':
+    case 'agent':
+    case 'read':
+    case 'glob':
+    case 'mcp':
+    case 'todowrite':
+    case 'todo': {
+      const status = readTrimmedString(part.status)
+      if (status === 'completed' || status === 'failed') {
+        return [createOpenCodeEnvelope(update, {
+          type: 'tool.end',
+          toolCallId: partId,
+          status,
+          result: part.output ?? part.result ?? part,
+        }, identity)]
+      }
+      return [createOpenCodeEnvelope(update, {
+        type: 'tool.start',
+        toolCallId: partId,
+        name: readTrimmedString(part.name) ?? readTrimmedString(part.title) ?? partType,
+        input: part.input ?? part.args ?? part,
+      }, identity)]
+    }
+    case 'step-start':
+    case 'step-finish':
+    case 'snapshot':
+    case 'retry':
+    case 'compaction':
+      return [createOpenCodeEnvelope(update, {
+        type: 'provider.activity',
+        title: partType,
+        data: part,
+      }, identity)]
+    default:
+      return [createOpenCodeEnvelope(update, {
+        type: 'provider.raw',
+        method: `${readTrimmedString(update.sessionUpdate) ?? readTrimmedString(update.type) ?? 'message'}/part:${partType ?? 'unknown'}`,
+        payload: part,
+      }, identity)]
+  }
+}
+
+export function mapOpenCodeToTranscriptEnvelopes(
+  rawUpdate: unknown,
+  state: OpenCodeTurnState,
+): TranscriptEnvelope[] {
+  const update = asObject(rawUpdate)
+  if (!update) {
+    return [createOpenCodeRawPayloadEnvelope(rawUpdate)]
+  }
+
+  const sessionUpdate = readTrimmedString(update.sessionUpdate) ?? readTrimmedString(update.type)
+  if (!sessionUpdate) {
+    return [createOpenCodeRawEnvelope(update)]
+  }
+
+  if (sessionUpdate === 'tool_call_update') {
+    const status = readTrimmedString(update.status)
+    if (status && status !== 'completed' && status !== 'failed') {
+      const toolCallId = readTrimmedString(update.toolCallId) ?? createTranscriptId()
+      return [createOpenCodeEnvelope(update, {
+        type: 'tool.delta',
+        toolCallId,
+        status,
+        output: extractToolOutput(update.content) ?? stringifyUnknown(update.rawOutput),
+        data: update,
+      }, { itemId: toolCallId })]
+    }
+  }
+
+  const normalized = normalizeOpenCodeSessionUpdate(update, state)
+  if (normalized) {
+    const events = Array.isArray(normalized) ? normalized : [normalized]
+    return events.flatMap((event) => bridgeLegacyEventToTranscriptEnvelopes(event))
+  }
+
+  const parts = Array.isArray(update.parts)
+    ? update.parts
+    : (Array.isArray(asObject(update.message)?.parts) ? asObject(update.message)?.parts as unknown[] : [])
+  const partEvents = parts.flatMap((part) => mapOpenCodePart(update, part))
+  if (partEvents.length > 0) {
+    return partEvents
+  }
+
+  if (
+    sessionUpdate.includes('permission') ||
+    sessionUpdate.includes('question') ||
+    sessionUpdate.includes('todo') ||
+    sessionUpdate.includes('status') ||
+    sessionUpdate.startsWith('session') ||
+    sessionUpdate.startsWith('message')
+  ) {
+    return [createOpenCodeEnvelope(update, {
+      type: 'provider.activity',
+      title: sessionUpdate,
+      data: update,
+    })]
+  }
+
+  return [createOpenCodeRawEnvelope(update)]
+}
+
+export function mapOpenCodePromptResponseToTranscriptEnvelopes(
+  rawResult: unknown,
+  state: OpenCodeTurnState,
+): TranscriptEnvelope[] {
+  const bridged = normalizeOpenCodePromptResponse(rawResult, state)
+    .flatMap((event) => bridgeLegacyEventToTranscriptEnvelopes(event))
+  const usageEnvelope = bridged.find((event) =>
+    event.ev.type === 'provider.activity'
+    && typeof event.ev.data === 'object'
+    && event.ev.data !== null
+    && 'usage' in event.ev.data,
+  )
+  const usage = usageEnvelope?.ev.type === 'provider.activity'
+    ? (usageEnvelope.ev.data as { usage?: unknown }).usage
+    : undefined
+  return bridged.map((event) => (
+    event.ev.type === 'turn.end' && usage
+      ? {
+          ...event,
+          ev: {
+            ...event.ev,
+            usage,
+          },
+        }
+      : event
+  ))
+}
+
 export function createOpenCodeTurnState(): OpenCodeTurnState {
   return {
     nextBlockIndex: 0,
@@ -453,7 +702,7 @@ export function normalizeOpenCodePromptResponse(
   const finalResult = describeStopReason(stopReason)
 
   return [
-    ...closeOpenBlock(state),
+    ...closeOpenBlock(state, { reusableForLateDelta: true }),
     withOpenCodeSource({
       type: 'message_delta',
       delta: stopReason ? { stop_reason: stopReason } : undefined,

@@ -458,7 +458,7 @@ describe('MobileSessionShell', () => {
     }
   })
 
-  it('uses semantic foreground tokens for Start chat in both themes', async () => {
+  it('uses semantic foreground tokens for Resume chat in both themes', async () => {
     for (const theme of ['dark', 'light'] as const) {
       renderShell({
         theme,
@@ -471,7 +471,7 @@ describe('MobileSessionShell', () => {
         clickSelector('button[aria-label="Session actions"]')
       })
 
-      expectSemanticMenuButton(findButtonByText('Start chat'))
+      expectSemanticMenuButton(findButtonByText('Resume chat'))
 
       cleanupShell()
     }
@@ -683,7 +683,112 @@ describe('MobileSessionShell', () => {
     expect(onSetTheme).toHaveBeenCalledWith('dark')
   })
 
-  it('exposes conversation Start in drawer when canStartConversation', async () => {
+  it('shows a resume panel instead of transcript and composer for stopped conversations', async () => {
+    const onStartConversation = vi.fn(async () => undefined)
+    renderShell({
+      conversation: buildConversation({ status: 'idle' }),
+      composerEnabled: false,
+      composerSendReady: false,
+      onStartConversation,
+    })
+
+    expect(document.body.querySelector('[data-testid="mobile-stopped-conversation-panel"]')).not.toBeNull()
+    expect(document.body.querySelector('[data-testid="transcript"]')).toBeNull()
+    expect(document.body.querySelector('[data-testid="session-composer"]')).toBeNull()
+
+    flushSync(() => {
+      clickSelector('[data-testid="mobile-stopped-conversation-start-button"]')
+    })
+    await Promise.resolve()
+
+    expect(onStartConversation).toHaveBeenCalledWith('conv-1')
+  })
+
+  it('shows a loading panel after tapping resume until the start request settles', async () => {
+    let resolveStart: (() => void) | null = null
+    const onStartConversation = vi.fn(() => new Promise<void>((resolve) => {
+      resolveStart = resolve
+    }))
+
+    renderShell({
+      conversation: buildConversation({ status: 'idle' }),
+      composerEnabled: false,
+      composerSendReady: false,
+      onStartConversation,
+    })
+
+    await act(async () => {
+      clickSelector('[data-testid="mobile-stopped-conversation-start-button"]')
+    })
+
+    expect(onStartConversation).toHaveBeenCalledWith('conv-1')
+    expect(document.body.querySelector('[data-testid="mobile-conversation-starting-panel"]')).not.toBeNull()
+    expect(document.body.textContent).toContain('Preparing chat...')
+    expect(document.body.querySelector('[data-testid="transcript"]')).toBeNull()
+    expect(document.body.querySelector('[data-testid="session-composer"]')).toBeNull()
+
+    await act(async () => {
+      resolveStart?.()
+    })
+  })
+
+  it('keeps showing the loading panel while the conversation read model is starting', async () => {
+    renderShell({
+      conversation: buildConversation({
+        status: 'active',
+        runtimeState: 'starting',
+        websocketReady: false,
+        allowedActions: {
+          send: false,
+          queue: false,
+          media: false,
+          start: false,
+          pause: false,
+          resume: false,
+          archive: true,
+          delete: true,
+          updateProvider: false,
+        },
+      }),
+      composerEnabled: false,
+      composerSendReady: false,
+      onStartConversation: vi.fn(async () => undefined),
+    })
+
+    expect(document.body.querySelector('[data-testid="mobile-conversation-starting-panel"]')).not.toBeNull()
+    expect(document.body.querySelector('[data-testid="mobile-stopped-conversation-panel"]')).toBeNull()
+    expect(document.body.querySelector('[data-testid="transcript"]')).toBeNull()
+    expect(document.body.querySelector('[data-testid="session-composer"]')).toBeNull()
+  })
+
+  it('shows a failed startup panel when the conversation read model reports failure', async () => {
+    const onStartConversation = vi.fn(async () => undefined)
+
+    renderShell({
+      conversation: buildConversation({
+        status: 'idle',
+        runtimeState: 'failed',
+        runtimeError: 'Provider login expired.',
+      }),
+      composerEnabled: false,
+      composerSendReady: false,
+      onStartConversation,
+    })
+
+    expect(document.body.querySelector('[data-testid="mobile-conversation-start-failed-panel"]')).not.toBeNull()
+    expect(document.body.textContent).toContain('Chat failed to start')
+    expect(document.body.textContent).toContain('Provider login expired.')
+    expect(document.body.querySelector('[data-testid="transcript"]')).toBeNull()
+    expect(document.body.querySelector('[data-testid="session-composer"]')).toBeNull()
+
+    flushSync(() => {
+      clickSelector('[data-testid="mobile-conversation-start-retry-button"]')
+    })
+
+    expect(onStartConversation).toHaveBeenCalledWith('conv-1')
+  })
+
+  it('exposes conversation Resume in drawer when canStartConversation', async () => {
     const onStartConversation = vi.fn(async () => undefined)
     renderShell({
       conversation: buildConversation({ status: 'idle' }),
@@ -693,10 +798,10 @@ describe('MobileSessionShell', () => {
     flushSync(() => {
       clickSelector('button[aria-label="Session actions"]')
     })
-    expect(document.body.textContent).toContain('Start chat')
+    expect(document.body.textContent).toContain('Resume chat')
 
     flushSync(() => {
-      clickButtonByText('Start chat')
+      clickButtonByText('Resume chat')
     })
 
     expect(onStartConversation).toHaveBeenCalledWith('conv-1')

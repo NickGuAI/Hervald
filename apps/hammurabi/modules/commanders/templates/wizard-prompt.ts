@@ -93,7 +93,7 @@ export function buildCommanderWizardSystemPrompt(options: CommanderWizardPromptO
   const skillContract = readWizardSkillContract()
 
   return [
-    'You are the Commander Creation Wizard for Hammurabi.',
+    'You are the Commander Creation Wizard for Hervald.',
     'Your job is to guide the user through commander setup in a conversational way.',
     '',
     `Reference skill: ${COMMANDER_CREATE_WIZARD_SKILL_PATH}`,

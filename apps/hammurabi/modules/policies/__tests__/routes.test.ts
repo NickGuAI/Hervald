@@ -1077,6 +1077,94 @@ describe('policies routes', () => {
     }
   })
 
+  it('exposes enriched Codex Apps approval details in /api/approvals/pending', async () => {
+    const server = await startServer()
+
+    try {
+      const approval = await server.approvalCoordinator.enqueue({
+        source: 'codex',
+        sessionId: 'codex-mcp-elicitation',
+        actionId: 'send-email',
+        actionLabel: 'Send Email',
+        toolName: 'mcp__codex_apps__gmail_send_email',
+        toolInput: {
+          to: 'matt.feroz@example.com',
+          subject: 'Need approval',
+          body: 'Can you review the deployment note?',
+          attachments: ['/tmp/deployment-note.pdf', '/tmp/context.txt'],
+        },
+        context: {
+          summary: 'To matt.feroz@example.com | Subject: Need approval',
+          preview: 'Can you review the deployment note?',
+          details: {
+            Provider: 'codex',
+            Connector: 'codex_apps',
+            Tool: 'gmail_send_email',
+            To: 'matt.feroz@example.com',
+            Subject: 'Need approval',
+            Attachments: '/tmp/deployment-note.pdf, /tmp/context.txt',
+            'Attachment Count': '2',
+            Session: 'codex-mcp-elicitation',
+            CWD: '/tmp/hammurabi-codex-mcp',
+            'Request ID': '912',
+          },
+        },
+      })
+
+      const pendingResponse = await fetch(`${server.baseUrl}/api/approvals/pending`, {
+        headers: AUTH_HEADERS,
+      })
+      const pendingPayload = await pendingResponse.json() as {
+        approvals: Array<{
+          approvalId?: string
+          source?: string
+          actionId?: string
+          previewText?: string
+          details?: Array<{ label: string; value: string }>
+          context?: { details?: Record<string, string> }
+        }>
+      }
+
+      expect(pendingResponse.status).toBe(200)
+      expect(pendingPayload.approvals).toEqual([
+        expect.objectContaining({
+          approvalId: approval.id,
+          source: 'codex',
+          actionId: 'send-email',
+          previewText: 'Can you review the deployment note?',
+          context: expect.objectContaining({
+            details: expect.objectContaining({
+              Provider: 'codex',
+              Connector: 'codex_apps',
+              Tool: 'gmail_send_email',
+              To: 'matt.feroz@example.com',
+              Subject: 'Need approval',
+              Attachments: '/tmp/deployment-note.pdf, /tmp/context.txt',
+              'Attachment Count': '2',
+              Session: 'codex-mcp-elicitation',
+              CWD: '/tmp/hammurabi-codex-mcp',
+              'Request ID': '912',
+            }),
+          }),
+        }),
+      ])
+      expect(pendingPayload.approvals[0].details).toEqual(expect.arrayContaining([
+        { label: 'Provider', value: 'codex' },
+        { label: 'Connector', value: 'codex_apps' },
+        { label: 'Tool', value: 'gmail_send_email' },
+        { label: 'To', value: 'matt.feroz@example.com' },
+        { label: 'Subject', value: 'Need approval' },
+        { label: 'Attachments', value: '/tmp/deployment-note.pdf, /tmp/context.txt' },
+        { label: 'Attachment Count', value: '2' },
+        { label: 'Session', value: 'codex-mcp-elicitation' },
+        { label: 'CWD', value: '/tmp/hammurabi-codex-mcp' },
+        { label: 'Request ID', value: '912' },
+      ]))
+    } finally {
+      await server.close()
+    }
+  })
+
   it('resolves queued approval commander display names in /api/approvals/pending', async () => {
     const getCommanderName = vi.fn((commanderId: string | null | undefined) =>
       commanderId === 'commander-atlas' ? 'Atlas' : null,

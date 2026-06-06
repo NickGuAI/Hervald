@@ -9,6 +9,7 @@ import {
   profileForApiResponse,
   GAIA_COMMANDER_AVATAR_URL,
   readCommanderUiProfile,
+  resolveDefaultCommanderAvatarUrl,
   resolveCommanderAvatarUrl,
   writeCommanderUiProfile,
 } from '../commanders/commander-profile.js'
@@ -32,6 +33,7 @@ import {
   createFounderBootstrapCandidate,
   resolveFounderAvatarBackfillUrl,
 } from '../operators/founder-bootstrap.js'
+import { resolveFounderAvatarSrc } from '../operators/founder-avatar.js'
 import {
   DEFAULT_FOUNDER_ORG_SETUP_FORM_VALUES,
   FOUNDER_SETUP_COMPLETED_PATH,
@@ -157,11 +159,28 @@ function createCommanderOrgStore(
   }
 }
 
-function createProfileStore(commanderDataDir: string): BuildOrgTreeDependencies['profileStore'] {
+function createProfileStore(
+  commanderDataDir: string,
+  sessionStore: Pick<CommanderSessionStore, 'list'>,
+): BuildOrgTreeDependencies['profileStore'] {
   return {
     async getAvatarUrl(commanderId: string): Promise<string | null> {
-      const profile = await readCommanderUiProfile(commanderId, commanderDataDir)
-      return resolveCommanderAvatarUrl(commanderId, commanderDataDir, profile)
+      const [profile, sessions] = await Promise.all([
+        readCommanderUiProfile(commanderId, commanderDataDir),
+        sessionStore.list(),
+      ])
+      const session = sessions.find((entry) => entry.id === commanderId)
+      return resolveCommanderAvatarUrl(
+        commanderId,
+        commanderDataDir,
+        profile,
+        {
+          defaultAvatarUrl: resolveDefaultCommanderAvatarUrl({
+            host: session?.host ?? null,
+            templateId: session?.templateId ?? null,
+          }),
+        },
+      )
     },
     async getProfile(commanderId: string) {
       return profileForApiResponse(commanderId, await readCommanderUiProfile(commanderId, commanderDataDir))
@@ -244,10 +263,6 @@ async function backfillFounderAvatarFromUser(
   founder: Operator,
   user: AuthUser | undefined,
 ): Promise<Operator> {
-  if (founder.avatarUrl?.trim()) {
-    return founder
-  }
-
   const avatarUrl = resolveFounderAvatarBackfillUrl(founder, user)
   if (!avatarUrl) {
     return founder
@@ -331,7 +346,7 @@ export function createOrgRouter(options: OrgRouterOptions = {}): Router {
     ?? new CommanderSessionStore(resolveCommanderSessionStorePath(commanderDataDir))
   const conversationStore = options.conversationStore ?? new ConversationStore(commanderDataDir)
   const questStore = options.questStore ?? new QuestStore(commanderDataDir)
-  const profileStore = options.profileStore ?? createProfileStore(commanderDataDir)
+  const profileStore = options.profileStore ?? createProfileStore(commanderDataDir, sessionStore)
   const orgIdentityStore = options.orgIdentityStore ?? new OrgIdentityStore()
   let automationStorePromise: Promise<BuildOrgTreeDependencies['automationStore']> | null = null
   let gaiaSeedPromise: Promise<void> | null = null
@@ -527,9 +542,8 @@ export function createOrgRouter(options: OrgRouterOptions = {}): Router {
     const founderId = existingFounder?.id
       ?? bootstrapCandidate?.id
       ?? buildFounderIdFromEmail(payload.founder.email)
-    const founderAvatarUrl = existingFounder?.avatarUrl
-      ?? bootstrapCandidate?.avatarUrl
-      ?? null
+    const founderAvatarUrl = resolveFounderAvatarSrc(existingFounder, null)
+      ?? resolveFounderAvatarSrc(bootstrapCandidate, null)
     const founderCreatedAt = existingFounder?.createdAt
       ?? bootstrapCandidate?.createdAt
       ?? new Date().toISOString()

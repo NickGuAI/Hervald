@@ -30,6 +30,18 @@ export interface CodexApprovalRawEvent {
   replyDeps: CodexApprovalReplyDeps
 }
 
+function codexApprovalDecisionFromPolicyDecision(
+  decision: ActionPolicyGateResult['decision'],
+): CodexApprovalDecision {
+  if (decision === 'allow') {
+    return 'accept'
+  }
+  if (decision === 'cancel') {
+    return 'cancel'
+  }
+  return 'decline'
+}
+
 function buildCodexApprovalResponse(
   request: CodexPendingApprovalRequest,
   decision: CodexApprovalDecision,
@@ -146,7 +158,7 @@ export const codexApprovalAdapter = registerApprovalAdapter<ProviderApprovalAdap
     const delivery = sendCodexApprovalReply(
       session,
       rawEvent.request,
-      result.decision === 'allow' ? 'accept' : 'decline',
+      codexApprovalDecisionFromPolicyDecision(result.decision),
       rawEvent.replyDeps,
       {
         notifyNativeQueue: false,

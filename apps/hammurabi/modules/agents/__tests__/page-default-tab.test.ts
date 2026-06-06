@@ -1,5 +1,5 @@
 import { createElement } from 'react'
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { MemoryRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { renderToStaticMarkup } from 'react-dom/server'
@@ -8,6 +8,7 @@ import type { AgentSession } from '@/types'
 const mocks = vi.hoisted(() => ({
   useAgentSessions: vi.fn(),
   useMachines: vi.fn(),
+  useProviderAuthSnapshots: vi.fn(),
 }))
 
 vi.mock('@/hooks/use-agents', () => ({
@@ -16,6 +17,7 @@ vi.mock('@/hooks/use-agents', () => ({
   resumeSession: vi.fn(),
   useAgentSessions: mocks.useAgentSessions,
   useMachines: mocks.useMachines,
+  useProviderAuthSnapshots: mocks.useProviderAuthSnapshots,
 }))
 
 vi.mock('@/hooks/use-is-mobile', () => ({
@@ -65,6 +67,13 @@ function renderAgentsPageHtml(): string {
 }
 
 describe('AgentsPage default session tab', () => {
+  beforeEach(() => {
+    mocks.useProviderAuthSnapshots.mockReturnValue({
+      data: { snapshots: [] },
+      refetch: vi.fn(),
+    })
+  })
+
   it('defaults to commander and shows commander sessions on initial render', () => {
     const sessions: AgentSession[] = [
       {
@@ -93,7 +102,6 @@ describe('AgentsPage default session tab', () => {
       data: [],
       isLoading: false,
     })
-
     const html = renderAgentsPageHtml()
 
     expect(html).toMatch(

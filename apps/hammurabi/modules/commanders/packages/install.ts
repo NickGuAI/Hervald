@@ -12,6 +12,8 @@ import {
 import { writeCommanderUiProfile } from '../commander-profile.js'
 import { ensureCommanderVisualProfile } from '../commander-visual-profile.js'
 import type { Conversation, ConversationStore } from '../conversation-store.js'
+import type { AutomationScheduler } from '../../automations/scheduler.js'
+import type { AutomationStore, CreateAutomationInput } from '../../automations/store.js'
 import {
   mergeIdentityOperatingStyleIntoCommanderWorkflow,
   scaffoldCommanderWorkflow,
@@ -26,6 +28,9 @@ const packageInstallLocks = new Map<string, Promise<void>>()
 export interface CommanderPackageInstallOptions {
   sessionStore: Pick<CommanderSessionStore, 'list' | 'create' | 'delete'>
   conversationStore?: Pick<ConversationStore, 'listByCommander' | 'getActiveChatForCommander' | 'ensureDefaultConversation' | 'delete'>
+  automationStore?: Pick<AutomationStore, 'create' | 'delete'>
+  automationScheduler?: Pick<AutomationScheduler, 'createAutomation' | 'deleteAutomation'>
+  automationSchedulerInitialized?: Promise<void>
   commanderDataDir: string
   commanderBasePath?: string
   now: () => Date
@@ -138,11 +143,69 @@ async function writeInstalledPackageSnapshot(
     required: definition.skills.filter((skill) => skill.required),
     optional: definition.skills.filter((skill) => !skill.required),
   }, null, 2), 'utf8')
+  await writeFile(path.join(packageRoot, 'automations.manifest.json'), JSON.stringify({
+    automations: definition.automations,
+  }, null, 2), 'utf8')
   await writeFile(path.join(packageRoot, 'onboarding.md'), definition.onboarding, 'utf8')
   await writeFile(path.join(packageRoot, 'memory-seed.md'), definition.memorySeed, 'utf8')
   await Promise.all(definition.examples.map((example) =>
     writeFile(path.join(packageRoot, 'examples', `${example.id}.md`), example.body, 'utf8'),
   ))
+}
+
+function buildPackageAutomationInput(
+  definition: CommanderPackageDefinition,
+  commander: CommanderSession,
+  automation: CommanderPackageDefinition['automations'][number],
+): CreateAutomationInput {
+  return {
+    parentCommanderId: commander.id,
+    name: automation.id,
+    trigger: automation.trigger,
+    ...(automation.schedule ? { schedule: automation.schedule } : {}),
+    ...(automation.questTrigger ? { questTrigger: automation.questTrigger } : {}),
+    instruction: automation.instruction,
+    agentType: automation.agentType ?? definition.agentType,
+    permissionMode: 'default',
+    skills: automation.skills,
+    templateId: `${definition.id}:${automation.id}`,
+    status: automation.status,
+    description: automation.description ?? automation.purpose,
+    timezone: automation.timezone,
+    machine: automation.machine ?? '',
+    workDir: automation.workDir,
+    model: automation.model,
+    sessionType: automation.sessionType,
+    seedMemory: automation.seedMemory,
+    maxRuns: automation.maxRuns,
+  }
+}
+
+async function seedPackageAutomations(
+  definition: CommanderPackageDefinition,
+  commander: CommanderSession,
+  options: CommanderPackageInstallOptions,
+  onCreatedAutomation?: (automationId: string) => void,
+): Promise<string[]> {
+  if (definition.automations.length === 0) {
+    return []
+  }
+
+  if (!options.automationScheduler && !options.automationStore) {
+    throw new Error('Automation store is required to install package preset automations')
+  }
+
+  await options.automationSchedulerInitialized
+  const createdIds: string[] = []
+  for (const automation of definition.automations) {
+    const input = buildPackageAutomationInput(definition, commander, automation)
+    const created = options.automationScheduler
+      ? await options.automationScheduler.createAutomation(input)
+      : await options.automationStore!.create(input)
+    createdIds.push(created.id)
+    onCreatedAutomation?.(created.id)
+  }
+  return createdIds
 }
 
 export async function installCommanderPackage(
@@ -195,8 +258,16 @@ async function installCommanderPackageLocked(
 
   const created = await options.sessionStore.create(session)
   let conversationId: string | null = null
+  const seededAutomationIds: string[] = []
 
   const rollback = async (): Promise<void> => {
+    for (const automationId of seededAutomationIds) {
+      if (options.automationScheduler) {
+        await options.automationScheduler.deleteAutomation(automationId).catch(() => {})
+      } else {
+        await options.automationStore?.delete(automationId, { removeFiles: true }).catch(() => {})
+      }
+    }
     if (conversationId && options.conversationStore) {
       await options.conversationStore.delete(conversationId).catch(() => {})
     }
@@ -226,6 +297,9 @@ async function installCommanderPackageLocked(
       ...definition.uiProfile,
     }))
     await writeInstalledPackageSnapshot(created.id, definition, commanderBasePath, options.now)
+    await seedPackageAutomations(definition, created, options, (automationId) => {
+      seededAutomationIds.push(automationId)
+    })
   } catch (error) {
     await rollback()
     throw error

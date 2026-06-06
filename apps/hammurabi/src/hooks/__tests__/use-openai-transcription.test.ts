@@ -51,6 +51,8 @@ class MockAudioContext {
 }
 
 class MockAudioWorkletNode {
+  static instances: MockAudioWorkletNode[] = []
+
   readonly port = {
     onmessage: null as ((event: MessageEvent<ArrayBuffer>) => void) | null,
   }
@@ -60,7 +62,9 @@ class MockAudioWorkletNode {
     _context: AudioContext,
     _name: string,
     _options?: AudioWorkletNodeOptions,
-  ) {}
+  ) {
+    MockAudioWorkletNode.instances.push(this)
+  }
 }
 
 class MockWebSocket {
@@ -119,6 +123,10 @@ const reactActEnvironment = globalThis as typeof globalThis & {
 
 function createChunk(bytes: number[]): ArrayBuffer {
   return new Uint8Array(bytes).buffer
+}
+
+function createAudioBuffer(byteLength: number): ArrayBuffer {
+  return new Uint8Array(byteLength).buffer
 }
 
 function createSession(
@@ -195,6 +203,7 @@ async function startListeningAndGetSocket(): Promise<MockWebSocket> {
 beforeEach(() => {
   latestHookState = null
   MockWebSocket.instances = []
+  MockAudioWorkletNode.instances = []
 
   originalAudioContext = window.AudioContext
   originalWebkitAudioContext = window.webkitAudioContext
@@ -229,6 +238,7 @@ afterEach(() => {
   container = null
   latestHookState = null
   MockWebSocket.instances = []
+  MockAudioWorkletNode.instances = []
   window.AudioContext = originalAudioContext
   window.webkitAudioContext = originalWebkitAudioContext
   window.AudioWorkletNode = originalAudioWorkletNode
@@ -282,7 +292,7 @@ describe('useOpenAITranscription helpers', () => {
       releaseAudioCapture,
       setIsListening: vi.fn(),
       scheduleFinalization: vi.fn(),
-      finalizeTranscript: vi.fn(),
+      onFinalizeTimeout: vi.fn(),
     })
 
     expect(result).toEqual({
@@ -295,6 +305,45 @@ describe('useOpenAITranscription helpers', () => {
     expect(releaseAudioCapture).not.toHaveBeenCalled()
   })
 
+  it('commits explicitly and schedules timeout handling after enough audio is captured', () => {
+    const session = createSession({
+      ready: true,
+      totalBytesSent: MIN_AUDIO_BYTES,
+    })
+    const closeSession = vi.fn()
+    const releaseAudioCapture = vi.fn()
+    const setIsListening = vi.fn()
+    const onFinalizeTimeout = vi.fn()
+    let scheduledCallback: (() => void) | null = null
+
+    const result = stopTranscriptionSession({
+      session,
+      closeSession,
+      releaseAudioCapture,
+      setIsListening,
+      scheduleFinalization: (callback, delayMs) => {
+        expect(delayMs).toBe(10000)
+        scheduledCallback = callback
+        return 12
+      },
+      onFinalizeTimeout,
+    })
+
+    expect(result).toEqual({
+      stopped: true,
+      tooShort: false,
+    })
+    expect(session.pendingStop).toBe(true)
+    expect(setIsListening).toHaveBeenCalledWith(false)
+    expect(releaseAudioCapture).toHaveBeenCalledWith(session)
+    expect(session.ws.send).toHaveBeenCalledWith(JSON.stringify({ type: 'commit' }))
+    expect(session.finalizationTimer).toBe(12)
+
+    scheduledCallback?.()
+    expect(onFinalizeTimeout).toHaveBeenCalledOnce()
+    expect(closeSession).toHaveBeenCalledOnce()
+  })
+
   it('prefers accumulated final segments and falls back to the latest partial transcript', () => {
     expect(getBufferedTranscript(['first', 'second'], 'ignored partial')).toBe('first second')
     expect(getBufferedTranscript([], 'partial only')).toBe('partial only')
@@ -304,8 +353,10 @@ describe('useOpenAITranscription helpers', () => {
 })
 
 describe('useOpenAITranscription websocket lifecycle', () => {
-  it('finalizes captured transcript segments on websocket close even when stop was never requested', async () => {
-    await renderHook()
+  it('sends start with context terms and ignores final frames while actively recording', async () => {
+    await renderHook({
+      terms: ['Claude Code', 'Kubernetes'],
+    })
     const socket = await startListeningAndGetSocket()
 
     flushSync(() => {
@@ -316,11 +367,46 @@ describe('useOpenAITranscription websocket lifecycle', () => {
     })
     await flushMicrotasks()
 
-    expect(latestHookState?.transcript).toBe('first finalized segment')
+    expect(socket.url).toContain('term=Claude+Code')
+    expect(socket.url).toContain('term=Kubernetes')
+    expect(socket.send).toHaveBeenCalledWith(JSON.stringify({ type: 'start' }))
+    expect(latestHookState?.transcript).toBe('')
     expect(latestHookState?.isListening).toBe(false)
   })
 
-  it('finalizes buffered transcript text on proxy error and routes the error through onError', async () => {
+  it('finalizes the transcript only after stop commits captured audio', async () => {
+    await renderHook()
+    const socket = await startListeningAndGetSocket()
+
+    flushSync(() => {
+      socket.emitOpen()
+      socket.emitMessage({ type: 'ready' })
+    })
+    await flushMicrotasks()
+
+    const worklet = MockAudioWorkletNode.instances.at(-1)
+    if (!worklet?.port.onmessage) {
+      throw new Error('Expected audio worklet onmessage handler')
+    }
+
+    worklet.port.onmessage({
+      data: createAudioBuffer(MIN_AUDIO_BYTES),
+    } as MessageEvent<ArrayBuffer>)
+
+    flushSync(() => {
+      latestHookState?.stopListening()
+      socket.emitMessage({ type: 'final', text: 'one final command' })
+    })
+    await flushMicrotasks()
+
+    expect(socket.send).toHaveBeenCalledWith(JSON.stringify({ type: 'start' }))
+    expect(socket.send).toHaveBeenCalledWith(expect.any(ArrayBuffer))
+    expect(socket.send).toHaveBeenCalledWith(JSON.stringify({ type: 'commit' }))
+    expect(latestHookState?.transcript).toBe('one final command')
+    expect(latestHookState?.isListening).toBe(false)
+  })
+
+  it('finalizes buffered post-stop partial text on proxy error and routes the error through onError', async () => {
     const onError = vi.fn()
 
     await renderHook({ onError })
@@ -329,6 +415,20 @@ describe('useOpenAITranscription websocket lifecycle', () => {
     flushSync(() => {
       socket.emitOpen()
       socket.emitMessage({ type: 'ready' })
+    })
+    await flushMicrotasks()
+
+    const worklet = MockAudioWorkletNode.instances.at(-1)
+    if (!worklet?.port.onmessage) {
+      throw new Error('Expected audio worklet onmessage handler')
+    }
+
+    worklet.port.onmessage({
+      data: createAudioBuffer(MIN_AUDIO_BYTES),
+    } as MessageEvent<ArrayBuffer>)
+
+    flushSync(() => {
+      latestHookState?.stopListening()
       socket.emitMessage({ type: 'partial', text: 'spoken words so far' })
       socket.emitMessage({ type: 'error', message: 'Realtime upstream closed' })
     })

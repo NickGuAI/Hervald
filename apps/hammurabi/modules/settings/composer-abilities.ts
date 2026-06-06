@@ -29,12 +29,6 @@ interface InvalidComposerAbilityPatch {
   error: string
 }
 
-const CREATE_QUESTS_PROMPT = [
-  'Load or create the relevant quests for this request before acting.',
-  'If acceptance criteria are missing or ambiguous, ask for them before finalizing the quest plan.',
-  'Make the final quest include explicit drift detection so future work can catch scope drift early.',
-].join(' ')
-
 const THINK_HARD_PROMPT = [
   'Think ultra hard internally before responding.',
   'Use a deep-think capability if one is available in this runtime.',
@@ -42,12 +36,6 @@ const THINK_HARD_PROMPT = [
 ].join(' ')
 
 export const DEFAULT_COMPOSER_ABILITIES: readonly ComposerAbilityDefinition[] = Object.freeze([
-  Object.freeze({
-    id: 'create-quests',
-    label: 'Create Quests',
-    prompt: CREATE_QUESTS_PROMPT,
-    enabled: true,
-  }),
   Object.freeze({
     id: 'think-hard',
     label: 'Think Hard',
@@ -57,6 +45,8 @@ export const DEFAULT_COMPOSER_ABILITIES: readonly ComposerAbilityDefinition[] = 
 ])
 
 const DEFAULT_ABILITY_IDS = new Set(DEFAULT_COMPOSER_ABILITIES.map((ability) => ability.id))
+const RETIRED_DEFAULT_ABILITY_IDS = new Set(['create-quests'])
+const RESERVED_ABILITY_IDS = new Set([...DEFAULT_ABILITY_IDS, ...RETIRED_DEFAULT_ABILITY_IDS])
 const COMPOSER_ABILITY_ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/u
 const MAX_CUSTOM_ABILITIES = 12
 const MAX_ABILITY_LABEL_LENGTH = 40
@@ -113,10 +103,10 @@ function normalizeAbilityDefinition(
   if (options.source === 'default' && !DEFAULT_ABILITY_IDS.has(id)) {
     return { error: `default composer ability "${id}" is not supported` }
   }
-  if (options.source === 'custom' && DEFAULT_ABILITY_IDS.has(id)) {
+  if (options.source === 'custom' && RESERVED_ABILITY_IDS.has(id)) {
     return { error: `custom composer ability "${id}" conflicts with a default ability` }
   }
-  if (!options.allowDefaultIds && DEFAULT_ABILITY_IDS.has(id)) {
+  if (!options.allowDefaultIds && RESERVED_ABILITY_IDS.has(id)) {
     return { error: `composer ability "${id}" is reserved for defaults` }
   }
 
@@ -331,7 +321,7 @@ export function createCustomComposerAbility(
     .replace(/[^a-z0-9]+/gu, '-')
     .replace(/^-+|-+$/gu, '')
     .slice(0, 32) || 'custom'
-  const reservedIds = new Set([...existingIds, ...DEFAULT_ABILITY_IDS])
+  const reservedIds = new Set([...existingIds, ...RESERVED_ABILITY_IDS])
   let id = `custom-${slug}`
   let suffix = 1
   while (reservedIds.has(id)) {

@@ -185,4 +185,58 @@ describe('agents websocket', () => {
       await server.close()
     }
   })
+
+  it('includes schemaVersion 2 replay projection when transcript envelopes are buffered', async () => {
+    const mock = createMockChildProcess()
+    mockedSpawn.mockReturnValueOnce(mock.cp as never)
+    const server = await startServer()
+
+    try {
+      await createStreamSession(server.baseUrl, 'ws-replay-v2')
+      const session = server.agents.sessionsInterface.getSession('ws-replay-v2')
+      expect(session?.kind).toBe('stream')
+      if (!session || session.kind !== 'stream') {
+        throw new Error('Expected stream session for replay v2 test')
+      }
+
+      session.events = [
+        {
+          schemaVersion: 2,
+          id: 'env-1',
+          time: '2026-05-27T00:00:00.000Z',
+          source: { provider: 'codex', backend: 'rpc', rawEventType: 'turn/started' },
+          turnId: 'turn-1',
+          ev: { type: 'turn.start', role: 'assistant' },
+        },
+        {
+          schemaVersion: 2,
+          id: 'env-2',
+          time: '2026-05-27T00:00:01.000Z',
+          source: { provider: 'codex', backend: 'rpc', rawEventType: 'item/agentMessage/delta' },
+          turnId: 'turn-1',
+          itemId: 'msg-1',
+          ev: { type: 'message.delta', text: 'hello', channel: 'final' },
+        },
+      ] as typeof session.events
+
+      const { ws, replay } = await connectWsWithReplay(server.baseUrl, 'ws-replay-v2')
+      const replayFrame = replay as typeof replay & {
+        projection?: { schemaVersion?: number; envelopes?: Array<{ id: string }> }
+        envelopes?: Array<{ id: string }>
+      }
+
+      expect(replayFrame.projection).toEqual(expect.objectContaining({
+        schemaVersion: 2,
+        envelopes: [expect.objectContaining({ id: 'env-1' }), expect.objectContaining({ id: 'env-2' })],
+      }))
+      expect(replayFrame.envelopes).toEqual([
+        expect.objectContaining({ id: 'env-1' }),
+        expect.objectContaining({ id: 'env-2' }),
+      ])
+
+      ws.close()
+    } finally {
+      await server.close()
+    }
+  })
 })

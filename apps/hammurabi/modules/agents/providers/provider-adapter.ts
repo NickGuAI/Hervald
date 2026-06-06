@@ -26,6 +26,7 @@ import type {
   MachineProviderAdapter,
 } from './machine-provider-adapter-core.js'
 import type { ProviderSessionContext } from './provider-session-context.js'
+import type { ProviderSpawnAuth } from '../provider-auth.js'
 
 export interface ProviderPermissionModeOption {
   value: ClaudePermissionMode
@@ -136,6 +137,7 @@ export interface ProviderCreateOptions {
   conversationId?: string
   currentSkillInvocation?: ActiveSkillInvocation
   daemonProcess?: PersistedDaemonProcess
+  providerAuth?: ProviderSpawnAuth
 }
 
 export interface ProviderAdapter {

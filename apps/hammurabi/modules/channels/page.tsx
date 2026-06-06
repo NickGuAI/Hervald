@@ -1,6 +1,19 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { QrCode, Save, Trash2 } from 'lucide-react'
+import {
+  Check,
+  Hash,
+  Mail,
+  MessageCircle,
+  MessageSquare,
+  Plug,
+  QrCode,
+  Save,
+  Send,
+  Trash2,
+  type LucideIcon,
+} from 'lucide-react'
+import { ModalFormContainer } from '@modules/components/ModalFormContainer'
 import { useOrgTree } from '@modules/org/hooks/useOrgTree'
 import {
   useBeginChannelPairing,
@@ -199,6 +212,27 @@ function providerLabel(descriptor: ChannelProviderDescriptor | null, fallback: s
   return descriptor?.label ?? fallback
 }
 
+function providerIcon(provider: CommanderChannelProvider): LucideIcon {
+  switch (provider) {
+    case 'email':
+      return Mail
+    case 'whatsapp':
+      return MessageCircle
+    case 'googlechat':
+      return MessageSquare
+    case 'telegram':
+      return Send
+    case 'discord':
+      return Hash
+    default:
+      return Plug
+  }
+}
+
+function providerIsConnected(bindings: CommanderChannelBinding[] | undefined): boolean {
+  return bindings?.some((binding) => binding.enabled) ?? false
+}
+
 export default function ChannelsPage() {
   const [searchParams, setSearchParams] = useSearchParams()
   const { data: orgTree } = useOrgTree()
@@ -209,6 +243,7 @@ export default function ChannelsPage() {
   const [formByProvider, setFormByProvider] = useState<Record<string, ChannelFormState>>({})
   const [pairingChallenge, setPairingChallenge] = useState<ChannelPairingChallenge | null>(null)
   const [formError, setFormError] = useState<string | null>(null)
+  const [channelModalOpen, setChannelModalOpen] = useState(false)
   const completingPairingIdRef = useRef<string | null>(null)
 
   const { data: providerDescriptorResponse } = useChannelProviderDescriptors(selectedCommanderId || null)
@@ -253,6 +288,28 @@ export default function ChannelsPage() {
     [commanders, selectedCommanderId],
   )
   const { data: bindings = [], error } = useChannels(selectedCommanderId || null)
+  const bindingsByProvider = useMemo(() => {
+    const grouped = new Map<CommanderChannelProvider, CommanderChannelBinding[]>()
+    for (const binding of bindings) {
+      grouped.set(binding.provider, [...(grouped.get(binding.provider) ?? []), binding])
+    }
+    return grouped
+  }, [bindings])
+  const selectedProviderBindings = provider
+    ? bindingsByProvider.get(provider) ?? []
+    : []
+  const selectedEnabledBinding = selectedProviderBindings.find((binding) => binding.enabled) ?? null
+  const shouldPollSelectedProviderStatus = Boolean(
+    selectedEnabledBinding && selectedProviderDescriptor?.pairing.mode !== 'none',
+  )
+  const { data: selectedProviderStatus } = useChannelStatus(
+    selectedEnabledBinding?.commanderId ?? '',
+    selectedEnabledBinding?.id ?? '',
+    shouldPollSelectedProviderStatus,
+  )
+  const selectedProviderConnected = Boolean(
+    selectedEnabledBinding && (!shouldPollSelectedProviderStatus || selectedProviderStatus?.connected === true),
+  )
   const createMutation = useCreateChannelBinding()
   const beginPairingMutation = useBeginChannelPairing()
   const completePairingMutation = useCompleteChannelPairing()
@@ -284,6 +341,7 @@ export default function ChannelsPage() {
     setSelectedCommanderId(nextCommanderId)
     setFormByProvider({})
     setPairingChallenge(null)
+    setChannelModalOpen(false)
     completingPairingIdRef.current = null
     const nextParams = new URLSearchParams(searchParams)
     if (nextCommanderId) {
@@ -292,6 +350,21 @@ export default function ChannelsPage() {
       nextParams.delete('commander')
     }
     setSearchParams(nextParams, { replace: true })
+  }
+
+  function handleOpenChannelModal(nextProvider: CommanderChannelProvider) {
+    setProvider(nextProvider)
+    setPairingChallenge(null)
+    setFormError(null)
+    setChannelModalOpen(true)
+    completingPairingIdRef.current = null
+  }
+
+  function handleCloseChannelModal() {
+    setChannelModalOpen(false)
+    setPairingChallenge(null)
+    setFormError(null)
+    completingPairingIdRef.current = null
   }
 
   async function handleCreate(event: FormEvent<HTMLFormElement>) {
@@ -406,121 +479,193 @@ export default function ChannelsPage() {
         </div>
 
         <section className="card-sumi p-5">
-          <label className="block">
-            <span className="section-title block">Commander</span>
-            <select
-              value={selectedCommanderId}
-              onChange={(event) => handleCommanderChange(event.target.value)}
-              className={INPUT_CLASS}
-              required
-            >
-              <option value="">Select Commander</option>
-              {commanders.map((commander) => (
-                <option key={commander.id} value={commander.id}>
-                  {commander.displayName}
-                </option>
-              ))}
-            </select>
-          </label>
-        </section>
+          <div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_minmax(18rem,24rem)] md:items-end">
+            <div>
+              <p className="section-title">Selected commander</p>
+              <div className="mt-3 flex items-center gap-3">
+                <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full border border-ink-border bg-washi-aged font-display text-lg text-sumi-black">
+                  {selectedCommander?.displayName.slice(0, 1).toUpperCase() ?? '?'}
+                </div>
+                <div className="min-w-0">
+                  <p className="truncate text-base font-medium text-sumi-black">
+                    {selectedCommander?.displayName ?? 'Select a commander'}
+                  </p>
+                  <p className="mt-1 font-mono text-xs text-sumi-diluted">
+                    {selectedCommander?.id ?? 'No commander selected'}
+                  </p>
+                </div>
+              </div>
+            </div>
 
-        <form onSubmit={(event) => void handleCreate(event)} className="card-sumi grid gap-4 p-5">
-          <div className="grid gap-4 md:grid-cols-4">
             <label className="block">
-              <span className="section-title block">Provider</span>
+              <span className="section-title block">Commander</span>
               <select
-                value={provider}
-                onChange={(event) => {
-                  setProvider(event.target.value as CommanderChannelProvider)
-                  setPairingChallenge(null)
-                  completingPairingIdRef.current = null
-                }}
+                value={selectedCommanderId}
+                onChange={(event) => handleCommanderChange(event.target.value)}
                 className={INPUT_CLASS}
                 required
               >
-                {providerDescriptors.map((entry) => (
-                  <option key={entry.provider} value={entry.provider}>{entry.label}</option>
+                <option value="">Select Commander</option>
+                {commanders.map((commander) => (
+                  <option key={commander.id} value={commander.id}>
+                    {commander.displayName}
+                  </option>
                 ))}
               </select>
             </label>
+          </div>
 
-            {selectedProviderDescriptor ? (
-              <DescriptorFields
-                fields={selectedProviderDescriptor.fields.filter(isIdentityField)}
+          <div className="mt-5 border-t border-ink-border pt-4">
+            <p className="section-title">Support channels</p>
+            <ChannelProviderStrip
+              descriptors={providerDescriptors}
+              bindingsByProvider={bindingsByProvider}
+              commanderName={selectedCommander?.displayName ?? 'selected commander'}
+              activeProvider={channelModalOpen ? provider : ''}
+              disabled={!selectedCommander}
+              onOpen={handleOpenChannelModal}
+            />
+          </div>
+        </section>
+
+        <ModalFormContainer
+          open={channelModalOpen && Boolean(selectedProviderDescriptor)}
+          title={selectedProviderDescriptor ? `Pair ${selectedProviderDescriptor.label}` : 'Pair Channel'}
+          onClose={handleCloseChannelModal}
+          desktopClassName="max-w-5xl"
+          mobileClassName="max-h-[96dvh]"
+        >
+          {selectedProviderDescriptor ? (
+            <form onSubmit={(event) => void handleCreate(event)} className="grid gap-4">
+              <section className="rounded-lg border border-ink-border bg-washi-aged px-3 py-2">
+                <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+                  <div>
+                    <p className="section-title">{selectedProviderDescriptor.label}</p>
+                    <p className="mt-1 text-sm text-sumi-diluted">
+                      {selectedCommander?.displayName ?? 'Selected commander'}
+                    </p>
+                  </div>
+                  <span
+                    data-testid="channel-modal-provider-status"
+                    className={[
+                      'inline-flex w-fit items-center gap-1 rounded-full border px-2 py-1 text-xs font-medium',
+                      selectedProviderConnected
+                        ? 'border-[color:var(--hv-accent-success)] bg-[var(--hv-accent-success-wash)] text-[color:var(--hv-accent-success)]'
+                        : 'border-ink-border bg-washi-white text-sumi-diluted',
+                    ].join(' ')}
+                  >
+                    {selectedProviderConnected ? (
+                      <Check size={12} aria-hidden="true" />
+                    ) : null}
+                    {selectedProviderConnected ? 'Connected' : 'Not connected'}
+                  </span>
+                </div>
+              </section>
+
+              <div className="grid gap-4 md:grid-cols-3">
+                <DescriptorFields
+                  fields={selectedProviderDescriptor.fields.filter(isIdentityField)}
+                  state={selectedForm}
+                  descriptor={selectedProviderDescriptor}
+                  commanders={commanders}
+                  onChange={updateSelectedForm}
+                />
+              </div>
+
+              <DescriptorFieldSections
+                fields={selectedProviderDescriptor.fields.filter((field) => !isIdentityField(field))}
                 state={selectedForm}
                 descriptor={selectedProviderDescriptor}
                 commanders={commanders}
                 onChange={updateSelectedForm}
               />
-            ) : null}
-          </div>
 
-          {selectedProviderDescriptor ? (
-            <DescriptorFieldSections
-              fields={selectedProviderDescriptor.fields.filter((field) => !isIdentityField(field))}
-              state={selectedForm}
-              descriptor={selectedProviderDescriptor}
-              commanders={commanders}
-              onChange={updateSelectedForm}
-            />
-          ) : null}
-
-          {activePairingChallenge ? (
-            <section className="rounded-xl border border-ink-border bg-washi-aged p-4">
-              <div className="flex flex-col gap-4 md:flex-row md:items-start">
-                <div className="flex-1">
-                  <div className="flex items-center gap-2">
-                    <QrCode size={18} aria-hidden="true" />
-                    <p className="section-title">
-                      {providerLabel(selectedProviderDescriptor, String(pairingProvider))} Pairing
-                    </p>
+              {activePairingChallenge ? (
+                <section className="rounded-xl border border-ink-border bg-washi-aged p-4">
+                  <div className="flex flex-col gap-4 md:flex-row md:items-start">
+                    <div className="flex-1">
+                      <div className="flex items-center gap-2">
+                        <QrCode size={18} aria-hidden="true" />
+                        <p className="section-title">
+                          {providerLabel(selectedProviderDescriptor, String(pairingProvider))} Pairing
+                        </p>
+                      </div>
+                      <p className="mt-2 text-sm text-sumi-diluted">{activePairingChallenge.instructions}</p>
+                      <p className="mt-2 font-mono text-xs text-sumi-diluted">
+                        {activePairingChallenge.accountId} · {activePairingState ?? 'pending'} · expires {activePairingChallenge.expiresAt ?? 'soon'}
+                      </p>
+                    </div>
+                    {activePairingChallenge.url ? (
+                      <img
+                        src={activePairingChallenge.url}
+                        alt={`${providerLabel(selectedProviderDescriptor, String(pairingProvider))} pairing QR`}
+                        className="h-52 w-52 rounded-lg border border-ink-border bg-washi-white p-2"
+                      />
+                    ) : null}
                   </div>
-                  <p className="mt-2 text-sm text-sumi-diluted">{activePairingChallenge.instructions}</p>
-                  <p className="mt-2 font-mono text-xs text-sumi-diluted">
-                    {activePairingChallenge.accountId} · {activePairingState ?? 'pending'} · expires {activePairingChallenge.expiresAt ?? 'soon'}
-                  </p>
-                </div>
-                {activePairingChallenge.url ? (
-                  <img
-                    src={activePairingChallenge.url}
-                    alt={`${providerLabel(selectedProviderDescriptor, String(pairingProvider))} pairing QR`}
-                    className="h-52 w-52 rounded-lg border border-ink-border bg-washi-white p-2"
-                  />
-                ) : null}
-              </div>
+                  <div className="mt-4 flex justify-end">
+                    <button
+                      type="button"
+                      onClick={() => void pairingStatusQuery.refetch()}
+                      disabled={completePairingMutation.isPending || activePairingConnected || pairingStatusQuery.isFetching}
+                      className="btn-primary inline-flex items-center gap-2 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {completePairingMutation.isPending || activePairingConnected
+                        ? 'Completing...'
+                        : pairingStatusQuery.isFetching
+                          ? 'Checking...'
+                          : 'Check Status'}
+                    </button>
+                  </div>
+                </section>
+              ) : null}
+
+              {mutationError ? (
+                <p className="text-sm text-accent-vermillion" role="alert">{mutationError}</p>
+              ) : null}
+
               <div className="mt-4 flex justify-end">
                 <button
-                  type="button"
-                  onClick={() => void pairingStatusQuery.refetch()}
-                  disabled={completePairingMutation.isPending || activePairingConnected || pairingStatusQuery.isFetching}
+                  type="submit"
+                  disabled={createMutation.isPending || beginPairingMutation.isPending || !selectedCommander || !selectedProviderDescriptor}
                   className="btn-primary inline-flex items-center gap-2 disabled:cursor-not-allowed disabled:opacity-60"
                 >
-                  {completePairingMutation.isPending || activePairingConnected
-                    ? 'Completing...'
-                    : pairingStatusQuery.isFetching
-                      ? 'Checking...'
-                      : 'Check Status'}
+                  {createMutation.isPending || beginPairingMutation.isPending
+                    ? 'Adding...'
+                    : selectedProviderDescriptor.pairing.mode === 'none'
+                      ? 'Add Channel'
+                      : 'Start Pairing'}
                 </button>
               </div>
-            </section>
+
+              {selectedProviderBindings.length > 0 ? (
+                <section className="grid gap-3 border-t border-ink-border pt-4">
+                  <div>
+                    <p className="section-title">Connected bindings</p>
+                    <p className="mt-1 text-sm text-sumi-diluted">
+                      {selectedProviderBindings.length} {selectedProviderBindings.length === 1 ? 'binding' : 'bindings'} for {selectedProviderDescriptor.label}
+                    </p>
+                  </div>
+                  {selectedProviderBindings.map((binding) => (
+                    <BindingRow
+                      key={binding.id}
+                      binding={binding}
+                      commanderId={selectedCommanderId}
+                      commanders={commanders}
+                      updateBinding={(input) => updateMutation.mutateAsync(input)}
+                      deleteBinding={(bindingId) => deleteMutation.mutateAsync({
+                        commanderId: selectedCommanderId,
+                        bindingId,
+                      })}
+                    />
+                  ))}
+                </section>
+              ) : null}
+            </form>
           ) : null}
+        </ModalFormContainer>
 
-          <div className="flex justify-end">
-            <button
-              type="submit"
-              disabled={createMutation.isPending || beginPairingMutation.isPending || !selectedCommander || !selectedProviderDescriptor}
-              className="btn-primary inline-flex items-center gap-2 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {createMutation.isPending || beginPairingMutation.isPending
-                ? 'Adding...'
-                : selectedProviderDescriptor?.pairing.mode === 'none'
-                  ? 'Add Channel'
-                  : 'Start Pairing'}
-            </button>
-          </div>
-        </form>
-
-        {mutationError ? (
+        {mutationError && !channelModalOpen ? (
           <p className="text-sm text-accent-vermillion">{mutationError}</p>
         ) : null}
 
@@ -555,6 +700,87 @@ export default function ChannelsPage() {
         </section>
       </div>
     </div>
+  )
+}
+
+function ChannelProviderStrip(props: {
+  descriptors: ChannelProviderDescriptor[]
+  bindingsByProvider: Map<CommanderChannelProvider, CommanderChannelBinding[]>
+  commanderName: string
+  activeProvider: CommanderChannelProvider
+  disabled: boolean
+  onOpen: (provider: CommanderChannelProvider) => void
+}) {
+  if (props.descriptors.length === 0) {
+    return (
+      <p className="mt-3 text-sm text-sumi-diluted">(no channel providers)</p>
+    )
+  }
+
+  return (
+    <div
+      className="mt-3 flex flex-wrap gap-3"
+      role="group"
+      aria-label={`Support channels for ${props.commanderName}`}
+      data-testid="channel-provider-strip"
+    >
+      {props.descriptors.map((descriptor) => {
+        return (
+          <ChannelProviderButton
+            key={descriptor.provider}
+            descriptor={descriptor}
+            bindings={props.bindingsByProvider.get(descriptor.provider) ?? []}
+            commanderName={props.commanderName}
+            active={props.activeProvider === descriptor.provider}
+            disabled={props.disabled}
+            onOpen={props.onOpen}
+          />
+        )
+      })}
+    </div>
+  )
+}
+
+function ChannelProviderButton(props: {
+  descriptor: ChannelProviderDescriptor
+  bindings: CommanderChannelBinding[]
+  commanderName: string
+  active: boolean
+  disabled: boolean
+  onOpen: (provider: CommanderChannelProvider) => void
+}) {
+  const Icon = providerIcon(props.descriptor.provider)
+  const binding = props.bindings.find((candidate) => candidate.enabled) ?? null
+  const shouldPollStatus = Boolean(binding && props.descriptor.pairing.mode !== 'none')
+  const { data: channelStatus } = useChannelStatus(binding?.commanderId ?? '', binding?.id ?? '', shouldPollStatus)
+  const connected = Boolean(binding && (!shouldPollStatus || channelStatus?.connected === true))
+
+  return (
+    <button
+      type="button"
+      data-testid={`channel-provider-${props.descriptor.provider}`}
+      data-connected={connected ? 'true' : 'false'}
+      aria-pressed={props.active}
+      aria-label={`${props.descriptor.label} channel for ${props.commanderName}: ${connected ? 'connected' : 'not connected'}. Open pairing and configuration.`}
+      title={`${props.descriptor.label} ${connected ? 'connected' : 'not connected'}`}
+      disabled={props.disabled}
+      onClick={() => props.onOpen(props.descriptor.provider)}
+      className={[
+        'relative inline-flex min-h-14 min-w-16 flex-col items-center justify-center gap-1 rounded-lg border px-3 py-2 text-xs transition-colors focus:outline-none focus:ring-2 focus:ring-[color:var(--hv-accent-info)] disabled:cursor-not-allowed disabled:opacity-60',
+        connected
+          ? 'border-[color:var(--hv-accent-success)] bg-[var(--hv-accent-success-wash)] text-[color:var(--hv-accent-success)]'
+          : 'border-ink-border bg-washi-aged text-sumi-black hover:bg-ink-wash',
+        props.active ? 'ring-2 ring-[color:var(--hv-accent-info)]' : '',
+      ].join(' ')}
+    >
+      <Icon size={18} aria-hidden="true" />
+      <span className="max-w-24 truncate">{props.descriptor.label}</span>
+      {connected ? (
+        <span className="absolute -right-1 -top-1 inline-flex h-5 w-5 items-center justify-center rounded-full border border-[color:var(--hv-accent-success)] bg-washi-white text-[color:var(--hv-accent-success)]">
+          <Check size={12} aria-hidden="true" />
+        </span>
+      ) : null}
+    </button>
   )
 }
 

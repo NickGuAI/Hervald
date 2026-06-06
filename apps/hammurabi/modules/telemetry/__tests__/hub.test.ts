@@ -18,7 +18,7 @@ async function createHub(now: () => Date): Promise<TelemetryHub> {
 afterEach(async () => {
   await Promise.all(
     tempDirectories.splice(0).map((directory) =>
-      rm(directory, { recursive: true, force: true }),
+      rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }),
     ),
   )
 })
@@ -68,6 +68,103 @@ describe('TelemetryHub summary token aggregates', () => {
     expect(summary.totalTokensToday).toBe(300)
     expect(summary.totalTokensWeek).toBe(300)
     expect(summary.totalTokensMonth).toBe(450)
+  })
+
+  it('restores local telemetry as bounded daily rollups instead of per-event calls', async () => {
+    const now = new Date('2026-05-29T12:00:00.000Z')
+    const directory = await mkdtemp(path.join(tmpdir(), 'hammurabi-telemetry-hub-'))
+    tempDirectories.push(directory)
+    const store = new TelemetryJsonlStore(path.join(directory, 'events.jsonl'))
+
+    await store.append({
+      type: 'ingest',
+      recordedAt: '2026-05-29T10:00:00.000Z',
+      payload: {
+        id: 'call-1',
+        sessionId: 'local-session',
+        agentName: 'codex-local',
+        model: 'gpt-5.5',
+        provider: 'codex-local',
+        inputTokens: 100,
+        outputTokens: 25,
+        cost: 0.01,
+        durationMs: 100,
+        currentTask: 'Local scan',
+        timestamp: '2026-05-29T10:00:00.000Z',
+      },
+    })
+    await store.append({
+      type: 'ingest',
+      recordedAt: '2026-05-29T10:01:00.000Z',
+      payload: {
+        id: 'call-2',
+        sessionId: 'local-session',
+        agentName: 'codex-local',
+        model: 'gpt-5.5',
+        provider: 'codex-local',
+        inputTokens: 300,
+        outputTokens: 75,
+        cost: 0.03,
+        durationMs: 300,
+        currentTask: 'Local scan',
+        timestamp: '2026-05-29T10:01:00.000Z',
+      },
+    })
+    await store.append({
+      type: 'otel_log',
+      recordedAt: '2026-05-29T10:02:00.000Z',
+      payload: {
+        signal: 'logs',
+        resource: {},
+        eventName: 'codex.user_prompt',
+        attributes: {},
+        normalized: {
+          id: 'zero-otel',
+          sessionId: 'prompt-only',
+          agentName: 'codex',
+          model: 'gpt-5.5',
+          provider: 'openai',
+          signal: 'logs',
+          inputTokens: 0,
+          outputTokens: 0,
+          cost: 0,
+          durationMs: 0,
+          currentTask: 'Working',
+          timestamp: '2026-05-29T10:02:00.000Z',
+          eventName: 'codex.user_prompt',
+        },
+      },
+    })
+
+    const hub = new TelemetryHub({ store, now: () => now })
+    await hub.ensureReady()
+
+    const detail = hub.getSessionDetail('local-session')
+    expect(detail?.session.callCount).toBe(2)
+    expect(detail?.session.inputTokens).toBe(400)
+    expect(detail?.session.outputTokens).toBe(100)
+    expect(detail?.session.totalCost).toBe(0.04)
+    expect(detail?.calls).toHaveLength(1)
+    expect(detail?.calls[0]).toMatchObject({
+      id: 'local-rollup:2026-05-29:local-session:codex-local:gpt-5.5:codex-local',
+      inputTokens: 400,
+      outputTokens: 100,
+      cost: 0.04,
+      callCount: 2,
+    })
+
+    const summary = await hub.getSummary(now)
+    expect(summary.costToday).toBe(0.04)
+    expect(summary.inputTokensToday).toBe(400)
+    expect(summary.outputTokensToday).toBe(100)
+    expect(summary.topModels).toEqual([
+      {
+        model: 'gpt-5.5',
+        cost: 0.04,
+        calls: 2,
+      },
+    ])
+    expect(hub.getSessionDetail('prompt-only')).toBeNull()
   })
 })
 
