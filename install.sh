@@ -27,7 +27,14 @@ PNPM_VERSION="${HERVALD_PNPM_VERSION:-10.23.0}"
 step() { printf "${CYAN}==>${NC} %s\n" "$*"; }
 ok()   { printf "${GREEN}✓${NC} %s\n" "$*"; }
 warn() { printf "${YELLOW}!${NC} %s\n" "$*"; }
-fail() { printf "${RED}✗${NC} %s\n" "$*" >&2; exit 1; }
+fail() {
+  local fallback_log="${HOME:-/tmp}/.hammurabi/logs/first-boot.log"
+  print_repair_hint \
+    "Installer failed" \
+    "$*" \
+    "Fix the issue above, then rerun install.sh. If first boot started, inspect ${INSTALL_LOG_FILE:-$fallback_log}."
+  exit 1
+}
 
 brand_opener() {
   printf "${CYAN}"
@@ -100,9 +107,9 @@ print_repair_hint() {
   local name="$1"
   local message="$2"
   local hint="$3"
-  printf "${YELLOW}!${NC} ${BOLD}%s${NC}: %s\n" "$name" "$message"
+  printf "${YELLOW}!${NC} ${BOLD}%s${NC}: %s\n" "$name" "$message" >&2
   if [[ -n "$hint" ]]; then
-    printf "  ${DIM}%s${NC}\n" "$hint"
+    printf "  ${DIM}%s${NC}\n" "$hint" >&2
   fi
 }
 
@@ -857,6 +864,7 @@ prompt_provider_selection() {
 }
 
 configure_providers() {
+  local setup_path="${1:-advanced}"
   local raw_selection selected provider
 
   if [[ "${HERVALD_CONFIGURE_PROVIDERS:-1}" == "0" ]]; then
@@ -864,9 +872,15 @@ configure_providers() {
     return 0
   fi
 
+  raw_selection="${HERVALD_PROVIDERS:-}"
+  if [[ "$setup_path" != "advanced" && -z "$raw_selection" ]]; then
+    warn "Quickstart skips provider CLI customization."
+    printf "  ${DIM}%s${NC}\n" "Choose Advanced setup, or set HERVALD_PROVIDERS=claude,codex,gemini,opencode for non-interactive provider setup."
+    return 0
+  fi
+
   ensure_local_machine_registry
 
-  raw_selection="${HERVALD_PROVIDERS:-}"
   if [[ -z "$raw_selection" ]]; then
     if ! prompt_available; then
       warn "No interactive terminal is available; skipping provider setup. Re-run with HERVALD_PROVIDERS=claude,codex,gemini,opencode to configure non-interactively."
@@ -1224,7 +1238,7 @@ ensure_local_path_setup
 ok "installed $SHIM_PATH"
 
 install_default_skills
-configure_providers
+configure_providers "$INSTALL_SETUP_PATH"
 
 case ":$PATH:" in
   *":$BIN_DIR:"*) ok "$BIN_DIR already on PATH" ;;
