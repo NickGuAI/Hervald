@@ -1,0 +1,91 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="620" viewBox="0 0 1120 620" role="img" aria-labelledby="title desc">
+  <title id="title">Hervald agent orchestration architecture</title>
+  <desc id="desc">Hervald routes operator intent through Command Room, mission state, approvals, workers, provider CLIs, and user-controlled machines.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0%" stop-color="#08141b"/>
+      <stop offset="52%" stop-color="#10212a"/>
+      <stop offset="100%" stop-color="#08141b"/>
+    </linearGradient>
+    <linearGradient id="node" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0%" stop-color="#18313c"/>
+      <stop offset="100%" stop-color="#0c1c24"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" x2="1" y1="0" y2="0">
+      <stop offset="0%" stop-color="#f2c19d"/>
+      <stop offset="100%" stop-color="#70a37f"/>
+    </linearGradient>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#f2c19d"/>
+    </marker>
+    <style>
+      .label { fill: #efe6d6; font: 700 24px Sora, Avenir Next, Segoe UI, sans-serif; }
+      .sub { fill: #a9c0c7; font: 18px Manrope, Inter, Segoe UI, sans-serif; }
+      .mono { fill: #f2c19d; font: 700 15px IBM Plex Mono, SFMono-Regular, monospace; letter-spacing: 2px; }
+    </style>
+  </defs>
+  <rect width="1120" height="620" rx="34" fill="url(#bg)"/>
+  <path d="M92 126 H1028 M92 308 H1028 M92 490 H1028" stroke="#244651" stroke-opacity=".58"/>
+  <path d="M270 82 V540 M560 82 V540 M850 82 V540" stroke="#244651" stroke-opacity=".58"/>
+  <text x="82" y="64" class="mono">HERVALD CONTROL PLANE</text>
+  <text x="758" y="64" class="mono">RUNS ON MACHINES YOU CONTROL</text>
+
+  <g transform="translate(70 222)">
+    <rect width="190" height="118" rx="22" fill="url(#node)" stroke="#2d5664" stroke-width="2"/>
+    <circle cx="34" cy="34" r="10" fill="#d97745"/>
+    <text x="56" y="42" class="label">Operator</text>
+    <text x="24" y="82" class="sub">intent + review</text>
+  </g>
+  <g transform="translate(332 130)">
+    <rect width="210" height="126" rx="22" fill="#142f28" stroke="#70a37f" stroke-width="2"/>
+    <circle cx="34" cy="36" r="10" fill="#70a37f"/>
+    <text x="56" y="44" class="label">Command Room</text>
+    <text x="24" y="84" class="sub">chat, quests, queue</text>
+  </g>
+  <g transform="translate(332 354)">
+    <rect width="210" height="126" rx="22" fill="url(#node)" stroke="#2d5664" stroke-width="2"/>
+    <circle cx="34" cy="36" r="10" fill="#d97745"/>
+    <text x="56" y="44" class="label">Mission State</text>
+    <text x="24" y="84" class="sub">memory + history</text>
+  </g>
+  <g transform="translate(620 130)">
+    <rect width="210" height="126" rx="22" fill="url(#node)" stroke="#2d5664" stroke-width="2"/>
+    <circle cx="34" cy="36" r="10" fill="#d97745"/>
+    <text x="56" y="44" class="label">Approvals</text>
+    <text x="24" y="84" class="sub">auto / review / block</text>
+  </g>
+  <g transform="translate(620 354)">
+    <rect width="210" height="126" rx="22" fill="#142f28" stroke="#70a37f" stroke-width="2"/>
+    <circle cx="34" cy="36" r="10" fill="#70a37f"/>
+    <text x="56" y="44" class="label">Workers</text>
+    <text x="24" y="84" class="sub">parallel execution</text>
+  </g>
+  <g transform="translate(902 130)">
+    <rect width="170" height="126" rx="22" fill="url(#node)" stroke="#2d5664" stroke-width="2"/>
+    <circle cx="32" cy="36" r="10" fill="#d97745"/>
+    <text x="54" y="44" class="label">CLIs</text>
+    <text x="22" y="84" class="sub">Codex, Claude</text>
+  </g>
+  <g transform="translate(902 354)">
+    <rect width="170" height="126" rx="22" fill="url(#node)" stroke="#2d5664" stroke-width="2"/>
+    <circle cx="32" cy="36" r="10" fill="#d97745"/>
+    <text x="54" y="44" class="label">Machines</text>
+    <text x="22" y="84" class="sub">Mac, VPS, tailnet</text>
+  </g>
+
+  <path d="M260 262 C292 224 300 202 332 190" fill="none" stroke="url(#accent)" stroke-width="3" marker-end="url(#arrow)"/>
+  <path d="M260 302 C294 348 304 388 332 418" fill="none" stroke="url(#accent)" stroke-width="3" marker-end="url(#arrow)"/>
+  <path d="M542 193 H620" fill="none" stroke="url(#accent)" stroke-width="3" marker-end="url(#arrow)"/>
+  <path d="M542 417 H620" fill="none" stroke="url(#accent)" stroke-width="3" marker-end="url(#arrow)"/>
+  <path d="M724 354 C746 302 746 258 724 256" fill="none" stroke="url(#accent)" stroke-width="3" marker-end="url(#arrow)"/>
+  <path d="M830 193 H902" fill="none" stroke="url(#accent)" stroke-width="3" marker-end="url(#arrow)"/>
+  <path d="M830 417 H902" fill="none" stroke="url(#accent)" stroke-width="3" marker-end="url(#arrow)"/>
+  <path d="M988 354 C1036 306 1036 248 988 256" fill="none" stroke="url(#accent)" stroke-width="3" marker-end="url(#arrow)"/>
+
+  <g transform="translate(120 542)">
+    <rect width="880" height="44" rx="22" fill="#0f222b" stroke="#244651"/>
+    <text x="28" y="29" fill="#efe6d6" font-family="Manrope, Inter, sans-serif" font-size="18" font-weight="700">
+      Mission graph, approval rules, memory, and worker ownership stay stable even when transport changes.
+    </text>
+  </g>
+</svg>
