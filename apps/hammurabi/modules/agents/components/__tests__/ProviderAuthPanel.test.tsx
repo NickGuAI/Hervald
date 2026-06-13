@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import { act } from 'react'
+import { flushSync } from 'react-dom'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ProviderAuthSnapshot, ProviderRegistryEntry } from '@/types'
@@ -9,7 +10,6 @@ const mocks = vi.hoisted(() => ({
   useProviderRegistry: vi.fn(),
   useProviderAuthSnapshots: vi.fn(),
   probeProviderAuthSnapshots: vi.fn(),
-  startProviderReauth: vi.fn(),
 }))
 
 vi.mock('@/hooks/use-providers', () => ({
@@ -21,7 +21,6 @@ vi.mock('@/hooks/use-providers', () => ({
 vi.mock('@/hooks/use-agents', () => ({
   useProviderAuthSnapshots: mocks.useProviderAuthSnapshots,
   probeProviderAuthSnapshots: mocks.probeProviderAuthSnapshots,
-  startProviderReauth: mocks.startProviderReauth,
 }))
 
 import { ProviderAuthPanel } from '../ProviderAuthPanel'
@@ -123,8 +122,9 @@ function renderPanel() {
   root = createRoot(container)
 
   return act(async () => {
-    root?.render(<ProviderAuthPanel />)
-    await Promise.resolve()
+    flushSync(() => {
+      root?.render(<ProviderAuthPanel />)
+    })
   })
 }
 
@@ -165,15 +165,6 @@ describe('ProviderAuthPanel', () => {
     setProviderRegistry(defaultProviderRegistry())
     setSnapshots([])
     mocks.probeProviderAuthSnapshots.mockResolvedValue({ snapshots: [] })
-    mocks.startProviderReauth.mockResolvedValue({
-      provider: 'codex',
-      scopeId: 'human:nick',
-      host: 'local',
-      state: 'oauth-state',
-      authorizationUrl: 'https://auth.example.test/authorize',
-      callbackUrl: 'https://hammurabi.example.test/api/agents/provider-auth/oauth/callback',
-      expiresAt: '2026-06-04T00:05:00.000Z',
-    })
   })
 
   afterEach(async () => {
@@ -198,7 +189,7 @@ describe('ProviderAuthPanel', () => {
     expect(renderedText()).toContain('Gemini CLI')
     expect(renderedText()).toContain('OpenCode')
     expect(renderedText()).toContain('Not connected')
-    expect(renderedText()).toContain('Connect')
+    expect(renderedText()).toContain('Login steps')
   })
 
   it('renders every machine-auth provider from the registry without a panel allowlist', async () => {
@@ -219,25 +210,23 @@ describe('ProviderAuthPanel', () => {
     expect(renderedText()).toContain('Test Runner')
   })
 
-  it('starts a default current-user reauth flow before any auth failure snapshot exists', async () => {
+  it('shows native Codex login instructions before any auth failure snapshot exists', async () => {
     await renderPanel()
 
-    const connectButton = container?.querySelector<HTMLButtonElement>('[data-testid="provider-auth-action-codex"]')
-    expect(connectButton).toBeDefined()
+    const loginStepsButton = container?.querySelector<HTMLButtonElement>('[data-testid="provider-auth-action-codex"]')
+    expect(loginStepsButton).toBeDefined()
 
     await act(async () => {
-      connectButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      loginStepsButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
       await Promise.resolve()
       await Promise.resolve()
     })
 
-    expect(mocks.startProviderReauth).toHaveBeenCalledWith({ provider: 'codex' })
-    expect(openWindow).toHaveBeenCalledWith(
-      'https://auth.example.test/authorize',
-      '_blank',
-      'noopener,noreferrer',
-    )
-    expect(refetchSnapshots).toHaveBeenCalled()
+    expect(openWindow).not.toHaveBeenCalled()
+    expect(refetchSnapshots).not.toHaveBeenCalled()
+    expect(renderedText()).toContain('Codex uses native CLI authentication')
+    expect(renderedText()).toContain('codex login status')
+    expect(renderedText()).toContain('codex login')
   })
 
   it('shows native Claude Code login instructions instead of starting Hervald OAuth', async () => {
@@ -256,8 +245,7 @@ describe('ProviderAuthPanel', () => {
     expect(renderedText()).toContain('commander-atlas on home-mac')
     expect(renderedText()).toContain('Claude Code login required.')
 
-    const loginStepsButton = Array.from(container?.querySelectorAll('button') ?? [])
-      .find((button) => button.textContent?.includes('Login steps'))
+    const loginStepsButton = container?.querySelector<HTMLButtonElement>('[data-testid="provider-auth-action-claude"]')
     expect(loginStepsButton).toBeDefined()
 
     await act(async () => {
@@ -266,7 +254,6 @@ describe('ProviderAuthPanel', () => {
       await Promise.resolve()
     })
 
-    expect(mocks.startProviderReauth).not.toHaveBeenCalled()
     expect(openWindow).not.toHaveBeenCalled()
     expect(renderedText()).toContain('claude auth status')
     expect(renderedText()).toContain('claude auth login')
@@ -285,7 +272,6 @@ describe('ProviderAuthPanel', () => {
       await Promise.resolve()
     })
 
-    expect(mocks.startProviderReauth).not.toHaveBeenCalled()
     expect(openWindow).not.toHaveBeenCalled()
     expect(renderedText()).toContain('OPENCODE_API_KEY')
     expect(renderedText()).toContain('opencode --version')

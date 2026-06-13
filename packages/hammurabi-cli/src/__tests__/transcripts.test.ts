@@ -130,4 +130,29 @@ describe('runTranscriptsCli', () => {
     expect(stderr.read()).toBe('')
     expect(stdout.read()).toBe('No transcript hits found for cmdr-1.\n')
   })
+
+  it('fails search when the API returns malformed success JSON', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response('', {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    )
+    const stdout = createBufferWriter()
+    const stderr = createBufferWriter()
+
+    const exitCode = await runTranscriptsCli(
+      ['search', '--commander', 'cmdr-1', 'rotation reset'],
+      {
+        fetchImpl,
+        readConfig: async () => config,
+        stdout: stdout.writer,
+        stderr: stderr.writer,
+      },
+    )
+
+    expect(exitCode).toBe(1)
+    expect(stdout.read()).toBe('')
+    expect(stderr.read()).toContain('Request failed (200): Malformed JSON response from Hammurabi API')
+  })
 })

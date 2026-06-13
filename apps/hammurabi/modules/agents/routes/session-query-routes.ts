@@ -3,7 +3,8 @@ import { parseSessionName } from '../session/input.js'
 import {
   buildPersistedEntryFromExitedSession,
   canResumeLiveStreamSession,
-  getCommanderLabels,
+  getConnectionState,
+  getResumeState,
   getWorldAgentStatus,
   liveSessionToApiPayload,
   summarizeWorkerStates,
@@ -25,7 +26,7 @@ import type {
 interface SessionQueryRouteDeps {
   router: Router
   requireReadAccess: RequestHandler
-  commanderSessionStorePath?: string
+  getCommanderLabels?(): Promise<Record<string, string>>
   sessions: Map<string, AnySession>
   completedSessions: Map<string, CompletedSession>
   exitedStreamSessions: Map<string, ExitedStreamSessionState>
@@ -182,6 +183,38 @@ export function registerSessionQueryRoutes(deps: SessionQueryRouteDeps): void {
     res.status(404).json({ error: 'Session not found' })
   })
 
+  router.get('/sessions/:name/debug/events', requireReadAccess, async (req, res) => {
+    await pruneSessions()
+
+    const name = deps.parseSessionName(req.params.name)
+    if (!name) {
+      res.status(400).json({ error: 'Invalid session name' })
+      return
+    }
+
+    const activeSession = deps.sessions.get(name)
+    if (activeSession?.kind === 'stream' || activeSession?.kind === 'external') {
+      res.json({
+        session: name,
+        total: activeSession.events.length,
+        events: activeSession.events,
+      })
+      return
+    }
+
+    const exitedSession = deps.exitedStreamSessions.get(name)
+    if (exitedSession) {
+      res.json({
+        session: name,
+        total: exitedSession.events.length,
+        events: exitedSession.events,
+      })
+      return
+    }
+
+    res.status(404).json({ error: 'Session not found' })
+  })
+
   router.get('/sessions/:name', requireReadAccess, async (req, res) => {
     await pruneSessions()
 
@@ -217,11 +250,18 @@ export function registerSessionQueryRoutes(deps: SessionQueryRouteDeps): void {
           name,
           completed: true,
           status: completed.subtype,
+          processState: 'exited',
+          turnState: 'completed',
+          connectionState: 'not_applicable',
+          resumeState: 'unavailable',
           sessionType: completed.sessionType,
           creator: completed.creator,
           created: active.createdAt,
           lastActivityAt: active.lastEventAt ?? completed.completedAt,
           spawnedBy: completed.spawnedBy,
+          processAlive: false,
+          hadResult: true,
+          resumeAvailable: false,
           result: {
             status: completed.subtype,
             finalComment: completed.finalComment,
@@ -234,16 +274,20 @@ export function registerSessionQueryRoutes(deps: SessionQueryRouteDeps): void {
 
       if (active.kind === 'stream') {
         const workerStates = deps.getWorkerStates(name)
+        const resumeAvailable = canResumeLiveStreamSession(active)
         res.json({
-          ...liveSessionToApiPayload(active),
+          ...liveSessionToApiPayload(active, { resumeAvailable }),
           completed: false,
-          status: 'running',
           workerSummary: summarizeWorkerStates(workerStates),
+          resumeAvailable,
         })
         return
       }
 
       const pid = active.kind === 'pty' ? active.pty.pid : 0
+      const connectionState = active.kind === 'external'
+        ? (active.status === 'connected' ? 'connected' : 'disconnected')
+        : getConnectionState(active)
       res.json({
         name,
         completed: false,
@@ -251,6 +295,12 @@ export function registerSessionQueryRoutes(deps: SessionQueryRouteDeps): void {
         created: active.createdAt,
         lastActivityAt: active.lastEventAt,
         pid,
+        processState: active.kind === 'external' ? 'none' : 'running',
+        turnState: active.kind === 'external' ? (active.status === 'stale' ? 'stale' : 'idle') : 'idle',
+        connectionState,
+        resumeState: 'unavailable',
+        processAlive: active.kind !== 'external',
+        resumeAvailable: false,
         sessionType: active.sessionType,
         creator: active.creator,
         transportType: active.kind === 'external' ? 'external' : (active.kind === 'pty' ? 'pty' : 'stream'),
@@ -271,11 +321,18 @@ export function registerSessionQueryRoutes(deps: SessionQueryRouteDeps): void {
         name,
         completed: true,
         status: completed.subtype,
+        processState: 'exited',
+        turnState: 'completed',
+        connectionState: 'not_applicable',
+        resumeState: 'unavailable',
         sessionType: completed.sessionType,
         creator: completed.creator,
         created: completed.createdAt ?? completed.completedAt,
         lastActivityAt: completed.completedAt,
         spawnedBy: completed.spawnedBy,
+        processAlive: false,
+        hadResult: true,
+        resumeAvailable: false,
         result: {
           status: completed.subtype,
           finalComment: completed.finalComment,
@@ -288,6 +345,8 @@ export function registerSessionQueryRoutes(deps: SessionQueryRouteDeps): void {
 
     const exited = deps.exitedStreamSessions.get(name)
     if (exited) {
+      const persistedEntry = buildPersistedEntryFromExitedSession(name, exited)
+      const resumeAvailable = await deps.isExitedSessionResumeAvailable(persistedEntry)
       res.json({
         name,
         completed: false,
@@ -295,6 +354,10 @@ export function registerSessionQueryRoutes(deps: SessionQueryRouteDeps): void {
         created: exited.createdAt,
         lastActivityAt: exited.createdAt,
         pid: 0,
+        processState: 'exited',
+        turnState: exited.hadResult ? 'completed' : 'idle',
+        connectionState: 'not_applicable',
+        resumeState: getResumeState(resumeAvailable),
         sessionType: exited.sessionType,
         creator: exited.creator,
         transportType: 'stream',
@@ -311,6 +374,7 @@ export function registerSessionQueryRoutes(deps: SessionQueryRouteDeps): void {
         hadResult: exited.hadResult,
         resumedFrom: exited.resumedFrom,
         queuedMessageCount: countVisibleQueuedMessages(exited),
+        resumeAvailable,
       })
       return
     }
@@ -323,7 +387,7 @@ export function registerSessionQueryRoutes(deps: SessionQueryRouteDeps): void {
 
     const result: AgentSession[] = []
     const nowMs = Date.now()
-    const commanderLabels = await getCommanderLabels(deps.commanderSessionStorePath)
+    const commanderLabels = await deps.getCommanderLabels?.() ?? {}
     for (const [name, session] of deps.sessions) {
       if (
         session.kind === 'stream' &&
@@ -340,21 +404,29 @@ export function registerSessionQueryRoutes(deps: SessionQueryRouteDeps): void {
 
       if (session.kind === 'stream') {
         const workerStates = deps.getWorkerStates(name)
-        const livePayload = liveSessionToApiPayload(session)
+        const resumeAvailable = canResumeLiveStreamSession(session)
+        const livePayload = liveSessionToApiPayload(session, { resumeAvailable })
         result.push({
           ...livePayload,
           ...(label ? { label } : {}),
           workerSummary: summarizeWorkerStates(workerStates),
-          resumeAvailable: canResumeLiveStreamSession(session),
+          resumeAvailable,
         })
         continue
       }
 
+      const connectionState = session.kind === 'external'
+        ? (session.status === 'connected' ? 'connected' : 'disconnected')
+        : getConnectionState(session)
       result.push({
         name,
         ...(label ? { label } : {}),
         created: session.createdAt,
         pid: session.kind === 'pty' ? session.pty.pid : 0,
+        processState: session.kind === 'external' ? 'none' : 'running',
+        turnState: session.kind === 'external' ? (session.status === 'stale' ? 'stale' : 'idle') : 'idle',
+        connectionState,
+        resumeState: 'unavailable',
         sessionType: session.sessionType,
         creator: session.creator,
         transportType: session.kind === 'external' ? 'external' : 'pty',
@@ -381,6 +453,10 @@ export function registerSessionQueryRoutes(deps: SessionQueryRouteDeps): void {
         name,
         created: exited.createdAt,
         pid: 0,
+        processState: 'exited',
+        turnState: exited.hadResult ? 'completed' : 'idle',
+        connectionState: 'not_applicable',
+        resumeState: getResumeState(resumeAvailable),
         sessionType: exited.sessionType,
         creator: exited.creator,
         transportType: 'stream',

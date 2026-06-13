@@ -47,7 +47,7 @@ Recovery:
 Run the provider's native status command on the same host that will run work:
 
 ```bash
-codex auth status
+codex login status
 claude auth status
 gemini auth status
 opencode auth status

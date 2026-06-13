@@ -14,7 +14,7 @@ const modulesRoot = path.join(hammurabiRoot, 'modules')
 
 function moduleDirectories(): string[] {
   return readdirSync(modulesRoot, { withFileTypes: true })
-    .filter((entry) => entry.isDirectory())
+    .filter((entry) => entry.isDirectory() && entry.name !== '__tests__')
     .map((entry) => entry.name)
     .sort()
 }

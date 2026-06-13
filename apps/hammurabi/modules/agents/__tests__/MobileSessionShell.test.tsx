@@ -339,6 +339,24 @@ describe('MobileSessionShell', () => {
     expect(document.body.querySelector('.session-header-center')).toBeNull()
   })
 
+  it('keeps mobile header navigation controls at 44px with accessible names', async () => {
+    renderShell()
+
+    const backButton = document.body.querySelector('button[aria-label="Back to org"]')
+    expect(backButton).not.toBeNull()
+    expect(backButton?.classList.contains('h-11')).toBe(true)
+    expect(backButton?.classList.contains('w-11')).toBe(true)
+    expect(backButton?.classList.contains('h-8')).toBe(false)
+    expect(backButton?.classList.contains('w-8')).toBe(false)
+
+    const overflowButton = document.body.querySelector('button[aria-label="Session actions"]')
+    expect(overflowButton).not.toBeNull()
+    expect(overflowButton?.classList.contains('h-11')).toBe(true)
+    expect(overflowButton?.classList.contains('w-11')).toBe(true)
+    expect(overflowButton?.classList.contains('h-8')).toBe(false)
+    expect(overflowButton?.classList.contains('w-8')).toBe(false)
+  })
+
   it('keeps long commander and conversation names constrained to truncating row text', async () => {
     renderShell({
       sessionLabel: 'A very long commander name that should never wrap the compact mobile header',
@@ -477,10 +495,7 @@ describe('MobileSessionShell', () => {
     }
   })
 
-  it('invokes window.confirm before kill and only calls onKill when confirmed', async () => {
-    const confirmSpy = vi.spyOn(window, 'confirm')
-      .mockReturnValueOnce(false)
-      .mockReturnValueOnce(true)
+  it('opens a confirmation modal before kill and only calls onKill when confirmed', async () => {
     const onKill = vi.fn(async () => undefined)
 
     renderShell({ onKill })
@@ -492,7 +507,14 @@ describe('MobileSessionShell', () => {
       clickButtonByText('Kill Session')
     })
 
-    expect(confirmSpy).toHaveBeenCalledTimes(1)
+    expect(document.body.textContent).toContain('Kill session?')
+    expect(onKill).not.toHaveBeenCalled()
+
+    flushSync(() => {
+      clickButtonByText('Cancel')
+    })
+
+    expect(document.body.textContent).not.toContain('Kill session?')
     expect(onKill).not.toHaveBeenCalled()
 
     flushSync(() => {
@@ -501,8 +523,11 @@ describe('MobileSessionShell', () => {
     flushSync(() => {
       clickButtonByText('Kill Session')
     })
+    await act(async () => {
+      clickButtonByText('Kill session')
+      await Promise.resolve()
+    })
 
-    expect(confirmSpy).toHaveBeenCalledTimes(2)
     expect(onKill).toHaveBeenCalledTimes(1)
   })
 

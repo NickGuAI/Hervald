@@ -13,7 +13,7 @@ import { readTranscriptTailPage } from '../../agents/transcript-store.js'
 import { STARTUP_PROMPT } from './context.js'
 import type { CommanderSession } from '../store.js'
 import { resolveCommanderWorkflow } from '../workflow-resolution.js'
-import type { Conversation } from '../conversation-store.js'
+import type { ChannelReplyDelivery, Conversation } from '../conversation-store.js'
 import type { CommanderRoutesContext } from './types.js'
 import { sanitizeProviderContextForPersistence } from '../../agents/providers/provider-context-migration.js'
 import { asClaudeProviderContext } from '../../agents/providers/provider-session-context.js'
@@ -183,6 +183,30 @@ function sliceMessagesFromNewest(input: {
   }
 }
 
+function appendChannelReplyDeliveryMessage(
+  conversation: Conversation,
+  messages: MsgItem[],
+): MsgItem[] {
+  const delivery = conversation.channelReplyDelivery
+  if (!delivery || delivery.status !== 'failed') {
+    return messages
+  }
+
+  const target = delivery.lastRoute.to.trim()
+  const targetLabel = target ? ` to ${target}` : ''
+  const error = delivery.error?.trim()
+  const errorText = error ? `: ${error}` : '.'
+  return [
+    ...messages,
+    {
+      id: `channel-reply-delivery-${delivery.id}`,
+      kind: 'system',
+      text: `External channel reply failed${targetLabel}${errorText} Operator retry required.`,
+      timestamp: delivery.failedAt ?? delivery.updatedAt,
+    },
+  ]
+}
+
 async function readTranscriptMessagesWindow(
   sessionName: string,
   targetMessages: number,
@@ -226,7 +250,10 @@ export async function getConversationMessagesPage(
   const liveEvents = getLiveConversationSession(context, conversation)?.events ?? []
 
   if (liveEvents.length > 0) {
-    const liveMessages = mapStreamEventsToMessages(liveEvents as readonly StreamJsonEvent[])
+    const liveMessages = appendChannelReplyDeliveryMessage(
+      conversation,
+      mapStreamEventsToMessages(liveEvents as readonly StreamJsonEvent[]),
+    )
     if (skipNewest < liveMessages.length) {
       const livePage = sliceMessagesFromNewest({
         messages: liveMessages,
@@ -246,13 +273,14 @@ export async function getConversationMessagesPage(
 
   const targetMessages = skipNewest + limit
   const transcriptWindow = await readTranscriptMessagesWindow(sessionName, targetMessages)
+  const transcriptMessages = appendChannelReplyDeliveryMessage(conversation, transcriptWindow.messages)
   const transcriptPage = sliceMessagesFromNewest({
-    messages: transcriptWindow.messages,
+    messages: transcriptMessages,
     limit,
     skipNewest,
     hasMoreBeforeWindow: transcriptWindow.hasMoreBeforeWindow,
   })
-  const source: ConversationMessagesPage['source'] = transcriptWindow.messages.length === 0
+  const source: ConversationMessagesPage['source'] = transcriptMessages.length === 0
     ? 'empty'
     : 'transcript'
 
@@ -271,6 +299,10 @@ export interface ConversationSpawnOptions {
   effort?: ClaudeEffortLevel
   adaptiveThinking?: ClaudeAdaptiveThinkingMode
   maxThinkingTokens?: ClaudeMaxThinkingTokens
+}
+
+interface ConversationStartLifecycleCallbacks {
+  onConversationActivated?: (conversation: Conversation) => void
 }
 
 interface PreparedConversationSession {
@@ -506,6 +538,7 @@ export async function startConversationSession(
   sendOptions?: { queue?: boolean; priority?: 'high' | 'normal' | 'low' },
   dispatchChannelReplies = false,
   channelReplySkipCompletedTurns = 0,
+  lifecycleCallbacks?: ConversationStartLifecycleCallbacks,
 ): Promise<{ conversation: Conversation; sent: boolean }> {
   const prepared = await prepareConversationSession(
     context,
@@ -537,6 +570,7 @@ export async function startConversationSession(
   const updated = await context.conversationStore.update(conversation.id, (current) => ({
     ...applyLiveSessionState(current, liveSession, createSessionInput.agentType, 'active'),
   }))
+  lifecycleCallbacks?.onConversationActivated?.(updated ?? conversation)
   await updateCommanderDerivedState(context, commanderId)
   const heartbeatConversation = updated ?? conversation
   context.heartbeatManager.start(
@@ -666,6 +700,7 @@ export interface ConversationMessagePayload {
   message: string
   displayMessage?: string
   images?: QueuedMessageImage[]
+  clientSendId?: string
 }
 
 interface DeepThinkingWorkerLaunch {
@@ -1215,6 +1250,7 @@ async function runDeepThinkingRoutingOperation(input: {
           thinkingOutputs,
         }),
         ...(input.payload.displayMessage !== undefined ? { displayText: input.payload.displayMessage.trim() } : {}),
+        ...(input.payload.clientSendId ? { clientSendId: input.payload.clientSendId } : {}),
         images: input.payload.images && input.payload.images.length > 0 ? [...input.payload.images] : undefined,
       },
       input.sendOptions,
@@ -1281,6 +1317,7 @@ async function sendConversationPayloadWithDeepThinkingGuard(input: {
 }): Promise<
   | {
     ok: true
+    operationId?: string
   }
   | {
     ok: false
@@ -1350,7 +1387,7 @@ async function sendConversationPayloadWithDeepThinkingGuard(input: {
         completeDeepThinkingOperation(input.conversation.id, controller)
       }
     })
-    return { ok: true }
+    return { ok: true, operationId }
   }
 
   const sent = await input.context.sessionsInterface?.sendToSession(
@@ -1358,6 +1395,7 @@ async function sendConversationPayloadWithDeepThinkingGuard(input: {
     {
       text: input.payload.message,
       ...(input.payload.displayMessage !== undefined ? { displayText: input.payload.displayMessage.trim() } : {}),
+      ...(input.payload.clientSendId ? { clientSendId: input.payload.clientSendId } : {}),
       images: input.payload.images && input.payload.images.length > 0 ? [...input.payload.images] : undefined,
     },
     input.sendOptions,
@@ -1408,6 +1446,178 @@ interface ChannelReplyForwarderOptions {
   skipCompletedTurns?: number
 }
 
+function channelReplyDeliveryId(conversationId: string, now: Date, attemptCount: number): string {
+  return [
+    'channel-reply',
+    conversationId.slice(0, 8),
+    now.getTime().toString(36),
+    String(attemptCount),
+  ].join('-')
+}
+
+async function recordChannelReplyDeliveryPending(
+  context: CommanderRoutesContext,
+  conversation: Conversation,
+  message: string,
+): Promise<ChannelReplyDelivery | null> {
+  const now = context.now()
+  const timestamp = now.toISOString()
+  const updated = await context.conversationStore.update(conversation.id, (current) => {
+    if (!current.channelMeta || !current.lastRoute) {
+      return current
+    }
+
+    const previous = current.channelReplyDelivery
+    const attemptCount = previous?.message === message
+      ? previous.attemptCount + 1
+      : 1
+    const provider = current.channelMeta.provider
+    const lastRoute = {
+      ...current.lastRoute,
+      channel: provider,
+    }
+
+    return {
+      ...current,
+      channelReplyDelivery: {
+        id: channelReplyDeliveryId(current.id, now, attemptCount),
+        status: 'pending',
+        message,
+        provider,
+        sessionKey: current.channelMeta.sessionKey,
+        lastRoute,
+        attemptCount,
+        attemptedAt: timestamp,
+        updatedAt: timestamp,
+      },
+    }
+  })
+
+  return updated?.channelReplyDelivery ?? null
+}
+
+async function recordChannelReplyDeliveryFailed(
+  context: CommanderRoutesContext,
+  input: {
+    conversationId: string
+    deliveryId: string
+    error: string
+  },
+): Promise<void> {
+  const timestamp = context.now().toISOString()
+  await context.conversationStore.update(input.conversationId, (current) => {
+    const delivery = current.channelReplyDelivery
+    if (!delivery || delivery.id !== input.deliveryId) {
+      return current
+    }
+    return {
+      ...current,
+      channelReplyDelivery: {
+        ...delivery,
+        status: 'failed',
+        error: input.error,
+        failedAt: timestamp,
+        updatedAt: timestamp,
+      },
+      lastMessageAt: timestamp,
+    }
+  })
+}
+
+export async function recordChannelReplyDeliveryDelivered(
+  context: CommanderRoutesContext,
+  input: {
+    conversationId: string
+    deliveryId?: string
+    message?: string
+    provider?: ChannelReplyDelivery['provider']
+    sessionKey?: string
+    lastRoute?: ChannelReplyDelivery['lastRoute']
+  },
+): Promise<void> {
+  const timestamp = context.now().toISOString()
+  await context.conversationStore.update(input.conversationId, (current) => {
+    const delivery = current.channelReplyDelivery
+    if (!delivery) {
+      return current
+    }
+    if (input.deliveryId && delivery.id !== input.deliveryId) {
+      return current
+    }
+    if (!input.deliveryId && input.message && delivery.message !== input.message) {
+      return current
+    }
+    return {
+      ...current,
+      channelReplyDelivery: {
+        ...delivery,
+        status: 'delivered',
+        provider: input.provider ?? delivery.provider,
+        sessionKey: input.sessionKey ?? delivery.sessionKey,
+        lastRoute: input.lastRoute ? { ...input.lastRoute } : delivery.lastRoute,
+        deliveredAt: timestamp,
+        updatedAt: timestamp,
+      },
+      lastMessageAt: timestamp,
+    }
+  })
+}
+
+async function dispatchAutomaticChannelReply(
+  context: CommanderRoutesContext,
+  conversation: Conversation,
+  message: string,
+): Promise<void> {
+  let delivery: ChannelReplyDelivery | null = null
+  const recordFailure = async (error: string): Promise<void> => {
+    if (!delivery) {
+      return
+    }
+    try {
+      await recordChannelReplyDeliveryFailed(context, {
+        conversationId: conversation.id,
+        deliveryId: delivery.id,
+        error,
+      })
+    } catch (persistError) {
+      console.warn(
+        `[channels] Failed to persist assistant reply failure for conversation "${conversation.id}":`,
+        persistError,
+      )
+    }
+  }
+  try {
+    delivery = await recordChannelReplyDeliveryPending(context, conversation, message)
+    const result = await context.dispatchCommanderChannelReply({
+      commanderId: conversation.commanderId,
+      conversationId: conversation.id,
+      message,
+    })
+    if (!result.ok) {
+      await recordFailure(result.error)
+      console.warn(
+        `[channels] Failed to dispatch assistant reply for conversation "${conversation.id}": ${result.error}`,
+      )
+      return
+    }
+    if (delivery) {
+      await recordChannelReplyDeliveryDelivered(context, {
+        conversationId: result.conversationId,
+        deliveryId: delivery.id,
+        provider: result.provider,
+        sessionKey: result.sessionKey,
+        lastRoute: result.lastRoute,
+      })
+    }
+  } catch (error) {
+    await recordFailure(error instanceof Error ? error.message : String(error))
+    console.warn(
+      `[channels] Failed to dispatch assistant reply for conversation "${conversation.id}":`,
+      error,
+    )
+  }
+}
+
 function ensureChannelReplyForwarder(
   context: CommanderRoutesContext,
   conversation: Conversation,
@@ -1448,22 +1658,7 @@ function ensureChannelReplyForwarder(
       return
     }
 
-    void context.dispatchCommanderChannelReply({
-      commanderId: conversation.commanderId,
-      conversationId: conversation.id,
-      message: replyText,
-    }).then((result) => {
-      if (!result.ok) {
-        console.warn(
-          `[channels] Failed to dispatch assistant reply for conversation "${conversation.id}": ${result.error}`,
-        )
-      }
-    }).catch((error) => {
-      console.warn(
-        `[channels] Failed to dispatch assistant reply for conversation "${conversation.id}":`,
-        error,
-      )
-    })
+    void dispatchAutomaticChannelReply(context, conversation, replyText)
   })
 
   context.channelReplyForwarders.set(sessionName, unsubscribe)
@@ -1539,6 +1734,7 @@ export async function deliverConversationMessage(
     ok: true
     createdSession: boolean
     conversation: Conversation
+    operationId?: string
   }
   | {
     ok: false
@@ -1618,6 +1814,7 @@ export async function deliverConversationMessage(
         ok: true,
         createdSession: true,
         conversation: updated ?? started.conversation,
+        ...(sent.operationId ? { operationId: sent.operationId } : {}),
       }
     }
     if (conversation.status === 'idle') {
@@ -1674,5 +1871,6 @@ export async function deliverConversationMessage(
     ok: true,
     createdSession: false,
     conversation: updated ?? conversation,
+    ...(sent.operationId ? { operationId: sent.operationId } : {}),
   }
 }

@@ -1,5 +1,6 @@
 import { formatStoredApiKeyUnauthorizedMessage } from './api-key-recovery.js'
 import { type HammurabiConfig, normalizeEndpoint, readHammurabiConfig } from './config.js'
+import { readJsonResponse } from './http-json.js'
 import { runCli as runOnboardCli } from './onboard.js'
 import { runMachinesCli } from './machines.js'
 import { runQuestsCli } from './quests.js'
@@ -230,26 +231,30 @@ async function runCommandersWorkersDispatch(
     return 1
   }
 
-  let payload: unknown = {}
-  try {
-    payload = (await response.json()) as unknown
-  } catch {
-    payload = {}
+  const payloadResult = await readJsonResponse(response)
+  if (!payloadResult.ok) {
+    const detail = await readErrorDetail(payloadResult.response)
+    stderr.write(
+      detail
+        ? `Request failed (${payloadResult.response.status}): ${detail}\n`
+        : `Request failed (${payloadResult.response.status}).\n`,
+    )
+    return 1
   }
 
-  const data = isObject(payload) ? payload : {}
+  const data = isObject(payloadResult.data) ? payloadResult.data : {}
   const sessionName = typeof data.sessionName === 'string' ? data.sessionName : options.sessionName
   const routedHost = typeof data.host === 'string' && data.host.trim().length > 0
     ? data.host.trim()
     : null
 
-  stdout.write(`Worker dispatched: ${sessionName}\n`)
-  stdout.write(`Host: ${routedHost ?? 'null'}\n`)
-
   if (!routedHost) {
-    stderr.write('warning: machine routing was dropped (server reported host: null); check field names\n')
+    stderr.write('Worker dispatch response was malformed: expected a JSON object with a string host.\n')
     return 1
   }
+
+  stdout.write(`Worker dispatched: ${sessionName}\n`)
+  stdout.write(`Host: ${routedHost}\n`)
 
   return 0
 }

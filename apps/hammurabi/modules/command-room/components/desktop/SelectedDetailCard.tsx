@@ -5,6 +5,7 @@
  * Shows worker name, label, pending action, and primary action buttons.
  */
 import type { CSSProperties } from 'react'
+import { cn } from '@/lib/utils'
 import { Chip } from '@modules/components/hervald'
 
 export interface Worker {
@@ -30,6 +31,14 @@ interface SelectedDetailCardProps {
   onApprove?: () => void
   onOpenWorkspace: () => void
   onDismiss?: () => void
+}
+
+const truncateTextStyle: CSSProperties = {
+  minWidth: 0,
+  maxWidth: '100%',
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
 }
 
 export function SelectedDetailCard({
@@ -86,9 +95,11 @@ export function SelectedDetailCard({
 
       {/* Worker name */}
       <div
-        className="font-mono"
+        className={cn('truncate font-mono text-sm')}
+        data-testid="selected-worker-name"
+        title={worker.name}
         style={{
-          fontSize: 13.5,
+          ...truncateTextStyle,
           color: 'var(--hv-fg)',
           marginBottom: 4,
         }}
@@ -98,9 +109,11 @@ export function SelectedDetailCard({
 
       {/* Worker label */}
       <div
-        className="font-body"
+        className={cn('truncate font-body text-xs')}
+        data-testid="selected-worker-label"
+        title={worker.label ?? worker.kind}
         style={{
-          fontSize: 11.5,
+          ...truncateTextStyle,
           color: 'var(--hv-fg-subtle)',
           fontStyle: 'italic',
           marginBottom: approval ? 10 : 14,

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import express from 'express'
 import type { ApiKeyStoreLike } from '../../api-keys/store'
 import { combinedAuth } from '../combined-auth'
+import { authUserHasRequiredPermissions } from '../auth0'
 
 interface RunningServer {
   baseUrl: string
@@ -132,6 +133,27 @@ describe('combinedAuth', () => {
       authMode: 'auth0',
       userId: 'auth0|user-allowed',
     })
+
+    await server.close()
+  })
+
+  it('does not promote access_token query parameters into bearer credentials', async () => {
+    const middleware = combinedAuth({
+      verifyToken: async (token) => {
+        if (token !== 'auth0-token') {
+          throw new Error('invalid')
+        }
+
+        return {
+          id: 'auth0|query-user',
+          email: 'user@example.com',
+        }
+      },
+    })
+    const server = await startServer(middleware)
+
+    const response = await fetch(`${server.baseUrl}/protected?access_token=auth0-token`)
+    expect(response.status).not.toBe(200)
 
     await server.close()
   })
@@ -278,6 +300,13 @@ describe('combinedAuth', () => {
     })
 
     await server.close()
+  })
+
+  it('does not treat internal/system as an unconditional permission pass', () => {
+    expect(authUserHasRequiredPermissions(
+      { id: 'internal', email: 'system' },
+      ['agents:write'],
+    )).toBe(false)
   })
 
   it('rejects invalid internal token and falls through to other auth', async () => {

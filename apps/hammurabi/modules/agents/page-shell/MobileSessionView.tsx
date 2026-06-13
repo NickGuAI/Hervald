@@ -5,7 +5,10 @@ import { cn } from '@/lib/utils'
 import { fetchJson, getAccessToken, isAuthRecoveryRequiredError } from '@/lib/api'
 import { getWsBase } from '@/lib/api-base'
 import { useIsMobile } from '@/hooks/use-is-mobile'
-import { postInputViaHttpFallback } from '@/hooks/use-agent-session-stream'
+import {
+  issueAgentSessionStreamTicket,
+  postInputViaHttpFallback,
+} from '@/hooks/use-agent-session-stream'
 import { DismissibleOverlay } from '@/components/DismissibleOverlay'
 import type {
   AgentType,
@@ -200,13 +203,14 @@ export function MobileSessionView({
     setDispatchTask('')
   }, [sessionName])
 
+  const isCommanderSession = sessionType === 'commander'
   const commanderIdForUi = useMemo(() => {
-    if (sessionType !== 'commander') {
+    if (!isCommanderSession) {
       return null
     }
     const normalizedId = commanderId?.trim()
     return normalizedId && normalizedId.length > 0 ? normalizedId : null
-  }, [commanderId, sessionType])
+  }, [commanderId, isCommanderSession])
 
   const { data: commanderUiPayload } = useQuery({
     queryKey: ['commanders', 'detail-ui', commanderIdForUi],
@@ -310,9 +314,9 @@ export function MobileSessionView({
       clearReconnectTimer()
       setWsStatus('connecting')
 
-      let token: string | null
+      let ticket: string | null
       try {
-        token = await getAccessToken()
+        ticket = await issueAgentSessionStreamTicket()
       } catch (error) {
         if (isAuthRecoveryRequiredError(error)) {
           if (!disposed) {
@@ -327,8 +331,8 @@ export function MobileSessionView({
       }
 
       const params = new URLSearchParams()
-      if (token) {
-        params.set('access_token', token)
+      if (ticket) {
+        params.set('ticket', ticket)
       }
       const wsBase = getWsBase()
       const url = wsBase
@@ -516,6 +520,9 @@ export function MobileSessionView({
     if (!text && images.length === 0 && !workspaceContext) {
       return false
     }
+    const clientSendId = typeof payload.clientSendId === 'string' && payload.clientSendId.trim().length > 0
+      ? payload.clientSendId.trim()
+      : undefined
 
     setMessages((prev) =>
       capMessages([
@@ -524,6 +531,7 @@ export function MobileSessionView({
           `user-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
           text || (workspaceContext ? '[workspace context]' : '[image]'),
           images,
+          clientSendId,
         ),
       ]),
     )
@@ -534,6 +542,7 @@ export function MobileSessionView({
         {
           text,
           images,
+          ...(clientSendId ? { clientSendId } : {}),
           workspaceContext,
         },
         getAccessToken,
@@ -544,6 +553,7 @@ export function MobileSessionView({
       type: 'input',
       text,
       images: images.length > 0 ? images : undefined,
+      clientSendId,
       workspaceContext,
     }))
     return true
@@ -560,6 +570,9 @@ export function MobileSessionView({
     if (!text && !images && !workspaceContext) {
       return false
     }
+    const clientSendId = typeof payload.clientSendId === 'string' && payload.clientSendId.trim().length > 0
+      ? payload.clientSendId.trim()
+      : undefined
 
     return runQueueMutation(
       () =>
@@ -568,7 +581,7 @@ export function MobileSessionView({
           headers: {
             'content-type': 'application/json',
           },
-          body: JSON.stringify({ text, images, workspaceContext }),
+          body: JSON.stringify({ text, images, clientSendId, workspaceContext }),
         }),
       'Failed to queue message',
     )
@@ -757,7 +770,7 @@ export function MobileSessionView({
             kind: 'target',
             targetId: target.targetId,
             label: target.label,
-            readOnly: target.isReadOnly,
+            readOnly: target.readOnly,
           })
         }
       } catch {
@@ -918,8 +931,9 @@ export function MobileSessionView({
                 <div className="text-sm font-mono text-sumi-black">Workers</div>
                 <button
                   type="button"
-                  className="rounded-md p-1 hover:bg-ink-wash"
+                  className="inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-md hover:bg-ink-wash"
                   onClick={() => setWorkersOpen(false)}
+                  aria-label="Close workers"
                 >
                   <X size={16} className="text-sumi-diluted" />
                 </button>
@@ -984,8 +998,9 @@ export function MobileSessionView({
                 <div className="text-sm font-mono text-sumi-black">Dispatch Worker</div>
                 <button
                   type="button"
-                  className="rounded-md p-1 hover:bg-ink-wash"
+                  className="inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-md hover:bg-ink-wash"
                   onClick={() => setDispatchOpen(false)}
+                  aria-label="Close dispatch worker"
                 >
                   <X size={16} className="text-sumi-diluted" />
                 </button>

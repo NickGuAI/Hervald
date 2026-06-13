@@ -11,12 +11,13 @@ import type {
 } from '../../types'
 
 const mocks = vi.hoisted(() => ({
+  fetchJson: vi.fn(),
   getAccessToken: vi.fn(),
 }))
 
 vi.mock('@/lib/api', () => ({
   buildRequestHeaders: vi.fn(async () => new Headers()),
-  fetchJson: vi.fn(),
+  fetchJson: mocks.fetchJson,
   getAccessToken: mocks.getAccessToken,
   isAuthRecoveryRequiredError: () => false,
 }))
@@ -84,6 +85,11 @@ async function renderNode(node: ReactNode) {
 describe('WorkspaceFilePreview', () => {
   beforeEach(() => {
     ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
+    let ticketCounter = 0
+    mocks.fetchJson.mockImplementation(async () => {
+      ticketCounter += 1
+      return { ticket: `ticket-${ticketCounter}` }
+    })
     mocks.getAccessToken.mockResolvedValue('token-123')
   })
 
@@ -97,6 +103,7 @@ describe('WorkspaceFilePreview', () => {
     container?.remove()
     container = null
     document.body.innerHTML = ''
+    mocks.fetchJson.mockReset()
     clearStoredInstanceUrl()
     delete (window as unknown as { Capacitor?: unknown }).Capacitor
     mocks.getAccessToken.mockReset()
@@ -109,8 +116,8 @@ describe('WorkspaceFilePreview', () => {
       id: 'wt-1',
       label: 'local:/tmp/workspace',
     }
-    const inlineUrl = '/api/workspace/raw?path=docs%2Freport.pdf&access_token=token-123&targetId=wt-1'
-    const downloadUrl = `${inlineUrl}&download=1`
+    const inlineUrl = '/api/workspace/raw?path=docs%2Freport.pdf&ticket=ticket-1&targetId=wt-1'
+    const downloadUrl = '/api/workspace/raw?path=docs%2Freport.pdf&ticket=ticket-2&targetId=wt-1&download=1'
 
     await renderNode(
       <WorkspaceFilePreview
@@ -163,7 +170,7 @@ describe('WorkspaceFilePreview', () => {
       await vi.waitFor(() => {
         const downloadAnchor = document.body.querySelector('a[download][aria-label="Download report.pdf"]')
         expect(downloadAnchor?.getAttribute('href')).toBe(
-          'https://hervald.example.com/api/workspace/raw?path=docs%2Freport.pdf&access_token=token-123&targetId=wt-1&download=1',
+          'https://hervald.example.com/api/workspace/raw?path=docs%2Freport.pdf&ticket=ticket-2&targetId=wt-1&download=1',
         )
       })
     })

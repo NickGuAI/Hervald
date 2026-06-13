@@ -9,9 +9,11 @@ import { Unicode11Addon } from '@xterm/addon-unicode11'
 import { SerializeAddon } from '@xterm/addon-serialize'
 import '@xterm/xterm/css/xterm.css'
 import { cn } from '@/lib/utils'
-import { getAccessToken, isAuthRecoveryRequiredError } from '@/lib/api'
+import { isAuthRecoveryRequiredError } from '@/lib/api'
 import { getWsBase } from '@/lib/api-base'
 import { readHvTerminalFontFamily, readHvTerminalTheme } from '@/lib/hv-tokens'
+import { issueAgentSessionStreamTicket } from '@/hooks/use-agent-session-stream'
+import { ConfirmModal } from '@modules/components/ConfirmModal'
 import type { AgentType } from '@/types'
 import { createReconnectBackoff, shouldReconnectWebSocketClose } from '../ws-reconnect'
 import { getKillConfirmationMessage } from './session-helpers'
@@ -38,6 +40,7 @@ export function TerminalView({
     'connecting',
   )
   const [isKilling, setIsKilling] = useState(false)
+  const [confirmKillOpen, setConfirmKillOpen] = useState(false)
 
   useEffect(() => {
     if (!termRef.current) {
@@ -107,9 +110,9 @@ export function TerminalView({
       clearReconnectTimer()
       setWsStatus('connecting')
 
-      let token: string | null
+      let ticket: string | null
       try {
-        token = await getAccessToken()
+        ticket = await issueAgentSessionStreamTicket()
       } catch (error) {
         if (isAuthRecoveryRequiredError(error)) {
           if (!disposed) {
@@ -124,8 +127,8 @@ export function TerminalView({
       }
 
       const params = new URLSearchParams()
-      if (token) {
-        params.set('access_token', token)
+      if (ticket) {
+        params.set('ticket', ticket)
       }
 
       const wsBase = getWsBase()
@@ -256,11 +259,15 @@ export function TerminalView({
       return
     }
 
-    const confirmed = window.confirm(getKillConfirmationMessage(sessionName, agentType))
-    if (!confirmed) {
+    setConfirmKillOpen(true)
+  }
+
+  async function handleConfirmKill() {
+    if (isKilling) {
       return
     }
 
+    setConfirmKillOpen(false)
     setIsKilling(true)
     try {
       await onKill(sessionName, agentType)
@@ -272,50 +279,61 @@ export function TerminalView({
   }
 
   return (
-    <div className={isMobileOverlay ? 'terminal-overlay' : 'flex flex-col h-full'}>
-      <div className="flex items-center justify-between px-5 py-3 border-b border-ink-border bg-washi-aged">
-        <div className="flex items-center gap-2">
-          <span className="font-mono text-sm text-sumi-black">{sessionLabel ?? sessionName}</span>
-          <span
-            className={cn(
-              'badge-sumi',
-              wsStatus === 'connected'
-                ? 'badge-active'
-                : wsStatus === 'connecting'
-                  ? 'badge-idle'
-                  : 'badge-stale',
+    <>
+      <div className={isMobileOverlay ? 'terminal-overlay' : 'flex flex-col h-full'}>
+        <div className="flex items-center justify-between px-5 py-3 border-b border-ink-border bg-washi-aged">
+          <div className="flex items-center gap-2">
+            <span className="font-mono text-sm text-sumi-black">{sessionLabel ?? sessionName}</span>
+            <span
+              className={cn(
+                'badge-sumi',
+                wsStatus === 'connected'
+                  ? 'badge-active'
+                  : wsStatus === 'connecting'
+                    ? 'badge-idle'
+                    : 'badge-stale',
+              )}
+            >
+              {wsStatus}
+            </span>
+            {isMobileOverlay && (
+              <span className="badge-sumi text-[10px]">PTY</span>
             )}
-          >
-            {wsStatus}
-          </span>
-          {isMobileOverlay && (
-            <span className="badge-sumi text-[10px]">PTY</span>
-          )}
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={handleKill}
+              disabled={isKilling}
+              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs text-accent-vermillion hover:bg-accent-vermillion/10 disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
+              aria-label="Kill session"
+            >
+              <Power size={14} />
+              {isKilling ? 'Killing...' : 'Kill Session'}
+            </button>
+            <button
+              onClick={onClose}
+              className="p-1.5 rounded-lg hover:bg-ink-wash transition-colors"
+              aria-label="Close terminal"
+            >
+              <X size={16} className="text-sumi-diluted" />
+            </button>
+          </div>
         </div>
-        <div className="flex items-center gap-2">
-          <button
-            onClick={handleKill}
-            disabled={isKilling}
-            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs text-accent-vermillion hover:bg-accent-vermillion/10 disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
-            aria-label="Kill session"
-          >
-            <Power size={14} />
-            {isKilling ? 'Killing...' : 'Kill Session'}
-          </button>
-          <button
-            onClick={onClose}
-            className="p-1.5 rounded-lg hover:bg-ink-wash transition-colors"
-            aria-label="Close terminal"
-          >
-            <X size={16} className="text-sumi-diluted" />
-          </button>
-        </div>
-      </div>
 
-      <div
-        ref={termRef}
-        className={cn('flex-1 bg-sumi-black', isMobileOverlay && 'overflow-auto touch-pan-y')}
+        <div
+          ref={termRef}
+          className={cn('flex-1 bg-sumi-black', isMobileOverlay && 'overflow-auto touch-pan-y')}
+        />
+      </div>
+      <ConfirmModal
+        open={confirmKillOpen}
+        title="Kill session?"
+        message={getKillConfirmationMessage(sessionName, agentType)}
+        confirmLabel="Kill session"
+        confirmTone="danger"
+        onClose={() => setConfirmKillOpen(false)}
+        onConfirm={() => void handleConfirmKill()}
       />
-    </div>
+    </>
   )
 }

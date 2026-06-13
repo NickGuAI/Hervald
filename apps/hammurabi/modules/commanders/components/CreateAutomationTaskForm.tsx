@@ -64,7 +64,13 @@ export function CreateAutomationTaskForm({
   machines,
   createPending,
 }: CreateAutomationTaskFormProps) {
-  const { data: skills, isLoading: skillsLoading } = useSkills()
+  const {
+    data: skills,
+    error: skillsError,
+    isError: skillsIsError,
+    isLoading: skillsLoading,
+    refetch: refetchSkills,
+  } = useSkills()
   const { data: providers = [] } = useProviderRegistry()
   const skillList = skills ?? []
 
@@ -74,7 +80,7 @@ export function CreateAutomationTaskForm({
   const [cwd, setCwd] = useState('')
   const [task, setTask] = useState('')
   const [timezone, setTimezone] = useState(() => detectBrowserTimezone())
-  const [agentType, setAgentType] = useState<AgentType>('claude')
+  const [agentType, setAgentType] = useState<AgentType>('codex')
   const [transportType, setTransportType] =
     useState<Exclude<SessionTransportType, 'external'>>('stream')
   const [effort, setEffort] = useState<ClaudeEffortLevel>(DEFAULT_CLAUDE_EFFORT_LEVEL)
@@ -124,7 +130,7 @@ export function CreateAutomationTaskForm({
       setTimezone(detectBrowserTimezone())
       setCwd('')
       setTask('')
-      setAgentType('claude')
+      setAgentType('codex')
       setTransportType('stream')
       setEffort(DEFAULT_CLAUDE_EFFORT_LEVEL)
       setAdaptiveThinking(DEFAULT_CLAUDE_ADAPTIVE_THINKING_MODE)
@@ -196,10 +202,13 @@ export function CreateAutomationTaskForm({
                     }
                   }}
                   className="w-full px-3 py-2 rounded-lg border border-ink-border bg-washi-aged text-[16px] md:text-sm focus:outline-none focus:border-ink-border-hover"
+                  disabled={skillsIsError}
                 >
                   <option value="">
                     {skillsLoading
                       ? 'Loading skills...'
+                      : skillsIsError
+                        ? 'Unable to load skills'
                       : skillList.length > 0
                         ? '— Select a skill —'
                         : 'No user-invocable skills installed'}
@@ -210,7 +219,20 @@ export function CreateAutomationTaskForm({
                     </option>
                   ))}
                 </select>
-                {activeSkill ? (
+                {skillsIsError ? (
+                  <div className="mt-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2.5 text-sm text-red-700">
+                    <p>{skillsError instanceof Error ? skillsError.message : 'Unable to load skills.'}</p>
+                    <button
+                      type="button"
+                      className="mt-1 font-mono text-xs underline"
+                      onClick={() => {
+                        void refetchSkills()
+                      }}
+                    >
+                      Retry
+                    </button>
+                  </div>
+                ) : activeSkill ? (
                   <div className="mt-2 rounded-lg border border-ink-border bg-washi-aged/60 px-3 py-2.5 space-y-1.5">
                     <p className="text-sm text-sumi-gray">{activeSkill.description}</p>
                     {activeSkill.argumentHint ? (

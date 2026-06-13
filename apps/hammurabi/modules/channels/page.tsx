@@ -233,9 +233,49 @@ function providerIsConnected(bindings: CommanderChannelBinding[] | undefined): b
   return bindings?.some((binding) => binding.enabled) ?? false
 }
 
+function channelErrorMessage(error: unknown, fallback: string): string {
+  return error instanceof Error && error.message ? error.message : fallback
+}
+
+function ChannelErrorState({
+  title,
+  error,
+  onRetry,
+}: {
+  title: string
+  error: unknown
+  onRetry?: () => void
+}) {
+  return (
+    <div
+      className="rounded-lg border border-accent-vermillion/30 bg-accent-vermillion/10 px-4 py-3 text-sm text-accent-vermillion"
+      role="alert"
+    >
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="font-medium">{title}</p>
+        {onRetry ? (
+          <button
+            type="button"
+            onClick={onRetry}
+            className="rounded border border-accent-vermillion/30 px-2 py-1 text-xs font-medium text-accent-vermillion transition-colors hover:bg-accent-vermillion/10"
+          >
+            Retry
+          </button>
+        ) : null}
+      </div>
+      <p className="mt-1 text-xs">{channelErrorMessage(error, title)}</p>
+    </div>
+  )
+}
+
 export default function ChannelsPage() {
   const [searchParams, setSearchParams] = useSearchParams()
-  const { data: orgTree } = useOrgTree()
+  const {
+    data: orgTree,
+    isLoading: orgTreeLoading,
+    error: orgTreeError,
+    refetch: refetchOrgTree,
+  } = useOrgTree()
   const commanders = orgTree?.commanders ?? []
   const requestedCommanderId = searchParams.get('commander')
   const [selectedCommanderId, setSelectedCommanderId] = useState(requestedCommanderId ?? '')
@@ -246,7 +286,12 @@ export default function ChannelsPage() {
   const [channelModalOpen, setChannelModalOpen] = useState(false)
   const completingPairingIdRef = useRef<string | null>(null)
 
-  const { data: providerDescriptorResponse } = useChannelProviderDescriptors(selectedCommanderId || null)
+  const {
+    data: providerDescriptorResponse,
+    isLoading: providerDescriptorsLoading,
+    error: providerDescriptorsError,
+    refetch: refetchProviderDescriptors,
+  } = useChannelProviderDescriptors(selectedCommanderId || null)
   const providerDescriptors = providerDescriptorResponse?.providers ?? []
   const selectedProviderDescriptor = providerDescriptors.find((entry) => entry.provider === provider) ?? null
   const selectedForm = selectedProviderDescriptor
@@ -287,7 +332,12 @@ export default function ChannelsPage() {
     () => commanders.find((commander) => commander.id === selectedCommanderId) ?? null,
     [commanders, selectedCommanderId],
   )
-  const { data: bindings = [], error } = useChannels(selectedCommanderId || null)
+  const {
+    data: bindings = [],
+    isLoading: bindingsLoading,
+    error,
+    refetch: refetchBindings,
+  } = useChannels(selectedCommanderId || null)
   const bindingsByProvider = useMemo(() => {
     const grouped = new Map<CommanderChannelProvider, CommanderChannelBinding[]>()
     for (const binding of bindings) {
@@ -479,6 +529,17 @@ export default function ChannelsPage() {
         </div>
 
         <section className="card-sumi p-5">
+          {orgTreeError ? (
+            <div className="mb-4">
+              <ChannelErrorState
+                title="Failed to load commanders"
+                error={orgTreeError}
+                onRetry={() => {
+                  void refetchOrgTree()
+                }}
+              />
+            </div>
+          ) : null}
           <div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_minmax(18rem,24rem)] md:items-end">
             <div>
               <p className="section-title">Selected commander</p>
@@ -491,7 +552,7 @@ export default function ChannelsPage() {
                     {selectedCommander?.displayName ?? 'Select a commander'}
                   </p>
                   <p className="mt-1 font-mono text-xs text-sumi-diluted">
-                    {selectedCommander?.id ?? 'No commander selected'}
+                    {orgTreeLoading ? 'Loading commanders...' : selectedCommander?.id ?? 'No commander selected'}
                   </p>
                 </div>
               </div>
@@ -517,14 +578,28 @@ export default function ChannelsPage() {
 
           <div className="mt-5 border-t border-ink-border pt-4">
             <p className="section-title">Support channels</p>
-            <ChannelProviderStrip
-              descriptors={providerDescriptors}
-              bindingsByProvider={bindingsByProvider}
-              commanderName={selectedCommander?.displayName ?? 'selected commander'}
-              activeProvider={channelModalOpen ? provider : ''}
-              disabled={!selectedCommander}
-              onOpen={handleOpenChannelModal}
-            />
+            {providerDescriptorsLoading && selectedCommander ? (
+              <p className="mt-3 text-sm text-sumi-diluted">Loading channel providers...</p>
+            ) : providerDescriptorsError ? (
+              <div className="mt-3">
+                <ChannelErrorState
+                  title="Failed to load channel providers"
+                  error={providerDescriptorsError}
+                  onRetry={() => {
+                    void refetchProviderDescriptors()
+                  }}
+                />
+              </div>
+            ) : (
+              <ChannelProviderStrip
+                descriptors={providerDescriptors}
+                bindingsByProvider={bindingsByProvider}
+                commanderName={selectedCommander?.displayName ?? 'selected commander'}
+                activeProvider={channelModalOpen ? provider : ''}
+                disabled={!selectedCommander}
+                onOpen={handleOpenChannelModal}
+              />
+            )}
           </div>
         </section>
 
@@ -681,7 +756,17 @@ export default function ChannelsPage() {
           </div>
 
           <div className="mt-5 space-y-3">
-            {bindings.length > 0 ? bindings.map((binding) => (
+            {bindingsLoading && selectedCommander ? (
+              <p className="text-sm text-sumi-diluted">Loading channel bindings...</p>
+            ) : error ? (
+              <ChannelErrorState
+                title="Failed to load channel bindings"
+                error={error}
+                onRetry={() => {
+                  void refetchBindings()
+                }}
+              />
+            ) : bindings.length > 0 ? bindings.map((binding) => (
               <BindingRow
                 key={binding.id}
                 binding={binding}

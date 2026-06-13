@@ -96,6 +96,7 @@ describe('workspace routes', () => {
         kind: 'target',
         id: 'wt-test',
         label: 'local',
+        readOnly: false,
       },
     })
     const resolver: WorkspaceResolverCapability = {
@@ -132,14 +133,34 @@ describe('workspace routes', () => {
       body: JSON.stringify({ conversationId: 'conv-1' }),
     })
     expect(openResponse.status).toBe(200)
-    await expect(openResponse.json()).resolves.toMatchObject({ targetId: 'wt-test' })
+    await expect(openResponse.json()).resolves.toEqual({
+      targetId: 'wt-test',
+      label: 'local',
+      host: 'local',
+      readOnly: false,
+    })
 
     const treeResponse = await fetch(
       `${server.baseUrl}/api/workspace/tree?targetId=wt-test`,
       { headers: AUTH_HEADERS },
     )
     expect(treeResponse.status).toBe(200)
-    await expect(treeResponse.json()).resolves.toMatchObject({
+    const treeBody = await treeResponse.json()
+    expect(treeBody.workspace).toMatchObject({
+      source: {
+        kind: 'target',
+        id: 'wt-test',
+        targetId: 'wt-test',
+        label: 'local',
+        host: 'local',
+        readOnly: false,
+      },
+      readOnly: false,
+      isRemote: false,
+    })
+    expect(treeBody.workspace).not.toHaveProperty('rootPath')
+    expect(treeBody.workspace).not.toHaveProperty('gitRoot')
+    expect(treeBody).toMatchObject({
       nodes: expect.arrayContaining([
         expect.objectContaining({ name: 'docs', type: 'directory' }),
         expect.objectContaining({ name: 'README.md', type: 'file' }),
@@ -151,7 +172,10 @@ describe('workspace routes', () => {
       { headers: AUTH_HEADERS },
     )
     expect(fileResponse.status).toBe(200)
-    await expect(fileResponse.json()).resolves.toMatchObject({
+    const fileBody = await fileResponse.json()
+    expect(fileBody.workspace).not.toHaveProperty('rootPath')
+    expect(fileBody.workspace).not.toHaveProperty('gitRoot')
+    expect(fileBody).toMatchObject({
       kind: 'text',
       content: expect.stringContaining('Unified workspace'),
     })
@@ -188,7 +212,10 @@ describe('workspace routes', () => {
       { headers: AUTH_HEADERS },
     )
     expect(gitStatusResponse.status).toBe(200)
-    await expect(gitStatusResponse.json()).resolves.toMatchObject({ enabled: false })
+    const gitStatusBody = await gitStatusResponse.json()
+    expect(gitStatusBody.workspace).not.toHaveProperty('rootPath')
+    expect(gitStatusBody.workspace).not.toHaveProperty('gitRoot')
+    expect(gitStatusBody).toMatchObject({ enabled: false })
 
     const resolvedPathResponse = await fetch(
       `${server.baseUrl}/api/workspace/resolve-path?targetId=wt-test&path=${
@@ -407,7 +434,7 @@ describe('workspace routes', () => {
     expect(resolvedPathResponse.status).toBe(200)
     await expect(resolvedPathResponse.json()).resolves.toMatchObject({
       targetId: 'wt-external',
-      targetLabel: `local:${externalDir}`,
+      targetLabel: 'Local workspace',
       targetReadOnly: false,
       path: 'final_report.md',
       type: 'file',
@@ -503,7 +530,7 @@ describe('workspace routes', () => {
     expect(resolvedPathResponse.status).toBe(200)
     await expect(resolvedPathResponse.json()).resolves.toMatchObject({
       targetId: 'wt-real',
-      targetLabel: `local:${realWorkspace.rootPath}`,
+      targetLabel: 'Local workspace',
       targetReadOnly: false,
       path: 'final_report.md',
       type: 'file',
@@ -596,7 +623,7 @@ describe('workspace routes', () => {
     expect(resolvedPathResponse.status).toBe(200)
     await expect(resolvedPathResponse.json()).resolves.toMatchObject({
       targetId: 'wt-real-dir',
-      targetLabel: `local:${realWorkspace.rootPath}`,
+      targetLabel: 'Local workspace',
       targetReadOnly: false,
       path: '',
       type: 'directory',

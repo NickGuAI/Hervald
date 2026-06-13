@@ -8,10 +8,15 @@ export interface AgentSessionStreamInputImage {
 export interface SendInput {
   text: string
   images?: AgentSessionStreamInputImage[]
+  clientSendId?: string
   workspaceContext?: WorkspaceContextPayload
 }
 
-export type PaintOptimistic = (text: string, images?: AgentSessionStreamInputImage[]) => void
+export type PaintOptimistic = (
+  text: string,
+  images?: AgentSessionStreamInputImage[],
+  clientSendId?: string,
+) => void
 
 export interface SendDispatcher {
   /** Mode label for logging and debugging. */
@@ -41,6 +46,7 @@ interface HttpConversationDispatcherOptions {
   readonly submitConversationMessage: (input: {
     message: string
     images?: AgentSessionStreamInputImage[]
+    clientSendId?: string
     workspaceContext?: WorkspaceContextPayload
   }) => Promise<boolean>
 }
@@ -50,6 +56,9 @@ const DEFAULT_WEBSOCKET_OPEN_STATE = 1
 function normalizeInput(input: SendInput) {
   const trimmed = input.text.trim()
   const imagesPayload = input.images && input.images.length > 0 ? input.images : undefined
+  const clientSendId = typeof input.clientSendId === 'string' && input.clientSendId.trim().length > 0
+    ? input.clientSendId.trim()
+    : undefined
   const hasContext = Boolean(
     input.workspaceContext?.filePaths?.length
     || input.workspaceContext?.directoryPaths?.length
@@ -57,7 +66,20 @@ function normalizeInput(input: SendInput) {
   )
   const hasContent = trimmed.length > 0 || Boolean(imagesPayload) || hasContext
 
-  return { trimmed, imagesPayload, hasContent }
+  return { trimmed, imagesPayload, clientSendId, hasContent }
+}
+
+function paintOptimisticMessage(
+  paintOptimistic: PaintOptimistic,
+  text: string,
+  images?: AgentSessionStreamInputImage[],
+  clientSendId?: string,
+) {
+  if (clientSendId) {
+    paintOptimistic(text, images, clientSendId)
+    return
+  }
+  paintOptimistic(text, images)
 }
 
 export function createWsDirectDispatcher({
@@ -69,36 +91,39 @@ export function createWsDirectDispatcher({
   return {
     mode: 'ws-direct',
     async send(input, paintOptimistic) {
-      const { trimmed, imagesPayload, hasContent } = normalizeInput(input)
+      const { trimmed, imagesPayload, clientSendId, hasContent } = normalizeInput(input)
       if (!sessionName || !hasContent) {
         return false
       }
 
       const socket = wsRef.current
       if (imagesPayload) {
-        paintOptimistic(trimmed, imagesPayload)
+        paintOptimisticMessage(paintOptimistic, trimmed, imagesPayload, clientSendId)
         return fallbackHttp({
           text: trimmed,
           images: imagesPayload,
+          ...(clientSendId ? { clientSendId } : {}),
           ...(input.workspaceContext ? { workspaceContext: input.workspaceContext } : {}),
         })
       }
 
       if (socket?.readyState === openReadyState) {
-        paintOptimistic(trimmed, imagesPayload)
+        paintOptimisticMessage(paintOptimistic, trimmed, imagesPayload, clientSendId)
         socket.send(JSON.stringify({
           type: 'input',
           text: trimmed,
           images: imagesPayload,
+          clientSendId,
           workspaceContext: input.workspaceContext,
         }))
         return true
       }
 
-      paintOptimistic(trimmed, imagesPayload)
+      paintOptimisticMessage(paintOptimistic, trimmed, imagesPayload, clientSendId)
       return fallbackHttp({
         text: trimmed,
         images: imagesPayload,
+        ...(clientSendId ? { clientSendId } : {}),
         ...(input.workspaceContext ? { workspaceContext: input.workspaceContext } : {}),
       })
     },
@@ -111,15 +136,16 @@ export function createHttpConversationDispatcher({
   return {
     mode: 'http-conversation',
     async send(input, paintOptimistic) {
-      const { trimmed, imagesPayload, hasContent } = normalizeInput(input)
+      const { trimmed, imagesPayload, clientSendId, hasContent } = normalizeInput(input)
       if (!hasContent) {
         return false
       }
 
-      paintOptimistic(trimmed, imagesPayload)
+      paintOptimisticMessage(paintOptimistic, trimmed, imagesPayload, clientSendId)
       return submitConversationMessage({
         message: trimmed,
         images: imagesPayload,
+        ...(clientSendId ? { clientSendId } : {}),
         ...(input.workspaceContext ? { workspaceContext: input.workspaceContext } : {}),
       })
     },

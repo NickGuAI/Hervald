@@ -1,6 +1,12 @@
 import React from 'react'
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
+
+const mocks = vi.hoisted(() => ({
+  useTelemetrySessions: vi.fn(),
+  useTelemetrySessionDetail: vi.fn(),
+  useTelemetrySummary: vi.fn(),
+}))
 
 const summaryData = {
   costToday: 0.5,
@@ -40,9 +46,9 @@ const sessionsData = [
 ]
 
 vi.mock('@/hooks/use-telemetry', () => ({
-  useTelemetrySessions: () => ({ data: sessionsData, isLoading: false }),
-  useTelemetrySessionDetail: () => ({ data: null, isLoading: false }),
-  useTelemetrySummary: () => ({ data: summaryData, isLoading: false }),
+  useTelemetrySessions: mocks.useTelemetrySessions,
+  useTelemetrySessionDetail: mocks.useTelemetrySessionDetail,
+  useTelemetrySummary: mocks.useTelemetrySummary,
 }))
 
 vi.mock('recharts', () => {
@@ -67,6 +73,22 @@ vi.mock('recharts', () => {
 import TelemetryPage from '../page'
 
 describe('TelemetryPage token usage rendering', () => {
+  beforeEach(() => {
+    mocks.useTelemetrySessions.mockReturnValue({
+      data: sessionsData,
+      isLoading: false,
+      error: null,
+      refetch: vi.fn(),
+    })
+    mocks.useTelemetrySessionDetail.mockReturnValue({ data: null, isLoading: false, error: null })
+    mocks.useTelemetrySummary.mockReturnValue({
+      data: summaryData,
+      isLoading: false,
+      error: null,
+      refetch: vi.fn(),
+    })
+  })
+
   it('shows token summary cards and session input/output split', () => {
     const html = renderToStaticMarkup(React.createElement(TelemetryPage))
 
@@ -75,5 +97,37 @@ describe('TelemetryPage token usage rendering', () => {
     expect(html).toContain('Tokens this month')
     expect(html).toContain('In 200 / Out 100')
     expect(html).toContain('In 5 / Out 7')
+  })
+
+  it('shows telemetry summary fetch errors instead of a loading or empty state', () => {
+    mocks.useTelemetrySummary.mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      error: new Error('summary endpoint unavailable'),
+      refetch: vi.fn(),
+    })
+
+    const html = renderToStaticMarkup(React.createElement(TelemetryPage))
+
+    expect(html).toContain('Failed to load telemetry summary')
+    expect(html).toContain('summary endpoint unavailable')
+    expect(html).toContain('Retry')
+    expect(html).not.toContain('No telemetry summary yet')
+  })
+
+  it('shows telemetry sessions fetch errors instead of an empty sessions list', () => {
+    mocks.useTelemetrySessions.mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      error: new Error('sessions endpoint unavailable'),
+      refetch: vi.fn(),
+    })
+
+    const html = renderToStaticMarkup(React.createElement(TelemetryPage))
+
+    expect(html).toContain('Failed to load telemetry sessions')
+    expect(html).toContain('sessions endpoint unavailable')
+    expect(html).toContain('Retry')
+    expect(html).not.toContain('No telemetry sessions yet')
   })
 })

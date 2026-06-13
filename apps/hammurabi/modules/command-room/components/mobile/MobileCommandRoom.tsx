@@ -168,6 +168,7 @@ export function MobileCommandRoom({
   onWorkspaceRequestedPathConsumed,
   onRecoverStaleWorkspaceTarget,
   onStopCommander,
+  onCreateChatForCommander,
   onCreateConversation,
   requestedNewChatCommanderId = null,
   onStartConversation,
@@ -415,6 +416,9 @@ export function MobileCommandRoom({
             onCreateConversation={activeCommander
               ? (agentType, model, reasoningConfig) =>
                   onCreateConversation?.(activeCommander.id, agentType, model, reasoningConfig) ?? null
+              : undefined}
+            onRequestCreateConversation={onCreateChatForCommander
+              ? () => onCreateChatForCommander(activeCommander.id)
               : undefined}
             onStartConversation={onStartConversation}
             onStopConversation={onStopConversation}

@@ -1,4 +1,4 @@
-import { Router } from 'express'
+import { Router, type Request, type RequestHandler } from 'express'
 import type { AuthUser } from '@gehirn/auth-providers'
 import type { ApiKeyStoreLike } from '../../server/api-keys/store.js'
 import { combinedAuth } from '../../server/middleware/combined-auth.js'
@@ -23,6 +23,10 @@ import {
   type ActionPolicyScope,
   type ActionPolicyValue,
 } from './types.js'
+import {
+  APPROVAL_BRIDGE_TOKEN_HEADER,
+  verifyApprovalBridgeToken,
+} from './approval-bridge-token.js'
 
 export interface PoliciesRouterOptions {
   apiKeyStore?: ApiKeyStoreLike
@@ -173,6 +177,56 @@ function toApprovalDecisionResponse(result: {
   }
 }
 
+function hasApprovalBridgeToken(req: Request): boolean {
+  return Boolean(req.header(APPROVAL_BRIDGE_TOKEN_HEADER)?.trim())
+}
+
+function isApprovalCheckRequest(req: Request): boolean {
+  return req.path === '/approval/check' || req.path.startsWith('/approval/check/')
+}
+
+function rejectApprovalBridgeOutsideCheck(): RequestHandler {
+  return (req, res, next) => {
+    if (hasApprovalBridgeToken(req) && !isApprovalCheckRequest(req)) {
+      res.status(403).json({ error: 'Approval bridge token is only valid for approval checks' })
+      return
+    }
+    next()
+  }
+}
+
+function createApprovalCheckAuth(
+  options: Pick<PoliciesRouterOptions, 'internalToken'>,
+  fallback: RequestHandler,
+): RequestHandler {
+  return (req, res, next) => {
+    const bridgeToken = req.header(APPROVAL_BRIDGE_TOKEN_HEADER)
+    if (!bridgeToken) {
+      fallback(req, res, next)
+      return
+    }
+
+    const verification = verifyApprovalBridgeToken(bridgeToken, {
+      internalToken: options.internalToken,
+    })
+    if (!verification.ok) {
+      res.status(401).json({ error: 'Invalid approval bridge token' })
+      return
+    }
+
+    req.approvalBridgeSessionName = verification.sessionName
+    req.authMode = 'api-key'
+    req.user = {
+      id: 'approval-bridge',
+      email: 'worker',
+      metadata: {
+        scopes: ['approval:check'],
+      },
+    }
+    next()
+  }
+}
+
 export function createPoliciesRouter(options: PoliciesRouterOptions): { router: Router } {
   const router = Router()
 
@@ -194,6 +248,9 @@ export function createPoliciesRouter(options: PoliciesRouterOptions): { router: 
     audience: options.auth0Audience,
     clientId: options.auth0ClientId,
   })
+  const requireApprovalCheckAccess = createApprovalCheckAuth(options, requireWriteAccess)
+
+  router.use(rejectApprovalBridgeOutsideCheck())
 
   router.get('/action-policies', requireReadAccess, async (req, res) => {
     const scope = parseScope(req.query.scope)
@@ -301,7 +358,7 @@ export function createPoliciesRouter(options: PoliciesRouterOptions): { router: 
     res.json({ settings })
   })
 
-  router.post('/approval/check', requireWriteAccess, async (req, res) => {
+  router.post('/approval/check', requireApprovalCheckAccess, async (req, res) => {
     const payload = typeof req.body === 'object' && req.body !== null ? req.body as Record<string, unknown> : null
     const toolName = typeof payload?.tool_name === 'string' ? payload.tool_name.trim() : ''
     if (!toolName) {
@@ -309,10 +366,18 @@ export function createPoliciesRouter(options: PoliciesRouterOptions): { router: 
       return
     }
 
-    const resolvedSessionName = typeof payload?.hammurabi_session_name === 'string'
+    let resolvedSessionName = typeof payload?.hammurabi_session_name === 'string'
       && payload.hammurabi_session_name.trim().length > 0
       ? payload.hammurabi_session_name.trim()
       : undefined
+    const bridgeSessionName = req.approvalBridgeSessionName?.trim()
+    if (bridgeSessionName) {
+      if (resolvedSessionName && resolvedSessionName !== bridgeSessionName) {
+        res.status(403).json({ error: 'Approval bridge token is scoped to a different session' })
+        return
+      }
+      resolvedSessionName = bridgeSessionName
+    }
     const resolvedClaudeSessionId = typeof payload?.session_id === 'string'
       && payload.session_id.trim().length > 0
       ? payload.session_id.trim()
@@ -337,7 +402,7 @@ export function createPoliciesRouter(options: PoliciesRouterOptions): { router: 
     res.json(toApprovalDecisionResponse(result))
   })
 
-  router.get('/approval/check/:requestId', requireWriteAccess, async (req, res) => {
+  router.get('/approval/check/:requestId', requireApprovalCheckAccess, async (req, res) => {
     const requestId = typeof req.params.requestId === 'string' ? req.params.requestId.trim() : ''
     if (!requestId) {
       res.status(400).json({ error: 'requestId is required' })
@@ -347,6 +412,12 @@ export function createPoliciesRouter(options: PoliciesRouterOptions): { router: 
     const status = await options.approvalCoordinator.getStatus(requestId)
     if (!status) {
       res.status(404).json({ error: `Pending approval "${requestId}" was not found` })
+      return
+    }
+
+    const bridgeSessionName = req.approvalBridgeSessionName?.trim()
+    if (bridgeSessionName && status.approval.sessionId !== bridgeSessionName) {
+      res.status(403).json({ error: 'Approval bridge token cannot read another session approval' })
       return
     }
 

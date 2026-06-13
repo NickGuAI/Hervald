@@ -577,6 +577,22 @@ function appendAgentImagesFromPayload(
   )
 }
 
+function isReflectedUserInputActivity(
+  envelope: TranscriptEnvelope,
+  detail: string | undefined,
+  payload: unknown,
+): boolean {
+  const rawEventType = envelope.source.rawEventType?.trim()
+  if (!rawEventType?.startsWith('item/')) {
+    return false
+  }
+
+  const payloadRecord = asRecord(payload)
+  const itemRecord = asRecord(payloadRecord?.item) ?? payloadRecord
+  const itemType = readTrimmedString(itemRecord?.type) ?? readTrimmedString(detail)
+  return itemType === 'userMessage'
+}
+
 function normalizeToolStatus(status: string | undefined): 'running' | 'success' | 'error' {
   const normalized = status?.trim().toLowerCase()
   if (!normalized) {
@@ -1094,7 +1110,9 @@ function processTranscriptEnvelope(
         ev.title ?? ev.detail ?? `${envelope.source.provider} activity`,
         ev.data,
       )
-      appendAgentImagesFromPayload(context, envelope, ev.data, parentMessageId)
+      if (!isReflectedUserInputActivity(envelope, ev.detail, ev.data)) {
+        appendAgentImagesFromPayload(context, envelope, ev.data, parentMessageId)
+      }
       return
 
     case 'provider.raw':
@@ -1138,7 +1156,19 @@ function hasPendingEquivalentUserMessage(
   messages: MsgItem[],
   text: string,
   images?: MsgItem['images'],
+  clientSendId?: string,
 ): boolean {
+  if (clientSendId) {
+    for (const message of messages) {
+      if (message.kind === 'user' && message.clientSendId === clientSendId) {
+        return true
+      }
+      if (message.children?.some((child) => child.kind === 'user' && child.clientSendId === clientSendId)) {
+        return true
+      }
+    }
+  }
+
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const candidate = messages[index]
     if (candidate.kind === 'user') {
@@ -1155,16 +1185,26 @@ function appendUserMessageIfDistinct(
   context: StreamEventProcessorContext,
   text: string,
   images?: MsgItem['images'],
+  clientSendId?: string,
 ) {
   context.setMessages((prev) => {
-    if (hasPendingEquivalentUserMessage(prev, text, images)) {
+    if (hasPendingEquivalentUserMessage(prev, text, images, clientSendId)) {
       return prev
     }
     return (context.capMessages ?? capMessages)([
       ...prev,
-      createUserMessage(context.nextId(), text, images),
+      createUserMessage(context.nextId(), text, images, clientSendId),
     ])
   })
+}
+
+function readUserClientSendId(event: StreamEvent): string | undefined {
+  const clientSendId = (event as { clientSendId?: unknown }).clientSendId
+  if (typeof clientSendId !== 'string') {
+    return undefined
+  }
+  const normalized = clientSendId.trim()
+  return normalized.length > 0 ? normalized : undefined
 }
 
 function readUserDisplayText(event: StreamEvent): string | null {
@@ -1597,6 +1637,7 @@ export function processStreamEvent(
       const subtype = typeof event.subtype === 'string' ? event.subtype : undefined
       const shouldRenderUserEnvelope = isReplay || subtype === 'queued_message'
       const displayText = readUserDisplayText(event)
+      const clientSendId = readUserClientSendId(event)
       if (
         typeof content === 'string'
         && (content.trim() || displayText !== null)
@@ -1605,9 +1646,12 @@ export function processStreamEvent(
         if (hasActiveAgentTool) {
           break
         }
-        appendUserMessageIfDistinct(context, displayText !== null
-          ? (displayText || '[workspace context]')
-          : content.trim())
+        appendUserMessageIfDistinct(
+          context,
+          displayText !== null ? (displayText || '[workspace context]') : content.trim(),
+          undefined,
+          clientSendId,
+        )
         break
       }
       if (!Array.isArray(content)) {
@@ -1633,7 +1677,7 @@ export function processStreamEvent(
               images.push({ mediaType: source?.media_type ?? '', data: source?.data ?? '' })
             }
           }
-          appendUserMessageIfDistinct(context, text, images)
+          appendUserMessageIfDistinct(context, text, images, clientSendId)
           break
         }
       }

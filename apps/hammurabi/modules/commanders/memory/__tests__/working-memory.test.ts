@@ -1,10 +1,19 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { WorkingMemory, WorkingMemoryStore } from '../working-memory.js'
 
 const COMMANDER_ID = '00000000-0000-4000-8000-000000000111'
+
+async function readOnlyCorruptFile(directory: string, baseName: string): Promise<string> {
+  const files = await readdir(directory)
+  const corruptFile = files.find((file) => file.startsWith(`${baseName}.corrupt.`))
+  if (!corruptFile) {
+    throw new Error(`Expected ${baseName} corrupt quarantine file in ${directory}`)
+  }
+  return readFile(join(directory, corruptFile), 'utf-8')
+}
 
 describe('WorkingMemoryStore', () => {
   let tmpDir: string
@@ -58,6 +67,48 @@ describe('WorkingMemoryStore', () => {
       summary: 'Investigate auth refresh path and verify middleware ordering',
       tags: ['auth', 'hypothesis'],
     })
+  })
+
+  it('fails closed and quarantines corrupt working-memory JSON before mutating', async () => {
+    const store = new WorkingMemoryStore(COMMANDER_ID, tmpDir)
+
+    await store.update({
+      source: 'append',
+      summary: 'Existing checkpoint that must not be replaced by a default state',
+    })
+    const memoryRoot = join(tmpDir, COMMANDER_ID, '.memory')
+    const statePath = join(memoryRoot, 'working-memory.json')
+    const original = await readFile(statePath, 'utf-8')
+    const truncated = original.slice(0, -2)
+    await writeFile(statePath, truncated, 'utf-8')
+
+    await expect(store.update({
+      source: 'append',
+      summary: 'This checkpoint must not overwrite the corrupt JSON',
+    })).rejects.toThrow(/Corrupt JSON file/)
+
+    await expect(readFile(statePath, 'utf-8')).rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(readOnlyCorruptFile(memoryRoot, 'working-memory.json'))
+      .resolves.toBe(truncated)
+  })
+
+  it('serializes concurrent working-memory updates for the same commander', async () => {
+    await Promise.all(
+      Array.from({ length: 20 }, (_value, index) => {
+        const store = new WorkingMemoryStore(COMMANDER_ID, tmpDir)
+        return store.update({
+          source: 'append',
+          summary: `Concurrent checkpoint ${index + 1}`,
+        })
+      }),
+    )
+
+    const state = await new WorkingMemoryStore(COMMANDER_ID, tmpDir).readState()
+    const summaries = state.checkpoints.map((entry) => entry.summary)
+    expect(summaries).toHaveLength(20)
+    for (let index = 0; index < 20; index += 1) {
+      expect(summaries).toContain(`Concurrent checkpoint ${index + 1}`)
+    }
   })
 
   it('normalizes legacy lifecycle sources into generic system checkpoints', async () => {

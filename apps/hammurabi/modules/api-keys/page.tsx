@@ -18,6 +18,8 @@ import {
 import { useAuth } from '@/contexts/AuthContext'
 import { timeAgo } from '@/lib/utils'
 import { MagicBento, MagicBentoCard } from '@/components/MagicBento'
+import { ConfirmModal } from '@modules/components/ConfirmModal'
+import { Toast } from '@modules/components/Toast'
 import { AccountProfileCard } from './components/AccountProfileCard'
 import { OrgIdentityCard } from '@modules/org-identity/components/OrgIdentityCard'
 import { ProviderAuthPanel } from '@modules/agents/components/ProviderAuthPanel'
@@ -39,7 +41,6 @@ const AVAILABLE_SCOPES = [
   { value: 'services:read', label: 'Services read' },
   { value: 'services:write', label: 'Services write' },
   { value: 'skills:read', label: 'Skills read' },
-  { value: 'skills:write', label: 'Skills write' },
 ] as const
 
 const ALL_SCOPE_VALUES = AVAILABLE_SCOPES.map((s) => s.value)
@@ -70,6 +71,17 @@ const FIELD_CLASS =
 const ERROR_CLASS =
   'flex items-start gap-2 rounded-lg bg-[var(--hv-accent-danger-wash)] px-3 py-2 text-sm text-[color:var(--hv-accent-danger)]'
 
+type PendingConfirmation =
+  | { kind: 'revoke-api-key'; keyId: string; keyName: string }
+  | { kind: 'clear-openai-key' }
+  | { kind: 'clear-gemini-key' }
+
+interface ConfirmationCopy {
+  title: string
+  message: string
+  confirmLabel: string
+}
+
 function formatExpiry(expiresAt: string): string {
   const date = new Date(expiresAt)
   if (Number.isNaN(date.getTime())) {
@@ -80,6 +92,30 @@ function formatExpiry(expiresAt: string): string {
     dateStyle: 'medium',
     timeStyle: 'short',
   }).format(date)
+}
+
+function getConfirmationCopy(action: PendingConfirmation): ConfirmationCopy {
+  if (action.kind === 'revoke-api-key') {
+    return {
+      title: 'Revoke API key?',
+      message: `Revoke "${action.keyName}"? Scripts using this key will lose access immediately.`,
+      confirmLabel: 'Revoke key',
+    }
+  }
+
+  if (action.kind === 'clear-openai-key') {
+    return {
+      title: 'Remove OpenAI transcription key?',
+      message: 'Microphone transcription will stop working until a new OpenAI key is saved.',
+      confirmLabel: 'Remove key',
+    }
+  }
+
+  return {
+    title: 'Remove Gemini image generation key?',
+    message: 'Avatar image generation will stop working until a new Gemini API key is saved.',
+    confirmLabel: 'Remove key',
+  }
 }
 
 export default function ApiKeysPage() {
@@ -100,6 +136,8 @@ export default function ApiKeysPage() {
   const [mobileInviteQrDataUrl, setMobileInviteQrDataUrl] = useState<string | null>(null)
   const [mobileInviteCopyState, setMobileInviteCopyState] =
     useState<'idle' | 'copied'>('idle')
+  const [pendingConfirmation, setPendingConfirmation] = useState<PendingConfirmation | null>(null)
+  const [toastMessage, setToastMessage] = useState<string | null>(null)
 
   const {
     data: keys = [],
@@ -190,6 +228,20 @@ export default function ApiKeysPage() {
     }
   }, [mobileInvitePayload])
 
+  useEffect(() => {
+    if (!toastMessage) {
+      return
+    }
+
+    const timer = window.setTimeout(() => {
+      setToastMessage(null)
+    }, 2500)
+
+    return () => {
+      window.clearTimeout(timer)
+    }
+  }, [toastMessage])
+
   async function handleCreateKey(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
 
@@ -245,15 +297,31 @@ export default function ApiKeysPage() {
 
     await setOpenAIMutation.mutateAsync(trimmedKey)
     setOpenAIApiKey('')
+    setToastMessage('OpenAI transcription key saved.')
   }
 
-  async function handleClearOpenAIKey() {
-    const confirmed = window.confirm('Remove the OpenAI transcription key?')
-    if (!confirmed) {
+  async function handleConfirmPendingAction(): Promise<void> {
+    const action = pendingConfirmation
+    if (!action) {
       return
     }
 
-    await clearOpenAIMutation.mutateAsync()
+    setPendingConfirmation(null)
+
+    if (action.kind === 'revoke-api-key') {
+      await revokeMutation.mutateAsync(action.keyId)
+      setToastMessage(`Revoked ${action.keyName}.`)
+      return
+    }
+
+    if (action.kind === 'clear-openai-key') {
+      await clearOpenAIMutation.mutateAsync()
+      setToastMessage('OpenAI transcription key removed.')
+      return
+    }
+
+    await clearGeminiMutation.mutateAsync()
+    setToastMessage('Gemini image generation key removed.')
   }
 
   async function handleSaveGeminiKey(event: FormEvent<HTMLFormElement>) {
@@ -265,16 +333,10 @@ export default function ApiKeysPage() {
 
     await setGeminiMutation.mutateAsync(trimmedKey)
     setGeminiApiKey('')
+    setToastMessage('Gemini image generation key saved.')
   }
 
-  async function handleClearGeminiKey() {
-    const confirmed = window.confirm('Remove the Gemini image generation key?')
-    if (!confirmed) {
-      return
-    }
-
-    await clearGeminiMutation.mutateAsync()
-  }
+  const confirmationCopy = pendingConfirmation ? getConfirmationCopy(pendingConfirmation) : null
 
   return (
     <div className="px-4 py-6 md:px-10 md:py-10">
@@ -339,7 +401,7 @@ export default function ApiKeysPage() {
                       type="button"
                       disabled={clearOpenAIMutation.isPending}
                       className="btn-ghost text-[color:var(--hv-accent-danger)] disabled:opacity-60 disabled:cursor-not-allowed"
-                      onClick={handleClearOpenAIKey}
+                      onClick={() => setPendingConfirmation({ kind: 'clear-openai-key' })}
                     >
                       {clearOpenAIMutation.isPending ? 'Removing...' : 'Remove'}
                     </button>
@@ -404,7 +466,7 @@ export default function ApiKeysPage() {
                       type="button"
                       disabled={clearGeminiMutation.isPending}
                       className="btn-ghost text-[color:var(--hv-accent-danger)] disabled:opacity-60 disabled:cursor-not-allowed"
-                      onClick={handleClearGeminiKey}
+                      onClick={() => setPendingConfirmation({ kind: 'clear-gemini-key' })}
                     >
                       {clearGeminiMutation.isPending ? 'Removing...' : 'Remove'}
                     </button>
@@ -599,7 +661,13 @@ export default function ApiKeysPage() {
                           type="button"
                           className="btn-ghost inline-flex items-center gap-2 text-[color:var(--hv-accent-danger)] shrink-0 self-start"
                           disabled={revokeMutation.isPending}
-                          onClick={() => revokeMutation.mutate(key.id)}
+                          onClick={() => {
+                            setPendingConfirmation({
+                              kind: 'revoke-api-key',
+                              keyId: key.id,
+                              keyName: key.name,
+                            })
+                          }}
                         >
                           <Trash2 size={14} />
                           Revoke
@@ -746,6 +814,19 @@ export default function ApiKeysPage() {
           </MagicBentoCard>
         </MagicBento>
       </div>
+      <Toast open={Boolean(toastMessage)} message={toastMessage ?? ''} />
+      {confirmationCopy && (
+        <ConfirmModal
+          open={Boolean(pendingConfirmation)}
+          title={confirmationCopy.title}
+          message={confirmationCopy.message}
+          confirmLabel={confirmationCopy.confirmLabel}
+          confirmTone="danger"
+          onClose={() => setPendingConfirmation(null)}
+          onConfirm={() => void handleConfirmPendingAction()}
+          bodyTestId="api-key-confirm-modal"
+        />
+      )}
     </div>
   )
 }

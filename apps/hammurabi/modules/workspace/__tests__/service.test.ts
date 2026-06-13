@@ -286,12 +286,13 @@ describe('workspace service', () => {
       commanderStore: commanderStore as never,
       sessionsInterface: sessionsInterface as never,
     })
+    const resolvedTmpDir = await fs.realpath(tmpDir)
 
     await expect(resolver.open({ conversationId: 'worker-conv' })).resolves.toMatchObject({
-      rootPath: path.join(tmpDir, 'worker'),
+      rootPath: path.join(resolvedTmpDir, 'worker'),
     })
     await expect(resolver.open({ conversationId: 'commander-conv' })).resolves.toMatchObject({
-      rootPath: tmpDir,
+      rootPath: resolvedTmpDir,
     })
     await expect(resolver.open({ conversationId: 'home-conv' })).resolves.toMatchObject({
       host: 'local',
@@ -358,14 +359,83 @@ describe('workspace service', () => {
         get: async () => null,
       } as never,
     })
+    const resolvedTmpDir = await fs.realpath(tmpDir)
 
     await expect(resolver.open({
       hostHint: 'local',
       pathHint: tmpDir,
     })).resolves.toMatchObject({
       host: 'local',
-      rootPath: tmpDir,
+      rootPath: resolvedTmpDir,
     })
+    await expect(resolver.open({
+      hostHint: 'local',
+      pathHint: tmpDir,
+    })).resolves.toMatchObject({
+      label: 'Local',
+    })
+  })
+
+  it('rejects direct local location opens when the local machine has no configured cwd', async () => {
+    const targetStore = new WorkspaceTargetStore(path.join(tmpDir, 'targets.json'))
+    const resolver = new WorkspaceResolver({
+      targetStore,
+      machineDescriptor: {
+        readMachineRegistry: async () => [{
+          id: 'local',
+          label: 'Local',
+          host: null,
+        }],
+      },
+      conversationStore: {
+        get: async () => null,
+      } as never,
+      commanderStore: {
+        get: async () => null,
+      } as never,
+    })
+
+    await expect(() =>
+      resolver.open({
+        hostHint: 'local',
+        pathHint: '/etc',
+      }),
+    ).rejects.toMatchObject({ statusCode: 403 })
+    await expect(targetStore.getByKey('location:local:/etc')).resolves.toBeNull()
+  })
+
+  it('realpaths direct local location roots before authorization', async () => {
+    const outsideDir = await fs.mkdtemp(path.join(os.tmpdir(), 'workspace-outside-'))
+    const symlinkPath = path.join(tmpDir, 'linked-outside')
+    await fs.symlink(outsideDir, symlinkPath)
+    const resolver = new WorkspaceResolver({
+      targetStore: new WorkspaceTargetStore(path.join(tmpDir, 'targets.json')),
+      machineDescriptor: {
+        readMachineRegistry: async () => [{
+          id: 'local',
+          label: 'Local',
+          host: null,
+          cwd: tmpDir,
+        }],
+      },
+      conversationStore: {
+        get: async () => null,
+      } as never,
+      commanderStore: {
+        get: async () => null,
+      } as never,
+    })
+
+    try {
+      await expect(() =>
+        resolver.open({
+          hostHint: 'local',
+          pathHint: symlinkPath,
+        }),
+      ).rejects.toMatchObject({ statusCode: 403 })
+    } finally {
+      await fs.rm(outsideDir, { recursive: true, force: true })
+    }
   })
 
   it('rejects unauthorized host/path hints before minting a target', async () => {

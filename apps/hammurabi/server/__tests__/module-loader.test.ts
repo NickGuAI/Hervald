@@ -221,4 +221,20 @@ describe('HammurabiCapabilityContainer', () => {
       /consumes undeclared capability "cap"/,
     )
   })
+
+  it('rejects capabilities provided under a different runtime module owner', () => {
+    const container = createHammurabiCapabilityContainer<{ cap: string }>()
+
+    expect(() => {
+      container.withProviderModule('workspace', () => {
+        container.provide('cap', 'agents', 'value')
+      })
+    }).toThrow(/Runtime module "workspace" cannot provide capability "cap" as owner "agents"/)
+
+    container.withProviderModule('workspace', () => {
+      container.provide('cap', 'workspace', 'value')
+    })
+
+    expect(container.snapshot().providers.get('cap')).toBe('workspace')
+  })
 })

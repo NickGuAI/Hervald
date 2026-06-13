@@ -3,6 +3,7 @@
 import { createElement } from 'react'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const mocks = vi.hoisted(() => ({
@@ -17,6 +18,7 @@ import { useComposerSkillSlots } from '@/hooks/use-composer-skill-slots'
 
 let root: Root | null = null
 let container: HTMLDivElement | null = null
+let queryClient: QueryClient | null = null
 let latestSkillSlots: ReturnType<typeof useComposerSkillSlots> | null = null
 
 function createSettings(skillName: string | null) {
@@ -54,7 +56,17 @@ async function renderHookHarness(): Promise<void> {
   root = createRoot(container)
 
   await act(async () => {
-    root?.render(createElement(Harness))
+    queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false },
+        mutations: { retry: false },
+      },
+    })
+    root?.render(createElement(
+      QueryClientProvider,
+      { client: queryClient },
+      createElement(Harness),
+    ))
   })
 }
 
@@ -66,6 +78,8 @@ async function unmountHarness(): Promise<void> {
     root?.unmount()
   })
   root = null
+  queryClient?.clear()
+  queryClient = null
   container?.remove()
   container = null
 }
@@ -122,12 +136,26 @@ describe('useComposerSkillSlots', () => {
       }),
     })
     expect(savedSkillName).toBe('create-quests')
-    expect(latestSkillSlots?.primarySkillName).toBe('create-quests')
+    await vi.waitFor(() => {
+      expect(latestSkillSlots?.primarySkillName).toBe('create-quests')
+    })
 
     await unmountHarness()
     await renderHookHarness()
-    await flushMicrotasks()
 
-    expect(latestSkillSlots?.primarySkillName).toBe('create-quests')
+    await vi.waitFor(() => {
+      expect(latestSkillSlots?.primarySkillName).toBe('create-quests')
+    })
+  })
+
+  it('exposes settings auth failures instead of hiding them behind an empty slot', async () => {
+    mocks.fetchJson.mockRejectedValueOnce(new Error('Request failed (401): Unauthorized'))
+
+    await renderHookHarness()
+
+    await vi.waitFor(() => {
+      expect(latestSkillSlots?.loadError?.message).toContain('401')
+    })
+    expect(latestSkillSlots?.primarySkillName).toBeNull()
   })
 })

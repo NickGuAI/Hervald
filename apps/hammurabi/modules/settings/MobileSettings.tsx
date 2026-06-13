@@ -127,7 +127,7 @@ function SettingsHeader({
       {backTo ? (
         <Link
           to={backTo}
-          className="mb-2 inline-flex h-8 w-8 items-center justify-center rounded-full border border-[color:var(--hv-border-hair)] bg-[var(--hv-surface-card)] text-[color:var(--hv-fg)]"
+          className="mb-2 inline-flex h-11 w-11 items-center justify-center rounded-full border border-[color:var(--hv-border-hair)] bg-[var(--hv-surface-card)] text-[color:var(--hv-fg)]"
           aria-label="Back to settings"
         >
           <ArrowLeft size={16} />

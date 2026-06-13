@@ -3,7 +3,7 @@ import type { AuthUser } from '@gehirn/auth-providers'
 import type { ApiKeyStoreLike } from '../../server/api-keys/store.js'
 import { combinedAuth } from '../../server/middleware/combined-auth.js'
 import type { LoadedHammurabiModuleGraph } from '../../server/module-loader.js'
-import { listProviders } from '../agents/providers/registry.js'
+import type { ProviderRegistryCapability } from '../../server/module-runtime-capabilities.js'
 import type {
   HammurabiModuleGraphModule,
   HammurabiModuleGraphResponse,
@@ -12,6 +12,7 @@ import type {
 
 export interface ModuleGraphRouterOptions {
   moduleGraph: LoadedHammurabiModuleGraph
+  providerRegistry: ProviderRegistryCapability
   apiKeyStore?: ApiKeyStoreLike
   auth0Domain?: string
   auth0Audience?: string
@@ -54,8 +55,8 @@ function toModuleGraphModule(manifest: LoadedHammurabiModuleGraph['manifests'][n
   }
 }
 
-function providerSummaries(): HammurabiProviderGraphSummary[] {
-  return listProviders().map((provider) => ({
+function providerSummaries(providerRegistry: ProviderRegistryCapability): HammurabiProviderGraphSummary[] {
+  return providerRegistry.listProviders().map((provider) => ({
     id: provider.id,
     label: provider.label,
     eventProvider: provider.eventProvider,
@@ -153,7 +154,7 @@ export function createModuleGraphRouter(options: ModuleGraphRouterOptions): Rout
           }]
         })
       }),
-      providers: providerSummaries(),
+      providers: providerSummaries(options.providerRegistry),
     }
 
     res.json(response)

@@ -54,7 +54,7 @@ function currentAuthMode(): AuthMode {
   return getStoredApiKey() ? 'api-key' : 'anonymous'
 }
 
-function handleUnauthorized(event: Omit<UnauthorizedEvent, 'authMode'> & { authMode?: AuthMode }): void {
+export function handleUnauthorized(event: Omit<UnauthorizedEvent, 'authMode'> & { authMode?: AuthMode }): void {
   if (unauthorizedHandler) {
     unauthorizedHandler({
       ...event,

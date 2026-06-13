@@ -119,6 +119,29 @@ describe('runQuestsCli', () => {
     }
   })
 
+  it('fails list when the API returns malformed success JSON', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response('', {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    )
+    const stdout = createBufferWriter()
+    const stderr = createBufferWriter()
+
+    const exitCode = await runQuestsCli(['list'], {
+      fetchImpl,
+      readConfig: async () => config,
+      commanderId: 'cmdr-1',
+      stdout: stdout.writer,
+      stderr: stderr.writer,
+    })
+
+    expect(exitCode).toBe(1)
+    expect(stdout.read()).toBe('')
+    expect(stderr.read()).toContain('Request failed (200): Malformed JSON response from Hammurabi API')
+  })
+
   it('documents commander identity in usage text', async () => {
     const stdout = createBufferWriter()
 
@@ -135,12 +158,12 @@ describe('runQuestsCli', () => {
     vi.stubEnv('HAMMURABI_COMMANDER_ID', '')
     vi.stubEnv('HAMMURABI_CONVERSATION_ID', 'conv-generated')
 
-    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async () => (
       new Response(JSON.stringify({ ok: true }), {
         status: 200,
         headers: { 'content-type': 'application/json' },
-      }),
-    )
+      })
+    ))
     const stdout = createBufferWriter()
     const stderr = createBufferWriter()
 
@@ -400,7 +423,7 @@ describe('runQuestsCli', () => {
     expect(stderr.read()).toContain('.hammurabi.json')
     expect(stderr.read()).toContain('api-keys/keys.json')
     expect(stderr.read()).toContain('HAMMURABI_ALLOW_DEFAULT_MASTER_KEY=1')
-    expect(stderr.read()).toContain('hammurabi onboard')
+    expect(stderr.read()).toContain('restart the Hervald installer')
   })
 
   it('sends POST for claim using explicit conversation id', async () => {
@@ -969,6 +992,52 @@ describe('runQuestsCli', () => {
     expect(JSON.parse((call?.[1]?.body as string) ?? '{}')).toEqual({
       instruction: 'Do something',
     })
+  })
+
+  it('fails create when the API returns malformed success JSON', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response('', {
+        status: 201,
+        headers: { 'content-type': 'application/json' },
+      }),
+    )
+    const stdout = createBufferWriter()
+    const stderr = createBufferWriter()
+
+    const exitCode = await runQuestsCli(['create', '--instruction', 'Do something'], {
+      fetchImpl,
+      readConfig: async () => config,
+      commanderId: 'cmdr-1',
+      stdout: stdout.writer,
+      stderr: stderr.writer,
+    })
+
+    expect(exitCode).toBe(1)
+    expect(stdout.read()).toBe('')
+    expect(stderr.read()).toContain('Request failed (201): Malformed JSON response from Hammurabi API')
+  })
+
+  it('fails create when the API omits the created quest id', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ status: 'pending' }), {
+        status: 201,
+        headers: { 'content-type': 'application/json' },
+      }),
+    )
+    const stdout = createBufferWriter()
+    const stderr = createBufferWriter()
+
+    const exitCode = await runQuestsCli(['create', '--instruction', 'Do something'], {
+      fetchImpl,
+      readConfig: async () => config,
+      commanderId: 'cmdr-1',
+      stdout: stdout.writer,
+      stderr: stderr.writer,
+    })
+
+    expect(exitCode).toBe(1)
+    expect(stdout.read()).toBe('')
+    expect(stderr.read()).toContain('Quest create response was malformed')
   })
 
   it('requires --instruction or --issue for create', async () => {

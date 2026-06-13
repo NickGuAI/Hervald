@@ -53,6 +53,7 @@ export type CreateQueuedMessage = (
   priority: QueuedMessagePriority,
   images?: QueuedMessageImage[],
   displayText?: string,
+  clientSendId?: string,
 ) => QueuedMessage
 
 export type EnqueueQueuedMessage = (
@@ -76,6 +77,7 @@ export type SendImmediateText = (
   text: string,
   images?: QueuedMessageImage[],
   displayText?: string,
+  clientSendId?: string,
 ) => Promise<
   | { ok: true; queued: boolean; message: QueuedMessage }
   | { ok: false; error: string }
@@ -125,10 +127,12 @@ function normalizeSendPayload(payload: string | SessionSendPayload): SessionSend
   }
   const images = payload.images && payload.images.length > 0 ? [...payload.images] : undefined
   const displayText = payload.displayText !== undefined ? payload.displayText.trim() : undefined
+  const clientSendId = payload.clientSendId !== undefined ? payload.clientSendId.trim() : undefined
   return {
     text: payload.text,
     ...(displayText !== undefined ? { displayText } : {}),
     images,
+    ...(clientSendId ? { clientSendId } : {}),
   }
 }
 
@@ -269,10 +273,10 @@ export function createCommanderSessionsInterface(
       if (!session || session.kind !== 'stream') {
         return false
       }
-      const { text, images, displayText } = normalizeSendPayload(payload)
+      const { text, images, displayText, clientSendId } = normalizeSendPayload(payload)
       if (options?.queue) {
-        const message = displayText !== undefined
-          ? createQueuedMessage(text, options.priority ?? 'normal', images, displayText)
+        const message = displayText !== undefined || clientSendId
+          ? createQueuedMessage(text, options.priority ?? 'normal', images, displayText, clientSendId)
           : createQueuedMessage(text, options.priority ?? 'normal', images)
         const queued = enqueueQueuedMessage(session, message)
         if (!queued.ok) {
@@ -282,8 +286,8 @@ export function createCommanderSessionsInterface(
         return true
       }
 
-      const result = displayText !== undefined
-        ? await sendImmediateTextToStreamSession(session, text, images, displayText)
+      const result = displayText !== undefined || clientSendId
+        ? await sendImmediateTextToStreamSession(session, text, images, displayText, clientSendId)
         : await sendImmediateTextToStreamSession(session, text, images)
       return result.ok
     },

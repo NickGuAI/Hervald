@@ -147,6 +147,18 @@ function normalizeSnapshot(raw: unknown): ProviderAuthSnapshot | null {
   if (!provider || !scopeId || !host || !status || !lastCheckedAt) {
     return null
   }
+  const persistedAuthMethod = asTrimmedString(raw.authMethod) as ProviderAuthMethod | undefined
+  const nativeCodexSnapshot = provider === 'codex' && !providerUsesManagedOAuth(provider)
+  const authMethod = nativeCodexSnapshot && (persistedAuthMethod === 'oauth' || persistedAuthMethod === 'missing')
+    ? 'login'
+    : persistedAuthMethod
+  const rawDetail = asTrimmedString(raw.detail)
+  const detail = nativeCodexSnapshot && rawDetail && /\b(?:oauth|re-auth|managed provider token|managed codex)\b/iu.test(rawDetail)
+    ? (status === 'ready'
+        ? 'Using Codex CLI credentials from the target environment.'
+        : buildProviderNativeAuthDetail(provider, host) ?? rawDetail)
+    : rawDetail
+  const reauthUrl = providerUsesManagedOAuth(provider) ? asTrimmedString(raw.reauthUrl) : undefined
   return {
     provider,
     scopeId,
@@ -155,9 +167,9 @@ function normalizeSnapshot(raw: unknown): ProviderAuthSnapshot | null {
     lastCheckedAt,
     ...(asTrimmedString(raw.accountId) ? { accountId: asTrimmedString(raw.accountId) } : {}),
     ...(asTrimmedString(raw.accountEmail) ? { accountEmail: asTrimmedString(raw.accountEmail) } : {}),
-    ...(asTrimmedString(raw.detail) ? { detail: asTrimmedString(raw.detail) } : {}),
-    ...(asTrimmedString(raw.reauthUrl) ? { reauthUrl: asTrimmedString(raw.reauthUrl) } : {}),
-    ...(asTrimmedString(raw.authMethod) ? { authMethod: asTrimmedString(raw.authMethod) as ProviderAuthMethod } : {}),
+    ...(detail ? { detail } : {}),
+    ...(reauthUrl ? { reauthUrl } : {}),
+    ...(authMethod ? { authMethod } : {}),
   }
 }
 
@@ -341,16 +353,19 @@ export function buildProviderReauthUrl(provider: AgentType, scopeId: string, hos
   return `/api/agents/provider-auth/${encodeURIComponent(provider)}/reauth?${params.toString()}`
 }
 
-export function providerUsesManagedOAuth(provider: AgentType): boolean {
-  return provider === 'codex'
+export function providerUsesManagedOAuth(_provider: AgentType): boolean {
+  return false
 }
 
 export function buildProviderNativeAuthDetail(provider: AgentType, host: string): string | null {
-  if (provider !== 'claude') {
-    return null
-  }
   const target = host === 'local' ? 'the Hervald host' : `machine "${host}"`
-  return `Claude Code uses native CLI authentication. Run \`claude auth status\` on ${target}; if it is not authenticated, run \`claude auth login\` there.`
+  if (provider === 'claude') {
+    return `Claude Code uses native CLI authentication. Run \`claude auth status\` on ${target}; if it is not authenticated, run \`claude auth login\` there.`
+  }
+  if (provider === 'codex') {
+    return `Codex uses native CLI authentication. Run \`codex login status\` on ${target}; if it is not authenticated, run \`codex login\` there.`
+  }
+  return null
 }
 
 function buildSnapshot(
@@ -637,6 +652,35 @@ export async function prepareProviderSpawnAuth(args: {
         buildProviderNativeAuthDetail(args.provider, host) ?? undefined,
       )
       await args.store.upsertSnapshot(snapshot)
+      return { provider: args.provider, snapshot }
+    }
+
+    if (args.provider === 'codex') {
+      if (hasApiKeyAuth(args.provider, env)) {
+        const snapshot = buildSnapshot(args.provider, args.scopeId, host, 'ready', 'api-key')
+        await args.store.upsertSnapshot(snapshot)
+        return { provider: args.provider, snapshot }
+      }
+      const loginEnv = await existingLoginAuthEnv(args.provider, env, host)
+      if (loginEnv) {
+        const snapshot = buildSnapshot(
+          args.provider,
+          args.scopeId,
+          host,
+          'ready',
+          'login',
+          'Using Codex CLI credentials from the target environment.',
+        )
+        await args.store.upsertSnapshot(snapshot)
+        return { provider: args.provider, snapshot, env: loginEnv }
+      }
+      const detail = buildProviderNativeAuthDetail(args.provider, host) ?? undefined
+      const status: ProviderAuthStatus = host === 'local' ? 'auth_required' : 'unknown'
+      const snapshot = buildSnapshot(args.provider, args.scopeId, host, status, 'login', detail)
+      await args.store.upsertSnapshot(snapshot)
+      if (status === 'auth_required') {
+        throw new ProviderAuthRequiredError(args.provider, snapshot, snapshot.detail)
+      }
       return { provider: args.provider, snapshot }
     }
 

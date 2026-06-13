@@ -1,4 +1,5 @@
 import { type HammurabiConfig, normalizeEndpoint, readHammurabiConfig } from './config.js'
+import { fetchJson as fetchJsonStrict } from './http-json.js'
 import {
   buildSessionMessagesApiPath,
   DEFAULT_JSON_PEEK_LAST,
@@ -69,20 +70,7 @@ async function fetchJson(
   url: string,
   init: RequestInit,
 ): Promise<{ ok: true; data: unknown } | { ok: false; response: Response }> {
-  const response = await fetchImpl(url, init)
-  if (!response.ok) {
-    return { ok: false, response }
-  }
-
-  if (response.status === 204) {
-    return { ok: true, data: null }
-  }
-
-  try {
-    return { ok: true, data: (await response.json()) as unknown }
-  } catch {
-    return { ok: true, data: null }
-  }
+  return fetchJsonStrict(fetchImpl, url, init)
 }
 
 async function readErrorDetail(response: Response): Promise<string | null> {

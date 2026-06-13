@@ -1,7 +1,12 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto'
-import { access, mkdir, readFile, rename, writeFile } from 'node:fs/promises'
+import { access, mkdir, readFile, rename } from 'node:fs/promises'
 import path from 'node:path'
 import { resolveModuleDataDir } from '../../modules/data-dir.js'
+import {
+  readJsonFileFailClosed,
+  writeJsonFileAtomically,
+  writeTextFileAtomically,
+} from '../../modules/json-file.js'
 
 export const OPENAI_REALTIME_TRANSCRIPTION_PROVIDER_ID = 'openai-realtime-transcription'
 export const GEMINI_IMAGE_GENERATION_PROVIDER_ID = 'gemini-image-generation'
@@ -391,9 +396,7 @@ export class ProviderSecretsStore
     }
 
     const generated = randomBytes(32)
-    await mkdir(path.dirname(this.keyFilePath), { recursive: true })
-    await writeFile(this.keyFilePath, `${generated.toString('base64')}\n`, {
-      encoding: 'utf8',
+    await writeTextFileAtomically(this.keyFilePath, `${generated.toString('base64')}\n`, {
       mode: 0o600,
     })
     return generated
@@ -416,27 +419,15 @@ export class ProviderSecretsStore
   private async readCollection(): Promise<PersistedSecretCollection> {
     await this.ensureLegacyMigration()
 
-    let contents: string
-    try {
-      contents = await readFile(this.filePath, 'utf8')
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-        return { secrets: {} }
-      }
-      throw error
-    }
-
-    try {
-      const parsed = JSON.parse(contents) as unknown
-      return toPersistedSecretCollection(parsed)
-    } catch {
+    const parsed = await readJsonFileFailClosed(this.filePath)
+    if (parsed === null) {
       return { secrets: {} }
     }
+    return toPersistedSecretCollection(parsed)
   }
 
   private async writeCollection(collection: PersistedSecretCollection): Promise<void> {
-    await mkdir(path.dirname(this.filePath), { recursive: true })
-    await writeFile(this.filePath, `${JSON.stringify(collection, null, 2)}\n`, 'utf8')
+    await writeJsonFileAtomically(this.filePath, collection, { trailingNewline: true })
   }
 }
 

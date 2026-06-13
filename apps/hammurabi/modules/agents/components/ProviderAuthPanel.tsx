@@ -1,8 +1,6 @@
 import { useMemo, useState } from 'react'
 import {
   CheckCircle2,
-  ExternalLink,
-  Loader2,
   RefreshCw,
   ShieldAlert,
   ShieldCheck,
@@ -10,7 +8,6 @@ import {
 } from 'lucide-react'
 import {
   probeProviderAuthSnapshots,
-  startProviderReauth,
   useProviderAuthSnapshots,
 } from '@/hooks/use-agents'
 import { useProviderRegistry } from '@/hooks/use-providers'
@@ -25,14 +22,6 @@ type AuthGuidance = {
   provider: AgentType
   message: string
   commands: string[]
-}
-
-function snapshotKey(snapshot: ProviderAuthSnapshot): string {
-  return `${snapshot.provider}:${snapshot.scopeId}:${snapshot.host}`
-}
-
-function pendingProviderKey(provider: AgentType): string {
-  return `${provider}:default`
 }
 
 function formatAuthDetail(snapshot: ProviderAuthSnapshot): string {
@@ -81,17 +70,18 @@ function statusIcon(status: ProviderAuthStatus | 'missing') {
   return <ShieldCheck size={16} className="text-[color:var(--hv-fg-faint)]" />
 }
 
-function actionLabel(provider: ProviderRegistryEntry, status: ProviderAuthStatus | 'missing'): string {
+function nativeLoginCommands(provider: ProviderRegistryEntry): string[] | null {
   if (provider.id === 'codex') {
-    if (status === 'auth_required') {
-      return 'Re-authenticate'
-    }
-    if (status === 'ready') {
-      return 'Reconnect'
-    }
-    return 'Connect'
+    return ['codex login status', 'codex login']
   }
   if (provider.id === 'claude') {
+    return ['claude auth status', 'claude auth login']
+  }
+  return null
+}
+
+function actionLabel(provider: ProviderRegistryEntry, status: ProviderAuthStatus | 'missing'): string {
+  if (nativeLoginCommands(provider)) {
     return status === 'ready' ? 'Auth status' : 'Login steps'
   }
   return 'Configure'
@@ -99,12 +89,13 @@ function actionLabel(provider: ProviderRegistryEntry, status: ProviderAuthStatus
 
 function buildAuthGuidance(provider: ProviderRegistryEntry, snapshot: ProviderAuthSnapshot | null): AuthGuidance {
   const host = snapshot?.host ?? 'local'
-  if (provider.id === 'claude') {
+  const nativeCommands = nativeLoginCommands(provider)
+  if (nativeCommands) {
     const target = host === 'local' ? 'the Hervald host' : host
     return {
       provider: provider.id,
-      message: `Claude Code uses native CLI authentication on ${target}.`,
-      commands: ['claude auth status', 'claude auth login'],
+      message: `${provider.label} uses native CLI authentication on ${target}.`,
+      commands: nativeCommands,
     }
   }
 
@@ -125,7 +116,6 @@ function buildAuthGuidance(provider: ProviderRegistryEntry, snapshot: ProviderAu
 export function ProviderAuthPanel() {
   const { data: providers = [] } = useProviderRegistry()
   const snapshotsQuery = useProviderAuthSnapshots()
-  const [pendingKey, setPendingKey] = useState<string | null>(null)
   const [isProbing, setIsProbing] = useState(false)
   const [actionError, setActionError] = useState<string | null>(null)
   const [authGuidance, setAuthGuidance] = useState<AuthGuidance | null>(null)
@@ -177,29 +167,9 @@ export function ProviderAuthPanel() {
     }
   }
 
-  async function handleReauth(provider: ProviderRegistryEntry, snapshot: ProviderAuthSnapshot | null): Promise<void> {
-    if (provider.id !== 'codex') {
-      setActionError(null)
-      setAuthGuidance(buildAuthGuidance(provider, snapshot))
-      return
-    }
-
-    const key = snapshot ? snapshotKey(snapshot) : pendingProviderKey(provider.id)
-    setPendingKey(key)
+  function handleReauth(provider: ProviderRegistryEntry, snapshot: ProviderAuthSnapshot | null): void {
     setActionError(null)
-    setAuthGuidance(null)
-    try {
-      const flow = await startProviderReauth({
-        provider: provider.id,
-        ...(snapshot ? { scopeId: snapshot.scopeId, host: snapshot.host } : {}),
-      })
-      window.open(flow.authorizationUrl, '_blank', 'noopener,noreferrer')
-      await snapshotsQuery.refetch()
-    } catch (error) {
-      setActionError(error instanceof Error ? error.message : 'Failed to start provider re-auth.')
-    } finally {
-      setPendingKey(null)
-    }
+    setAuthGuidance(buildAuthGuidance(provider, snapshot))
   }
 
   return (
@@ -218,9 +188,6 @@ export function ProviderAuthPanel() {
         {rows.map((row) => {
           const snapshot = row.snapshot
           const status = snapshot?.status ?? 'missing'
-          const key = snapshot ? snapshotKey(snapshot) : pendingProviderKey(row.provider.id)
-          const isPending = pendingKey === key
-          const isNativeProvider = row.provider.id === 'claude'
 
           return (
             <div
@@ -246,13 +213,8 @@ export function ProviderAuthPanel() {
                     onClick={() => void handleReauth(row.provider, snapshot)}
                     data-testid={`provider-auth-action-${row.provider.id}`}
                     className="btn-primary inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs"
-                    disabled={isPending}
                   >
-                    {isPending
-                      ? <Loader2 size={13} className="animate-spin" />
-                      : isNativeProvider || row.provider.id !== 'codex'
-                        ? <Terminal size={13} />
-                        : <ExternalLink size={13} />}
+                    <Terminal size={13} />
                     {actionLabel(row.provider, status)}
                   </button>
                 </div>

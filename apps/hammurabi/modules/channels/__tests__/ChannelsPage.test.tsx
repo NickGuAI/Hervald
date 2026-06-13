@@ -112,6 +112,15 @@ function installApiMock(): void {
       }
     }
 
+    if (url === '/api/commanders/channels/providers') {
+      return {
+        providers: listChannelProviderDescriptors({
+          commanderId: 'cmd-1',
+          bindings,
+        }),
+      }
+    }
+
     if (url === '/api/commanders/cmd-1/channels') {
       if (method === 'POST') {
         const body = parseBody(init)
@@ -284,6 +293,70 @@ afterEach(async () => {
 })
 
 describe('ChannelsPage support channel icons', () => {
+  it('shows a commander loading state before the org tree has loaded', async () => {
+    mocks.useOrgTree.mockReturnValue({
+      data: undefined,
+      isLoading: true,
+      error: null,
+      refetch: vi.fn(),
+    })
+
+    await renderChannelsPage()
+
+    expect(document.body.textContent).toContain('Loading commanders...')
+    expect(document.body.textContent).not.toContain('Failed to load commanders')
+  })
+
+  it('shows commander tree errors with a retry action', async () => {
+    const refetch = vi.fn()
+    mocks.useOrgTree.mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      error: new Error('org tree unavailable'),
+      refetch,
+    })
+
+    await renderChannelsPage()
+
+    expect(document.body.textContent).toContain('Failed to load commanders')
+    expect(document.body.textContent).toContain('org tree unavailable')
+
+    await clickElement(getButtonByText('Retry'))
+
+    expect(refetch).toHaveBeenCalledTimes(1)
+  })
+
+  it('shows commander-scoped query errors instead of empty providers or bindings', async () => {
+    mocks.fetchJson.mockImplementation(async (url: string) => {
+      if (url === '/api/commanders/cmd-1/channels/providers') {
+        throw new Error('provider scope unavailable')
+      }
+      if (url === '/api/commanders/cmd-1/channels') {
+        throw new Error('binding scope unavailable')
+      }
+      if (url === '/api/commanders/channels/providers') {
+        return { providers: [] }
+      }
+      throw new Error(`Unhandled fetchJson URL: ${url}`)
+    })
+
+    await renderChannelsPage()
+
+    await vi.waitFor(() => {
+      expect(document.body.textContent).toContain('Failed to load channel providers')
+    })
+    expect(document.body.textContent).toContain('provider scope unavailable')
+    expect(document.body.textContent).toContain('Retry')
+
+    await vi.waitFor(() => {
+      expect(document.body.textContent).toContain('Failed to load channel bindings')
+    })
+    expect(document.body.textContent).toContain('binding scope unavailable')
+    expect(document.body.textContent).toContain('Retry')
+    expect(document.body.textContent).not.toContain('(no channel providers)')
+    expect(document.body.textContent).not.toContain('(no channel bindings)')
+  })
+
   it('renders accessible provider icon buttons beneath the selected commander with connected styling', async () => {
     bindings = [
       createBinding('email', {

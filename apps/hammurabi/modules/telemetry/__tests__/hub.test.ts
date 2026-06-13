@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
@@ -12,7 +12,7 @@ async function createHub(now: () => Date): Promise<TelemetryHub> {
   tempDirectories.push(directory)
   const storeFilePath = path.join(directory, 'events.jsonl')
   const store = new TelemetryJsonlStore(storeFilePath)
-  return new TelemetryHub({ store, now })
+  return new TelemetryHub({ store, now, retentionDays: 0 })
 }
 
 afterEach(async () => {
@@ -136,7 +136,7 @@ describe('TelemetryHub summary token aggregates', () => {
       },
     })
 
-    const hub = new TelemetryHub({ store, now: () => now })
+    const hub = new TelemetryHub({ store, now: () => now, retentionDays: 0 })
     await hub.ensureReady()
 
     const detail = hub.getSessionDetail('local-session')
@@ -165,6 +165,28 @@ describe('TelemetryHub summary token aggregates', () => {
       },
     ])
     expect(hub.getSessionDetail('prompt-only')).toBeNull()
+  })
+})
+
+describe('TelemetryHub restore bounds', () => {
+  it('uses the store default stream size guard during startup restore', async () => {
+    const stream = vi.fn(async function* () {
+      yield* []
+    })
+    const store = {
+      stream,
+      append: vi.fn(async () => undefined),
+      compact: vi.fn(async () => undefined),
+    } as unknown as TelemetryJsonlStore
+
+    const hub = new TelemetryHub({
+      store,
+      now: () => new Date('2026-05-29T12:00:00.000Z'),
+      retentionDays: 0,
+    })
+    await hub.ensureReady()
+
+    expect(stream).toHaveBeenCalledWith()
   })
 })
 

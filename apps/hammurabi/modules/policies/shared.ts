@@ -1,5 +1,8 @@
+import { existsSync, realpathSync } from 'node:fs'
 import { appendFile, mkdir, readFile, writeFile } from 'node:fs/promises'
+import { homedir } from 'node:os'
 import path from 'node:path'
+import { findFirstMatchingGlob } from './glob.js'
 import type { ActionPolicyValue } from './types.js'
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
@@ -105,12 +108,118 @@ export function extractToolPath(toolInput: unknown): string | undefined {
   return undefined
 }
 
-export function isPathWithinCwd(candidatePath: string, cwd: string): boolean {
-  const normalizedCwd = path.resolve(cwd)
-  const normalizedCandidate = path.isAbsolute(candidatePath)
-    ? path.resolve(candidatePath)
-    : path.resolve(normalizedCwd, candidatePath)
-  const relative = path.relative(normalizedCwd, normalizedCandidate)
+interface PathScopeOptions {
+  allowlist?: string[]
+}
+
+function expandHomePath(value: string): string {
+  if (value === '~') {
+    return homedir()
+  }
+  if (value.startsWith('~/')) {
+    return path.join(homedir(), value.slice(2))
+  }
+  return value
+}
+
+function normalizeAllowlistPattern(pattern: string, cwd: string): string {
+  const expanded = expandHomePath(pattern.trim())
+  if (!expanded) {
+    return expanded
+  }
+  if (path.isAbsolute(expanded)) {
+    return path.resolve(expanded)
+  }
+  return path.resolve(cwd, expanded)
+}
+
+function resolveCandidatePath(candidatePath: string, cwd: string): {
+  raw: string
+  normalized: string
+  real: string
+} | null {
+  const raw = candidatePath.trim()
+  if (!raw || raw.includes('\0')) {
+    return null
+  }
+
+  const expanded = expandHomePath(raw)
+  const normalized = path.isAbsolute(expanded)
+    ? path.resolve(expanded)
+    : path.resolve(cwd, expanded)
+
+  try {
+    if (existsSync(normalized)) {
+      return {
+        raw,
+        normalized,
+        real: realpathSync(normalized),
+      }
+    }
+
+    const parent = path.dirname(normalized)
+    if (!existsSync(parent)) {
+      return null
+    }
+
+    return {
+      raw,
+      normalized,
+      real: path.join(realpathSync(parent), path.basename(normalized)),
+    }
+  } catch {
+    return null
+  }
+}
+
+function isAllowlistedPath(
+  candidate: { raw: string; normalized: string; real: string },
+  cwd: string,
+  allowlist: string[],
+): boolean {
+  const patterns = allowlist
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0)
+  if (patterns.length === 0) {
+    return false
+  }
+
+  const normalizedPatterns = patterns.map((entry) => normalizeAllowlistPattern(entry, cwd))
+  const candidateValues = [
+    candidate.raw,
+    expandHomePath(candidate.raw),
+    candidate.normalized,
+    candidate.real,
+  ]
+
+  return candidateValues.some((value) => {
+    return findFirstMatchingGlob(value, patterns) !== null
+      || findFirstMatchingGlob(value, normalizedPatterns) !== null
+  })
+}
+
+export function isPathWithinCwd(
+  candidatePath: string,
+  cwd: string,
+  options: PathScopeOptions = {},
+): boolean {
+  let normalizedCwd: string
+  try {
+    normalizedCwd = realpathSync(path.resolve(cwd))
+  } catch {
+    return false
+  }
+
+  const candidate = resolveCandidatePath(candidatePath, normalizedCwd)
+  if (!candidate) {
+    return false
+  }
+
+  if (isAllowlistedPath(candidate, normalizedCwd, options.allowlist ?? [])) {
+    return true
+  }
+
+  const relative = path.relative(normalizedCwd, candidate.real)
   return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative))
 }
 

@@ -7,6 +7,7 @@ import {
   findModuleGraphUiRouteMetadata,
   findModuleGraphRoute,
   findModuleGraphWebSocket,
+  resolveModuleGraphWebSocketPath,
 } from '@/module-graph-bindings'
 import { HAMMURABI_MODULE_GRAPH } from '@/module-manifest'
 import { moduleComponentBindings } from '@/module-registry'
@@ -241,7 +242,11 @@ describe('module graph frontend bindings', () => {
     expect(findModuleGraphWebSocket(currentGraph, 'agents.session-stream')?.path).toBe(
       '/api/agents/sessions/:name/ws',
     )
+    expect(resolveModuleGraphWebSocketPath(currentGraph, 'agents.session-stream', { name: 'worker/one' })).toBe(
+      '/api/agents/sessions/worker%2Fone/ws',
+    )
     expect(findModuleGraphWebSocket(currentGraph, 'missing')).toBeNull()
+    expect(resolveModuleGraphWebSocketPath(currentGraph, 'missing', { name: 'worker/one' })).toBeNull()
   })
 
   it('resolves backend-owned UI route metadata by route id', () => {

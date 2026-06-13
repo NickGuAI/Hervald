@@ -3,7 +3,10 @@ import { describe, expect, it } from 'vitest'
 
 import { HammurabiModuleLoaderError, type LoadedHammurabiModuleGraph } from '../module-loader'
 import { createManifestMountedModules, deriveRuntimeRoutePrefix } from '../module-runtime'
-import type { HammurabiRouteDeclaration } from '../../src/types/module-manifest'
+import type {
+  HammurabiRouteDeclaration,
+  HammurabiWebSocketDeclaration,
+} from '../../src/types/module-manifest'
 
 function route(id: string, mount: string): HammurabiRouteDeclaration {
   return {
@@ -16,7 +19,10 @@ function route(id: string, mount: string): HammurabiRouteDeclaration {
   }
 }
 
-function graphForRoutes(routes: HammurabiRouteDeclaration[]): LoadedHammurabiModuleGraph {
+function graphForRoutes(
+  routes: HammurabiRouteDeclaration[],
+  websockets: HammurabiWebSocketDeclaration[] = [],
+): LoadedHammurabiModuleGraph {
   const manifestById = new Map(
     routes.map((declaredRoute) => [
       declaredRoute.ownerModuleId,
@@ -31,7 +37,7 @@ function graphForRoutes(routes: HammurabiRouteDeclaration[]): LoadedHammurabiMod
 
   return {
     manifestById,
-    mountPlan: { routes },
+    mountPlan: { routes, websockets },
   } as unknown as LoadedHammurabiModuleGraph
 }
 
@@ -101,5 +107,28 @@ describe('createManifestMountedModules', () => {
     ])
 
     expect(module.routePrefix).toBe('/api')
+  })
+
+  it('rejects declared websockets when the owning runtime has no upgrade handler', () => {
+    const routes = [
+      route('agents.api', '/api/agents'),
+    ]
+    const websockets: HammurabiWebSocketDeclaration[] = [
+      {
+        id: 'agents.session-stream',
+        path: '/api/agents/sessions/:name/ws',
+        match: 'exact',
+        auth: 'api-key-or-auth0',
+        ownerModuleId: 'agents',
+      },
+    ]
+
+    expect(() => createManifestMountedModules(graphForRoutes(routes, websockets), [
+      {
+        name: 'agents',
+        routeIds: ['agents.api'],
+        router: Router(),
+      },
+    ])).toThrow(/WebSocket "agents\.session-stream".*does not register an upgrade handler/u)
   })
 })

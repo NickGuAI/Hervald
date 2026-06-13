@@ -14,6 +14,10 @@ import type {
 } from '../../agents/routes'
 import type { StreamSession } from '../../agents/types'
 import { ActionPolicyGate } from '../action-policy-gate'
+import {
+  APPROVAL_BRIDGE_TOKEN_HEADER,
+  createApprovalBridgeToken,
+} from '../approval-bridge-token'
 import { createApprovalsRouter } from '../approvals-routes'
 import { ApprovalCoordinator } from '../pending-store'
 import { resolveActionPolicy } from '../resolver'
@@ -899,6 +903,52 @@ describe('policies routes', () => {
     }
   })
 
+  it('redacts sensitive pending approval payloads by default', async () => {
+    const server = await startServer()
+
+    try {
+      await server.approvalCoordinator.enqueue({
+        source: 'codex',
+        sessionId: 'secret-review-session',
+        actionId: 'everything-else',
+        actionLabel: 'Run Tool',
+        toolName: 'mcp__secrets__write',
+        toolInput: {
+          apiKey: 'hmrb_supersecretvalue',
+          nested: {
+            authorization: 'Bearer super-secret-bearer-token',
+          },
+        },
+        context: {
+          summary: 'Write credential hmrb_supersecretvalue',
+          preview: 'Authorization: Bearer super-secret-bearer-token',
+          details: {
+            Token: 'hmrb_supersecretvalue',
+            File: '/tmp/config.json',
+          },
+        },
+      })
+
+      const pendingResponse = await fetch(`${server.baseUrl}/api/approvals/pending`, {
+        headers: AUTH_HEADERS,
+      })
+      const pendingPayload = await pendingResponse.json() as {
+        approvals: Array<Record<string, unknown>>
+      }
+      const serialized = JSON.stringify(pendingPayload)
+
+      expect(pendingResponse.status).toBe(200)
+      expect(serialized).not.toContain('hmrb_supersecretvalue')
+      expect(serialized).not.toContain('super-secret-bearer-token')
+      expect(pendingPayload.approvals[0]?.raw).not.toHaveProperty('toolInput')
+      expect(pendingPayload.approvals[0]?.context).toEqual(expect.objectContaining({
+        summary: 'Write credential [redacted]',
+      }))
+    } finally {
+      await server.close()
+    }
+  })
+
   it('drops resolved approvals older than 24h from /api/approvals/history by default', async () => {
     const fixedNow = new Date('2026-05-01T12:00:00.000Z')
     const server = await startServer({ now: () => new Date(fixedNow) })
@@ -1303,6 +1353,124 @@ describe('policies routes', () => {
     }
   })
 
+  it('accepts scoped approval bridge tokens only for the owning session approval check surface', async () => {
+    const server = await startServer()
+    const bridgeToken = createApprovalBridgeToken({
+      internalToken: INTERNAL_TOKEN,
+      sessionName: 'stream-bridge-01',
+    })
+
+    try {
+      const createResponse = await fetch(`${server.baseUrl}/api/approval/check`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          [APPROVAL_BRIDGE_TOKEN_HEADER]: bridgeToken,
+        },
+        body: JSON.stringify({
+          hammurabi_session_name: 'stream-bridge-01',
+          tool_name: 'mcp__slack__post_message',
+          tool_input: {
+            channel: '#ops',
+            message: 'Ship the hotfix.',
+          },
+        }),
+      })
+      const createPayload = await createResponse.json() as {
+        decision: string
+        request_id: string
+      }
+
+      expect(createResponse.status).toBe(200)
+      expect(createPayload.decision).toBe('pending')
+      await vi.waitFor(async () => {
+        const approvals = await server.approvalCoordinator.listPending()
+        expect(approvals[0]).toEqual(expect.objectContaining({
+          id: createPayload.request_id,
+          sessionId: 'stream-bridge-01',
+        }))
+      })
+
+      const privilegedPolicyResponse = await fetch(`${server.baseUrl}/api/action-policies/settings`, {
+        headers: {
+          [APPROVAL_BRIDGE_TOKEN_HEADER]: bridgeToken,
+        },
+      })
+      expect(privilegedPolicyResponse.status).toBe(403)
+
+      const bridgeDecideResponse = await fetch(`${server.baseUrl}/api/approval/decide`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          [APPROVAL_BRIDGE_TOKEN_HEADER]: bridgeToken,
+        },
+        body: JSON.stringify({
+          id: createPayload.request_id,
+          decision: 'approve',
+        }),
+      })
+      expect(bridgeDecideResponse.status).toBe(403)
+
+      const decideResponse = await fetch(`${server.baseUrl}/api/approval/decide`, {
+        method: 'POST',
+        headers: {
+          ...AUTH_HEADERS,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          id: createPayload.request_id,
+          decision: 'approve',
+        }),
+      })
+      expect(decideResponse.status).toBe(200)
+
+      const resolvedResponse = await fetch(`${server.baseUrl}/api/approval/check/${createPayload.request_id}`, {
+        headers: {
+          [APPROVAL_BRIDGE_TOKEN_HEADER]: bridgeToken,
+        },
+      })
+      expect(resolvedResponse.status).toBe(200)
+      expect(await resolvedResponse.json()).toEqual({
+        decision: 'allow',
+      })
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('rejects approval bridge tokens used for another session', async () => {
+    const server = await startServer()
+    const bridgeToken = createApprovalBridgeToken({
+      internalToken: INTERNAL_TOKEN,
+      sessionName: 'stream-bridge-owner',
+    })
+
+    try {
+      const response = await fetch(`${server.baseUrl}/api/approval/check`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          [APPROVAL_BRIDGE_TOKEN_HEADER]: bridgeToken,
+        },
+        body: JSON.stringify({
+          hammurabi_session_name: 'stream-other-session',
+          tool_name: 'mcp__slack__post_message',
+          tool_input: {
+            channel: '#ops',
+            message: 'Ship the hotfix.',
+          },
+        }),
+      })
+
+      expect(response.status).toBe(403)
+      expect(await response.json()).toEqual({
+        error: 'Approval bridge token is scoped to a different session',
+      })
+    } finally {
+      await server.close()
+    }
+  })
+
   it('keeps pending approvals restart-safe across the polling route', async () => {
     const rootDir = await mkdtemp(path.join(tmpdir(), 'hammurabi-policies-routes-restart-'))
     tempDirectories.push(rootDir)
@@ -1510,7 +1678,9 @@ describe('policies routes', () => {
     const server = await startServer({
       buildCommanderNameLookup: async () => getCommanderName,
     })
-    const ws = new WebSocket(`${server.baseUrl.replace('http', 'ws')}/api/approvals/stream?api_key=test-key`)
+    const ws = new WebSocket(`${server.baseUrl.replace('http', 'ws')}/api/approvals/stream`, {
+      headers: { 'x-hammurabi-api-key': 'test-key' },
+    })
 
     try {
       const snapshotMessage = waitForMessage(ws)

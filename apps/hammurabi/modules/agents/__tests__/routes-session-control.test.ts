@@ -57,6 +57,71 @@ describe("agents routes", () => {
       await server.close()
     })
 
+  it('returns matching explicit lifecycle state in session list and detail', async () => {
+      const streamMock = createMockChildProcess()
+      mockedSpawn.mockReturnValueOnce(streamMock.cp as never)
+      const server = await startServer()
+
+      try {
+        const createResponse = await fetch(`${server.baseUrl}/api/agents/sessions`, {
+          method: 'POST',
+          headers: {
+            ...AUTH_HEADERS,
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify({
+            name: 'lifecycle-human-stream',
+            mode: 'default',
+            transportType: 'stream',
+            task: 'finish the turn',
+          }),
+        })
+        expect(createResponse.status).toBe(201)
+
+        streamMock.emitStdout('{"type":"result","subtype":"success","result":"done"}\n')
+
+        await vi.waitFor(async () => {
+          const listResponse = await fetch(`${server.baseUrl}/api/agents/sessions`, {
+            headers: AUTH_HEADERS,
+          })
+          expect(listResponse.status).toBe(200)
+          const listPayload = await listResponse.json() as Array<Record<string, unknown>>
+          const listed = listPayload.find((session) => session.name === 'lifecycle-human-stream')
+          expect(listed).toBeDefined()
+
+          const detailResponse = await fetch(`${server.baseUrl}/api/agents/sessions/lifecycle-human-stream`, {
+            headers: AUTH_HEADERS,
+          })
+          expect(detailResponse.status).toBe(200)
+          const detail = await detailResponse.json() as Record<string, unknown>
+
+          const lifecycleFields = [
+            'processState',
+            'turnState',
+            'connectionState',
+            'resumeState',
+            'processAlive',
+            'status',
+            'resumeAvailable',
+          ]
+          for (const field of lifecycleFields) {
+            expect(detail[field]).toEqual(listed?.[field])
+          }
+          expect(detail).toMatchObject({
+            processState: 'running',
+            turnState: 'completed',
+            connectionState: 'disconnected',
+            resumeState: 'unavailable',
+            processAlive: true,
+            status: 'completed',
+            resumeAvailable: false,
+          })
+        })
+      } finally {
+        await server.close()
+      }
+    })
+
   it('merges commander sessions with role and excludes stopped commanders', async () => {
       const { spawner } = createMockPtySpawner()
       const server = await startServer({ ptySpawner: spawner })
@@ -160,7 +225,7 @@ describe("agents routes", () => {
             phase: 'thinking',
           }),
           expect.objectContaining({
-            id: 'commander-beta',
+            id: 'commander-commander-beta',
             role: 'commander',
             status: 'idle',
             phase: 'blocked',
@@ -515,7 +580,7 @@ describe("agents routes", () => {
         rows: 40,
       }))
       expect(lastHandle()!.write).toHaveBeenCalledWith(
-        'export CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING=1 MAX_THINKING_TOKENS=128000 && unset CLAUDECODE ANTHROPIC_MODEL ANTHROPIC_DEFAULT_OPUS_MODEL ANTHROPIC_DEFAULT_SONNET_MODEL && claude --effort max\r',
+        'export CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING=1 MAX_THINKING_TOKENS=128000 && unset CLAUDECODE HAMMURABI_INTERNAL_TOKEN ANTHROPIC_MODEL ANTHROPIC_DEFAULT_OPUS_MODEL ANTHROPIC_DEFAULT_SONNET_MODEL && claude --effort max\r',
       )
 
       await server.close()
@@ -559,7 +624,7 @@ describe("agents routes", () => {
           }),
         )
         expect(handle.write).toHaveBeenCalledWith(
-          'export CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING=1 MAX_THINKING_TOKENS=128000 && unset CLAUDECODE ANTHROPIC_MODEL ANTHROPIC_DEFAULT_OPUS_MODEL ANTHROPIC_DEFAULT_SONNET_MODEL && claude --effort max\r',
+          'export CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING=1 MAX_THINKING_TOKENS=128000 && unset CLAUDECODE HAMMURABI_INTERNAL_TOKEN ANTHROPIC_MODEL ANTHROPIC_DEFAULT_OPUS_MODEL ANTHROPIC_DEFAULT_SONNET_MODEL && claude --effort max\r',
         )
       } finally {
         await server.close()
@@ -586,7 +651,7 @@ describe("agents routes", () => {
 
         expect(response.status).toBe(201)
         expect(lastHandle()!.write).toHaveBeenCalledWith(
-          'export CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING=1 MAX_THINKING_TOKENS=128000 && unset CLAUDECODE ANTHROPIC_MODEL ANTHROPIC_DEFAULT_OPUS_MODEL ANTHROPIC_DEFAULT_SONNET_MODEL && claude --effort high\r',
+          'export CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING=1 MAX_THINKING_TOKENS=128000 && unset CLAUDECODE HAMMURABI_INTERNAL_TOKEN ANTHROPIC_MODEL ANTHROPIC_DEFAULT_OPUS_MODEL ANTHROPIC_DEFAULT_SONNET_MODEL && claude --effort high\r',
         )
       } finally {
         await server.close()
@@ -613,7 +678,7 @@ describe("agents routes", () => {
 
         expect(response.status).toBe(201)
         expect(lastHandle()!.write).toHaveBeenCalledWith(
-          'export CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING=1 MAX_THINKING_TOKENS=128000 && unset CLAUDECODE ANTHROPIC_MODEL ANTHROPIC_DEFAULT_OPUS_MODEL ANTHROPIC_DEFAULT_SONNET_MODEL && claude --effort max\r',
+          'export CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING=1 MAX_THINKING_TOKENS=128000 && unset CLAUDECODE HAMMURABI_INTERNAL_TOKEN ANTHROPIC_MODEL ANTHROPIC_DEFAULT_OPUS_MODEL ANTHROPIC_DEFAULT_SONNET_MODEL && claude --effort max\r',
         )
       } finally {
         await server.close()
@@ -814,7 +879,7 @@ describe("agents routes", () => {
       })
       expect(lastHandle()!.write).toHaveBeenNthCalledWith(
         1,
-        'export CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING=1 MAX_THINKING_TOKENS=128000 && unset CLAUDECODE ANTHROPIC_MODEL ANTHROPIC_DEFAULT_OPUS_MODEL ANTHROPIC_DEFAULT_SONNET_MODEL && claude --effort max\r',
+        'export CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING=1 MAX_THINKING_TOKENS=128000 && unset CLAUDECODE HAMMURABI_INTERNAL_TOKEN ANTHROPIC_MODEL ANTHROPIC_DEFAULT_OPUS_MODEL ANTHROPIC_DEFAULT_SONNET_MODEL && claude --effort max\r',
       )
       expect(lastHandle()!.write).toHaveBeenNthCalledWith(
         2,
@@ -1162,8 +1227,8 @@ describe("agents routes", () => {
 
       // Attach message listener before open to avoid race condition with scrollback
       const wsUrl = server.baseUrl.replace('http://', 'ws://') +
-        '/api/agents/sessions/ws-scrollback/ws?api_key=test-key'
-      const ws = new WebSocket(wsUrl)
+        '/api/agents/sessions/ws-scrollback/ws'
+      const ws = new WebSocket(wsUrl, { headers: { 'x-hammurabi-api-key': 'test-key' } })
       const messages: string[] = []
 
       ws.on('message', (data, isBinary) => {
@@ -1226,8 +1291,8 @@ describe("agents routes", () => {
 
       const replayChunks: string[] = []
       const wsUrl = server.baseUrl.replace('http://', 'ws://') +
-        '/api/agents/sessions/ws-reconnect-scrollback/ws?api_key=test-key'
-      const secondWs = new WebSocket(wsUrl)
+        '/api/agents/sessions/ws-reconnect-scrollback/ws'
+      const secondWs = new WebSocket(wsUrl, { headers: { 'x-hammurabi-api-key': 'test-key' } })
       secondWs.on('message', (data, isBinary) => {
         if (isBinary) {
           replayChunks.push(data.toString())
@@ -1580,8 +1645,8 @@ describe("agents routes", () => {
       const server = await startServer({ ptySpawner: spawner })
 
       const wsUrl = server.baseUrl.replace('http://', 'ws://') +
-        '/api/agents/sessions/%E0%A4%A/ws?api_key=test-key'
-      const ws = new WebSocket(wsUrl)
+        '/api/agents/sessions/%E0%A4%A/ws'
+      const ws = new WebSocket(wsUrl, { headers: { 'x-hammurabi-api-key': 'test-key' } })
 
       await expect(
         new Promise<void>((resolve, reject) => {
@@ -1608,8 +1673,8 @@ describe("agents routes", () => {
       })
 
       const wsUrl = server.baseUrl.replace('http://', 'ws://') +
-        '/api/agents/sessions/ws-alias-test/ws?api_key=test-key'
-      const ws = new WebSocket(wsUrl)
+        '/api/agents/sessions/ws-alias-test/ws'
+      const ws = new WebSocket(wsUrl, { headers: { 'x-hammurabi-api-key': 'test-key' } })
 
       await new Promise<void>((resolve, reject) => {
         const timeout = setTimeout(() => reject(new Error('Timed out')), 3_000)

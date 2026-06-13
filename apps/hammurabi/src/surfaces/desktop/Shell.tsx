@@ -4,10 +4,6 @@
  * Owns the desktop TopBar and viewport frame. Mobile chrome/safe-area policy
  * is delegated to `src/surfaces/mobile/MobileShell`.
  */
-import { useMemo } from 'react'
-import { workerLifecycle } from '@gehirn/hammurabi-cli/session-contract'
-import { useAgentSessions } from '@/hooks/use-agents'
-import { usePendingApprovals } from '@/hooks/use-approvals'
 import { useIsMobile } from '@/hooks/use-is-mobile'
 import {
   MobileShellChrome,
@@ -20,39 +16,18 @@ import type { TopBarCounts } from './TopBar'
 
 interface ShellProps {
   modules: FrontendNavItem[]
+  counts?: TopBarCounts
   children: React.ReactNode
 }
 
-function useTopBarCounts(): TopBarCounts {
-  const { data: sessions = [] } = useAgentSessions()
-  const { data: approvals = [] } = usePendingApprovals()
-
-  return useMemo(() => {
-    let running = 0
-    let stale = 0
-    let exited = 0
-
-    for (const session of sessions) {
-      const lifecycle = workerLifecycle({
-        status: session.status,
-        processAlive: session.processAlive,
-      })
-      if (lifecycle === 'running') running += 1
-      if (lifecycle === 'stale') stale += 1
-      if (lifecycle === 'exited') exited += 1
-    }
-
-    return {
-      running,
-      stale,
-      exited,
-      pending: approvals.length,
-    }
-  }, [approvals.length, sessions])
+const EMPTY_TOP_BAR_COUNTS: TopBarCounts = {
+  running: 0,
+  stale: 0,
+  exited: 0,
+  pending: 0,
 }
 
-export function Shell({ modules, children }: ShellProps) {
-  const counts = useTopBarCounts()
+export function Shell({ modules, counts = EMPTY_TOP_BAR_COUNTS, children }: ShellProps) {
   const isMobile = useIsMobile()
   const mobileChrome = useMobileShellChromeState({ isMobile })
 

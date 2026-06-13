@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import { act } from 'react'
+import { flushSync } from 'react-dom'
 import { createRoot, type Root } from 'react-dom/client'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -68,12 +69,13 @@ async function renderCenter(
   })
 
   await act(async () => {
-    root?.render(
-      <MemoryRouter>
-        <ApprovalNotificationCenter />
-      </MemoryRouter>,
-    )
-    await Promise.resolve()
+    flushSync(() => {
+      root?.render(
+        <MemoryRouter>
+          <ApprovalNotificationCenter />
+        </MemoryRouter>,
+      )
+    })
   })
 }
 

@@ -183,13 +183,14 @@ export async function resetActiveRuntimeStateForLaunch(
     },
   ]
 
-  await Promise.all(tasks.map(async (task) => {
+  for (const task of tasks) {
     try {
       result[task.key] = await task.run()
     } catch (error) {
       result.errors.push(formatResetError(task.label, error))
+      break
     }
-  }))
+  }
 
   return result
 }

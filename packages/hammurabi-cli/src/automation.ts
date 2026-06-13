@@ -1,4 +1,5 @@
 import { type HammurabiConfig, normalizeEndpoint, readHammurabiConfig } from './config.js'
+import { fetchJson as fetchJsonStrict } from './http-json.js'
 import { listAutomationProviderIds, loadProviderRegistry } from './providers.js'
 
 interface Writable {
@@ -69,6 +70,10 @@ export interface AutomationCliDependencies {
   stdout?: Writable
   stderr?: Writable
 }
+
+type AutomationListParseResult =
+  | { ok: true; automations: AutomationSummary[] }
+  | { ok: false; error: string }
 
 const LIST_FLAGS = ['--commander', '--trigger'] as const
 const MUTATION_FLAGS = [
@@ -227,20 +232,7 @@ async function fetchJson(
   url: string,
   init: RequestInit,
 ): Promise<{ ok: true; data: unknown } | { ok: false; response: Response }> {
-  const response = await fetchImpl(url, init)
-  if (!response.ok) {
-    return { ok: false, response }
-  }
-
-  if (response.status === 204) {
-    return { ok: true, data: null }
-  }
-
-  try {
-    return { ok: true, data: (await response.json()) as unknown }
-  } catch {
-    return { ok: true, data: null }
-  }
+  return fetchJsonStrict(fetchImpl, url, init)
 }
 
 async function readErrorDetail(response: Response): Promise<string | null> {
@@ -542,6 +534,7 @@ function parseAutomationSummary(entry: unknown): AutomationSummary | null {
 
   const schedule = parseScheduleValue(entry.schedule)
   const questTrigger = parseQuestTrigger(entry.questTrigger)
+  const status = normalizeStatus(entry.status)
   const trigger = normalizeTrigger(entry.trigger)
     ?? (questTrigger ? 'quest' : (schedule ? 'schedule' : null))
 
@@ -549,10 +542,10 @@ function parseAutomationSummary(entry: unknown): AutomationSummary | null {
     id,
     name,
     trigger: trigger ?? undefined,
-    status: normalizeStatus(entry.status),
+    status,
     schedule,
     timezone: parseOptionalString(entry.timezone),
-    enabled: typeof entry.enabled === 'boolean' ? entry.enabled : undefined,
+    enabled: typeof entry.enabled === 'boolean' ? entry.enabled : (status ? status === 'active' : undefined),
     parentCommanderId: parseOptionalString(entry.parentCommanderId)
       ?? parseOptionalString(entry.commanderId),
     agentType: parseOptionalString(entry.agentType),
@@ -572,12 +565,18 @@ function parseAutomationSummary(entry: unknown): AutomationSummary | null {
   }
 }
 
-function parseAutomationListPayload(payload: unknown): AutomationSummary[] {
-  const rawAutomations = Array.isArray(payload)
-    ? payload
-    : isObject(payload) && Array.isArray(payload.automations)
-      ? payload.automations
-      : []
+function parseAutomationListPayload(payload: unknown): AutomationListParseResult {
+  let rawAutomations: unknown[]
+  if (Array.isArray(payload)) {
+    rawAutomations = payload
+  } else if (isObject(payload) && Array.isArray(payload.automations)) {
+    rawAutomations = payload.automations
+  } else {
+    return {
+      ok: false,
+      error: 'Automation list response was malformed: expected a JSON array or { automations: [...] }.',
+    }
+  }
 
   const automations: AutomationSummary[] = []
   for (const entry of rawAutomations) {
@@ -586,7 +585,7 @@ function parseAutomationListPayload(payload: unknown): AutomationSummary[] {
       automations.push(automation)
     }
   }
-  return automations
+  return { ok: true, automations }
 }
 
 function parseAutomationDetail(payload: unknown): AutomationDetail | null {
@@ -603,11 +602,18 @@ function parseAutomationDetail(payload: unknown): AutomationDetail | null {
     permissionMode: parseOptionalString(payload.permissionMode),
     createdAt: parseOptionalString(payload.createdAt),
     updatedAt: parseOptionalString(payload.updatedAt),
-    nextScheduledAt: parseOptionalString(payload.nextScheduledAt),
+    nextScheduledAt: parseOptionalString(payload.nextScheduledAt) ?? parseOptionalString(payload.nextRun),
     questTrigger: parseQuestTrigger(payload.questTrigger),
     skills: parseOptionalStringArray(payload.skills),
     seedMemory: parseOptionalString(payload.seedMemory),
   }
+}
+
+function parseCreatedAutomationId(payload: unknown): string | null {
+  if (!isObject(payload)) {
+    return null
+  }
+  return parseOptionalString(payload.id) ?? null
 }
 
 function formatDurationSeconds(value: number): string {
@@ -703,7 +709,13 @@ async function runList(
     return 1
   }
 
-  const automations = parseAutomationListPayload(result.data)
+  const parsed = parseAutomationListPayload(result.data)
+  if (!parsed.ok) {
+    stderr.write(`${parsed.error}\n`)
+    return 1
+  }
+
+  const automations = parsed.automations
   if (automations.length === 0) {
     stdout.write('No automations found.\n')
     return 0
@@ -743,8 +755,11 @@ async function runCreate(
     return 1
   }
 
-  const payload = isObject(result.data) ? result.data : {}
-  const automationId = typeof payload.id === 'string' ? payload.id : '(unknown)'
+  const automationId = parseCreatedAutomationId(result.data)
+  if (!automationId) {
+    stderr.write('Automation create response was malformed: expected a JSON object with a string id.\n')
+    return 1
+  }
   stdout.write(`Created automation ID: ${automationId}\n`)
   return 0
 }

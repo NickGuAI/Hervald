@@ -41,11 +41,21 @@ import {
 } from './page-shell/session-helpers'
 import { TerminalView } from './page-shell/TerminalView'
 
+function sessionsErrorMessage(error: unknown): string {
+  return error instanceof Error && error.message ? error.message : 'Failed to load sessions'
+}
+
 export default function AgentsPage() {
   const isMobile = useIsMobile()
   const queryClient = useQueryClient()
   const [searchParams, setSearchParams] = useSearchParams()
-  const { data: sessions, isLoading, isFetching } = useAgentSessions()
+  const {
+    data: sessions,
+    isLoading,
+    isFetching,
+    error: sessionsError,
+    refetch: refetchAgentSessions,
+  } = useAgentSessions()
   const { data: machines } = useMachines()
   const { data: providers = [] } = useProviderRegistry()
   const [selectedSession, setSelectedSession] = useState<string | null>(null)
@@ -439,6 +449,25 @@ export default function AgentsPage() {
           {isLoading ? (
             <div className="flex justify-center py-12">
               <div className="w-3 h-3 rounded-full bg-sumi-mist animate-breathe" />
+            </div>
+          ) : sessionsError ? (
+            <div
+              className="rounded-lg border border-accent-vermillion/30 bg-accent-vermillion/10 px-4 py-3 text-sm text-accent-vermillion"
+              role="alert"
+            >
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="font-medium">Failed to load agent sessions</p>
+                <button
+                  type="button"
+                  onClick={() => {
+                    void refetchAgentSessions()
+                  }}
+                  className="rounded border border-accent-vermillion/30 px-2 py-1 text-xs font-medium text-accent-vermillion transition-colors hover:bg-accent-vermillion/10"
+                >
+                  Retry
+                </button>
+              </div>
+              <p className="mt-1 text-xs">{sessionsErrorMessage(sessionsError)}</p>
             </div>
           ) : filteredSessions?.length === 0 ? (
             <div className="text-center py-12 text-sumi-diluted text-sm">

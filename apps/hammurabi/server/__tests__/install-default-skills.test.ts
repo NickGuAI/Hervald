@@ -309,7 +309,6 @@ describe('Hervald installers bundle write-new-skill by default', () => {
           PATH: installerPath(fakeBin),
           FAKE_GIT_CLONE_SOURCE: sourceRepo,
           HERVALD_EXPECTED_NODE_BIN_DIR: expectedNodeBinDir,
-          HERVALD_CONFIGURE_PROVIDERS: '0',
           HAMMURABI_DATA_DIR: path.join(homeDir, '.hammurabi'),
           HAMMURABI_TOOLCHAIN_DIR: toolchainDir,
           HAMMURABI_INSTALL_AUTOSTART: '0',
@@ -320,7 +319,25 @@ describe('Hervald installers bundle write-new-skill by default', () => {
     )
 
     expect(result.stdout).toContain('Installing default skills')
+    expect(result.stdout).toContain('Quickstart skips provider CLI customization')
+    expect(result.stdout).not.toContain('Configuring provider CLIs')
     await assertInstalledSkill(homeDir)
+  })
+
+  it('keeps installer provider setup behind Advanced or explicit env selection', async () => {
+    const script = await readFile(path.join(repoRoot, 'apps', 'hammurabi', 'install.sh'), 'utf8')
+
+    expect(script).toContain('configure_providers "$INSTALL_SETUP_PATH"')
+    expect(script).toContain('Quickstart skips provider CLI customization')
+    expect(script).toContain('Choose Advanced setup, or set HERVALD_PROVIDERS=')
+    expect(script).toContain('prompt_provider_selection()')
+    expect(script).toContain('Select providers [1,2,3,4]:')
+    expect(script).toContain('"Already authenticated - re-check CLI or env auth"')
+    expect(script).toContain('"Paste secret - save API key or setup token locally"')
+    expect(script).toContain('"Skip - leave this provider unconfigured"')
+    expect(script).toMatch(/fail\(\) \{[\s\S]*print_repair_hint/)
+    expect(script).not.toContain('all | claude,codex,gemini,opencode')
+    expect(script).not.toContain('y/authenticated | key | skip')
   })
 
   it('configures selected provider tooling non-interactively from installer env', async () => {
@@ -350,6 +367,7 @@ describe('Hervald installers bundle write-new-skill by default', () => {
           PATH: installerPath(fakeBin),
           FAKE_GIT_CLONE_SOURCE: sourceRepo,
           HERVALD_EXPECTED_NODE_BIN_DIR: expectedNodeBinDir,
+          HERVALD_SETUP_PATH: 'advanced',
           HERVALD_PROVIDERS: 'gemini',
           HERVALD_GEMINI_API_KEY: 'gemini-test-api-key',
           HAMMURABI_DATA_DIR: dataDir,

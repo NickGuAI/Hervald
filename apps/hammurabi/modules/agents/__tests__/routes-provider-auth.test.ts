@@ -15,7 +15,7 @@ afterEach(async () => {
 })
 
 describe('provider auth routes', () => {
-  it('starts OAuth flows with the server-reachable callback route', async () => {
+  it('does not expose Hervald OAuth start for Codex native auth', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'hammurabi-provider-auth-routes-'))
     tempDirs.push(dir)
     const providerAuthStore = new ProviderAuthStore(join(dir, 'provider-secrets.json'))
@@ -34,17 +34,15 @@ describe('provider auth routes', () => {
         }),
       })
 
-      expect(response.status).toBe(200)
-      const payload = await response.json() as { authorizationUrl: string; callbackUrl: string }
-      const expectedCallbackUrl = `${server.baseUrl}/api/agents/provider-auth/oauth/callback`
-      expect(payload.callbackUrl).toBe(expectedCallbackUrl)
-      expect(new URL(payload.authorizationUrl).searchParams.get('redirect_uri')).toBe(expectedCallbackUrl)
+      expect(response.status).toBe(400)
+      const payload = await response.json() as { error: string }
+      expect(payload.error).toContain('codex login')
     } finally {
       await server.close()
     }
   })
 
-  it('does not expose Hammurabi OAuth start for Claude Code native auth', async () => {
+  it('does not expose Hervald OAuth start for Claude Code native auth', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'hammurabi-provider-auth-routes-'))
     tempDirs.push(dir)
     const providerAuthStore = new ProviderAuthStore(join(dir, 'provider-secrets.json'))

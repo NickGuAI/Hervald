@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { type HammurabiConfig, readHammurabiConfig } from './config.js'
+import { readJsonResponse } from './http-json.js'
 import { runTranscriptsCli } from './transcripts.js'
 
 const COMMANDER_FILENAME = 'COMMANDER.md'
@@ -640,18 +641,31 @@ async function runTemplateLoad(
     return 1
   }
 
-  let result: unknown
-  try {
-    result = (await response.json()) as unknown
-  } catch {
-    result = null
+  const result = await readJsonResponse(response)
+  if (!result.ok) {
+    const detail = await readErrorDetail(result.response)
+    stderr.write(
+      detail
+        ? `Commander import failed (${result.response.status}): ${detail}\n`
+        : `Commander import failed (${result.response.status}).\n`,
+    )
+    return 1
   }
 
-  const data = isObject(result) ? result : {}
-  const id = typeof data.id === 'string' ? data.id : ''
+  const data = isObject(result.data) ? result.data : null
+  if (!data) {
+    stderr.write('Commander import response was malformed: expected a JSON object with a string id.\n')
+    return 1
+  }
+
+  const id = typeof data.id === 'string' && data.id.trim().length > 0 ? data.id : ''
+  if (!id) {
+    stderr.write('Commander import response was malformed: expected a JSON object with a string id.\n')
+    return 1
+  }
   const displayName = typeof data.displayName === 'string' && data.displayName.trim().length > 0
     ? data.displayName.trim()
-    : id || 'commander'
+    : id
   const url = typeof data.url === 'string' && data.url.trim().length > 0
     ? new URL(data.url, `${normalizeEndpoint(config.endpoint)}/`).toString()
     : new URL(

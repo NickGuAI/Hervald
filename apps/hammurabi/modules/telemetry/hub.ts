@@ -837,7 +837,7 @@ export class TelemetryHub {
 
   private async restoreFromStore(): Promise<void> {
     const localAggregates = new Map<string, IngestAggregate>()
-    for await (const entry of this.options.store.stream({ maxBytes: 0 })) {
+    for await (const entry of this.options.store.stream()) {
       if (entry.type === 'ingest') {
         if (isLocalIngestRecord(entry.payload)) {
           addLocalIngestAggregate(localAggregates, entry.payload)

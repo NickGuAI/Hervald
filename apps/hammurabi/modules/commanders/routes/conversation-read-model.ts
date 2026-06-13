@@ -33,6 +33,16 @@ interface LiveConversationSessionLike {
   agentType?: AgentType
 }
 
+function hasSerializableStreamShape(
+  liveSession: LiveConversationSessionLike,
+): liveSession is StreamSession {
+  const stream = liveSession as Partial<StreamSession>
+  const clients = stream.clients as { size?: unknown } | undefined
+  return liveSession.kind === 'stream'
+    && Array.isArray(stream.events)
+    && typeof clients?.size === 'number'
+}
+
 /**
  * Backend-owned conversation read model for Command Room clients.
  *
@@ -89,25 +99,34 @@ function resolveTransportType(liveSession: LiveConversationSessionLike | undefin
     : null
 }
 
+function serializeMinimalLiveSession(liveSession: LiveConversationSessionLike): AgentSession {
+  const created = (liveSession as { createdAt?: string }).createdAt ?? new Date(0).toISOString()
+  const transportType = resolveTransportType(liveSession) ?? 'stream'
+  const process = (liveSession as { process?: { pid?: number } }).process
+  const isStream = transportType === 'stream'
+
+  return {
+    name: (liveSession as { name?: string }).name ?? '',
+    created,
+    lastActivityAt: (liveSession as { lastEventAt?: string }).lastEventAt ?? created,
+    pid: typeof process?.pid === 'number' ? process.pid : 0,
+    transportType,
+    processAlive: isStream,
+    hadResult: Boolean((liveSession as { finalResultEvent?: unknown }).finalResultEvent),
+    status: isStream ? 'active' : 'idle',
+    ...(liveSession.agentType ? { agentType: liveSession.agentType } : {}),
+  }
+}
+
 function serializeLiveSession(liveSession: LiveConversationSessionLike | undefined): AgentSession | null {
   if (!liveSession) {
     return null
   }
-  if (liveSession.kind === 'stream') {
+  if (hasSerializableStreamShape(liveSession)) {
     return liveSessionToApiPayload(liveSession as StreamSession)
   }
 
-  return {
-    name: (liveSession as { name?: string }).name ?? '',
-    created: (liveSession as { createdAt?: string }).createdAt ?? new Date(0).toISOString(),
-    lastActivityAt: (liveSession as { lastEventAt?: string }).lastEventAt ?? new Date(0).toISOString(),
-    pid: 0,
-    transportType: resolveTransportType(liveSession) ?? 'stream',
-    processAlive: false,
-    hadResult: false,
-    status: 'idle',
-    ...(liveSession.agentType ? { agentType: liveSession.agentType } : {}),
-  } as AgentSession
+  return serializeMinimalLiveSession(liveSession)
 }
 
 function buildLabel(conversation: Conversation): string {
@@ -140,12 +159,12 @@ export function buildConversationSummaryDTO(
   const isDefaultConversation = conversation.id === buildDefaultCommanderConversationId(conversation.commanderId)
   const sessionName = buildConversationSessionName(conversation)
   const isArchived = conversation.status === 'archived'
-  const runtimeOverlay = getConversationRuntimeOverlay(conversation.id)
+  const displayRuntimeOverlay = getConversationRuntimeOverlay(conversation.id)
   const runtimeState: ConversationRuntimeState = isArchived
     ? 'archived'
-    : runtimeOverlay?.state === 'starting'
+    : displayRuntimeOverlay?.state === 'starting'
       ? 'starting'
-      : runtimeOverlay?.state === 'failed'
+      : displayRuntimeOverlay?.state === 'failed'
         ? 'failed'
         : conversation.status === 'active' && hasLiveSession
           ? 'active'
@@ -245,7 +264,7 @@ export function buildConversationSummaryDTO(
     ...conversation,
     runtimeState,
     websocketReady,
-    runtimeError: runtimeOverlay?.error ?? null,
+    runtimeError: displayRuntimeOverlay?.error ?? null,
     isDefaultConversation,
     liveSession: serializeLiveSession(liveSession),
     canonicalOrder,
@@ -253,7 +272,7 @@ export function buildConversationSummaryDTO(
       status: conversation.status,
       runtimeState,
       websocketReady,
-      runtimeError: runtimeOverlay?.error ?? null,
+      runtimeError: displayRuntimeOverlay?.error ?? null,
       isVisible: conversation.status !== 'archived',
       isDefaultConversation,
       hasLiveSession,

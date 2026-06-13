@@ -11,6 +11,7 @@ import { buildVoiceTranscriptionContext } from '../../../server/voice/transcript
 import {
   buildConversationSessionName,
   deliverConversationMessage,
+  recordChannelReplyDeliveryDelivered,
   stopConversationSession,
 } from './conversation-runtime.js'
 import { resolveConversationVoiceConfig } from '../voice-config.js'
@@ -19,6 +20,22 @@ import type { ChannelAdapter, ChannelInboundEvent } from '../../channels/types.j
 import type { Conversation } from '../conversation-store.js'
 import type { CommanderChannelMeta } from '../store.js'
 import type { CommanderRoutesContext } from './types.js'
+
+interface ChannelMessageIdempotencyInput {
+  provider: string
+  accountId: string
+  rawSourceId: string
+}
+
+interface ChannelMessageDuplicateResponseInput {
+  res: import('express').Response
+  commanderId: string
+  conversationId: string
+  sessionKey: string
+  surfaceKey: string
+}
+
+const inFlightChannelMessageDeliveries = new Map<string, Promise<boolean>>()
 
 function requestAbortSignal(
   req: import('express').Request,
@@ -73,6 +90,73 @@ function toInboundEvent(
     rawTimestamp: parsed.rawTimestamp,
     rawSourceId: parsed.rawSourceId,
   }
+}
+
+function parseExplicitRawSourceId(body: unknown): string | null {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return null
+  }
+  return parseMessage((body as { rawSourceId?: unknown }).rawSourceId)
+}
+
+function channelMessageIdempotencyKey(input: ChannelMessageIdempotencyInput): string {
+  return JSON.stringify([
+    input.provider.trim().toLowerCase(),
+    input.accountId.trim(),
+    input.rawSourceId.trim(),
+  ])
+}
+
+async function waitForInFlightChannelMessageDelivery(
+  input: ChannelMessageIdempotencyInput,
+): Promise<boolean> {
+  const pending = inFlightChannelMessageDeliveries.get(channelMessageIdempotencyKey(input))
+  if (!pending) {
+    return false
+  }
+  try {
+    return await pending
+  } catch {
+    return false
+  }
+}
+
+function reserveInFlightChannelMessageDelivery(
+  input: ChannelMessageIdempotencyInput,
+): {
+  release: (delivered: boolean) => void
+} | null {
+  const key = channelMessageIdempotencyKey(input)
+  if (inFlightChannelMessageDeliveries.has(key)) {
+    return null
+  }
+
+  let settle: (delivered: boolean) => void = () => {}
+  const pending = new Promise<boolean>((resolve) => {
+    settle = resolve
+  })
+  inFlightChannelMessageDeliveries.set(key, pending)
+  return {
+    release(delivered) {
+      settle(delivered)
+      if (inFlightChannelMessageDeliveries.get(key) === pending) {
+        inFlightChannelMessageDeliveries.delete(key)
+      }
+    },
+  }
+}
+
+function sendDuplicateChannelMessageResponse(input: ChannelMessageDuplicateResponseInput): void {
+  input.res.status(200).json({
+    accepted: true,
+    delivered: false,
+    duplicate: true,
+    created: false,
+    commanderId: input.commanderId,
+    conversationId: input.conversationId,
+    sessionKey: input.sessionKey,
+    surfaceKey: input.surfaceKey,
+  })
 }
 
 function voiceChannelTerms(input: {
@@ -188,6 +272,7 @@ export function registerChannelRoutes(
     try {
       const channelMeta = toCommanderChannelMeta(parsed.value)
       const event = toInboundEvent(parsed.value, channelMeta)
+      const explicitRawSourceId = parseExplicitRawSourceId(req.body)
       const resolved = await resolveInboundChannelMessage(
         {
           event,
@@ -275,21 +360,92 @@ export function registerChannelRoutes(
         return
       }
 
+      const idempotencyInput = explicitRawSourceId
+        ? {
+          provider: event.provider,
+          accountId: event.accountId,
+          rawSourceId: explicitRawSourceId,
+        }
+        : null
+      if (idempotencyInput) {
+        if (
+          await waitForInFlightChannelMessageDelivery(idempotencyInput)
+          || await context.channelMessageIdempotencyLedger.has({
+            ...idempotencyInput,
+            now: context.now(),
+          })
+        ) {
+          sendDuplicateChannelMessageResponse({
+            res,
+            commanderId: commander.id,
+            conversationId: resolved.conversation.id,
+            sessionKey: channelMeta.sessionKey,
+            surfaceKey: resolved.binding.surfaceKey,
+          })
+          return
+        }
+      }
+
+      const idempotencyReservation = idempotencyInput
+        ? reserveInFlightChannelMessageDelivery(idempotencyInput)
+        : null
+      if (idempotencyInput && !idempotencyReservation) {
+        if (
+          await waitForInFlightChannelMessageDelivery(idempotencyInput)
+          || await context.channelMessageIdempotencyLedger.has({
+            ...idempotencyInput,
+            now: context.now(),
+          })
+        ) {
+          sendDuplicateChannelMessageResponse({
+            res,
+            commanderId: commander.id,
+            conversationId: resolved.conversation.id,
+            sessionKey: channelMeta.sessionKey,
+            surfaceKey: resolved.binding.surfaceKey,
+          })
+          return
+        }
+        res.status(409).json({
+          accepted: false,
+          delivered: false,
+          created: resolved.created,
+          commanderId: commander.id,
+          conversationId: resolved.conversation.id,
+          sessionKey: channelMeta.sessionKey,
+          error: 'Channel message delivery is already in progress; retry shortly',
+        })
+        return
+      }
+
       const sendOptions = parsed.value.mode === 'collect'
         ? { queue: true, priority: 'normal' as const }
         : undefined
 
-      const delivered = await deliverConversationMessage(
-        context,
-        resolved.conversation,
-        { message },
-        {
-          ...sendOptions,
-          autoStartIdle: true,
-          dispatchChannelReplies: true,
-          abortSignal: requestAbortSignal(req, res),
-        },
-      )
+      let deliverySucceeded = false
+      let delivered: Awaited<ReturnType<typeof deliverConversationMessage>>
+      try {
+        delivered = await deliverConversationMessage(
+          context,
+          resolved.conversation,
+          { message },
+          {
+            ...sendOptions,
+            autoStartIdle: true,
+            dispatchChannelReplies: true,
+            abortSignal: requestAbortSignal(req, res),
+          },
+        )
+        if (delivered.ok && idempotencyInput) {
+          await context.channelMessageIdempotencyLedger.claim({
+            ...idempotencyInput,
+            now: context.now(),
+          })
+          deliverySucceeded = true
+        }
+      } finally {
+        idempotencyReservation?.release(deliverySucceeded)
+      }
 
       if (!delivered.ok) {
         res.status(delivered.status).json({
@@ -349,10 +505,19 @@ export function registerChannelRoutes(
       return
     }
 
+    await recordChannelReplyDeliveryDelivered(context, {
+      conversationId: delivered.conversationId,
+      message,
+      provider: delivered.provider,
+      sessionKey: delivered.sessionKey,
+      lastRoute: delivered.lastRoute,
+    })
+
     res.json({
       accepted: true,
       delivered: true,
       commanderId,
+      conversationId: delivered.conversationId,
       provider: delivered.provider,
       sessionKey: delivered.sessionKey,
       lastRoute: delivered.lastRoute,

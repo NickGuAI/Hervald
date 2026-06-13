@@ -12,16 +12,48 @@ export function appendQueuedMessagesToTranscript(
   return messages
 }
 
+function imageSignature(image: NonNullable<MsgItem['images']>[number]): string {
+  return JSON.stringify({
+    mediaType: image.mediaType ?? null,
+    data: image.data ?? null,
+    url: image.url ?? null,
+    alt: image.alt ?? null,
+  })
+}
+
+function imagesSignature(message: MsgItem): string | null {
+  if (!message.images?.length) {
+    return null
+  }
+  return JSON.stringify(message.images.map(imageSignature))
+}
+
+function comparableText(message: MsgItem): string {
+  return message.text.replace(/\s+/gu, ' ').trim()
+}
+
+function comparableUserImageText(message: MsgItem): string {
+  const text = comparableText(message)
+  return text === '[image]' ? '' : text
+}
+
+function signatureText(message: MsgItem): string {
+  if (message.kind === 'user' && message.images?.length) {
+    return comparableUserImageText(message)
+  }
+  return message.text
+}
+
 function messageSignature(message: MsgItem): string {
   return JSON.stringify({
     kind: message.kind,
-    text: message.text,
+    text: signatureText(message),
     toolId: message.toolId ?? null,
     toolName: message.toolName ?? null,
     toolStatus: message.toolStatus ?? null,
     toolInput: message.toolInput ?? null,
     toolOutput: message.toolOutput ?? null,
-    images: message.images ?? null,
+    images: imagesSignature(message),
     planningAction: message.planningAction ?? null,
     planningPlan: message.planningPlan ?? null,
     planningMessage: message.planningMessage ?? null,
@@ -29,6 +61,14 @@ function messageSignature(message: MsgItem): string {
 }
 
 function transcriptIdentityKey(message: MsgItem): string | null {
+  const clientSendId = message.kind === 'user' ? message.clientSendId?.trim() : undefined
+  if (clientSendId) {
+    return JSON.stringify({
+      kind: message.kind,
+      clientSendId,
+    })
+  }
+
   const transcript = message.transcript
   const itemId = transcript?.itemId
   if (!itemId) {
@@ -49,10 +89,6 @@ function transcriptIdentityKey(message: MsgItem): string | null {
 
 const TEXT_OVERLAP_SEARCH_WINDOW = 8
 const TEXT_OVERLAP_MIN_LENGTH = 80
-
-function comparableText(message: MsgItem): string {
-  return message.text.replace(/\s+/gu, ' ').trim()
-}
 
 function canUseTextOverlap(message: MsgItem): boolean {
   return (
@@ -93,6 +129,39 @@ function textContainmentRedundancy(
   return null
 }
 
+function userImagePromptRedundancy(
+  historicalMessage: MsgItem,
+  liveMessage: MsgItem,
+): 'historical' | 'live' | null {
+  if (historicalMessage.kind !== 'user' || liveMessage.kind !== 'user') {
+    return null
+  }
+
+  const historicalImages = imagesSignature(historicalMessage)
+  const liveImages = imagesSignature(liveMessage)
+  if (!historicalImages || historicalImages !== liveImages) {
+    return null
+  }
+
+  const historicalText = comparableUserImageText(historicalMessage)
+  const liveText = comparableUserImageText(liveMessage)
+  if (historicalText !== liveText) {
+    return null
+  }
+
+  return 'historical'
+}
+
+function messageBoundaryRedundancy(
+  historicalMessage: MsgItem,
+  liveMessage: MsgItem,
+): 'historical' | 'live' | null {
+  return (
+    userImagePromptRedundancy(historicalMessage, liveMessage)
+    ?? textContainmentRedundancy(historicalMessage, liveMessage)
+  )
+}
+
 function chooseFullerMessage(left: MsgItem, right: MsgItem): MsgItem {
   const leftText = comparableText(left)
   const rightText = comparableText(right)
@@ -131,7 +200,7 @@ function mergeTranscriptIdentityAndBoundaryOverlap(
     let overlapIndex = -1
     let redundancy: 'historical' | 'live' | null = null
     for (let index = mergedHistorical.length - 1; index >= searchStart; index -= 1) {
-      redundancy = textContainmentRedundancy(mergedHistorical[index], liveMessage)
+      redundancy = messageBoundaryRedundancy(mergedHistorical[index], liveMessage)
       if (redundancy) {
         overlapIndex = index
         break

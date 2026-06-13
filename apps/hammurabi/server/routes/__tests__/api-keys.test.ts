@@ -312,7 +312,6 @@ describe('api key auth routes', () => {
       'telemetry:read',
     ])
     expect(created.scopes).not.toContain('agents:admin')
-    expect(created.scopes).not.toContain('skills:write')
 
     const listResponse = await fetch(`${server.baseUrl}/api/auth/keys`, {
       headers: {

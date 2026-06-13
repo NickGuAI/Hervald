@@ -6,6 +6,11 @@ import { QuestStore } from './quest-store.js'
 import { createCommandersRouter } from './routes.js'
 import { CommanderSessionStore } from './store.js'
 import { ConversationStore } from './conversation-store.js'
+import {
+  buildCommanderSessionSeed,
+  type CommanderSessionSeedParams,
+} from './memory/module.js'
+import { createCommanderTranscriptAppender } from './transcripts.js'
 import type {
   ModuleRouteRegistration,
   ModuleRuntimeContext,
@@ -26,6 +31,13 @@ export function createCommandersFoundation(context: ModuleRuntimeContext): null 
   capabilities.provide('commanders.quest-store', 'commanders', questStore)
   capabilities.provide('commanders.store', 'commanders', commanderSessionStore)
   capabilities.provide('commanders.conversations', 'commanders', commanderConversationStore)
+  capabilities.provide(
+    'commanders.session-seed-builder',
+    'commanders',
+    (params: Omit<CommanderSessionSeedParams, 'memoryBasePath'>) =>
+      buildCommanderSessionSeed({ ...params, memoryBasePath: commanderDataDir }),
+  )
+  capabilities.provide('commanders.transcripts', 'commanders', createCommanderTranscriptAppender(commanderDataDir))
 
   return null
 }

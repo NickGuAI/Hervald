@@ -26,6 +26,7 @@ vi.mock('@/hooks/use-approvals', () => ({
 }))
 
 import { Shell } from '@/surfaces/desktop/Shell'
+import type { TopBarCounts } from '@/surfaces/desktop/TopBar'
 
 let root: Root | null = null
 let container: HTMLDivElement | null = null
@@ -53,7 +54,10 @@ function buildMatchMedia(isMobile: boolean) {
   }))
 }
 
-async function renderShell(modules: FrontendNavItem[] = [commandRoomModule]) {
+async function renderShell(
+  modules: FrontendNavItem[] = [commandRoomModule],
+  counts: TopBarCounts = { running: 0, stale: 0, exited: 0, pending: 0 },
+) {
   container = document.createElement('div')
   document.body.appendChild(container)
 
@@ -69,7 +73,7 @@ async function renderShell(modules: FrontendNavItem[] = [commandRoomModule]) {
     root?.render(
       <QueryClientProvider client={queryClient}>
         <MemoryRouter initialEntries={['/command-room']}>
-          <Shell modules={modules}>
+          <Shell modules={modules} counts={counts}>
             <div>child</div>
           </Shell>
         </MemoryRouter>
@@ -119,8 +123,13 @@ describe('Shell top-bar counts', () => {
     vi.clearAllMocks()
   })
 
-  it('counts active and idle as running', async () => {
-    await renderShell()
+  it('renders feature-provided status counts', async () => {
+    await renderShell([commandRoomModule], {
+      running: 2,
+      stale: 1,
+      exited: 2,
+      pending: 2,
+    })
 
     await vi.waitFor(() => {
       const text = container?.textContent?.replace(/\s+/g, ' ') ?? ''

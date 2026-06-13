@@ -108,9 +108,6 @@ if [ "$MODE" = "dev" ]; then
     NODE_ENV_VALUE="development"
 fi
 
-CANDIDATE_PORT=$((PORT + 1000))
-CANDIDATE_SESSION_NAME="${SESSION_NAME}-candidate-$$"
-
 port_listener_pids() {
     local probe_port="${1:-$PORT}"
     if command -v lsof &>/dev/null; then
@@ -284,22 +281,7 @@ else
 fi
 
 if [ "$MODE" = "prod" ]; then
-    echo -n -e "${YELLOW}Checking candidate port $CANDIDATE_PORT...${NC}"
-    if is_port_listening "$CANDIDATE_PORT"; then
-        echo -e " ${RED}${CROSS} Candidate port $CANDIDATE_PORT is already in use. Aborting without touching live listener.${NC}"
-        exit 1
-    fi
-    echo -e " ${GREEN}${CHECKMARK} (free)${NC}"
-
-    echo -e "${GREEN}Launching Hervald background-disabled private API candidate on port $CANDIDATE_PORT before touching live listener...${NC}"
-    launch_tmux_service "$CANDIDATE_SESSION_NAME" "$CANDIDATE_PORT" "0" "0" "$PRIVATE_BIND_HOST"
-    wait_for_service_health "$CANDIDATE_PORT" "$CANDIDATE_SESSION_NAME"
-    if ! $HEALTH_READY; then
-        tmux kill-session -t "$CANDIDATE_SESSION_NAME" 2>/dev/null || true
-        echo -e "${RED}${CROSS} Candidate did not pass /api/health. Existing listener was left untouched.${NC}"
-        exit 1
-    fi
-    echo "[INFO] $(date -u +%Y-%m-%dT%H:%M:%SZ) Background-disabled candidate passed /api/health on port $CANDIDATE_PORT; stopping existing listener on port $PORT for handoff" >> "$LAUNCH_LOG_FILE"
+    echo "[INFO] $(date -u +%Y-%m-%dT%H:%M:%SZ) Production mode selected; stopping existing listener on port $PORT for handoff" >> "$LAUNCH_LOG_FILE"
 else
     echo "[INFO] $(date -u +%Y-%m-%dT%H:%M:%SZ) Dev mode selected; stopping existing listener on port $PORT for handoff" >> "$LAUNCH_LOG_FILE"
 fi
@@ -326,7 +308,6 @@ fi
 
 # Wait for health after the new listener starts.
 wait_for_service_health "$PORT" "$SESSION_NAME"
-tmux kill-session -t "$CANDIDATE_SESSION_NAME" 2>/dev/null || true
 
 # Report status
 echo -n -e "${YELLOW}Hervald health /api/health...${NC}"

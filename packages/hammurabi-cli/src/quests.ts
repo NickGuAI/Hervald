@@ -1,5 +1,6 @@
 import { formatStoredApiKeyUnauthorizedMessage } from './api-key-recovery.js'
 import { type HammurabiConfig, normalizeEndpoint, readHammurabiConfig } from './config.js'
+import { fetchJson as fetchJsonStrict } from './http-json.js'
 
 interface QuestSummary {
   id: string
@@ -564,20 +565,7 @@ async function fetchJson(
   url: string,
   init: RequestInit,
 ): Promise<{ ok: true; data: unknown } | { ok: false; response: Response }> {
-  const response = await fetchImpl(url, init)
-  if (!response.ok) {
-    return { ok: false, response }
-  }
-
-  if (response.status === 204) {
-    return { ok: true, data: null }
-  }
-
-  try {
-    return { ok: true, data: (await response.json()) as unknown }
-  } catch {
-    return { ok: true, data: null }
-  }
+  return fetchJsonStrict(fetchImpl, url, init)
 }
 
 function parseCreateOptions(args: readonly string[]): CreateOptions | null {
@@ -720,8 +708,12 @@ async function runCreate(
     return 1
   }
 
-  const data = isObject(result.data) ? result.data : {}
-  const id = typeof data.id === 'string' ? data.id : '(unknown)'
+  const data = isObject(result.data) ? result.data : null
+  const id = typeof data?.id === 'string' && data.id.trim().length > 0 ? data.id : null
+  if (!id) {
+    stderr.write('Quest create response was malformed: expected a JSON object with a string id.\n')
+    return 1
+  }
   stdout.write(`Quest created: ${id}\n`)
   return 0
 }

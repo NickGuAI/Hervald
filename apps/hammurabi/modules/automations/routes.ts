@@ -121,6 +121,16 @@ function parseOptionalStatus(raw: unknown): AutomationStatus | null | undefined 
     : null
 }
 
+function parseOptionalBoolean(raw: unknown): boolean | null | undefined {
+  if (raw === undefined) {
+    return undefined
+  }
+  if (typeof raw === 'boolean') {
+    return raw
+  }
+  return null
+}
+
 function parseOptionalAgentType(raw: unknown): AgentType | null | undefined {
   if (raw === undefined) {
     return undefined
@@ -259,10 +269,24 @@ function toIsoString(value: Date | null | undefined): string | null {
   return value.toISOString()
 }
 
-function toAutomationResponse(automation: Automation, scheduler: AutomationScheduler): Automation & { nextRun: string | null } {
+function enabledStatus(enabled: boolean): AutomationStatus {
+  return enabled ? 'active' : 'paused'
+}
+
+function statusConflictsWithEnabled(status: AutomationStatus | undefined, enabled: boolean | undefined): boolean {
+  return status !== undefined && enabled !== undefined && status !== enabledStatus(enabled)
+}
+
+function toAutomationResponse(
+  automation: Automation,
+  scheduler: AutomationScheduler,
+): Automation & { enabled: boolean; nextRun: string | null; nextScheduledAt: string | null } {
+  const nextRun = toIsoString(scheduler.getNextRun(automation.id))
   return {
     ...automation,
-    nextRun: toIsoString(scheduler.getNextRun(automation.id)),
+    enabled: automation.status === 'active',
+    nextRun,
+    nextScheduledAt: nextRun,
   }
 }
 
@@ -405,6 +429,15 @@ export function createAutomationsRouter(options: AutomationsRouterOptions = {}):
       res.status(400).json({ error: 'status must be active, paused, completed, or cancelled when provided' })
       return
     }
+    const enabled = parseOptionalBoolean(req.body?.enabled)
+    if (enabled === null) {
+      res.status(400).json({ error: 'enabled must be a boolean when provided' })
+      return
+    }
+    if (statusConflictsWithEnabled(status, enabled)) {
+      res.status(400).json({ error: 'enabled conflicts with status' })
+      return
+    }
     const timezone = parseOptionalTimezone(req.body?.timezone)
     if (timezone === null) {
       res.status(400).json({ error: 'timezone must be a valid IANA timezone when provided' })
@@ -455,6 +488,7 @@ export function createAutomationsRouter(options: AutomationsRouterOptions = {}):
       res.status(400).json({ error: modelValidation.error, validIds: modelValidation.validIds })
       return
     }
+    const createStatus = status ?? (enabled !== undefined ? enabledStatus(enabled) : undefined)
     const createInput: CreateAutomationInput = {
       name,
       trigger,
@@ -464,7 +498,7 @@ export function createAutomationsRouter(options: AutomationsRouterOptions = {}):
       ...(parentCommanderId !== undefined ? { parentCommanderId } : {}),
       ...(schedule ? { schedule } : {}),
       ...(questTrigger ? { questTrigger } : {}),
-      ...(status ? { status } : {}),
+      ...(createStatus ? { status: createStatus } : {}),
       ...(description ? { description } : {}),
       ...(timezone ? { timezone } : {}),
       machine: machine ?? '',
@@ -589,6 +623,19 @@ export function createAutomationsRouter(options: AutomationsRouterOptions = {}):
         return
       }
       patch.status = status
+    }
+    if ('enabled' in body) {
+      const enabled = parseOptionalBoolean(body.enabled)
+      if (enabled === null || enabled === undefined) {
+        res.status(400).json({ error: 'enabled must be a boolean' })
+        return
+      }
+      const enabledAsStatus = enabledStatus(enabled)
+      if (patch.status && patch.status !== enabledAsStatus) {
+        res.status(400).json({ error: 'enabled conflicts with status' })
+        return
+      }
+      patch.status = enabledAsStatus
     }
     if ('description' in body) {
       const description = parseOptionalString(body.description)

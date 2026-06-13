@@ -1,10 +1,11 @@
 // @vitest-environment jsdom
 
-import type { ComponentProps } from 'react'
+import { act, type ComponentProps } from 'react'
 import { flushSync } from 'react-dom'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { SessionComposer } from '../SessionComposer'
+import { MAX_MESSAGE_IMAGE_BYTES, MAX_MESSAGE_IMAGE_SIZE_MB } from '../../message-images'
 
 const speechRecognitionMock = {
   isListening: false,
@@ -16,6 +17,8 @@ const speechRecognitionMock = {
 
 const composerAbilitiesMock = vi.hoisted(() => ({
   customAbilitiesEnabled: false,
+  loadError: null as Error | null,
+  retryLoad: vi.fn(),
   addCustomAbility: vi.fn(),
   removeCustomAbility: vi.fn(),
   useComposerAbilities: vi.fn(() => ({
@@ -38,11 +41,15 @@ const composerAbilitiesMock = vi.hoisted(() => ({
     removeCustomAbility: composerAbilitiesMock.removeCustomAbility,
     isLoading: false,
     isSaving: false,
+    loadError: composerAbilitiesMock.loadError,
+    retryLoad: composerAbilitiesMock.retryLoad,
   })),
 }))
 
 const composerSkillSlotsMock = vi.hoisted(() => ({
   primarySkillName: null as string | null,
+  loadError: null as Error | null,
+  retryLoad: vi.fn(),
   setPrimarySkillName: vi.fn(async (skillName: string) => {
     composerSkillSlotsMock.primarySkillName = skillName.replace(/^\/+/u, '')
     return true
@@ -63,6 +70,8 @@ const composerSkillSlotsMock = vi.hoisted(() => ({
     clearPrimarySkillName: composerSkillSlotsMock.clearPrimarySkillName,
     isLoading: false,
     isSaving: false,
+    loadError: composerSkillSlotsMock.loadError,
+    retryLoad: composerSkillSlotsMock.retryLoad,
   })),
 }))
 
@@ -156,6 +165,32 @@ function setDraftText(value: string) {
   })
 }
 
+function fileWithSize(name: string, type: string, size: number): File {
+  const file = new File(['x'], name, { type })
+  Object.defineProperty(file, 'size', {
+    configurable: true,
+    value: size,
+  })
+  return file
+}
+
+async function attachComposerImage(file = new File(['fake-image'], 'draft.png', { type: 'image/png' })) {
+  const input = document.body.querySelector('input[type="file"]') as HTMLInputElement | null
+  expect(input).not.toBeNull()
+  Object.defineProperty(input, 'files', {
+    configurable: true,
+    value: [file],
+  })
+
+  flushSync(() => {
+    input?.dispatchEvent(new Event('change', { bubbles: true }))
+  })
+
+  await vi.waitFor(() => {
+    expect(document.body.querySelector('.composer-attachment')).not.toBeNull()
+  })
+}
+
 beforeEach(() => {
   speechRecognitionMock.isListening = false
   speechRecognitionMock.transcript = ''
@@ -163,10 +198,14 @@ beforeEach(() => {
   speechRecognitionMock.startListening.mockReset()
   speechRecognitionMock.stopListening.mockReset()
   composerAbilitiesMock.customAbilitiesEnabled = false
+  composerAbilitiesMock.loadError = null
+  composerAbilitiesMock.retryLoad.mockReset()
   composerAbilitiesMock.addCustomAbility.mockReset()
   composerAbilitiesMock.removeCustomAbility.mockReset()
   composerAbilitiesMock.useComposerAbilities.mockClear()
   composerSkillSlotsMock.primarySkillName = null
+  composerSkillSlotsMock.loadError = null
+  composerSkillSlotsMock.retryLoad.mockReset()
   composerSkillSlotsMock.setPrimarySkillName.mockClear()
   composerSkillSlotsMock.clearPrimarySkillName.mockClear()
   composerSkillSlotsMock.useComposerSkillSlots.mockClear()
@@ -268,17 +307,112 @@ describe('SessionComposer', () => {
     expect(window.localStorage.getItem('hammurabi:draft:conversation-conv-1')).toBe('flush from pagehide')
   })
 
+  it('persists and restores pending image attachments with the session draft', async () => {
+    renderComposer({
+      sessionName: 'conversation-image-draft',
+      variant: 'mobile',
+    })
+
+    await attachComposerImage()
+
+    flushSync(() => {
+      root?.unmount()
+    })
+    root = null
+    container?.remove()
+    container = null
+
+    const storedImages = window.localStorage.getItem('hammurabi:draft-images:conversation-image-draft')
+    expect(storedImages).not.toBeNull()
+    expect(JSON.parse(storedImages ?? '{}')).toEqual({
+      images: [{ mediaType: 'image/png', data: 'ZmFrZS1pbWFnZQ==' }],
+    })
+
+    renderComposer({
+      sessionName: 'conversation-image-draft',
+      variant: 'desktop',
+    })
+
+    await vi.waitFor(() => {
+      const restoredImage = document.body.querySelector('.composer-attachment img') as HTMLImageElement | null
+      expect(restoredImage?.src).toBe('data:image/png;base64,ZmFrZS1pbWFnZQ==')
+    })
+  })
+
+  it('clears persisted pending image attachments after send', async () => {
+    const onSend = vi.fn(() => true)
+    renderComposer({
+      sessionName: 'conversation-image-send-clear',
+      onSend,
+    })
+
+    await attachComposerImage()
+    window.dispatchEvent(new Event('pagehide'))
+    expect(window.localStorage.getItem('hammurabi:draft-images:conversation-image-send-clear')).not.toBeNull()
+
+    flushSync(() => {
+      findButtonByLabel('Send').click()
+    })
+
+    await vi.waitFor(() => {
+      expect(window.localStorage.getItem('hammurabi:draft-images:conversation-image-send-clear')).toBeNull()
+      expect(document.body.querySelector('.composer-attachment')).toBeNull()
+    })
+    expect(onSend).toHaveBeenCalledWith(expect.objectContaining({
+      text: '',
+      images: [{ mediaType: 'image/png', data: 'ZmFrZS1pbWFnZQ==' }],
+      clientSendId: expect.stringMatching(/^send-/u),
+    }))
+  })
+
+  it('clears persisted pending image attachments when the image is removed', async () => {
+    renderComposer({ sessionName: 'conversation-image-remove-clear' })
+
+    await attachComposerImage()
+    window.dispatchEvent(new Event('pagehide'))
+    expect(window.localStorage.getItem('hammurabi:draft-images:conversation-image-remove-clear')).not.toBeNull()
+
+    flushSync(() => {
+      findButtonByLabel('Remove image').click()
+    })
+    window.dispatchEvent(new Event('pagehide'))
+
+    expect(window.localStorage.getItem('hammurabi:draft-images:conversation-image-remove-clear')).toBeNull()
+    expect(document.body.querySelector('.composer-attachment')).toBeNull()
+  })
+
   it('renders composer abilities in the mobile variant when queue access is unavailable', async () => {
     renderComposer({ variant: 'mobile' })
 
     const buttons = Array.from(composerRow().querySelectorAll('button'))
-    expect(buttons).toHaveLength(5)
+    expect(buttons).toHaveLength(6)
     expect(findButtonByLabel('Add to chat')).toBeDefined()
+    expect(findButtonByLabel('Insert skill')).toBeDefined()
     expect(findButtonByLabel('Configure quick skill slot')).toBeDefined()
     expect(findButtonByLabel('Enable Think Hard ability')).toBeDefined()
     expect(findButtonByLabel('Start voice input')).toBeDefined()
     expect(findButtonByLabel('Send message')).toBeDefined()
     expect(document.body.querySelector('button[aria-label="Add custom composer ability"]')).toBeNull()
+  })
+
+  it('shows a settings retry affordance when composer settings fail to load', async () => {
+    composerAbilitiesMock.loadError = new Error('Request failed (401): Unauthorized')
+    composerSkillSlotsMock.loadError = new Error('Request failed (401): Unauthorized')
+
+    renderComposer({ variant: 'desktop' })
+
+    expect(document.body.textContent).toContain('Unable to load composer settings.')
+    const retryButton = Array.from(document.body.querySelectorAll('button')).find((button) =>
+      button.textContent === 'Retry',
+    )
+    expect(retryButton).not.toBeNull()
+
+    flushSync(() => {
+      retryButton?.click()
+    })
+
+    expect(composerAbilitiesMock.retryLoad).toHaveBeenCalled()
+    expect(composerSkillSlotsMock.retryLoad).toHaveBeenCalled()
   })
 
   it('keeps the mobile textarea above a compact action row with mic next to send', async () => {
@@ -291,6 +425,7 @@ describe('SessionComposer', () => {
     expect(row.querySelector('.composer-field-stack textarea')).toBeNull()
     expect(composer?.querySelector(':scope > .input-bar > .composer-field-stack textarea')).not.toBeNull()
     expect(row.querySelector('button[aria-label="Add to chat"]')).not.toBeNull()
+    expect(row.querySelector('button[aria-label="Insert skill"]')).not.toBeNull()
     expect(row.querySelector('button[aria-label="Configure quick skill slot"]')).not.toBeNull()
     expect(row.querySelector('button[aria-label="Enable Think Hard ability"]')).not.toBeNull()
 
@@ -369,6 +504,52 @@ describe('SessionComposer', () => {
     expect(onSend).not.toHaveBeenCalled()
   })
 
+  it('replaces the mobile input with a queueing status while enqueue is in flight', async () => {
+    const onSend = vi.fn(() => true)
+    let resolveQueue: ((queued: boolean) => void) | null = null
+    const queuePromise = new Promise<boolean>((resolve) => {
+      resolveQueue = resolve
+    })
+    const onQueue = vi.fn(() => queuePromise)
+
+    renderComposer({
+      variant: 'mobile',
+      isStreaming: false,
+      onSend,
+      onQueue,
+      queueSnapshot: {
+        currentMessage: null,
+        items: [],
+        totalCount: 0,
+        maxSize: 8,
+      },
+    })
+
+    setDraftText('Queue this once')
+    const queueMessageButton = findButtonByLabel('Queue message')
+
+    flushSync(() => {
+      queueMessageButton.click()
+      queueMessageButton.click()
+    })
+
+    expect(onQueue).toHaveBeenCalledTimes(1)
+    expect(onSend).not.toHaveBeenCalled()
+    expect(document.body.querySelector('textarea')).toBeNull()
+    expect(document.body.querySelector('[role="status"][aria-label="Queuing message"]')?.textContent)
+      .toContain('Queuing message...')
+    expect(findButtonByLabel('Queue message').disabled).toBe(true)
+
+    await act(async () => {
+      resolveQueue?.(true)
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+
+    const textarea = document.body.querySelector('textarea') as HTMLTextAreaElement | null
+    expect(textarea).not.toBeNull()
+    expect(textarea?.value).toBe('')
+  })
+
   it('sends from the mobile primary action when the session is idle', async () => {
     const onSend = vi.fn(() => true)
     const onQueue = vi.fn(() => true)
@@ -389,7 +570,7 @@ describe('SessionComposer', () => {
     expect(onQueue).not.toHaveBeenCalled()
   })
 
-  it('clears the mobile draft immediately after an async send is accepted', async () => {
+  it('clears the mobile draft after an async send is accepted', async () => {
     const onSend = vi.fn(() => Promise.resolve(true))
 
     renderComposer({
@@ -403,9 +584,32 @@ describe('SessionComposer', () => {
       findButtonByLabel('Send message').click()
     })
 
-    const textarea = document.body.querySelector('textarea') as HTMLTextAreaElement | null
-    expect(textarea?.value).toBe('')
+    await vi.waitFor(() => {
+      const textarea = document.body.querySelector('textarea') as HTMLTextAreaElement | null
+      expect(textarea?.value).toBe('')
+    })
     expect(onSend).toHaveBeenCalledWith({ text: 'Clear this after tapping send', images: undefined })
+  })
+
+  it('keeps the mobile draft when an async fallback send resolves false', async () => {
+    const onSend = vi.fn(() => Promise.resolve(false))
+
+    renderComposer({
+      variant: 'mobile',
+      isStreaming: false,
+      onSend,
+    })
+    setDraftText('Keep failed fallback draft')
+
+    flushSync(() => {
+      findButtonByLabel('Send message').click()
+    })
+
+    await vi.waitFor(() => {
+      expect(onSend).toHaveBeenCalledWith({ text: 'Keep failed fallback draft', images: undefined })
+    })
+    const textarea = document.body.querySelector('textarea') as HTMLTextAreaElement | null
+    expect(textarea?.value).toBe('Keep failed fallback draft')
   })
 
   it('keeps the mobile draft when send is rejected synchronously', async () => {
@@ -548,6 +752,33 @@ describe('SessionComposer', () => {
     expect(document.body.querySelector('button[aria-label="Add custom composer ability"]')).toBeNull()
   })
 
+  it('shows a clear error when an attached image is too large', async () => {
+    const onSend = vi.fn(() => true)
+    renderComposer({ onSend })
+
+    const input = document.body.querySelector('input[type="file"]') as HTMLInputElement | null
+    expect(input).not.toBeNull()
+    Object.defineProperty(input, 'files', {
+      configurable: true,
+      value: [fileWithSize('huge-chat-image.png', 'image/png', MAX_MESSAGE_IMAGE_BYTES + (5 * 1024 * 1024))],
+    })
+
+    flushSync(() => {
+      input?.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+
+    expect(document.body.querySelector('.composer-image-error')?.textContent).toContain(
+      `Image too large: huge-chat-image.png is 35.0 MB. Maximum is ${MAX_MESSAGE_IMAGE_SIZE_MB} MB per image.`,
+    )
+    expect(document.body.querySelector('.composer-attachment')).toBeNull()
+
+    setDraftText('Try to send text only')
+    flushSync(() => {
+      findButtonByLabel('Send').click()
+    })
+    expect(onSend).toHaveBeenCalledWith({ text: 'Try to send text only', images: undefined })
+  })
+
   it('configures the quick skill slot from the skills picker', async () => {
     renderComposer()
 
@@ -559,6 +790,37 @@ describe('SessionComposer', () => {
     })
 
     expect(composerSkillSlotsMock.setPrimarySkillName).toHaveBeenCalledWith('/create-quests')
+  })
+
+  it('opens the insert skills picker from the mobile composer', async () => {
+    renderComposer({ variant: 'mobile' })
+
+    expect(document.body.querySelector('[data-testid="skills-picker"]')?.getAttribute('data-visible')).toBe('false')
+
+    flushSync(() => {
+      findButtonByLabel('Insert skill').click()
+    })
+
+    expect(document.body.querySelector('[data-testid="skills-picker"]')?.getAttribute('data-visible')).toBe('true')
+    expect(findButtonByLabel('Insert skill').getAttribute('aria-pressed')).toBe('true')
+  })
+
+  it('keeps selected mobile ability styles after the transparent mobile reset', async () => {
+    const fs = (process as typeof process & {
+      getBuiltinModule?: (id: 'fs') => { readFileSync: (filePath: string, encoding: BufferEncoding) => string }
+    }).getBuiltinModule?.('fs')
+    if (!fs) {
+      throw new Error('Node fs builtin is unavailable in this test environment')
+    }
+    const css = fs.readFileSync(`${process.cwd()}/src/index.css`, 'utf8')
+    const resetIndex = css.indexOf('.hervald-session-composer--mobile .composer-add-btn,')
+    const activeIndex = css.indexOf(
+      '.hervald-session-composer--mobile .composer-row--mobile .composer-ability-btn.composer-ability-btn--active',
+    )
+
+    expect(resetIndex).toBeGreaterThanOrEqual(0)
+    expect(activeIndex).toBeGreaterThan(resetIndex)
+    expect(css.slice(activeIndex, activeIndex + 500)).toContain('background: var(--hv-bg-raised)')
   })
 
   it('applies the configured quick skill slot to the draft without losing context', async () => {

@@ -13,6 +13,7 @@ import type { CommanderChannelBindingStore } from '../../channels/store.js'
 import type { ProviderSessionContext } from '../../agents/providers/provider-session-context.js'
 import type { ActionPolicyGate } from '../../policies/action-policy-gate.js'
 import type { WorkspaceResolverCapability } from '../../workspace/capability.js'
+import type { ChannelMessageIdempotencyLedger } from '../channel-idempotency-ledger.js'
 import type {
   CommanderHeartbeatManager,
   CommanderHeartbeatConfig,
@@ -80,6 +81,7 @@ export interface CommandersRouterOptions {
   channelReplyDispatchers?: Partial<Record<CommanderChannelMeta['provider'], CommanderChannelReplyDispatcher>>
   surfaceBindingStore?: ChannelSurfaceBindingStore
   channelBindingStore?: CommanderChannelBindingStore
+  channelMessageIdempotencyLedger?: ChannelMessageIdempotencyLedger
   actionPolicyGate?: ActionPolicyGate
   getWorkspaceResolver?: () => WorkspaceResolverCapability | undefined
 }
@@ -201,6 +203,7 @@ export interface CommanderRoutesContext {
   conversationStore: ConversationStore
   surfaceBindingStore: ChannelSurfaceBindingStore
   channelBindingStore: CommanderChannelBindingStore
+  channelMessageIdempotencyLedger: ChannelMessageIdempotencyLedger
   questStore: QuestStore
   ghTasksFactory: (repo: string) => Pick<GhTasks, 'readTask'>
   heartbeatLog: HeartbeatLog
@@ -247,6 +250,7 @@ export interface CommanderRoutesContext {
   }) => Promise<
     | {
       ok: true
+      conversationId: string
       provider: CommanderChannelMeta['provider']
       sessionKey: string
       lastRoute: CommanderLastRoute

@@ -1,9 +1,10 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { WebSocket } from 'ws'
 import { CommanderSessionStore, type CommanderSession } from '../../commanders/store'
+import { createCommanderTranscriptAppender } from '../../commanders/transcripts'
 import { ActionPolicyGate } from '../../policies/action-policy-gate'
 import { ApprovalCoordinator } from '../../policies/pending-store'
 import { PolicyStore } from '../../policies/store'
@@ -72,6 +73,28 @@ async function createReadyCodexProviderAuthStore(scopeId = 'api-key') {
   }
 }
 
+async function createReadyCodexHome() {
+  const dir = await mkdtemp(join(tmpdir(), 'hammurabi-codex-home-'))
+  await writeFile(
+    join(dir, 'auth.json'),
+    JSON.stringify({
+      OPENAI_API_KEY: null,
+      tokens: {
+        access_token: 'test-codex-access-token',
+      },
+      last_refresh: '2026-01-01T00:00:00.000Z',
+    }),
+    'utf8',
+  )
+
+  return {
+    dir,
+    cleanup: async () => {
+      await rm(dir, { recursive: true, force: true })
+    },
+  }
+}
+
 function buildCodexThreadReadResult(item: Record<string, unknown>) {
   return {
     thread: {
@@ -87,14 +110,38 @@ function buildCodexThreadReadResult(item: Record<string, unknown>) {
 }
 
 describe("stream sessions", () => {
+  let codexHome: Awaited<ReturnType<typeof createReadyCodexHome>> | null = null
+  let originalCodexHome: string | undefined
+  let originalOpenAiApiKey: string | undefined
+
   function installMockProcess() {
       const mock = createMockChildProcess()
       mockedSpawn.mockReturnValue(mock.cp as never)
       return mock
     }
 
-  afterEach(() => {
+  beforeEach(async () => {
+      originalCodexHome = process.env.CODEX_HOME
+      originalOpenAiApiKey = process.env.OPENAI_API_KEY
+      codexHome = await createReadyCodexHome()
+      process.env.CODEX_HOME = codexHome.dir
+      delete process.env.OPENAI_API_KEY
+    })
+
+  afterEach(async () => {
       mockedSpawn.mockRestore()
+      if (originalCodexHome === undefined) {
+        delete process.env.CODEX_HOME
+      } else {
+        process.env.CODEX_HOME = originalCodexHome
+      }
+      if (originalOpenAiApiKey === undefined) {
+        delete process.env.OPENAI_API_KEY
+      } else {
+        process.env.OPENAI_API_KEY = originalOpenAiApiKey
+      }
+      await codexHome?.cleanup()
+      codexHome = null
     })
 
   it('creates remote codex stream sessions over ssh', async () => {
@@ -556,6 +603,7 @@ describe("stream sessions", () => {
       const sidecar = installMockCodexSidecar()
       const workDir = await mkdtemp(join(tmpdir(), 'hammurabi-commander-codex-jsonl-'))
       const sessionStorePath = join(workDir, 'stream-sessions.json')
+      const commanderTranscriptDir = join(workDir, 'data', 'commander')
       const originalDataDir = process.env.HAMMURABI_DATA_DIR
       const originalCommanderDataDir = process.env.COMMANDER_DATA_DIR
       process.env.HAMMURABI_DATA_DIR = join(workDir, 'data')
@@ -567,6 +615,8 @@ describe("stream sessions", () => {
       try {
         server = await startServer({
           autoRotateEntryThreshold: 1,
+          commanderDataDir: commanderTranscriptDir,
+          commanderTranscriptAppender: createCommanderTranscriptAppender(commanderTranscriptDir),
           sessionStorePath,
         })
 
@@ -809,7 +859,7 @@ describe("stream sessions", () => {
         expect(await sessionResponse.json()).toMatchObject({
           name: 'codex-rest-send',
           completed: false,
-          status: 'running',
+          status: 'active',
           agentType: 'codex',
         })
 
@@ -1498,7 +1548,7 @@ describe("stream sessions", () => {
           expect(await sessionResponse.json()).toMatchObject({
             name: 'codex-sidecar-close',
             completed: false,
-            status: 'running',
+            status: 'active',
           })
         })
 
@@ -1695,7 +1745,7 @@ describe("stream sessions", () => {
         expect(await sessionB.json()).toMatchObject({
           name: 'codex-isolation-b',
           completed: false,
-          status: 'running',
+          status: 'active',
         })
 
         const sessionA = await fetch(`${server.baseUrl}/api/agents/sessions/codex-isolation-a`, {
@@ -1705,7 +1755,7 @@ describe("stream sessions", () => {
         expect(await sessionA.json()).toMatchObject({
           name: 'codex-isolation-a',
           completed: false,
-          status: 'running',
+          status: 'active',
         })
 
         wsA.close()
@@ -1910,7 +1960,7 @@ describe("stream sessions", () => {
           expect(sessionResponse.status).toBe(200)
           expect(await sessionResponse.json()).toMatchObject({
             completed: false,
-            status: 'running',
+            status: 'active',
           })
         })
 
@@ -3638,11 +3688,11 @@ describe("stream sessions", () => {
         await new Promise((resolve) => setTimeout(resolve, 50))
 
         const wsUrl = server.baseUrl.replace('http://', 'ws://') +
-          '/api/agents/sessions/codex-usage-notifications/ws?api_key=test-key'
-        const ws = new WebSocket(wsUrl)
+          '/api/agents/sessions/codex-usage-notifications/ws'
+        const ws = new WebSocket(wsUrl, { headers: { 'x-hammurabi-api-key': 'test-key' } })
         const replayPromise = new Promise<{
           type: string
-          events: Array<{ type?: string; schemaVersion?: number; ev?: { type?: string; data?: unknown }; source?: unknown }>
+          events?: Array<{ type?: string; schemaVersion?: number; ev?: { type?: string; data?: unknown }; source?: unknown }>
           envelopes?: Array<{ schemaVersion?: number; ev?: { type?: string; data?: unknown }; source?: unknown }>
           usage: { inputTokens: number; outputTokens: number; costUsd: number }
         }>((resolve) => {
@@ -3653,7 +3703,7 @@ describe("stream sessions", () => {
               envelopes?: Array<{ schemaVersion?: number; ev?: { type?: string; data?: unknown }; source?: unknown }>
               usage?: { inputTokens: number; outputTokens: number; costUsd: number }
             }
-            if (parsed.type === 'replay' && parsed.events && parsed.usage) {
+            if (parsed.type === 'replay' && parsed.envelopes && parsed.usage) {
               resolve({
                 type: parsed.type,
                 events: parsed.events,
@@ -3675,7 +3725,8 @@ describe("stream sessions", () => {
           outputTokens: 33,
           costUsd: 0.11,
         })
-        expect(replay.events).toEqual([
+        expect(replay.events).toBeUndefined()
+        expect(replay.envelopes).toEqual([
           expect.objectContaining({
             schemaVersion: 2,
           }),
@@ -4023,7 +4074,7 @@ describe("stream sessions", () => {
       }
     })
 
-  it('accepts requestId=0 on /codex-approvals/:requestId as a parseable request id', async () => {
+  it('does not expose the legacy agents Codex approval decision route', async () => {
       const sidecar = installMockCodexSidecar()
       const server = await startServer()
 
@@ -4043,7 +4094,32 @@ describe("stream sessions", () => {
         })
         expect(createResponse.status).toBe(201)
 
-        const approveResponse = await fetch(
+        sidecar.setThreadReadResult(buildCodexThreadReadResult({
+          id: 'cmd-policy-owned-approval',
+          type: 'commandExecution',
+          command: 'gog gmail send --to matt.feroz@example.com --subject "Need approval"',
+        }))
+
+        sidecar.emitServerRequest(905, 'item/commandExecution/requestApproval', {
+          threadId: 'thread-1',
+          turnId: 'turn-policy-owned',
+          itemId: 'cmd-policy-owned-approval',
+          reason: 'outbound send requires approval',
+        })
+
+        let pendingApprovalId = ''
+        await vi.waitFor(async () => {
+          const approvals = await server.approvalCoordinator.listPending()
+          expect(approvals).toHaveLength(1)
+          pendingApprovalId = approvals[0].id
+          expect(approvals[0]).toEqual(expect.objectContaining({
+            actionId: 'send-email',
+            sessionId: 'codex-approval-zero',
+            source: 'codex',
+          }))
+        })
+
+        const legacyResponse = await fetch(
           `${server.baseUrl}/api/agents/sessions/codex-approval-zero/codex-approvals/0`,
           {
             method: 'POST',
@@ -4054,24 +4130,34 @@ describe("stream sessions", () => {
             body: JSON.stringify({ decision: 'accept' }),
           },
         )
-        expect(approveResponse.status).toBe(404)
-        const body = await approveResponse.json() as { error: string }
-        expect(body.error).not.toContain('Invalid Codex approval request id')
+        expect(legacyResponse.status).toBe(404)
+        expect(sidecar.getResponseById(905)).toBeUndefined()
+        expect(await server.approvalCoordinator.listPending()).toEqual([
+          expect.objectContaining({ id: pendingApprovalId }),
+        ])
 
-        const malformedResponse = await fetch(
-          `${server.baseUrl}/api/agents/sessions/codex-approval-zero/codex-approvals/0abc`,
-          {
-            method: 'POST',
-            headers: {
-              ...AUTH_HEADERS,
-              'content-type': 'application/json',
-            },
-            body: JSON.stringify({ decision: 'accept' }),
+        const decideResponse = await fetch(`${server.baseUrl}/api/approval/decide`, {
+          method: 'POST',
+          headers: {
+            ...AUTH_HEADERS,
+            'content-type': 'application/json',
           },
-        )
-        expect(malformedResponse.status).toBe(400)
-        const malformedBody = await malformedResponse.json() as { error: string }
-        expect(malformedBody.error).toBe('Invalid Codex approval request id')
+          body: JSON.stringify({
+            id: pendingApprovalId,
+            decision: 'approve',
+          }),
+        })
+        expect(decideResponse.status).toBe(200)
+        expect(await decideResponse.json()).toEqual({
+          ok: true,
+          id: pendingApprovalId,
+          decision: 'approve',
+        })
+
+        await vi.waitFor(() => {
+          const response = sidecar.getResponseById(905)
+          expect((response?.result as { decision?: string } | undefined)?.decision).toBe('accept')
+        })
       } finally {
         await sidecar.closeServer()
         await server.close()

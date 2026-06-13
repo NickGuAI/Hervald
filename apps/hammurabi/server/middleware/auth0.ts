@@ -177,10 +177,6 @@ export function authUserHasRequiredPermissions(
     return false
   }
 
-  if (user.id === 'internal' && user.email === 'system') {
-    return true
-  }
-
   const availablePermissions = new Set([
     ...auth0PermissionsFromUser(user),
     ...apiKeyScopesFromUser(user),

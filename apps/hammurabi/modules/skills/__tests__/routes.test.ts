@@ -214,7 +214,7 @@ describe('skills route discovery', () => {
     }
   })
 
-  it('requires skills scopes for API keys', async () => {
+  it('requires skills:read API key scope for discovery', async () => {
     const root = await makeTempRoot()
     const directRoot = path.join(root, 'direct-skills')
     await mkdir(path.join(directRoot, 'wide-research'), { recursive: true })
@@ -237,7 +237,7 @@ describe('skills route discovery', () => {
     const server = await startServer({
       apiKeyStore: makeApiKeyStore({
         'skills-read-key': ['skills:read'],
-        'skills-write-key': ['skills:write'],
+        'agents-read-key': ['agents:read'],
         'commander-read-key': ['commanders:read'],
       }),
       verifyAuth0Token: async () => {
@@ -263,7 +263,36 @@ describe('skills route discovery', () => {
       })
       expect(commanderScopedResponse.status).toBe(403)
 
-      const readOnlyWriteResponse = await fetch(`${server.baseUrl}/api/skills/invalid:name/config`, {
+      const nonSkillScopedDiscoveryResponse = await fetch(`${server.baseUrl}/api/skills`, {
+        headers: {
+          'x-hammurabi-api-key': 'agents-read-key',
+        },
+      })
+      expect(nonSkillScopedDiscoveryResponse.status).toBe(403)
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('does not expose page-only config or history endpoints', async () => {
+    const server = await startServer({
+      apiKeyStore: makeApiKeyStore({
+        'skills-read-key': ['skills:read'],
+      }),
+      verifyAuth0Token: async () => {
+        throw new Error('unexpected Auth0 verification')
+      },
+    })
+
+    try {
+      const configReadResponse = await fetch(`${server.baseUrl}/api/skills/wide-research/config`, {
+        headers: {
+          'x-hammurabi-api-key': 'skills-read-key',
+        },
+      })
+      expect(configReadResponse.status).toBe(404)
+
+      const configWriteResponse = await fetch(`${server.baseUrl}/api/skills/wide-research/config`, {
         method: 'PUT',
         headers: {
           'content-type': 'application/json',
@@ -271,17 +300,14 @@ describe('skills route discovery', () => {
         },
         body: JSON.stringify({ fields: {} }),
       })
-      expect(readOnlyWriteResponse.status).toBe(403)
+      expect(configWriteResponse.status).toBe(404)
 
-      const writeScopedResponse = await fetch(`${server.baseUrl}/api/skills/invalid:name/config`, {
-        method: 'PUT',
+      const historyResponse = await fetch(`${server.baseUrl}/api/skills/wide-research/history`, {
         headers: {
-          'content-type': 'application/json',
-          'x-hammurabi-api-key': 'skills-write-key',
+          'x-hammurabi-api-key': 'skills-read-key',
         },
-        body: JSON.stringify({ fields: {} }),
       })
-      expect(writeScopedResponse.status).toBe(400)
+      expect(historyResponse.status).toBe(404)
     } finally {
       await server.close()
     }

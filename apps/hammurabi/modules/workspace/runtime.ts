@@ -1,6 +1,7 @@
-import path from 'node:path'
-import { createMachineRegistryStore } from '../agents/machines.js'
-import { resolveHammurabiDataDir } from '../data-dir.js'
+import {
+  createMachineRegistryStore,
+  defaultMachineRegistryStorePath,
+} from '../agents/machines.js'
 import { createWorkspaceRouter } from './routes.js'
 import { WorkspaceResolver } from './capability.js'
 import type {
@@ -10,7 +11,7 @@ import type {
 
 export function createWorkspaceRuntime(context: ModuleRuntimeContext): ModuleRouteRegistration {
   const { capabilities, options } = context
-  const machineDescriptor = createMachineRegistryStore(path.join(resolveHammurabiDataDir(), 'machines.json'))
+  const machineDescriptor = createMachineRegistryStore(defaultMachineRegistryStorePath())
   const resolver = new WorkspaceResolver({
     machineDescriptor,
     conversationStore: capabilities.consume('commanders.conversations', 'workspace'),
@@ -18,7 +19,7 @@ export function createWorkspaceRuntime(context: ModuleRuntimeContext): ModuleRou
     sessionsInterface: capabilities.consume('agents.sessions-interface', 'workspace'),
   })
 
-  capabilities.provide('agents.machineDescriptor', 'agents', machineDescriptor)
+  capabilities.provide('workspace.machineDescriptor', 'workspace', machineDescriptor)
   capabilities.provide('workspace.resolver', 'workspace', resolver)
 
   return {

@@ -1,11 +1,10 @@
-import { appendFile, mkdir, readFile } from 'node:fs/promises'
+import { readFile } from 'node:fs/promises'
 import * as path from 'node:path'
 import {
   migrateProviderContext,
   migratedProviderContextChanged,
   sanitizeProviderContextForPersistence,
 } from '../providers/provider-context-migration.js'
-import { resolveCommanderDataDir } from '../../commanders/paths.js'
 import { writeJsonFileAtomically } from '../../json-file.js'
 import { resolveModuleDataDir } from '../../data-dir.js'
 import {
@@ -33,6 +32,7 @@ import {
 import type {
   AnySession,
   CompletedSession,
+  CommanderTranscriptAppender,
   ExitedStreamSessionState,
   MachineConfig,
   PersistedSessionsState,
@@ -108,8 +108,20 @@ export function buildTranscriptMeta(session: StreamSession): TranscriptMeta {
   }
 }
 
+const lastTranscriptMetaJsonBySession = new WeakMap<StreamSession, string>()
+
 export function writeTranscriptMetaForSession(session: StreamSession): void {
-  void writeSessionMeta(session.name, buildTranscriptMeta(session)).catch((error) => {
+  const meta = buildTranscriptMeta(session)
+  const serialized = JSON.stringify(meta)
+  if (lastTranscriptMetaJsonBySession.get(session) === serialized) {
+    return
+  }
+  lastTranscriptMetaJsonBySession.set(session, serialized)
+
+  void writeSessionMeta(session.name, meta).catch((error) => {
+    if (lastTranscriptMetaJsonBySession.get(session) === serialized) {
+      lastTranscriptMetaJsonBySession.delete(session)
+    }
     warnTranscriptStoreFailure('write transcript meta', session.name, error)
   })
 }
@@ -124,10 +136,10 @@ export function appendGenericTranscriptEvent(session: StreamSession, event: Stre
 export function appendCommanderTranscriptEvent(
   session: StreamSession,
   event: StreamJsonEvent,
-  queues: Map<string, Promise<void>>,
+  transcriptAppender: CommanderTranscriptAppender | undefined,
   extractClaudeSessionId: (event: StreamJsonEvent) => string | undefined,
 ): void {
-  if (session.sessionType !== 'commander' || session.creator.kind !== 'commander') {
+  if (!transcriptAppender || session.sessionType !== 'commander' || session.creator.kind !== 'commander') {
     return
   }
 
@@ -144,37 +156,10 @@ export function appendCommanderTranscriptEvent(
     return
   }
 
-  let line: string
-  try {
-    line = `${JSON.stringify(event)}\n`
-  } catch {
-    return
-  }
-
-  const transcriptPath = path.resolve(
-    resolveCommanderDataDir(),
+  transcriptAppender.appendEvent({
     commanderId,
-    'sessions',
-    `${transcriptId}.jsonl`,
-  )
-
-  const previous = queues.get(transcriptPath) ?? Promise.resolve()
-  const next = previous
-    .catch(() => undefined)
-    .then(async () => {
-      await mkdir(path.dirname(transcriptPath), { recursive: true })
-      await appendFile(transcriptPath, line, 'utf8')
-    })
-    .catch((error) => {
-      const message = error instanceof Error ? error.message : String(error)
-      console.warn(`[agents] Failed to append commander transcript "${transcriptPath}": ${message}`)
-    })
-
-  queues.set(transcriptPath, next)
-  void next.finally(() => {
-    if (queues.get(transcriptPath) === next) {
-      queues.delete(transcriptPath)
-    }
+    transcriptId,
+    event,
   })
 }
 

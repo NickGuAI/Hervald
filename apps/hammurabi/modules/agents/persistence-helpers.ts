@@ -17,11 +17,12 @@
  * module-local state rather than leak out as a `persistSessionStateQueue`
  * ref through the context.
  */
-import { readFile } from 'node:fs/promises'
 import {
   COMMAND_ROOM_COMPLETED_SESSION_TTL_MS,
+  MAX_STREAM_EVENTS,
+  RESTORED_REPLAY_TURN_LIMIT,
 } from './constants.js'
-import { buildDefaultCommanderConversationId } from '../commanders/store.js'
+import { migrateLegacyPersistedSessionSources } from './legacy-session-source-migration.js'
 import {
   buildPersistedEntryFromExitedSession,
   getWorldAgentStatus,
@@ -36,6 +37,7 @@ import {
   clearCodexTurnWatchdog,
   markCodexTurnHealthy,
 } from './adapters/codex/helpers.js'
+import { pruneSessionTranscript } from './transcript-store.js'
 import type { MachineRegistryStore } from './machines.js'
 import { getProvider } from './providers/registry.js'
 import type {
@@ -146,6 +148,7 @@ export function createPersistenceHelpers(
   // swallow before `.then` prevents a rejected previous write from
   // poisoning every subsequent call.
   let persistSessionStateQueue: Promise<void> = Promise.resolve()
+  let transcriptPruneQueue: Promise<void> = Promise.resolve()
 
   function isBenignPersistedSessionWriteError(error: unknown): boolean {
     return (error as NodeJS.ErrnoException | null)?.code === 'ENOENT'
@@ -172,7 +175,10 @@ export function createPersistenceHelpers(
   }
 
   async function flushPersistedSessionsWrite(): Promise<void> {
-    await persistSessionStateQueue.catch(() => undefined)
+    await Promise.all([
+      persistSessionStateQueue.catch(() => undefined),
+      transcriptPruneQueue.catch(() => undefined),
+    ])
   }
 
   async function readPersistedSessionsState(): Promise<PersistedSessionsState> {
@@ -181,12 +187,7 @@ export function createPersistenceHelpers(
 
   async function restorePersistedSessions(): Promise<void> {
     const persisted = await readPersistedSessionsStateFromStore(sessionStorePath)
-    const migrationSourceEntries = await readStoredSessionMigrationEntries(sessionStorePath)
-    const migratedSessions = persisted.sessions.map((entry) =>
-      migratePersistedSessionEntry(entry, migrationSourceEntries.get(entry.name)),
-    )
-    const migratedState = { sessions: migratedSessions }
-    const changed = JSON.stringify(migratedState) !== JSON.stringify(persisted)
+    const { state: migratedState, changed } = await migrateLegacyPersistedSessionSources(sessionStorePath, persisted)
     if (changed) {
       await writePersistedSessionsStateToStore(sessionStorePath, migratedState, { backup: true })
     }
@@ -201,6 +202,22 @@ export function createPersistenceHelpers(
       applyUsageEvent: applyStreamUsageEvent,
       restoreProviderSession,
     })
+  }
+
+  function scheduleTranscriptPrune(sessionName: string): void {
+    transcriptPruneQueue = transcriptPruneQueue
+      .catch(() => undefined)
+      .then(async () => {
+        try {
+          await pruneSessionTranscript(sessionName, {
+            maxTurns: RESTORED_REPLAY_TURN_LIMIT,
+            maxEvents: MAX_STREAM_EVENTS,
+          })
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error)
+          console.warn(`[agents] Failed to prune transcript for "${sessionName}": ${message}`)
+        }
+      })
   }
 
   function getStaleCronSessionCandidates(nowMs: number = Date.now()): SessionPruneCandidate[] {
@@ -254,6 +271,7 @@ export function createPersistenceHelpers(
       }
       void teardownProviderSession(session, 'Pruning stale automation session')
       sessions.delete(candidate.name)
+      scheduleTranscriptPrune(candidate.name)
     }
 
     schedulePersistedSessionsWrite()
@@ -385,12 +403,14 @@ export function createPersistenceHelpers(
         }
         await teardownProviderSession(liveSession, 'Pruning stale non-human session')
         sessions.delete(candidate.name)
+        scheduleTranscriptPrune(candidate.name)
         continue
       }
 
       if (exitedStreamSessions.has(candidate.name)) {
         exitedStreamSessions.delete(candidate.name)
         completedSessions.delete(candidate.name)
+        scheduleTranscriptPrune(candidate.name)
       }
     }
 
@@ -409,158 +429,4 @@ export function createPersistenceHelpers(
     getStaleNonHumanSessionCandidates,
     pruneStaleNonHumanSessions,
   }
-}
-
-function asMigrationRecord(value: unknown): Record<string, unknown> | null {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : null
-}
-
-function parseOptionalTrimmedString(value: unknown): string | undefined {
-  return typeof value === 'string' && value.trim().length > 0
-    ? value.trim()
-    : undefined
-}
-
-function inferPersistedSessionSource(
-  sessionName: string,
-  rawEntry?: Record<string, unknown>,
-): { creator: SessionCreator; sessionType: SessionType; spawnedBy?: string } {
-  const parentSession = parseOptionalTrimmedString(rawEntry?.parentSession)
-    ?? parseOptionalTrimmedString(rawEntry?.spawnedBy)
-  if (sessionName.startsWith('command-room-')) {
-    return {
-      creator: { kind: 'cron', id: '<unknown-cron-task>' },
-      sessionType: 'cron',
-    }
-  }
-  if (sessionName.startsWith('automation-')) {
-    return {
-      creator: { kind: 'automation', id: '<unknown-automation>' },
-      sessionType: 'automation',
-    }
-  }
-  if (sessionName.startsWith('sentinel-')) {
-    return {
-      creator: { kind: 'sentinel', id: '<unknown-sentinel>' },
-      sessionType: 'sentinel',
-    }
-  }
-  if (sessionName.startsWith('worker-') || parentSession) {
-    return {
-      creator: {
-        kind: 'commander',
-        id: parentSession ? commanderIdFromSessionName(parentSession) ?? 'unknown' : 'unknown',
-      },
-      sessionType: 'worker',
-      ...(parentSession ? { spawnedBy: parentSession } : {}),
-    }
-  }
-  if (sessionName.startsWith('commander-')) {
-    return {
-      creator: {
-        kind: 'commander',
-        id: commanderIdFromSessionName(sessionName) ?? sessionName,
-      },
-      sessionType: 'commander',
-    }
-  }
-
-  return {
-    creator: { kind: 'human', id: '<unknown-user>' },
-    sessionType: 'worker',
-  }
-}
-
-function commanderIdFromSessionName(sessionName: string | null | undefined): string | null {
-  const normalized = sessionName?.trim() ?? ''
-  if (!normalized.startsWith('commander-')) {
-    return null
-  }
-
-  const commanderId = normalized.slice('commander-'.length).trim()
-  return commanderId.length > 0 ? commanderId : null
-}
-
-function migratePersistedSessionEntry(
-  entry: PersistedStreamSession,
-  rawEntry?: Record<string, unknown>,
-): PersistedStreamSession {
-  const inferred = inferPersistedSessionSource(entry.name, rawEntry)
-  const next: PersistedStreamSession = { ...entry }
-  const changedFields: string[] = []
-
-  if (!next.sessionType) {
-    next.sessionType = inferred.sessionType
-    changedFields.push('sessionType')
-  }
-
-  if (!next.creator) {
-    next.creator = inferred.creator
-    changedFields.push('creator')
-  }
-
-  if (!next.spawnedBy && inferred.spawnedBy) {
-    next.spawnedBy = inferred.spawnedBy
-    changedFields.push('spawnedBy')
-  }
-
-  if (
-    !next.conversationId &&
-    next.sessionType === 'commander' &&
-    next.creator?.kind === 'commander' &&
-    typeof next.creator.id === 'string' &&
-    next.creator.id.trim().length > 0
-  ) {
-    next.conversationId = buildDefaultCommanderConversationId(next.creator.id.trim())
-    changedFields.push('conversationId')
-  }
-
-  if (changedFields.length > 0) {
-    console.info(
-      `[agents][migration] Backfilled persisted session "${entry.name}": ${changedFields.join(', ')}`,
-    )
-  }
-
-  return next
-}
-
-async function readStoredSessionMigrationEntries(
-  sessionStorePath: string,
-): Promise<Map<string, Record<string, unknown>>> {
-  let raw: string
-  try {
-    raw = await readFile(sessionStorePath, 'utf8')
-  } catch {
-    return new Map()
-  }
-
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(raw) as unknown
-  } catch {
-    return new Map()
-  }
-
-  if (typeof parsed !== 'object' || parsed === null || !Array.isArray((parsed as { sessions?: unknown[] }).sessions)) {
-    return new Map()
-  }
-
-  const entriesByName = new Map<string, Record<string, unknown>>()
-  for (const rawEntry of (parsed as { sessions: unknown[] }).sessions) {
-    const entry = asMigrationRecord(rawEntry)
-    if (!entry) {
-      continue
-    }
-
-    const name = parseOptionalTrimmedString(entry.name)
-    if (!name) {
-      continue
-    }
-
-    entriesByName.set(name, entry)
-  }
-
-  return entriesByName
 }

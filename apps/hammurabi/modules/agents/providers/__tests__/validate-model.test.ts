@@ -21,6 +21,20 @@ describe('validateModelForAgentType', () => {
     expect(defaultCodexModels).toEqual(['gpt-5.5'])
   })
 
+  it('publishes current Claude Fable and Opus model ids', () => {
+    const claudeModelIds = getProvider('claude')?.availableModels.map((option) => option.id)
+
+    expect(claudeModelIds).toEqual(expect.arrayContaining([
+      'claude-fable-5',
+      'claude-opus-4-8',
+      'claude-sonnet-4-6',
+      'claude-opus-4-6',
+      'claude-haiku-4-5-20251001',
+    ]))
+    expect(validateModelForAgentType('claude', 'claude-fable-5')).toEqual({ ok: true })
+    expect(validateModelForAgentType('claude', 'claude-opus-4-8')).toEqual({ ok: true })
+  })
+
   it('rejects cross-provider model ids and returns validIds', () => {
     expect(validateModelForAgentType('codex', 'claude-opus-4-6')).toEqual({
       ok: false,

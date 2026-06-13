@@ -730,6 +730,7 @@ export async function sendTextToCodexSession(
     type: 'user',
     ...(options.userEventSubtype ? { subtype: options.userEventSubtype } : {}),
     ...(options.displayText !== undefined ? { displayText: options.displayText.trim() } : {}),
+    ...(options.clientSendId ? { clientSendId: options.clientSendId } : {}),
     message: { role: 'user', content: buildCodexUserEventContent(text, images) },
   } as unknown as StreamJsonEvent
   deps.appendEvent(session, userEvent)
@@ -766,6 +767,7 @@ export function createCodexSessionAdapter(
           text,
           displayText: options?.displayText,
           images: normalizedImages,
+          clientSendId: options?.clientSendId,
           priority: 'normal',
         })
         return { ok: true, delivered: 'queued', message, position }

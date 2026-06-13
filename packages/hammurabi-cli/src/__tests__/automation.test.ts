@@ -94,6 +94,28 @@ describe('runAutomationCli', () => {
     )
   })
 
+  it('fails list when the server returns a malformed success response', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response('', {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    )
+    const stdout = createBufferWriter()
+    const stderr = createBufferWriter()
+
+    const exitCode = await runAutomationCli(['list'], {
+      fetchImpl,
+      readConfig: async () => config,
+      stdout: stdout.writer,
+      stderr: stderr.writer,
+    })
+
+    expect(exitCode).toBe(1)
+    expect(stdout.read()).toBe('')
+    expect(stderr.read()).toContain('Request failed (200): Malformed JSON response from Hammurabi API')
+  })
+
   it('creates a schedule automation with unified fields', async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async (input) => {
       const url = String(input)
@@ -194,6 +216,41 @@ describe('runAutomationCli', () => {
     })
   })
 
+  it('fails create when the server returns no automation id', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response('', {
+        status: 201,
+        headers: { 'content-type': 'application/json' },
+      }),
+    )
+    const stdout = createBufferWriter()
+    const stderr = createBufferWriter()
+
+    const exitCode = await runAutomationCli(
+      [
+        'create',
+        '--trigger',
+        'schedule',
+        '--name',
+        'daily-briefing',
+        '--instruction',
+        '/daily-briefing',
+        '--schedule',
+        '27 6 * * *',
+      ],
+      {
+        fetchImpl,
+        readConfig: async () => config,
+        stdout: stdout.writer,
+        stderr: stderr.writer,
+      },
+    )
+
+    expect(exitCode).toBe(1)
+    expect(stdout.read()).toBe('')
+    expect(stderr.read()).toContain('Request failed (201): Malformed JSON response from Hammurabi API')
+  })
+
   it('creates a quest automation with an explicit trigger payload', async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(JSON.stringify({ id: 'auto-quest-1' }), {
@@ -273,9 +330,14 @@ describe('runAutomationCli', () => {
         timezone: 'America/New_York',
         enabled: true,
         parentCommanderId: 'cmd-1',
+        agentType: 'codex',
+        sessionType: 'stream',
+        workDir: '/home/builder/App',
+        permissionMode: 'default',
         skills: ['daily-briefing'],
         totalRuns: 4,
         totalCostUsd: 1.25,
+        nextRun: '2026-06-09T10:27:00.000Z',
       }), {
         status: 200,
         headers: { 'content-type': 'application/json' },
@@ -295,6 +357,12 @@ describe('runAutomationCli', () => {
     expect(output).toContain('Trigger: schedule')
     expect(output).toContain('Schedule: 27 6 * * *')
     expect(output).toContain('Commander: cmd-1')
+    expect(output).toContain('Enabled: true')
+    expect(output).toContain('Agent: codex')
+    expect(output).toContain('Session Type: stream')
+    expect(output).toContain('Work Dir: /home/builder/App')
+    expect(output).toContain('Permission Mode: default')
+    expect(output).toContain('Next Scheduled: 2026-06-09T10:27:00.000Z')
     expect(output).toContain('Skills: daily-briefing')
     expect(output).toContain('Total Runs: 4')
   })
@@ -361,12 +429,12 @@ describe('runAutomationCli', () => {
   })
 
   it('pause and resume patch automation status', async () => {
-    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async () => (
       new Response(JSON.stringify({ ok: true }), {
         status: 200,
         headers: { 'content-type': 'application/json' },
-      }),
-    )
+      })
+    ))
     const stdout = createBufferWriter()
 
     const commands: Array<[string, string]> = [

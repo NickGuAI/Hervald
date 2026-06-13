@@ -16,6 +16,9 @@ import type {
 import type { ClaudeEffortLevel } from '../claude-effort.js'
 import type { ClaudeMaxThinkingTokens } from '../claude-max-thinking-tokens.js'
 import type { QuestStore } from '../commanders/quest-store.js'
+import type { CommanderSessionStore } from '../commanders/store.js'
+import type { ConversationStore } from '../commanders/conversation-store.js'
+import type { CommanderSessionSeedParams } from '../commanders/memory/module.js'
 import type { GeminiTurnState } from './event-normalizers/gemini.js'
 import type { OpenCodeTurnState } from './event-normalizers/opencode.js'
 import type { ProviderId } from './adapters/provider-registry-types.js'
@@ -36,6 +39,11 @@ export interface SessionCreator {
   id?: string
 }
 
+export type AgentSessionProcessState = 'running' | 'exited' | 'none'
+export type AgentSessionTurnState = 'idle' | 'running' | 'blocked' | 'stale' | 'completed'
+export type AgentSessionConnectionState = 'connected' | 'disconnected' | 'not_applicable'
+export type AgentSessionResumeState = 'available' | 'unavailable'
+
 export interface AgentSession {
   name: string
   label?: string
@@ -55,6 +63,10 @@ export interface AgentSession {
   spawnedBy?: string
   spawnedWorkers?: string[]
   workerSummary?: WorkerSummary
+  processState?: AgentSessionProcessState
+  turnState?: AgentSessionTurnState
+  connectionState?: AgentSessionConnectionState
+  resumeState?: AgentSessionResumeState
   processAlive?: boolean
   hadResult?: boolean
   resumedFrom?: string
@@ -220,11 +232,13 @@ export interface SessionSendPayload {
   text: string
   displayText?: string
   images?: QueuedMessageImage[]
+  clientSendId?: string
 }
 
 export interface StreamDispatchOptions {
   userEventSubtype?: string
   displayText?: string
+  clientSendId?: string
 }
 
 export interface StreamSessionAdapter {
@@ -494,9 +508,27 @@ export interface AgentsRouterOptions {
   internalToken?: string
   getActionPolicyGate?: () => ActionPolicyGate | null
   getWorkspaceResolver?: () => WorkspaceResolverCapability | undefined
+  commanderSessionStore?: Pick<CommanderSessionStore, 'get' | 'list'>
+  commanderConversationStore?: Pick<ConversationStore, 'get' | 'listByCommander'>
+  buildCommanderSessionSeed?: (
+    params: Omit<CommanderSessionSeedParams, 'memoryBasePath'>,
+  ) => Promise<{ systemPrompt?: string; maxTurns?: number }>
+  getCommanderLabels?: () => Promise<Record<string, string>>
   commanderSessionStorePath?: string
+  commanderDataDir?: string
+  commanderTranscriptAppender?: CommanderTranscriptAppender
   questStore?: QuestStore
   providerAuthStore?: ProviderAuthStore
+}
+
+export interface CommanderTranscriptAppendInput {
+  commanderId: string
+  transcriptId: string
+  event: StreamJsonEvent
+}
+
+export interface CommanderTranscriptAppender {
+  appendEvent(input: CommanderTranscriptAppendInput): void
 }
 
 export interface AgentsRouterResult {

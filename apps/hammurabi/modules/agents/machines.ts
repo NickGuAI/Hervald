@@ -1,9 +1,10 @@
 import { execFile, spawn, type ChildProcess } from 'node:child_process'
-import { mkdir, readFile, stat, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, stat } from 'node:fs/promises'
 import { isIP } from 'node:net'
 import * as path from 'node:path'
 import { promisify } from 'node:util'
 import { resolveHammurabiDataDir } from '../data-dir.js'
+import { writeJsonFileAtomically } from '../json-file.js'
 import {
   DEFAULT_CLAUDE_ADAPTIVE_THINKING_MODE,
   getClaudeDisableAdaptiveThinkingEnvValue,
@@ -14,6 +15,7 @@ import {
   type ClaudeMaxThinkingTokens,
 } from '../claude-max-thinking-tokens.js'
 import type { WorkspaceCommandRunner } from '../workspace/index.js'
+import { APPROVAL_BRIDGE_TOKEN_ENV } from '../policies/approval-bridge-token.js'
 import { WORKSPACE_EXEC_MAX_BUFFER_BYTES } from './constants.js'
 import {
   migrateMachineEnvFiles,
@@ -68,6 +70,10 @@ export const CODEX_RUNTIME_INHERITED_ENV_KEYS = [
   ...ANTHROPIC_MODEL_ENV_KEYS,
   ...CODEX_RUNTIME_TELEMETRY_ENV_KEYS,
 ] as const
+
+export function defaultMachineRegistryStorePath(env: NodeJS.ProcessEnv = process.env): string {
+  return path.join(resolveHammurabiDataDir(env), 'machines.json')
+}
 
 export const CODEX_RUNTIME_DISABLED_TELEMETRY_ENV = {
   OTEL_SDK_DISABLED: 'true',
@@ -355,11 +361,10 @@ export function createMachineRegistryStore(machinesFilePath: string): MachineReg
     let validated = ensureDefaultLocalMachine(parseMachineRegistry({ machines }))
     const migrated = await migrateMachineEnvFiles(validated)
     validated = ensureDefaultLocalMachine(migrated.machines)
-    await mkdir(path.dirname(machinesFilePath), { recursive: true })
-    await writeFile(
+    await writeJsonFileAtomically(
       machinesFilePath,
-      `${JSON.stringify({ machines: validated }, null, 2)}\n`,
-      'utf8',
+      { machines: validated },
+      { trailingNewline: true },
     )
     invalidateMachineRegistryCache()
     return validated
@@ -520,7 +525,7 @@ export function buildSshDestination(machine: MachineConfig & { host: string }): 
 
 /**
  * Reverse-tunnels the EC2 approval daemon back to the remote machine and
- * propagates the internal token without exposing it on the command line or
+ * propagates the scoped approval bridge token without exposing it on the command line or
  * leaking it via shell history.
  *
  * When provided to `buildSshArgs`, the resulting SSH command gains:
@@ -530,7 +535,7 @@ export function buildSshDestination(machine: MachineConfig & { host: string }): 
  *      Hervald daemon. Binds remote loopback only; the daemon is not
  *      exposed on any other interface.
  *
- *   -o SendEnv=HAMMURABI_INTERNAL_TOKEN
+ *   -o SendEnv=HAMMURABI_APPROVAL_BRIDGE_TOKEN
  *      Propagates the token over SSH's environment channel. The token value
  *      stays in the client process env, not in argv or the bootstrap script.
  *
@@ -540,7 +545,7 @@ export function buildSshDestination(machine: MachineConfig & { host: string }): 
  */
 export interface ApprovalBridge {
   port: number | string
-  internalToken?: string
+  approvalBridgeToken?: string
 }
 
 function buildApprovalBridgeOptions(bridge: ApprovalBridge): string[] {
@@ -549,9 +554,9 @@ function buildApprovalBridgeOptions(bridge: ApprovalBridge): string[] {
     '-R',
     `127.0.0.1:${portStr}:127.0.0.1:${portStr}`,
   ]
-  const token = bridge.internalToken?.trim()
+  const token = bridge.approvalBridgeToken?.trim()
   if (token) {
-    args.push('-o', 'SendEnv=HAMMURABI_INTERNAL_TOKEN')
+    args.push('-o', `SendEnv=${APPROVAL_BRIDGE_TOKEN_ENV}`)
   }
   return args
 }

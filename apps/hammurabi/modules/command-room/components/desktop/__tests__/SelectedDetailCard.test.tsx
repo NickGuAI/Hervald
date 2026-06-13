@@ -67,4 +67,39 @@ describe('SelectedDetailCard', () => {
 
     expect(onDismiss).toHaveBeenCalledTimes(1)
   })
+
+  it('truncates long worker names and labels without losing the full text', async () => {
+    const longName = 'worker-with-a-very-long-generated-name-that-should-not-expand-the-selected-detail-card'
+    const longLabel = 'Deep research worker with an unusually verbose assignment label'
+
+    await render(
+      <SelectedDetailCard
+        worker={{
+          id: 'worker-long',
+          name: longName,
+          label: longLabel,
+          kind: 'worker',
+          state: 'running',
+        }}
+        onOpenWorkspace={vi.fn()}
+      />,
+    )
+
+    const name = document.querySelector('[data-testid="selected-worker-name"]') as HTMLDivElement | null
+    const label = document.querySelector('[data-testid="selected-worker-label"]') as HTMLDivElement | null
+
+    expect(name).not.toBeNull()
+    expect(label).not.toBeNull()
+    expect(name?.classList.contains('truncate')).toBe(true)
+    expect(label?.classList.contains('truncate')).toBe(true)
+    expect(name?.classList.contains('text-sm')).toBe(true)
+    expect(label?.classList.contains('text-xs')).toBe(true)
+    expect(name?.getAttribute('title')).toBe(longName)
+    expect(label?.getAttribute('title')).toBe(longLabel)
+    expect(name?.style.fontSize).toBe('')
+    expect(label?.style.fontSize).toBe('')
+    expect(name?.style.overflow).toBe('hidden')
+    expect(name?.style.textOverflow).toBe('ellipsis')
+    expect(name?.style.whiteSpace).toBe('nowrap')
+  })
 })

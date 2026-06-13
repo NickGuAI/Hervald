@@ -91,7 +91,7 @@ function resetHookMocks() {
     error: null,
   })
   mocks.useRevokeApiKey.mockReturnValue({
-    mutate: vi.fn(),
+    mutateAsync: vi.fn(),
     isPending: false,
     error: null,
   })
@@ -123,6 +123,27 @@ function resetHookMocks() {
     isPending: false,
     error: null,
   })
+}
+
+async function renderApiKeysPage() {
+  container = document.createElement('div')
+  document.body.appendChild(container)
+  root = createRoot(container)
+
+  await act(async () => {
+    root?.render(<ApiKeysPage />)
+    await Promise.resolve()
+  })
+}
+
+function findButton(label: string): HTMLButtonElement {
+  const button = Array.from(document.body.querySelectorAll('button')).find(
+    (candidate) => candidate.textContent?.trim() === label,
+  )
+  if (!(button instanceof HTMLButtonElement)) {
+    throw new Error(`Missing button: ${label}`)
+  }
+  return button
 }
 
 describe('ApiKeysPage MagicBento settings layout', () => {
@@ -258,5 +279,44 @@ describe('ApiKeysPage MagicBento settings layout', () => {
       })
     }
     expect(document.querySelector('img[alt="Mobile access pairing QR"]')).not.toBeNull()
+  })
+
+  it('requires modal confirmation before revoking an API key', async () => {
+    const revokeApiKey = vi.fn(async () => undefined)
+    mocks.useRevokeApiKey.mockReturnValue({
+      mutateAsync: revokeApiKey,
+      isPending: false,
+      error: null,
+    })
+
+    await renderApiKeysPage()
+
+    await act(async () => {
+      findButton('Revoke').click()
+      await Promise.resolve()
+    })
+
+    expect(document.body.textContent).toContain('Revoke API key?')
+    expect(document.body.textContent).toContain('Revoke "Telemetry Ingest"?')
+
+    await act(async () => {
+      findButton('Cancel').click()
+      await Promise.resolve()
+    })
+
+    expect(revokeApiKey).not.toHaveBeenCalled()
+    expect(document.body.textContent).not.toContain('Revoke "Telemetry Ingest"?')
+
+    await act(async () => {
+      findButton('Revoke').click()
+      await Promise.resolve()
+    })
+    await act(async () => {
+      findButton('Revoke key').click()
+      await Promise.resolve()
+    })
+
+    expect(revokeApiKey).toHaveBeenCalledWith('key-1')
+    expect(document.body.textContent).toContain('Revoked Telemetry Ingest.')
   })
 })

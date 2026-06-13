@@ -20,6 +20,10 @@ import {
   shellEscape,
 } from '../../machines.js'
 import type { ClaudePermissionMode } from '../../types.js'
+import {
+  APPROVAL_BRIDGE_TOKEN_ENV,
+  APPROVAL_BRIDGE_TOKEN_HEADER,
+} from '../../../policies/approval-bridge-token.js'
 
 const CLAUDE_APPEND_PROMPT_FILE_ARG = '__HAMMURABI_CLAUDE_APPEND_PROMPT_FILE__'
 
@@ -85,7 +89,7 @@ export function buildClaudeStreamArgs(
 
 export interface ClaudeApprovalEnvOptions {
   port?: number | string
-  internalToken?: string
+  approvalBridgeToken?: string
   baseUrl?: string
 }
 
@@ -166,10 +170,10 @@ export function buildClaudeSpawnEnv(
 ): NodeJS.ProcessEnv {
   const port = resolveClaudeApprovalPort(env, approval.port)
   const baseUrl = approval.baseUrl?.trim() || env.HAMMURABI_APPROVAL_BASE_URL?.trim() || `http://127.0.0.1:${port}`
-  const internalToken = approval.internalToken?.trim() || env.HAMMURABI_INTERNAL_TOKEN?.trim()
+  const approvalBridgeToken = approval.approvalBridgeToken?.trim() || env[APPROVAL_BRIDGE_TOKEN_ENV]?.trim()
 
   const spawnEnv: NodeJS.ProcessEnv = {
-    ...scrubEnvironmentVariables(env, ['CLAUDECODE', ...ANTHROPIC_MODEL_ENV_KEYS]),
+    ...scrubEnvironmentVariables(env, ['CLAUDECODE', 'HAMMURABI_INTERNAL_TOKEN', ...ANTHROPIC_MODEL_ENV_KEYS]),
     CLAUDECODE: undefined,
     CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING: getClaudeDisableAdaptiveThinkingEnvValue(adaptiveThinking),
     MAX_THINKING_TOKENS: String(maxThinkingTokens),
@@ -177,8 +181,8 @@ export function buildClaudeSpawnEnv(
     HAMMURABI_PORT: port,
     HAMMURABI_APPROVAL_BASE_URL: baseUrl,
   }
-  if (internalToken) {
-    spawnEnv.HAMMURABI_INTERNAL_TOKEN = internalToken
+  if (approvalBridgeToken) {
+    spawnEnv[APPROVAL_BRIDGE_TOKEN_ENV] = approvalBridgeToken
   }
   return spawnEnv
 }
@@ -187,7 +191,7 @@ export function buildClaudeEnvironmentPrefix(
   adaptiveThinking: ClaudeAdaptiveThinkingMode = DEFAULT_CLAUDE_ADAPTIVE_THINKING_MODE,
   maxThinkingTokens: ClaudeMaxThinkingTokens = DEFAULT_CLAUDE_MAX_THINKING_TOKENS,
 ): string {
-  return `export ${CLAUDE_DISABLE_ADAPTIVE_THINKING_ENV}=${getClaudeDisableAdaptiveThinkingEnvValue(adaptiveThinking)} ${CLAUDE_MAX_THINKING_TOKENS_ENV}=${maxThinkingTokens} && ${buildUnsetEnvironmentCommand(['CLAUDECODE', ...ANTHROPIC_MODEL_ENV_KEYS])}`
+  return `export ${CLAUDE_DISABLE_ADAPTIVE_THINKING_ENV}=${getClaudeDisableAdaptiveThinkingEnvValue(adaptiveThinking)} ${CLAUDE_MAX_THINKING_TOKENS_ENV}=${maxThinkingTokens} && ${buildUnsetEnvironmentCommand(['CLAUDECODE', 'HAMMURABI_INTERNAL_TOKEN', ...ANTHROPIC_MODEL_ENV_KEYS])}`
 }
 
 export function buildClaudePtyCommand(
@@ -206,7 +210,7 @@ export function buildClaudeShellInvocation(
   maxThinkingTokens: ClaudeMaxThinkingTokens = DEFAULT_CLAUDE_MAX_THINKING_TOKENS,
   appendSystemPrompt?: string,
 ): string {
-  const envPrefix = `export CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING=${getClaudeDisableAdaptiveThinkingEnvValue(adaptiveThinking)} MAX_THINKING_TOKENS=${maxThinkingTokens}; ${buildUnsetEnvironmentCommand(['CLAUDECODE', ...ANTHROPIC_MODEL_ENV_KEYS])};`
+  const envPrefix = `export CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING=${getClaudeDisableAdaptiveThinkingEnvValue(adaptiveThinking)} MAX_THINKING_TOKENS=${maxThinkingTokens}; ${buildUnsetEnvironmentCommand(['CLAUDECODE', 'HAMMURABI_INTERNAL_TOKEN', ...ANTHROPIC_MODEL_ENV_KEYS])};`
   const promptBootstrap = appendSystemPrompt
     ? buildAppendPromptFileBootstrap(appendSystemPrompt)
     : ''
@@ -235,7 +239,7 @@ function sleep(ms){return new Promise((resolve)=>{setTimeout(resolve,ms);});}
 async function fetchApprovalPayload(url,init,failureContext){let response;try{response=await fetch(url,init);}catch(error){const message=error instanceof Error?error.message:String(error);failClosed(\`\${failureContext} (\${message})\`);return null;}if(!response.ok){let errorText="";try{errorText=(await response.text()).trim();}catch{}const detail=errorText?\`: \${errorText}\`:"";failClosed(\`approval service returned HTTP \${response.status}\${detail}\`);return null;}try{return await response.json();}catch(error){const message=error instanceof Error?error.message:String(error);failClosed(\`approval response was not valid JSON (\${message})\`);return null;}}
 async function pollForTerminalDecision(requestId,retryAfterMs,headers){const deadlineMs=resolveApprovalDeadlineMs();const deadlineAt=Date.now()+deadlineMs;let nextDelayMs=normalizeRetryAfterMs(retryAfterMs);while(true){const remainingMs=deadlineAt-Date.now();if(remainingMs<=0){failClosed(\`approval review deadline exceeded after \${deadlineMs}ms (request \${requestId})\`);return null;}await sleep(Math.min(nextDelayMs,remainingMs));const payload=await fetchApprovalPayload(\`\${defaultBaseUrl()}/api/approval/check/\${encodeURIComponent(requestId)}\`,{method:"GET",headers},\`approval polling failed for request \${requestId}\`);if(!payload){return null;}if(payload?.decision!=="pending"){return payload;}nextDelayMs=normalizeRetryAfterMs(payload?.retry_after_ms);}}
 async function readStdin(){const chunks=[];for await(const chunk of process.stdin){chunks.push(Buffer.isBuffer(chunk)?chunk:Buffer.from(String(chunk)));}return Buffer.concat(chunks).toString("utf8");}
-(async()=>{const raw=await readStdin();if(!raw.trim()){process.exit(0);}let payload;try{payload=JSON.parse(raw);}catch{payload=raw;}if(payload&&typeof payload==="object"&&!Array.isArray(payload)&&process.env.HAMMURABI_SESSION_NAME&&typeof payload.hammurabi_session_name!=="string"){payload.hammurabi_session_name=process.env.HAMMURABI_SESSION_NAME;}const headers={"content-type":"application/json"};const internalToken=process.env.HAMMURABI_INTERNAL_TOKEN?.trim();if(internalToken){headers["x-hammurabi-internal-token"]=internalToken;}let responsePayload=await fetchApprovalPayload(\`\${defaultBaseUrl()}/api/approval/check\`,{method:"POST",headers,body:typeof payload==="string"?payload:JSON.stringify(payload)},"approval service unreachable");if(!responsePayload){return;}if(responsePayload?.decision==="pending"){const requestId=typeof responsePayload.request_id==="string"?responsePayload.request_id.trim():"";if(!requestId){failClosed("approval service returned pending without request_id");return;}responsePayload=await pollForTerminalDecision(requestId,responsePayload?.retry_after_ms,headers);if(!responsePayload){return;}}const reason=typeof responsePayload?.reason==="string"&&responsePayload.reason.trim().length>0?responsePayload.reason.trim():undefined;if(responsePayload?.decision==="allow"){emitPreToolUseDecision("allow",reason);return;}process.stderr.write((reason??"Action rejected by Hammurabi policy.")+"\\n");process.exit(2);})().catch((error)=>{const message=error instanceof Error?error.message:String(error);failClosed(\`hook crashed (\${message})\`);});
+(async()=>{const raw=await readStdin();if(!raw.trim()){process.exit(0);}let payload;try{payload=JSON.parse(raw);}catch{payload=raw;}if(payload&&typeof payload==="object"&&!Array.isArray(payload)&&process.env.HAMMURABI_SESSION_NAME&&typeof payload.hammurabi_session_name!=="string"){payload.hammurabi_session_name=process.env.HAMMURABI_SESSION_NAME;}const headers={"content-type":"application/json"};const bridgeToken=process.env.${APPROVAL_BRIDGE_TOKEN_ENV}?.trim();if(bridgeToken){headers["${APPROVAL_BRIDGE_TOKEN_HEADER}"]=bridgeToken;}let responsePayload=await fetchApprovalPayload(\`\${defaultBaseUrl()}/api/approval/check\`,{method:"POST",headers,body:typeof payload==="string"?payload:JSON.stringify(payload)},"approval service unreachable");if(!responsePayload){return;}if(responsePayload?.decision==="pending"){const requestId=typeof responsePayload.request_id==="string"?responsePayload.request_id.trim():"";if(!requestId){failClosed("approval service returned pending without request_id");return;}responsePayload=await pollForTerminalDecision(requestId,responsePayload?.retry_after_ms,headers);if(!responsePayload){return;}}const reason=typeof responsePayload?.reason==="string"&&responsePayload.reason.trim().length>0?responsePayload.reason.trim():undefined;if(responsePayload?.decision==="allow"){emitPreToolUseDecision("allow",reason);return;}process.stderr.write((reason??"Action rejected by Hammurabi policy.")+"\\n");process.exit(2);})().catch((error)=>{const message=error instanceof Error?error.message:String(error);failClosed(\`hook crashed (\${message})\`);});
 `.trim()
 
 export function buildClaudeApprovalHookCommand(): string {

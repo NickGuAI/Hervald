@@ -2,12 +2,12 @@ import { useEffect, useState } from 'react'
 import { Download, ExternalLink, FileCode2, FileImage, FileWarning, Loader2, Pencil, Save, Trash2 } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { getAccessToken, isAuthRecoveryRequiredError } from '@/lib/api'
+import { isAuthRecoveryRequiredError } from '@/lib/api'
 import { cn } from '@/lib/utils'
 import type {
   WorkspaceFilePreview as WorkspaceFilePreviewData,
 } from '../types'
-import { buildWorkspaceRawUrl } from '../use-workspace'
+import { buildWorkspaceRawUrl, issueWorkspaceRawTicket } from '../use-workspace'
 
 export { buildWorkspaceRawUrl } from '../use-workspace'
 
@@ -86,14 +86,12 @@ export function WorkspaceFilePreview({
     }
 
     setRawFileUrl(null)
-    setDownloadFileUrl(buildWorkspaceRawUrl(
-      previewRawSource,
-      previewRawPath,
-      null,
-      { download: true },
-    ))
-    void getAccessToken()
-      .then((token) => {
+    setDownloadFileUrl(null)
+    void Promise.all([
+      rawPreviewKind ? issueWorkspaceRawTicket(previewRawSource, previewRawPath) : Promise.resolve(null),
+      issueWorkspaceRawTicket(previewRawSource, previewRawPath),
+    ])
+      .then(([previewTicket, downloadTicket]) => {
         if (cancelled) {
           return
         }
@@ -101,13 +99,13 @@ export function WorkspaceFilePreview({
           ? buildWorkspaceRawUrl(
               previewRawSource,
               previewRawPath,
-              token,
+              previewTicket,
             )
           : null)
         setDownloadFileUrl(buildWorkspaceRawUrl(
           previewRawSource,
           previewRawPath,
-          token,
+          downloadTicket,
           { download: true },
         ))
       })

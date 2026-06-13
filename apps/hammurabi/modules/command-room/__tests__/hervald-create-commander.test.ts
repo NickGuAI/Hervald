@@ -43,6 +43,7 @@ vi.mock('@/hooks/use-agents', () => ({
   verifyTailscaleHostname: mocks.verifyTailscaleHostname,
   useAgentSessions: mocks.useAgentSessions,
   useMachines: mocks.useMachines,
+  useDirectories: vi.fn(() => ({ data: undefined, error: null, isLoading: false })),
 }))
 
 vi.mock('@/hooks/use-approvals', () => ({

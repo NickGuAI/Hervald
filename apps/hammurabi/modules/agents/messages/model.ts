@@ -30,6 +30,7 @@ export interface MsgItem {
   id: string
   kind: 'system' | 'user' | 'thinking' | 'agent' | 'tool' | 'ask' | 'planning' | 'provider'
   text: string
+  clientSendId?: string
   timestamp?: string
   children?: MsgItem[]
   images?: MessageImageAttachment[]
@@ -65,11 +66,13 @@ export function createUserMessage(
   id: string,
   text: string,
   images?: MessageImageAttachment[],
+  clientSendId?: string,
 ): MsgItem {
   return {
     id,
     kind: 'user',
     text,
+    ...(clientSendId ? { clientSendId } : {}),
     images: images && images.length > 0 ? images : undefined,
   }
 }

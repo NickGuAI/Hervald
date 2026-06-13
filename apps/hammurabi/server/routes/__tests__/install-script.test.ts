@@ -166,8 +166,10 @@ describe('installer prompt helpers', () => {
       'print_receipt_line "URL" "${INSTALL_LOGIN_URL:-http://localhost:${PORT:-$DEFAULT_PORT}/welcome}"',
     )
     expect(scriptContents).toContain(
-      'Complete browser onboarding, then create a permanent API key in Settings and rotate or revoke the bootstrap key.',
+      'Complete browser onboarding within 24 hours, then create a permanent API key in Settings and rotate or revoke the expiring bootstrap key.',
     )
+    expect(scriptContents).toContain('configure_cli_from_first_boot "$PORT"')
+    expect(scriptContents).not.toContain('Optional: run ${CYAN}hammurabi onboard${NC}')
     expect(scriptContents).not.toMatch(/localhost:\$\{[^}]+}\/org/)
   })
 

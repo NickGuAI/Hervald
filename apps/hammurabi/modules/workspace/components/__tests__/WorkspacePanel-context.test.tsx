@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => ({
   fetchWorkspacePathResolution: vi.fn(),
   downloadWorkspaceFile: vi.fn(),
   saveFile: vi.fn(),
+  deletePath: vi.fn(),
   previewData: null as null | {
     kind: 'text'
     path: string
@@ -47,7 +48,7 @@ vi.mock('../../use-workspace', () => ({
     createFolder: vi.fn(async () => undefined),
     saveFile: mocks.saveFile,
     renamePath: vi.fn(async () => undefined),
-    deletePath: vi.fn(async () => undefined),
+    deletePath: mocks.deletePath,
     uploadFiles: vi.fn(async () => undefined),
     initGit: vi.fn(async () => undefined),
   }),
@@ -84,22 +85,30 @@ vi.mock('../WorkspaceFilePreview', () => ({
     draftContent,
     readOnly,
     onDraftChange,
+    onSave,
+    onDelete,
   }: {
     selectedPath: string | null
     draftContent?: string
     readOnly?: boolean
     onDraftChange?: (value: string) => void
+    onSave?: () => void
+    onDelete?: () => void
   }) => (
-    <div data-testid="workspace-preview-path">
-      {selectedPath ?? 'none'}
-      {!readOnly && (
-        <textarea
-          data-testid="workspace-preview-editor"
-          value={draftContent ?? ''}
-          onChange={(event) => onDraftChange?.(event.target.value)}
-        />
+    <>
+      <div data-testid="workspace-preview-path">{selectedPath ?? 'none'}</div>
+      {!readOnly && selectedPath && (
+        <>
+          <textarea
+            data-testid="workspace-preview-editor"
+            value={draftContent ?? ''}
+            onChange={(event) => onDraftChange?.(event.target.value)}
+          />
+          <button type="button" onClick={onSave}>Save file</button>
+          <button type="button" onClick={onDelete}>Delete file</button>
+        </>
       )}
-    </div>
+    </>
   ),
 }))
 
@@ -209,6 +218,7 @@ describe('WorkspacePanel add-to-context actions', () => {
       }
     })
     mocks.saveFile.mockResolvedValue(undefined)
+    mocks.deletePath.mockResolvedValue(undefined)
     mocks.previewData = null
   })
 
@@ -228,6 +238,7 @@ describe('WorkspacePanel add-to-context actions', () => {
     mocks.fetchWorkspacePathResolution.mockReset()
     mocks.downloadWorkspaceFile.mockReset()
     mocks.saveFile.mockReset()
+    mocks.deletePath.mockReset()
     mocks.previewData = null
     vi.clearAllMocks()
   })
@@ -274,6 +285,71 @@ describe('WorkspacePanel add-to-context actions', () => {
     })
 
     expect(mocks.downloadWorkspaceFile).toHaveBeenCalledWith(SOURCE, 'README.md', undefined)
+  })
+
+  it('shows shared feedback for save and confirms before deleting a selected file', async () => {
+    const onInsertPath = vi.fn()
+
+    await renderPanel(onInsertPath)
+
+    await vi.waitFor(() => {
+      expect(document.body.querySelector('[aria-label="Add README.md to context"]')).not.toBeNull()
+    })
+
+    await act(async () => {
+      const readmeButton = Array.from(document.body.querySelectorAll('button'))
+        .find((button) => button.textContent?.includes('README.md')) as HTMLButtonElement | undefined
+      readmeButton?.click()
+      await Promise.resolve()
+    })
+
+    await vi.waitFor(() => {
+      expect(document.body.querySelector('[data-testid="workspace-preview-path"]')?.textContent).toContain('README.md')
+    })
+
+    await act(async () => {
+      const saveButton = Array.from(document.body.querySelectorAll('button'))
+        .find((button) => button.textContent === 'Save file') as HTMLButtonElement | undefined
+      saveButton?.click()
+      await Promise.resolve()
+    })
+
+    expect(mocks.saveFile).toHaveBeenCalledWith('README.md', '')
+    expect(document.body.textContent).toContain('Saved README.md.')
+
+    await act(async () => {
+      const deleteButton = Array.from(document.body.querySelectorAll('button'))
+        .find((button) => button.textContent === 'Delete file') as HTMLButtonElement | undefined
+      deleteButton?.click()
+      await Promise.resolve()
+    })
+
+    expect(document.body.textContent).toContain('Delete workspace path?')
+    expect(mocks.deletePath).not.toHaveBeenCalled()
+
+    await act(async () => {
+      const cancelButton = Array.from(document.body.querySelectorAll('button'))
+        .find((button) => button.textContent === 'Cancel') as HTMLButtonElement | undefined
+      cancelButton?.click()
+      await Promise.resolve()
+    })
+    expect(mocks.deletePath).not.toHaveBeenCalled()
+
+    await act(async () => {
+      const deleteButton = Array.from(document.body.querySelectorAll('button'))
+        .find((button) => button.textContent === 'Delete file') as HTMLButtonElement | undefined
+      deleteButton?.click()
+      await Promise.resolve()
+    })
+    await act(async () => {
+      const confirmButton = Array.from(document.body.querySelectorAll('button'))
+        .find((button) => button.textContent === 'Delete') as HTMLButtonElement | undefined
+      confirmButton?.click()
+      await Promise.resolve()
+    })
+
+    expect(mocks.deletePath).toHaveBeenCalledWith('README.md')
+    expect(document.body.textContent).toContain('Deleted README.md.')
   })
 
   it('surfaces workspace download failures in the panel', async () => {

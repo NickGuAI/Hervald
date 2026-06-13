@@ -1,7 +1,7 @@
 import type { Request, RequestHandler, Router } from 'express'
 import { spawn } from 'node:child_process'
 import path from 'node:path'
-import { CommanderSessionStore } from '../../commanders/store.js'
+import type { CommanderSessionStore } from '../../commanders/store.js'
 import {
   buildMachineProbeScript,
   buildLoginShellCommand,
@@ -47,8 +47,8 @@ interface MachineWorldRouteDeps {
   router: Router
   requireReadAccess: RequestHandler
   requireWriteAccess: RequestHandler
-  commanderSessionStorePath?: string
-  conversationStore?: ConversationStore
+  commanderSessionStore?: Pick<CommanderSessionStore, 'list'>
+  conversationStore?: Pick<ConversationStore, 'listByCommander'>
   sessions: Map<string, AnySession>
   buildSshArgs(
     machine: MachineConfig & { host: string },
@@ -525,10 +525,7 @@ export function registerMachineWorldRoutes(deps: MachineWorldRouteDeps): void {
     }
 
     try {
-      const commanderStore = deps.commanderSessionStorePath !== undefined
-        ? new CommanderSessionStore(deps.commanderSessionStorePath)
-        : new CommanderSessionStore()
-      const commanderSessions = await commanderStore.list()
+      const commanderSessions = await deps.commanderSessionStore?.list() ?? []
       for (const commanderSession of commanderSessions) {
         if (commanderSession.state === 'stopped') {
           continue

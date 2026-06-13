@@ -3,6 +3,8 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ChevronUp, Plus, X } from 'lucide-react'
 import { cn, timeAgo } from '@/lib/utils'
 import { fetchJson, fetchVoid } from '@/lib/api'
+import { ConfirmModal } from '@modules/components/ConfirmModal'
+import { Toast } from '@modules/components/Toast'
 import type { CommanderSession } from '../hooks/useCommander'
 import { ModalFormContainer } from '../../components/ModalFormContainer'
 import {
@@ -72,6 +74,23 @@ interface DeleteQuestInput {
 
 type QuestBoardCommander = Pick<CommanderSession, 'id' | 'host'>
 const ONE_DAY_MS = 24 * 60 * 60 * 1000
+const QUEST_DRAFT_STORAGE_KEY = 'hammurabi:quest-board:draft:v1'
+
+interface QuestDraftSnapshot {
+  showForm: boolean
+  instruction: string
+  source: QuestSource
+  githubIssueUrl: string
+  cwd: string
+  agentType: QuestAgentType
+  permissionMode: QuestPermissionMode
+  selectedSkills: string[]
+  artifacts: QuestArtifact[]
+  showArtifactForm: boolean
+  artifactType: QuestArtifactType
+  artifactLabel: string
+  artifactHref: string
+}
 
 const STATUS_META: Record<
   QuestDisplayStatus,
@@ -193,6 +212,78 @@ function parseQuestArtifacts(raw: unknown): QuestArtifact[] {
   }
 
   return artifacts
+}
+
+function parseQuestSource(value: unknown): QuestSource {
+  if (
+    value === 'idea' ||
+    value === 'github-issue' ||
+    value === 'manual' ||
+    value === 'voice-log'
+  ) {
+    return value
+  }
+  return 'manual'
+}
+
+function parseQuestPermissionMode(value: unknown): QuestPermissionMode {
+  return value === 'default' ? value : 'default'
+}
+
+function parseQuestAgentType(value: unknown): QuestAgentType {
+  return typeof value === 'string' && value.trim().length > 0
+    ? value.trim() as QuestAgentType
+    : 'claude'
+}
+
+function questDraftStorage(): Storage | null {
+  try {
+    return window.sessionStorage
+  } catch {
+    return null
+  }
+}
+
+function readQuestDraftSnapshot(): QuestDraftSnapshot | null {
+  const raw = questDraftStorage()?.getItem(QUEST_DRAFT_STORAGE_KEY)
+  if (!raw) {
+    return null
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as unknown
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return null
+    }
+    const data = parsed as Record<string, unknown>
+    return {
+      showForm: data.showForm === true,
+      instruction: typeof data.instruction === 'string' ? data.instruction : '',
+      source: parseQuestSource(data.source),
+      githubIssueUrl: typeof data.githubIssueUrl === 'string' ? data.githubIssueUrl : '',
+      cwd: typeof data.cwd === 'string' ? data.cwd : '',
+      agentType: parseQuestAgentType(data.agentType),
+      permissionMode: parseQuestPermissionMode(data.permissionMode),
+      selectedSkills: Array.isArray(data.selectedSkills)
+        ? data.selectedSkills.filter((entry): entry is string => typeof entry === 'string')
+        : [],
+      artifacts: parseQuestArtifacts(data.artifacts),
+      showArtifactForm: data.showArtifactForm === true,
+      artifactType: parseArtifactType(data.artifactType) ?? 'url',
+      artifactLabel: typeof data.artifactLabel === 'string' ? data.artifactLabel : '',
+      artifactHref: typeof data.artifactHref === 'string' ? data.artifactHref : '',
+    }
+  } catch {
+    return null
+  }
+}
+
+function writeQuestDraftSnapshot(snapshot: QuestDraftSnapshot): void {
+  questDraftStorage()?.setItem(QUEST_DRAFT_STORAGE_KEY, JSON.stringify(snapshot))
+}
+
+function clearQuestDraftSnapshot(): void {
+  questDraftStorage()?.removeItem(QUEST_DRAFT_STORAGE_KEY)
 }
 
 function extractNoteText(value: unknown): string | null {
@@ -504,7 +595,7 @@ export function QuestBoard({
   const [cwd, setCwd] = useState('')
   const [agentType, setAgentType] = useState<QuestAgentType>('claude')
   const [permissionMode, setPermissionMode] = useState<QuestPermissionMode>('default')
-  const [skillsInput, setSkillsInput] = useState('')
+  const [selectedSkills, setSelectedSkills] = useState<string[]>([])
   const [artifacts, setArtifacts] = useState<QuestArtifact[]>([])
   const [showArtifactForm, setShowArtifactForm] = useState(false)
   const [artifactType, setArtifactType] = useState<QuestArtifactType>('url')
@@ -515,6 +606,9 @@ export function QuestBoard({
   const [deletingQuestId, setDeletingQuestId] = useState<string | null>(null)
   const [expandedQuestIds, setExpandedQuestIds] = useState<string[]>([])
   const [showOlderDoneQuests, setShowOlderDoneQuests] = useState(false)
+  const [confirmDirtyCloseOpen, setConfirmDirtyCloseOpen] = useState(false)
+  const [toastMessage, setToastMessage] = useState<string | null>(null)
+  const [draftStorageReady, setDraftStorageReady] = useState(false)
 
   useEffect(() => {
     if (filterCommanderId === 'all') {
@@ -539,6 +633,40 @@ export function QuestBoard({
     setShowOlderDoneQuests(false)
   }, [filterCommanderId])
 
+  useEffect(() => {
+    if (!toastMessage) {
+      return
+    }
+
+    const timer = window.setTimeout(() => {
+      setToastMessage(null)
+    }, 2500)
+
+    return () => {
+      window.clearTimeout(timer)
+    }
+  }, [toastMessage])
+
+  useEffect(() => {
+    const storedDraft = readQuestDraftSnapshot()
+    if (storedDraft) {
+      setShowForm(storedDraft.showForm)
+      setInstruction(storedDraft.instruction)
+      setSource(storedDraft.source)
+      setGithubIssueUrl(storedDraft.githubIssueUrl)
+      setCwd(storedDraft.cwd)
+      setAgentType(storedDraft.agentType)
+      setPermissionMode(storedDraft.permissionMode)
+      setSelectedSkills(storedDraft.selectedSkills)
+      setArtifacts(storedDraft.artifacts)
+      setShowArtifactForm(storedDraft.showArtifactForm)
+      setArtifactType(storedDraft.artifactType)
+      setArtifactLabel(storedDraft.artifactLabel)
+      setArtifactHref(storedDraft.artifactHref)
+    }
+    setDraftStorageReady(true)
+  }, [])
+
   const activeFilterCommanderId = filterCommanderId ?? 'all'
   const selectedCommander = activeFilterCommanderId === 'all'
     ? null
@@ -547,6 +675,58 @@ export function QuestBoard({
     () => new Map(commanders.map((commander) => [commander.id, commander.host])),
     [commanders],
   )
+  const isQuestDraftDirty = source !== 'manual'
+    || githubIssueUrl.trim().length > 0
+    || instruction.trim().length > 0
+    || cwd.trim().length > 0
+    || agentType !== 'claude'
+    || permissionMode !== 'default'
+    || selectedSkills.length > 0
+    || artifacts.length > 0
+    || artifactLabel.trim().length > 0
+    || artifactHref.trim().length > 0
+    || artifactType !== 'url'
+
+  useEffect(() => {
+    if (!draftStorageReady) {
+      return
+    }
+    if (!isQuestDraftDirty) {
+      clearQuestDraftSnapshot()
+      return
+    }
+    writeQuestDraftSnapshot({
+      showForm,
+      instruction,
+      source,
+      githubIssueUrl,
+      cwd,
+      agentType,
+      permissionMode,
+      selectedSkills,
+      artifacts,
+      showArtifactForm,
+      artifactType,
+      artifactLabel,
+      artifactHref,
+    })
+  }, [
+    agentType,
+    artifactHref,
+    artifactLabel,
+    artifacts,
+    artifactType,
+    cwd,
+    draftStorageReady,
+    githubIssueUrl,
+    instruction,
+    isQuestDraftDirty,
+    permissionMode,
+    selectedSkills,
+    showArtifactForm,
+    showForm,
+    source,
+  ])
 
   const questsQuery = useQuery({
     queryKey: ['commanders', 'quests', activeFilterCommanderId],
@@ -619,6 +799,37 @@ export function QuestBoard({
     }
   }
 
+  function resetQuestDraft(): void {
+    clearQuestDraftSnapshot()
+    setInstruction('')
+    setSource('manual')
+    setGithubIssueUrl('')
+    setCwd('')
+    setAgentType('claude')
+    setPermissionMode('default')
+    setSelectedSkills([])
+    setArtifacts([])
+    setShowArtifactForm(false)
+    setArtifactType('url')
+    setArtifactLabel('')
+    setArtifactHref('')
+    setFormError(null)
+  }
+
+  function handleRequestCloseForm(): void {
+    if (isQuestDraftDirty) {
+      setConfirmDirtyCloseOpen(true)
+      return
+    }
+    setShowForm(false)
+  }
+
+  function handleDiscardDraftAndClose(): void {
+    setConfirmDirtyCloseOpen(false)
+    resetQuestDraft()
+    setShowForm(false)
+  }
+
   async function handleSubmit(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault()
     if (!selectedCommander) {
@@ -637,16 +848,11 @@ export function QuestBoard({
       return
     }
 
-    const skillsToUse = skillsInput
-      .split(',')
-      .map((s) => s.trim())
-      .filter(Boolean)
-
     const contract = {
       ...(cwd.trim() ? { cwd: cwd.trim() } : {}),
       ...(agentType ? { agentType } : {}),
       ...(permissionMode ? { permissionMode } : {}),
-      ...(skillsToUse.length > 0 ? { skillsToUse } : {}),
+      ...(selectedSkills.length > 0 ? { skillsToUse: selectedSkills } : {}),
     }
 
     setFormError(null)
@@ -659,19 +865,9 @@ export function QuestBoard({
         ...(artifacts.length > 0 ? { artifacts } : {}),
         ...(Object.keys(contract).length > 0 ? { contract } : {}),
       })
-      setInstruction('')
-      setSource('manual')
-      setGithubIssueUrl('')
-      setCwd('')
-      setAgentType('claude')
-      setPermissionMode('default')
-      setSkillsInput('')
-      setArtifacts([])
-      setShowArtifactForm(false)
-      setArtifactType('url')
-      setArtifactLabel('')
-      setArtifactHref('')
+      resetQuestDraft()
       setShowForm(false)
+      setToastMessage('Quest added.')
     } catch (error) {
       setFormError(toErrorMessage(error) ?? 'Failed to create quest')
     }
@@ -708,6 +904,7 @@ export function QuestBoard({
         commanderId,
         questId: quest.id,
       })
+      setToastMessage('Quest deleted.')
     } finally {
       setDeletingQuestId(null)
     }
@@ -787,7 +984,13 @@ export function QuestBoard({
 
         <button
           type="button"
-          onClick={() => setShowForm((current) => !current)}
+          onClick={() => {
+            if (showForm) {
+              handleRequestCloseForm()
+              return
+            }
+            setShowForm(true)
+          }}
           disabled={!selectedCommander}
           className="btn-ghost !px-3 !py-1.5 text-xs inline-flex min-h-[44px] items-center gap-1.5 disabled:opacity-60 disabled:cursor-not-allowed"
         >
@@ -799,7 +1002,7 @@ export function QuestBoard({
       <ModalFormContainer
         open={Boolean(selectedCommander && showForm)}
         title="Add Quest"
-        onClose={() => setShowForm(false)}
+        onClose={handleRequestCloseForm}
       >
         <QuestCreateForm
           source={source}
@@ -812,12 +1015,13 @@ export function QuestBoard({
           onInstructionChange={setInstruction}
           cwd={cwd}
           onCwdChange={setCwd}
+          directoryHost={selectedCommander?.host}
           agentType={agentType}
           onAgentTypeChange={setAgentType}
           permissionMode={permissionMode}
           onPermissionModeChange={setPermissionMode}
-          skillsInput={skillsInput}
-          onSkillsInputChange={setSkillsInput}
+          selectedSkills={selectedSkills}
+          onSelectedSkillsChange={setSelectedSkills}
           artifacts={artifacts}
           showArtifactForm={showArtifactForm}
           onToggleArtifactForm={() => setShowArtifactForm((current) => !current)}
@@ -831,9 +1035,20 @@ export function QuestBoard({
           onRemoveArtifact={handleRemoveArtifact}
           formError={formError}
           submitPending={createQuestMutation.isPending}
+          canClearDraft={isQuestDraftDirty}
           onSubmit={(event) => void handleSubmit(event)}
+          onClearDraft={resetQuestDraft}
         />
       </ModalFormContainer>
+      <ConfirmModal
+        open={confirmDirtyCloseOpen}
+        title="Discard quest draft?"
+        message="This quest draft has unsaved changes. Discard it and close the form?"
+        confirmLabel="Discard draft"
+        confirmTone="danger"
+        onClose={() => setConfirmDirtyCloseOpen(false)}
+        onConfirm={handleDiscardDraftAndClose}
+      />
 
       <div className="flex-1 min-h-0 overflow-y-auto p-3 space-y-3">
         {commanders.length === 0 && (
@@ -915,6 +1130,7 @@ export function QuestBoard({
           {apiError}
         </p>
       )}
+      <Toast open={Boolean(toastMessage)} message={toastMessage ?? ''} />
     </section>
   )
 }

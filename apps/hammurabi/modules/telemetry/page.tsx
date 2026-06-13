@@ -242,6 +242,41 @@ const STATUS_CLASSES: Record<SessionStatus, string> = {
   completed: 'badge-completed',
 }
 
+function errorMessage(error: unknown, fallback: string): string {
+  return error instanceof Error && error.message ? error.message : fallback
+}
+
+function TelemetryErrorState({
+  title,
+  error,
+  onRetry,
+}: {
+  title: string
+  error: unknown
+  onRetry?: () => void
+}) {
+  return (
+    <div
+      className="rounded-lg border border-accent-vermillion/30 bg-accent-vermillion/10 px-4 py-3 text-sm text-accent-vermillion"
+      role="alert"
+    >
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="font-medium">{title}</p>
+        {onRetry ? (
+          <button
+            type="button"
+            onClick={onRetry}
+            className="rounded border border-accent-vermillion/30 px-2 py-1 text-xs font-medium text-accent-vermillion transition-colors hover:bg-accent-vermillion/10"
+          >
+            Retry
+          </button>
+        ) : null}
+      </div>
+      <p className="mt-1 text-xs">{errorMessage(error, title)}</p>
+    </div>
+  )
+}
+
 function SummaryCard({
   label,
   value,
@@ -362,13 +397,25 @@ function SessionDetail({
   sessionId: string
   onBack: () => void
 }) {
-  const { data, isLoading } = useTelemetrySessionDetail(sessionId)
+  const { data, isLoading, error } = useTelemetrySessionDetail(sessionId)
   const chartTokens = useTelemetryChartTokens()
 
-  if (isLoading || !data) {
+  if (isLoading) {
     return (
       <div className="flex items-center justify-center h-64">
         <div className="w-3 h-3 rounded-full bg-sumi-mist animate-breathe" />
+      </div>
+    )
+  }
+
+  if (error) {
+    return <TelemetryErrorState title="Failed to load telemetry session detail" error={error} />
+  }
+
+  if (!data) {
+    return (
+      <div className="text-center py-12 text-sumi-diluted text-sm">
+        No telemetry detail found for this session.
       </div>
     )
   }
@@ -538,7 +585,12 @@ function SessionDetail({
 }
 
 function GlobalSummary() {
-  const { data: baseSummary, isLoading: baseLoading } = useTelemetrySummary()
+  const {
+    data: baseSummary,
+    isLoading: baseLoading,
+    error: baseError,
+    refetch: refetchBaseSummary,
+  } = useTelemetrySummary()
   const chartTokens = useTelemetryChartTokens()
   const [summaryPeriod, setSummaryPeriod] = useState<SummaryPeriodMode>('month:current')
   const [pickedMonth, setPickedMonth] = useState<string>(getCurrentMonthValue)
@@ -554,6 +606,8 @@ function GlobalSummary() {
   const {
     data: periodSummary,
     isLoading: periodLoading,
+    error: periodError,
+    refetch: refetchPeriodSummary,
   } = useQuery({
     queryKey: ['telemetry', 'summary', periodParam],
     queryFn: () =>
@@ -567,10 +621,42 @@ function GlobalSummary() {
   const summary = isDefaultPeriod ? baseSummary : (periodSummary ?? baseSummary)
   const isLoading = !summary && (baseLoading || periodLoading)
 
-  if (isLoading || !summary) {
+  if (isLoading) {
     return (
       <div className="flex items-center justify-center h-32">
         <div className="w-3 h-3 rounded-full bg-sumi-mist animate-breathe" />
+      </div>
+    )
+  }
+
+  if (baseError && !baseSummary) {
+    return (
+      <TelemetryErrorState
+        title="Failed to load telemetry summary"
+        error={baseError}
+        onRetry={() => {
+          void refetchBaseSummary()
+        }}
+      />
+    )
+  }
+
+  if (!isDefaultPeriod && periodError && !periodSummary) {
+    return (
+      <TelemetryErrorState
+        title="Failed to load telemetry summary"
+        error={periodError}
+        onRetry={() => {
+          void refetchPeriodSummary()
+        }}
+      />
+    )
+  }
+
+  if (!summary) {
+    return (
+      <div className="text-center py-12 text-sumi-diluted text-sm">
+        No telemetry summary yet
       </div>
     )
   }
@@ -778,7 +864,12 @@ function GlobalSummary() {
 }
 
 export default function TelemetryPage() {
-  const { data: sessions, isLoading } = useTelemetrySessions()
+  const {
+    data: sessions,
+    isLoading,
+    error,
+    refetch: refetchSessions,
+  } = useTelemetrySessions()
   const [selectedId, setSelectedId] = useState<string | null>(null)
 
   return (
@@ -811,6 +902,14 @@ export default function TelemetryPage() {
                 <div className="flex justify-center py-12">
                   <div className="w-3 h-3 rounded-full bg-sumi-mist animate-breathe" />
                 </div>
+              ) : error ? (
+                <TelemetryErrorState
+                  title="Failed to load telemetry sessions"
+                  error={error}
+                  onRetry={() => {
+                    void refetchSessions()
+                  }}
+                />
               ) : sessions?.length === 0 ? (
                 <div className="text-center py-12 text-sumi-diluted text-sm">
                   No telemetry sessions yet

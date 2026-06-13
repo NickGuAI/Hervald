@@ -163,7 +163,7 @@ export function createManifestMountedModules(
 ): HammurabiModule[] {
   const routeById = new Map(moduleGraph.mountPlan.routes.map((route) => [route.id, route]))
 
-  return registrations.map((registration) => {
+  const modules = registrations.map((registration) => {
     const declaredRoutes = registration.routeIds.map((routeId) => {
       const route = routeById.get(routeId)
       if (!route) {
@@ -208,4 +208,32 @@ export function createManifestMountedModules(
       ...(registration.shutdown ? { shutdown: registration.shutdown } : {}),
     }
   })
+
+  validateDeclaredWebSocketHandlers(moduleGraph, modules)
+
+  return modules
+}
+
+function validateDeclaredWebSocketHandlers(
+  moduleGraph: LoadedHammurabiModuleGraph,
+  modules: readonly HammurabiModule[],
+): void {
+  const moduleByName = new Map(modules.map((module) => [module.name, module]))
+  const declaredWebsockets = moduleGraph.mountPlan.websockets ?? []
+
+  for (const declaration of declaredWebsockets) {
+    const ownerModule = moduleByName.get(declaration.ownerModuleId)
+    if (!ownerModule) {
+      throw new HammurabiModuleLoaderError(
+        `WebSocket "${declaration.id}" is declared by "${declaration.ownerModuleId}" `
+        + 'but no runtime module with that name is registered',
+      )
+    }
+    if (!ownerModule.handleUpgrade) {
+      throw new HammurabiModuleLoaderError(
+        `WebSocket "${declaration.id}" is declared by "${declaration.ownerModuleId}" `
+        + 'but that runtime does not register an upgrade handler',
+      )
+    }
+  }
 }

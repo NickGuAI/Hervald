@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { fetchJson } from '@/lib/api'
 import {
   createCustomComposerAbility,
@@ -15,6 +16,8 @@ interface AppSettingsResponse {
     composerAbilities?: unknown
   }
 }
+
+const COMPOSER_ABILITY_SETTINGS_QUERY_KEY = ['settings', 'composer-abilities'] as const
 
 function normalizeComposerAbilitySettings(payload: unknown): ComposerAbilitySettings {
   const source = (
@@ -47,35 +50,23 @@ export function useComposerAbilities(): {
   removeCustomAbility: (id: string) => Promise<boolean>
   isLoading: boolean
   isSaving: boolean
+  loadError: Error | null
+  retryLoad: () => void
 } {
   const [settings, setSettings] = useState<ComposerAbilitySettings>(() => getDefaultComposerAbilitySettings())
-  const [isLoading, setIsLoading] = useState(true)
   const [isSaving, setIsSaving] = useState(false)
+  const queryClient = useQueryClient()
+  const settingsQuery = useQuery({
+    queryKey: COMPOSER_ABILITY_SETTINGS_QUERY_KEY,
+    queryFn: fetchComposerAbilitySettings,
+    staleTime: 60_000,
+  })
 
   useEffect(() => {
-    let disposed = false
-
-    async function loadSettings() {
-      try {
-        const nextSettings = await fetchComposerAbilitySettings()
-        if (!disposed) {
-          setSettings(nextSettings)
-        }
-      } catch {
-        // Keep built-in defaults available when settings are unavailable.
-      } finally {
-        if (!disposed) {
-          setIsLoading(false)
-        }
-      }
+    if (settingsQuery.data) {
+      setSettings(settingsQuery.data)
     }
-
-    void loadSettings()
-
-    return () => {
-      disposed = true
-    }
-  }, [])
+  }, [settingsQuery.data])
 
   const persistSettings = useCallback(async (nextSettings: ComposerAbilitySettings): Promise<boolean> => {
     const previous = settings
@@ -83,6 +74,7 @@ export function useComposerAbilities(): {
     setIsSaving(true)
     try {
       const savedSettings = await patchComposerAbilitySettings(nextSettings)
+      queryClient.setQueryData(COMPOSER_ABILITY_SETTINGS_QUERY_KEY, savedSettings)
       setSettings(savedSettings)
       return true
     } catch {
@@ -91,7 +83,7 @@ export function useComposerAbilities(): {
     } finally {
       setIsSaving(false)
     }
-  }, [settings])
+  }, [queryClient, settings])
 
   const addCustomAbility = useCallback(async (label: string, prompt: string): Promise<boolean> => {
     const existingIds = [
@@ -126,7 +118,11 @@ export function useComposerAbilities(): {
     customAbilitiesEnabled: settings.customAbilitiesEnabled,
     addCustomAbility,
     removeCustomAbility,
-    isLoading,
+    isLoading: settingsQuery.isLoading,
     isSaving,
+    loadError: settingsQuery.error,
+    retryLoad: () => {
+      void settingsQuery.refetch()
+    },
   }
 }

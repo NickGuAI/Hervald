@@ -3,6 +3,7 @@ export type WorkspaceSourceKind = 'target'
 export interface WorkspaceSourceDescriptor {
   kind: WorkspaceSourceKind
   id: string
+  targetId?: string
   label: string
   host?: string | null
   readOnly?: boolean

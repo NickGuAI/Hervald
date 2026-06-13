@@ -3,6 +3,7 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ApiKeyRecord, ApiKeyStoreLike } from '../../../server/api-keys/store.js'
 import { createOrgRouter } from '../../org/route.js'
@@ -22,6 +23,7 @@ const previousEnv = {
   HAMMURABI_DATA_DIR: process.env.HAMMURABI_DATA_DIR,
   COMMANDER_DATA_DIR: process.env.COMMANDER_DATA_DIR,
   HAMMURABI_COMMANDER_MEMORY_DIR: process.env.HAMMURABI_COMMANDER_MEMORY_DIR,
+  HAMMURABI_AGENT_SKILLS_DIR: process.env.HAMMURABI_AGENT_SKILLS_DIR,
 }
 
 const tempDirs: string[] = []
@@ -40,7 +42,7 @@ interface ScheduledJob {
 }
 
 function restoreEnvVar(
-  key: 'HAMMURABI_DATA_DIR' | 'COMMANDER_DATA_DIR' | 'HAMMURABI_COMMANDER_MEMORY_DIR',
+  key: 'HAMMURABI_DATA_DIR' | 'COMMANDER_DATA_DIR' | 'HAMMURABI_COMMANDER_MEMORY_DIR' | 'HAMMURABI_AGENT_SKILLS_DIR',
   value: string | undefined,
 ): void {
   if (value === undefined) {
@@ -104,7 +106,7 @@ function createTestCronScheduler(scheduledJobs: ScheduledJob[]): CronScheduler {
   }
 }
 
-async function startServer(dataDir: string): Promise<RunningServer> {
+async function startServer(dataDir: string, knownCommanderIds = new Set<string>()): Promise<RunningServer> {
   const app = express()
   const apiKeyStore = createTestApiKeyStore()
   const commanderDataDir = path.join(dataDir, 'commander')
@@ -117,8 +119,8 @@ async function startServer(dataDir: string): Promise<RunningServer> {
     store: automationStore,
     scheduler: createTestCronScheduler(scheduledJobs),
     commanderStore: {
-      async get() {
-        return null
+      async get(commanderId: string) {
+        return knownCommanderIds.has(commanderId) ? { id: commanderId } : null
       },
     },
   })
@@ -194,12 +196,14 @@ async function startServer(dataDir: string): Promise<RunningServer> {
 beforeEach(() => {
   delete process.env.COMMANDER_DATA_DIR
   delete process.env.HAMMURABI_COMMANDER_MEMORY_DIR
+  delete process.env.HAMMURABI_AGENT_SKILLS_DIR
 })
 
 afterEach(async () => {
   restoreEnvVar('HAMMURABI_DATA_DIR', previousEnv.HAMMURABI_DATA_DIR)
   restoreEnvVar('COMMANDER_DATA_DIR', previousEnv.COMMANDER_DATA_DIR)
   restoreEnvVar('HAMMURABI_COMMANDER_MEMORY_DIR', previousEnv.HAMMURABI_COMMANDER_MEMORY_DIR)
+  restoreEnvVar('HAMMURABI_AGENT_SKILLS_DIR', previousEnv.HAMMURABI_AGENT_SKILLS_DIR)
   await Promise.all(
     tempDirs.splice(0).map((directory) =>
       rm(directory, { recursive: true, force: true }),
@@ -208,6 +212,94 @@ afterEach(async () => {
 })
 
 describe('automations first boot', () => {
+  async function readSupportedMemoryCliSubcommands(): Promise<Set<string>> {
+    const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../../..')
+    const source = await readFile(
+      path.join(repoRoot, 'packages', 'hammurabi-cli', 'src', 'memory.ts'),
+      'utf8',
+    )
+    return new Set(
+      [...source.matchAll(/command\s*(?:!={2}|={2}=)\s*'([^']+)'/gu)]
+        .map((match) => match[1])
+        .filter((command): command is string => Boolean(command)),
+    )
+  }
+
+  function extractMemoryCliSubcommands(instruction: string): string[] {
+    return [...instruction.matchAll(/\bhammurabi\s+memory\s+([a-z][a-z-]*)\b/giu)]
+      .map((match) => match[1])
+      .filter((command): command is string => Boolean(command))
+  }
+
+  it('repairs live memory cleanup automations that reference unsupported memory CLI commands', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'hammurabi-automations-memory-cleanup-'))
+    tempDirs.push(dataDir)
+    const automationsDir = path.join(dataDir, 'automations')
+    const commanderDataDir = path.join(dataDir, 'commander')
+    await mkdir(automationsDir, { recursive: true })
+
+    const staleInstruction = 'For each active commander, run hammurabi memory compact --commander <id>.'
+    const supportedMemoryCommands = await readSupportedMemoryCliSubcommands()
+    expect(extractMemoryCliSubcommands(staleInstruction).some((command) =>
+      !supportedMemoryCommands.has(command),
+    )).toBe(true)
+
+    await writeFile(
+      path.join(automationsDir, 'memory-consolidation-id.json'),
+      `${JSON.stringify({
+        id: 'memory-consolidation-id',
+        operatorId: 'founder-test',
+        parentCommanderId: null,
+        name: 'memory-consolidation',
+        trigger: 'schedule',
+        schedule: '0 0 * * *',
+        instruction: staleInstruction,
+        agentType: 'codex',
+        permissionMode: 'default',
+        skills: [],
+        status: 'active',
+        description: 'Nightly memory compaction across all active commanders - midnight ET',
+        timezone: 'America/New_York',
+        workDir: '/home/builder/App/apps/hammurabi',
+        model: 'gpt-5.5',
+        sessionType: 'stream',
+        createdAt: '2026-04-17T02:00:18.315Z',
+        lastRun: '2026-06-12T04:06:06.207Z',
+        totalRuns: 56,
+        totalCostUsd: 59.002174,
+        history: [{
+          timestamp: '2026-06-12T04:06:06.207Z',
+          action: 'No completion comment provided.',
+          result: 'No completion comment provided.',
+          costUsd: 0,
+          durationSec: 366,
+          source: 'schedule',
+        }],
+      }, null, 2)}\n`,
+      'utf8',
+    )
+
+    const store = new AutomationStore({
+      dirPath: automationsDir,
+      commanderDataDir,
+    })
+    await store.ensureLoaded()
+
+    const memoryCleanup = await store.get('memory-consolidation-id')
+    expect(memoryCleanup).toMatchObject({
+      name: 'memory-consolidation',
+      skills: ['commander-memory-cleanup'],
+      lastRun: '2026-06-12T04:06:06.207Z',
+      totalRuns: 56,
+      totalCostUsd: 59.002174,
+    })
+    expect(memoryCleanup?.history).toHaveLength(1)
+    expect(memoryCleanup?.instruction).toContain('/commander-memory-cleanup')
+    expect(extractMemoryCliSubcommands(memoryCleanup?.instruction ?? '').filter((command) =>
+      !supportedMemoryCommands.has(command),
+    )).toEqual([])
+  })
+
   it('globalizes Atlas hygiene automations in place while preserving history', async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), 'hammurabi-automations-atlas-global-'))
     tempDirs.push(dataDir)
@@ -365,6 +457,125 @@ describe('automations first boot', () => {
       })
     } finally {
       consoleError.mockRestore()
+      await server.close()
+    }
+  })
+
+  it('persists CLI-created schedule automations and exposes show/list fields', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'hammurabi-automations-cli-create-'))
+    tempDirs.push(dataDir)
+    process.env.HAMMURABI_DATA_DIR = dataDir
+    const agentSkillsDir = path.join(dataDir, 'agent-skills')
+    for (const skill of ['gog', 'hammurabi']) {
+      const skillDir = path.join(agentSkillsDir, 'core', skill)
+      await mkdir(skillDir, { recursive: true })
+      await writeFile(path.join(skillDir, 'SKILL.md'), `# ${skill}\n`, 'utf8')
+    }
+    process.env.HAMMURABI_AGENT_SKILLS_DIR = agentSkillsDir
+    const commanderId = 'df5eb54a-8b36-41d1-9164-300d11e6da79'
+    const server = await startServer(dataDir, new Set([commanderId]))
+
+    try {
+      await expect(server.initialized).resolves.toBeUndefined()
+      const orgResponse = await fetch(`${server.baseUrl}/api/org`, {
+        method: 'POST',
+        headers: {
+          ...API_HEADERS,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          displayName: 'Gehirn',
+          founder: {
+            displayName: 'Nick Gu',
+            email: 'nick.gu@example.com',
+          },
+        }),
+      })
+      expect(orgResponse.status).toBe(201)
+
+      const createResponse = await fetch(`${server.baseUrl}/api/automations`, {
+        method: 'POST',
+        headers: {
+          ...API_HEADERS,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          trigger: 'schedule',
+          name: 'Gehirn grant and CRM email tracker',
+          parentCommanderId: commanderId,
+          schedule: '0 9 * * *',
+          timezone: 'America/New_York',
+          workDir: '/home/builder/PKMS/gehirn-monorepo',
+          agentType: 'codex',
+          permissionMode: 'default',
+          sessionType: 'stream',
+          skills: ['gog', 'hammurabi'],
+          enabled: true,
+          instruction: 'Run Operations/automation/email-followup-tracker/run_and_push.sh',
+        }),
+      })
+      const createBody = await createResponse.text()
+      expect(createResponse.status, createBody).toBe(201)
+      const created = JSON.parse(createBody) as Record<string, unknown>
+      expect(created).toMatchObject({
+        name: 'Gehirn grant and CRM email tracker',
+        parentCommanderId: commanderId,
+        schedule: '0 9 * * *',
+        timezone: 'America/New_York',
+        workDir: '/home/builder/PKMS/gehirn-monorepo',
+        agentType: 'codex',
+        permissionMode: 'default',
+        sessionType: 'stream',
+        skills: ['gog', 'hammurabi'],
+        status: 'active',
+        enabled: true,
+      })
+      expect(server.scheduledJobs).toEqual([
+        {
+          expression: '0 9 * * *',
+          name: `automation-${created.id}`,
+          timezone: 'America/New_York',
+        },
+      ])
+
+      const showResponse = await fetch(`${server.baseUrl}/api/automations/${created.id}`, {
+        headers: API_HEADERS,
+      })
+      expect(showResponse.status).toBe(200)
+      await expect(showResponse.json()).resolves.toMatchObject({
+        id: created.id,
+        parentCommanderId: commanderId,
+        schedule: '0 9 * * *',
+        workDir: '/home/builder/PKMS/gehirn-monorepo',
+        agentType: 'codex',
+        permissionMode: 'default',
+        sessionType: 'stream',
+        skills: ['gog', 'hammurabi'],
+        enabled: true,
+      })
+
+      const listResponse = await fetch(`${server.baseUrl}/api/automations?parentCommanderId=${commanderId}`, {
+        headers: API_HEADERS,
+      })
+      expect(listResponse.status).toBe(200)
+      const listed = await listResponse.json() as Array<Record<string, unknown>>
+      expect(listed).toHaveLength(1)
+      expect(listed[0]).toMatchObject({
+        id: created.id,
+        enabled: true,
+      })
+
+      const persisted = JSON.parse(
+        await readFile(path.join(dataDir, 'automations', `${created.id}.json`), 'utf8'),
+      ) as Record<string, unknown>
+      expect(persisted).toMatchObject({
+        id: created.id,
+        parentCommanderId: commanderId,
+        status: 'active',
+        workDir: '/home/builder/PKMS/gehirn-monorepo',
+        skills: ['gog', 'hammurabi'],
+      })
+    } finally {
       await server.close()
     }
   })

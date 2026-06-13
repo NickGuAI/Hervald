@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { WebSocket } from 'ws'
 import { CommanderSessionStore, type CommanderSession } from '../../commanders/store'
 import { createDefaultHeartbeatConfig } from '../../commanders/heartbeat'
+import { createCommanderTranscriptAppender } from '../../commanders/transcripts'
 import type { PtySpawner } from '../routes'
 import {
   AUTH_HEADERS,
@@ -36,7 +37,7 @@ const CLAUDE_SOURCE = {
   },
 } as const
 
-const UNSET_CLAUDE_CHILD_ENV = 'unset CLAUDECODE ANTHROPIC_MODEL ANTHROPIC_DEFAULT_OPUS_MODEL ANTHROPIC_DEFAULT_SONNET_MODEL'
+const UNSET_CLAUDE_CHILD_ENV = 'unset CLAUDECODE HAMMURABI_INTERNAL_TOKEN ANTHROPIC_MODEL ANTHROPIC_DEFAULT_OPUS_MODEL ANTHROPIC_DEFAULT_SONNET_MODEL'
 
 function withClaudeSource<T extends Record<string, unknown>>(event: T) {
   return {
@@ -48,6 +49,16 @@ function withClaudeSource<T extends Record<string, unknown>>(event: T) {
 function readStreamEventKind(event: unknown): string | undefined {
   const record = event as { type?: string; ev?: { type?: string } }
   return record.type ?? record.ev?.type
+}
+
+async function readDebugEvents(baseUrl: string, sessionName: string): Promise<unknown[]> {
+  const response = await fetch(
+    `${baseUrl}/api/agents/sessions/${encodeURIComponent(sessionName)}/debug/events`,
+    { headers: AUTH_HEADERS },
+  )
+  expect(response.status).toBe(200)
+  const payload = await response.json() as { events?: unknown[] }
+  return Array.isArray(payload.events) ? payload.events : []
 }
 
 describe("stream sessions", () => {
@@ -271,6 +282,64 @@ describe("stream sessions", () => {
       await server.close()
     })
 
+    it('rejects creator on public stream worker creates via the canonical worker launcher', async () => {
+      installMockProcess()
+      const server = await startServer()
+
+      try {
+        const createResponse = await fetch(`${server.baseUrl}/api/agents/sessions`, {
+          method: 'POST',
+          headers: {
+            ...AUTH_HEADERS,
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify({
+            name: 'stream-worker-forged-creator',
+            mode: 'default',
+            transportType: 'stream',
+            creator: { kind: 'human', id: 'forged-user' },
+          }),
+        })
+
+        expect(createResponse.status).toBe(400)
+        expect(await createResponse.json()).toEqual({
+          error: 'creator must not be provided on /api/agents/sessions - worker creator is supplied by the authenticated route context',
+        })
+        expect(mockedSpawn).not.toHaveBeenCalled()
+      } finally {
+        await server.close()
+      }
+    })
+
+    it('rejects parentSession on public stream worker creates via the canonical worker launcher', async () => {
+      installMockProcess()
+      const server = await startServer()
+
+      try {
+        const createResponse = await fetch(`${server.baseUrl}/api/agents/sessions`, {
+          method: 'POST',
+          headers: {
+            ...AUTH_HEADERS,
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify({
+            name: 'stream-worker-parent-session',
+            mode: 'default',
+            transportType: 'stream',
+            parentSession: 'commander-main',
+          }),
+        })
+
+        expect(createResponse.status).toBe(400)
+        expect(await createResponse.json()).toEqual({
+          error: 'parentSession is not honored on worker launch routes. Commander attribution is carried by creator, supplied by the route context.',
+        })
+        expect(mockedSpawn).not.toHaveBeenCalled()
+      } finally {
+        await server.close()
+      }
+    })
+
   it('uses the requested Claude effort for stream sessions and exposes it in the session list', async () => {
       installMockProcess()
       const server = await startServer()
@@ -316,7 +385,11 @@ describe("stream sessions", () => {
       let server: RunningServer | null = null
 
       try {
-        server = await startServer()
+        const commanderTranscriptDir = join(workDir, 'data', 'commander')
+        server = await startServer({
+          commanderDataDir: commanderTranscriptDir,
+          commanderTranscriptAppender: createCommanderTranscriptAppender(commanderTranscriptDir),
+        })
 
         const createResponse = await fetch(`${server.baseUrl}/api/agents/sessions`, {
           method: 'POST',
@@ -460,6 +533,7 @@ describe("stream sessions", () => {
 
       const workDir = await mkdtemp(join(tmpdir(), 'hammurabi-commander-rotate-'))
       const commanderDataDir = join(workDir, 'commander-data')
+      const commanderTranscriptDir = join(workDir, 'data', 'commander')
       const sessionStorePath = join(workDir, 'stream-sessions.json')
       const originalDataDir = process.env.HAMMURABI_DATA_DIR
       const originalCommanderDataDir = process.env.COMMANDER_DATA_DIR
@@ -472,7 +546,9 @@ describe("stream sessions", () => {
       try {
         server = await startServer({
           autoRotateEntryThreshold: 1,
+          commanderDataDir: commanderTranscriptDir,
           commanderSessionStorePath: join(commanderDataDir, 'sessions.json'),
+          commanderTranscriptAppender: createCommanderTranscriptAppender(commanderTranscriptDir),
           sessionStorePath,
         })
 
@@ -1649,8 +1725,10 @@ describe("stream sessions", () => {
         })
 
         const { ws, replay } = await connectWsWithReplay(server.baseUrl, sessionName)
-        expect(replay.events).toEqual(expectedReplayEvents)
-        expect(replay.events).not.toContainEqual({ type: 'system', marker: 'persisted-fallback-only' })
+        expect(replay.events).toBeUndefined()
+        const replayEvents = await readDebugEvents(server.baseUrl, sessionName)
+        expect(replayEvents).toEqual(expectedReplayEvents)
+        expect(replayEvents).not.toContainEqual({ type: 'system', marker: 'persisted-fallback-only' })
         expect(replay.usage).toEqual({
           inputTokens: 222,
           outputTokens: 111,
@@ -1737,7 +1815,9 @@ describe("stream sessions", () => {
         })
 
         const { ws, replay } = await connectWsWithReplay(server.baseUrl, sessionName)
-        expect(replay.events).toEqual(persistedEvents)
+        expect(replay.events).toBeUndefined()
+        const replayEvents = await readDebugEvents(server.baseUrl, sessionName)
+        expect(replayEvents).toEqual(persistedEvents)
         expect(replay.usage).toEqual({
           inputTokens: 120,
           outputTokens: 60,
@@ -2214,8 +2294,8 @@ describe("stream sessions", () => {
 
       // Register message handler BEFORE open to catch the replay sent on upgrade
       const wsUrl = server.baseUrl.replace('http://', 'ws://') +
-        '/api/agents/sessions/stream-replay/ws?api_key=test-key'
-      const ws = new WebSocket(wsUrl)
+        '/api/agents/sessions/stream-replay/ws'
+      const ws = new WebSocket(wsUrl, { headers: { 'x-hammurabi-api-key': 'test-key' } })
       const messages: Array<{ type: string; events?: unknown[] }> = []
 
       ws.on('message', (data) => {
@@ -2234,7 +2314,9 @@ describe("stream sessions", () => {
 
       const replay = messages.find((m) => m.type === 'replay')
       expect(replay).toBeDefined()
-      expect(replay!.events?.map(readStreamEventKind)).toEqual(['turn.start', 'message.start', 'message.start'])
+      expect(replay!.events).toBeUndefined()
+      const replayEvents = await readDebugEvents(server.baseUrl, 'stream-replay')
+      expect(replayEvents.map(readStreamEventKind)).toEqual(['turn.start', 'message.start', 'message.start'])
 
       ws.close()
       await server.close()
@@ -2265,8 +2347,8 @@ describe("stream sessions", () => {
       await new Promise((resolve) => setTimeout(resolve, 50))
 
       const wsUrl = server.baseUrl.replace('http://', 'ws://') +
-        '/api/agents/sessions/stream-plan-mode/ws?api_key=test-key'
-      const ws = new WebSocket(wsUrl)
+        '/api/agents/sessions/stream-plan-mode/ws'
+      const ws = new WebSocket(wsUrl, { headers: { 'x-hammurabi-api-key': 'test-key' } })
       const messages: Array<{ type: string; events?: unknown[] }> = []
 
       ws.on('message', (data) => {
@@ -2285,7 +2367,8 @@ describe("stream sessions", () => {
       const replay = messages.find((message) => message.type === 'replay')
       expect(replay).toBeDefined()
 
-      const replayEvents = replay!.events as Array<Record<string, unknown>>
+      expect(replay!.events).toBeUndefined()
+      const replayEvents = await readDebugEvents(server.baseUrl, 'stream-plan-mode') as Array<Record<string, unknown>>
       expect(replayEvents.map(readStreamEventKind)).toEqual([
         'plan.update',
         'plan.update',
@@ -2383,8 +2466,8 @@ describe("stream sessions", () => {
       await new Promise((r) => setTimeout(r, 50))
 
       const wsUrl = server.baseUrl.replace('http://', 'ws://') +
-        '/api/agents/sessions/stream-replay-reconnect/ws?api_key=test-key'
-      const secondWs = new WebSocket(wsUrl)
+        '/api/agents/sessions/stream-replay-reconnect/ws'
+      const secondWs = new WebSocket(wsUrl, { headers: { 'x-hammurabi-api-key': 'test-key' } })
       const messages: Array<{
         type: string
         events?: Array<{ type: string }>
@@ -2406,7 +2489,9 @@ describe("stream sessions", () => {
 
       const replay = messages.find((message) => message.type === 'replay')
       expect(replay).toBeDefined()
-      expect(replay!.events?.map(readStreamEventKind)).toEqual([
+      expect(replay!.events).toBeUndefined()
+      const replayEvents = await readDebugEvents(server.baseUrl, 'stream-replay-reconnect')
+      expect(replayEvents.map(readStreamEventKind)).toEqual([
         'provider.activity',
         'provider.activity',
         'turn.end',
@@ -2784,8 +2869,8 @@ describe("stream sessions", () => {
 
       // Register message handler before open to avoid missing events
       const wsUrl = server.baseUrl.replace('http://', 'ws://') +
-        '/api/agents/sessions/stream-error/ws?api_key=test-key'
-      const ws = new WebSocket(wsUrl)
+        '/api/agents/sessions/stream-error/ws'
+      const ws = new WebSocket(wsUrl, { headers: { 'x-hammurabi-api-key': 'test-key' } })
       const received: Array<{ type: string; text?: string }> = []
 
       ws.on('message', (data) => {
@@ -2918,8 +3003,8 @@ describe("stream sessions", () => {
 
       // Register message handler before open to catch the replay
       const wsUrl = server.baseUrl.replace('http://', 'ws://') +
-        '/api/agents/sessions/stream-usage/ws?api_key=test-key'
-      const ws = new WebSocket(wsUrl)
+        '/api/agents/sessions/stream-usage/ws'
+      const ws = new WebSocket(wsUrl, { headers: { 'x-hammurabi-api-key': 'test-key' } })
       const messages: Array<{ type: string; events?: Array<Record<string, unknown>> }> = []
 
       ws.on('message', (data) => {
@@ -2938,7 +3023,9 @@ describe("stream sessions", () => {
 
       const replay = messages.find((m) => m.type === 'replay')
       expect(replay).toBeDefined()
-      const usageEvent = replay!.events!.find((event) => (
+      expect(replay!.events).toBeUndefined()
+      const replayEvents = await readDebugEvents(server.baseUrl, 'stream-usage')
+      const usageEvent = replayEvents.find((event) => (
         (event.ev as { type?: string } | undefined)?.type === 'provider.activity'
       )) as { ev?: { data?: { usage?: unknown } } } | undefined
       expect(usageEvent).toBeDefined()
@@ -3023,10 +3110,11 @@ describe("stream sessions", () => {
 
       // Connect and capture replay before the server's immediate replay frame can race past the listener.
       const { ws, replay } = await connectWsWithReplay(server.baseUrl, 'stream-cap')
-      // Should be capped at 1000
-      expect(replay.events.length).toBeLessThanOrEqual(1000)
-      // The last event should be the most recent (chunk-1009)
-      const lastEvent = replay.events[replay.events.length - 1] as { ev?: { text?: string } }
+      expect(replay.events).toBeUndefined()
+      expect(replay.projection?.replayCursor?.returnedEvents).toBeLessThanOrEqual(1000)
+      const replayEvents = await readDebugEvents(server.baseUrl, 'stream-cap')
+      expect(replayEvents.length).toBeLessThanOrEqual(1000)
+      const lastEvent = replayEvents[replayEvents.length - 1] as { ev?: { text?: string } }
       expect(lastEvent.ev?.text).toBe('chunk-1009')
 
       ws.close()
@@ -3118,8 +3206,8 @@ describe("stream sessions", () => {
 
       // Connect and check the replay message includes usage totals
       const wsUrl = server.baseUrl.replace('http://', 'ws://') +
-        '/api/agents/sessions/stream-replay-usage/ws?api_key=test-key'
-      const ws = new WebSocket(wsUrl)
+        '/api/agents/sessions/stream-replay-usage/ws'
+      const ws = new WebSocket(wsUrl, { headers: { 'x-hammurabi-api-key': 'test-key' } })
       const messages: Array<{ type: string; events?: unknown[]; usage?: { inputTokens: number; outputTokens: number; costUsd: number } }> = []
 
       ws.on('message', (data) => {
@@ -3178,8 +3266,8 @@ describe("stream sessions", () => {
 
       // Connect and check accumulated usage in replay
       const wsUrl = server.baseUrl.replace('http://', 'ws://') +
-        '/api/agents/sessions/stream-multi-usage/ws?api_key=test-key'
-      const ws = new WebSocket(wsUrl)
+        '/api/agents/sessions/stream-multi-usage/ws'
+      const ws = new WebSocket(wsUrl, { headers: { 'x-hammurabi-api-key': 'test-key' } })
       const messages: Array<{ type: string; usage?: { inputTokens: number; outputTokens: number; costUsd: number } }> = []
 
       ws.on('message', (data) => {
@@ -3231,8 +3319,8 @@ describe("stream sessions", () => {
       await new Promise((r) => setTimeout(r, 50))
 
       const wsUrl = server.baseUrl.replace('http://', 'ws://') +
-        '/api/agents/sessions/stream-result-override/ws?api_key=test-key'
-      const ws = new WebSocket(wsUrl)
+        '/api/agents/sessions/stream-result-override/ws'
+      const ws = new WebSocket(wsUrl, { headers: { 'x-hammurabi-api-key': 'test-key' } })
       const messages: Array<{ type: string; usage?: { inputTokens: number; outputTokens: number; costUsd: number } }> = []
 
       ws.on('message', (data) => {
@@ -3284,8 +3372,8 @@ describe("stream sessions", () => {
 
       const wsUrl =
         server.baseUrl.replace('http://', 'ws://') +
-        '/api/agents/sessions/stream-total-cost/ws?api_key=test-key'
-      const ws = new WebSocket(wsUrl)
+        '/api/agents/sessions/stream-total-cost/ws'
+      const ws = new WebSocket(wsUrl, { headers: { 'x-hammurabi-api-key': 'test-key' } })
       const messages: Array<{
         type: string
         usage?: { inputTokens: number; outputTokens: number; costUsd: number }

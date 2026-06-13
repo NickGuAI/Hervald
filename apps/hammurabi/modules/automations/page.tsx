@@ -102,35 +102,21 @@ export function AutomationsPage() {
         <p className="text-xs uppercase tracking-wide text-sumi-diluted">Hervald</p>
         <h1 className="mt-1 text-3xl font-medium text-sumi-black">Automations</h1>
 
-        <div className="mt-4 flex gap-2 overflow-x-auto" data-testid="automations-commander-filter">
-          <button
-            type="button"
-            onClick={() => updateParams({ commander: 'global' })}
-            className="shrink-0 rounded-full px-3 py-1.5 text-xs font-mono"
-            style={{
-              background: commanderFilter === 'global' ? 'var(--hv-fg)' : 'transparent',
-              color: commanderFilter === 'global' ? 'var(--hv-bg)' : 'var(--hv-fg-subtle)',
-              border: commanderFilter === 'global' ? '1px solid var(--hv-fg)' : '1px solid var(--hv-border-hair)',
-            }}
+        <label className="mt-4 block max-w-sm" data-testid="automations-commander-filter">
+          <span className="section-title block mb-2">Commander</span>
+          <select
+            value={commanderFilter}
+            onChange={(event) => updateParams({ commander: event.target.value })}
+            className="w-full rounded-lg border border-ink-border bg-washi-white px-3 py-2 text-sm font-mono text-sumi-black focus:outline-none focus:border-ink-border-hover"
           >
-            global
-          </button>
-          {commanders.map((commander) => (
-            <button
-              key={commander.id}
-              type="button"
-              onClick={() => updateParams({ commander: commander.id })}
-              className="shrink-0 rounded-full px-3 py-1.5 text-xs font-mono"
-              style={{
-                background: commanderFilter === commander.id ? 'var(--hv-fg)' : 'transparent',
-                color: commanderFilter === commander.id ? 'var(--hv-bg)' : 'var(--hv-fg-subtle)',
-                border: commanderFilter === commander.id ? '1px solid var(--hv-fg)' : '1px solid var(--hv-border-hair)',
-              }}
-            >
-              {commander.displayName?.trim().toLowerCase() || commander.id}
-            </button>
-          ))}
-        </div>
+            <option value="global">global</option>
+            {commanders.map((commander) => (
+              <option key={commander.id} value={commander.id}>
+                {commander.displayName?.trim().toLowerCase() || commander.id}
+              </option>
+            ))}
+          </select>
+        </label>
       </div>
 
       <div className="min-h-0 flex-1 overflow-hidden">

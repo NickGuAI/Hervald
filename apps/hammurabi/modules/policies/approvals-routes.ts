@@ -2,7 +2,7 @@ import { Router } from 'express'
 import { WebSocketServer, WebSocket } from 'ws'
 import type { IncomingMessage } from 'node:http'
 import type { Duplex } from 'node:stream'
-import type { AuthUser } from '@gehirn/auth-providers'
+import { bearerTokenFromHeader, type AuthUser } from '@gehirn/auth-providers'
 import type {
   ApprovalSessionsInterface,
   CodexApprovalQueueEvent,
@@ -11,6 +11,10 @@ import type {
 import type { ApiKeyStoreLike } from '../../server/api-keys/store.js'
 import { combinedAuth } from '../../server/middleware/combined-auth.js'
 import { createAuth0Verifier } from '../../server/middleware/auth0.js'
+import {
+  InMemoryTransportAuthTicketStore,
+  readTransportAuthTicketFromUrl,
+} from '../../server/auth/transport-tickets.js'
 import { ApprovalCoordinator } from './pending-store.js'
 import type { ApprovalCoordinatorEvent, ApprovalHistoryEntry, PendingApproval } from './types.js'
 
@@ -50,7 +54,8 @@ function toQueuedApprovalResponse(
   getCommanderName: CommanderNameLookup,
   approval: PendingApproval,
 ) {
-  const details = Object.entries(approval.context.details ?? {}).map(([label, value]) => ({
+  const redactedContext = redactApprovalContext(approval.context)
+  const details = Object.entries(redactedContext.details ?? {}).map(([label, value]) => ({
     label,
     value,
   }))
@@ -68,21 +73,22 @@ function toQueuedApprovalResponse(
     sessionName: approval.sessionId ?? null,
     source: approval.source,
     requestedAt: approval.requestedAt,
-    summary: approval.context.summary,
+    summary: redactedContext.summary,
     reason: null,
     risk: null,
-    preview: approval.context.preview,
-    previewText: approval.context.preview,
+    preview: redactedContext.preview,
+    previewText: redactedContext.preview,
     details,
     context: {
-      ...approval.context,
+      ...redactedContext,
       ...(commanderName ? { commanderName } : {}),
       sessionName: approval.sessionId ?? undefined,
     },
-    raw: {
+    raw: redactedPendingApprovalRaw({
       ...approval,
+      context: redactedContext,
       details,
-    },
+    }),
   }
 }
 
@@ -122,8 +128,69 @@ function toCodexApprovalResponse(
       sessionName: approval.sessionName,
       ...(commanderName ? { commanderName } : {}),
     },
-    raw: approval,
+    raw: redactUnknown(approval),
   }
+}
+
+const SENSITIVE_KEY_PATTERN = /(?:^|[_-])(api[_-]?key|authorization|bearer|cookie|credential|password|private[_-]?key|secret|token)(?:$|[_-])/iu
+const SECRET_SHAPED_VALUE_PATTERN = /\b(?:Bearer\s+[A-Za-z0-9._~+/=-]{12,}|hmrb_[A-Za-z0-9_-]{8,}|sk-[A-Za-z0-9_-]{12,}|gh[psuor]_[A-Za-z0-9_]{20,}|AKIA[0-9A-Z]{16})\b/gu
+const REDACTED = '[redacted]'
+
+function redactString(value: string): string {
+  return value.replace(SECRET_SHAPED_VALUE_PATTERN, REDACTED)
+}
+
+function redactUnknown(value: unknown, keyHint = ''): unknown {
+  if (SENSITIVE_KEY_PATTERN.test(keyHint)) {
+    return REDACTED
+  }
+  if (typeof value === 'string') {
+    return redactString(value)
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => redactUnknown(item))
+  }
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([key, entry]) => [
+        key,
+        redactUnknown(entry, key),
+      ]),
+    )
+  }
+  return value
+}
+
+function redactApprovalContext(context: PendingApproval['context']): PendingApproval['context'] {
+  const details: Record<string, string> = {}
+  for (const [key, value] of Object.entries(context.details ?? {})) {
+    const redacted = redactUnknown(value, key)
+    if (typeof redacted === 'string') {
+      details[key] = redacted
+    }
+  }
+
+  return {
+    summary: redactString(context.summary),
+    details,
+    ...(typeof context.preview === 'string' ? { preview: redactString(context.preview) } : {}),
+    ...(context.command ? { command: redactString(context.command) } : {}),
+    ...(context.primaryTarget
+      ? {
+        primaryTarget: {
+          label: context.primaryTarget.label,
+          value: redactString(context.primaryTarget.value),
+        },
+      }
+      : {}),
+  }
+}
+
+function redactedPendingApprovalRaw(
+  approval: PendingApproval & { details?: Array<{ label: string; value: string }> },
+): Record<string, unknown> {
+  const { toolInput: _toolInput, ...safeApproval } = approval
+  return redactUnknown(safeApproval) as Record<string, unknown>
 }
 
 async function listApprovalResponses(options: ApprovalsRouterOptions) {
@@ -270,6 +337,7 @@ export function createApprovalsRouter(options: ApprovalsRouterOptions): {
 } {
   const router = Router()
   const wss = new WebSocketServer({ noServer: true })
+  const streamTickets = new InMemoryTransportAuthTicketStore()
   const auth0Verifier = createAuth0Verifier({
     domain: options.auth0Domain,
     audience: options.auth0Audience,
@@ -293,6 +361,10 @@ export function createApprovalsRouter(options: ApprovalsRouterOptions): {
     res.json({
       approvals: await listApprovalResponses(options),
     })
+  })
+
+  router.post('/stream-ticket', requireReadAccess, (_req, res) => {
+    res.json(streamTickets.issue('approvals.pending-stream'))
   })
 
   router.get('/history', requireReadAccess, async (req, res) => {
@@ -328,10 +400,21 @@ export function createApprovalsRouter(options: ApprovalsRouterOptions): {
 
   async function verifyWsAuth(req: IncomingMessage): Promise<boolean> {
     const url = new URL(req.url ?? '', `http://${req.headers.host ?? 'localhost'}`)
-    const accessToken = url.searchParams.get('access_token')
-    const apiKeyParam = url.searchParams.get('api_key')
+    if (
+      streamTickets.consume(
+        readTransportAuthTicketFromUrl(url),
+        'approvals.pending-stream',
+      )
+    ) {
+      return true
+    }
+
+    const authorizationHeader = Array.isArray(req.headers.authorization)
+      ? req.headers.authorization[0]
+      : req.headers.authorization
+    const bearerToken = bearerTokenFromHeader(authorizationHeader)
     const apiKeyHeader = req.headers['x-hammurabi-api-key'] as string | undefined
-    const token = accessToken ?? apiKeyParam ?? apiKeyHeader
+    const token = bearerToken ?? apiKeyHeader
 
     if (!token) {
       return false

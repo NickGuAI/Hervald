@@ -7,6 +7,9 @@ import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ensureLocalStorage } from './ensureLocalStorage'
+import { ModuleGraphProvider } from '@/module-graph-context'
+import type { HammurabiModuleGraphResponse } from '@/types/module-graph-api'
+import { COMMAND_ROOM_ROUTE_METADATA } from '../route-metadata'
 
 const mocks = vi.hoisted(() => ({
   fetchJson: vi.fn(),
@@ -117,6 +120,42 @@ vi.mock('../../commanders/components/CommanderIdentityTab', () => ({
 
 import CommandRoomPage from '../page'
 
+const moduleGraph: HammurabiModuleGraphResponse = {
+  modules: [
+    {
+      id: 'command-room',
+      label: 'Command Room',
+      status: 'public',
+      summary: 'Command room test graph.',
+      capabilities: { provides: [], consumes: [] },
+      dependencies: { modules: [], capabilities: [] },
+      ui: {
+        kind: 'route',
+        routes: [{
+          id: 'command-room.ui',
+          path: '/command-room',
+          componentKey: 'modules/command-room/page',
+          surfaces: ['desktop', 'mobile'],
+          metadata: COMMAND_ROOM_ROUTE_METADATA,
+        }],
+        surfaces: ['desktop', 'mobile'],
+      },
+    },
+  ],
+  routes: [],
+  parsers: [],
+  websockets: [{
+    id: 'conversation.session-stream',
+    moduleId: 'conversation',
+    path: '/api/conversations/:id/ws',
+    match: 'exact',
+    auth: 'api-key-or-auth0',
+  }],
+  storage: [],
+  nav: [],
+  providers: [],
+}
+
 const reactActEnvironment = globalThis as typeof globalThis & {
   IS_REACT_ACT_ENVIRONMENT?: boolean
 }
@@ -170,15 +209,19 @@ async function renderAt(pathname: string) {
         QueryClientProvider,
         { client: queryClient },
         createElement(
-          MemoryRouter,
-          { initialEntries: [pathname] },
+          ModuleGraphProvider,
+          { graph: moduleGraph },
           createElement(
-            Routes,
-            null,
-            createElement(Route, {
-              path: '/command-room',
-              element: createElement(CommandRoomRoute),
-            }),
+            MemoryRouter,
+            { initialEntries: [pathname] },
+            createElement(
+              Routes,
+              null,
+              createElement(Route, {
+                path: '/command-room',
+                element: createElement(CommandRoomRoute),
+              }),
+            ),
           ),
         ),
       ),
@@ -295,6 +338,23 @@ function composerInput(): HTMLTextAreaElement | HTMLInputElement | undefined {
   ) as HTMLTextAreaElement | HTMLInputElement | undefined
 }
 
+function latestConversationMessagePostBody(): Record<string, unknown> {
+  const call = [...mocks.fetchJson.mock.calls].reverse().find(([path, init]) => (
+    path === '/api/conversations/conversation-1/message'
+    && (init as RequestInit | undefined)?.method === 'POST'
+  ))
+  if (!call) {
+    throw new Error('Expected a conversation message POST')
+  }
+
+  const init = call[1] as RequestInit | undefined
+  expect(init?.headers).toEqual({
+    'content-type': 'application/json',
+  })
+  expect(typeof init?.body).toBe('string')
+  return JSON.parse(init?.body as string) as Record<string, unknown>
+}
+
 const LIVE_CONVERSATION_SESSION_NAME = 'commander-commander-1-conversation-conversation-1'
 
 function buildLiveConversation() {
@@ -388,10 +448,9 @@ function mockConversationEndpoints(
     if (path === '/api/workspace/open') {
       return {
         targetId: 'wt-test',
-        label: 'local:/tmp/workspace',
+        label: 'Local',
         host: 'local',
-        rootPath: '/tmp/workspace',
-        isReadOnly: false,
+        readOnly: false,
       }
     }
     if (path === '/api/commanders/commander-1/conversations') {
@@ -460,10 +519,9 @@ describe('Hervald command-room routing', () => {
       if (path === '/api/workspace/open') {
         return {
           targetId: 'wt-test',
-          label: 'local:/tmp/workspace',
+          label: 'Local',
           host: 'local',
-          rootPath: '/tmp/workspace',
-          isReadOnly: false,
+          readOnly: false,
         }
       }
       if (path === '/api/agents/sessions/commander-commander-1/queue') {
@@ -1009,25 +1067,17 @@ describe('Hervald command-room routing', () => {
 
     expect(rawSend).not.toHaveBeenCalled()
     await vi.waitFor(() => {
-      expect(mocks.fetchJson).toHaveBeenCalledWith(
-        '/api/conversations/conversation-1/message',
-        expect.objectContaining({
-          method: 'POST',
-          headers: {
-            'content-type': 'application/json',
+      expect(latestConversationMessagePostBody()).toEqual({
+        message: 'Queue this screenshot.',
+        images: [
+          {
+            mediaType: 'image/png',
+            data: 'ZmFrZS1pbWFnZQ==',
           },
-          body: JSON.stringify({
-            message: 'Queue this screenshot.',
-            images: [
-              {
-                mediaType: 'image/png',
-                data: 'ZmFrZS1pbWFnZQ==',
-              },
-            ],
-            queue: true,
-          }),
-        }),
-      )
+        ],
+        clientSendId: expect.any(String),
+        queue: true,
+      })
     })
   })
 
@@ -1060,24 +1110,16 @@ describe('Hervald command-room routing', () => {
 
     expect(rawSend).not.toHaveBeenCalled()
     await vi.waitFor(() => {
-      expect(mocks.fetchJson).toHaveBeenCalledWith(
-        '/api/conversations/conversation-1/message',
-        expect.objectContaining({
-          method: 'POST',
-          headers: {
-            'content-type': 'application/json',
+      expect(latestConversationMessagePostBody()).toEqual({
+        message: 'Send this screenshot.',
+        images: [
+          {
+            mediaType: 'image/png',
+            data: 'ZmFrZS1pbWFnZQ==',
           },
-          body: JSON.stringify({
-            message: 'Send this screenshot.',
-            images: [
-              {
-                mediaType: 'image/png',
-                data: 'ZmFrZS1pbWFnZQ==',
-              },
-            ],
-          }),
-        }),
-      )
+        ],
+        clientSendId: expect.any(String),
+      })
     })
   })
 
@@ -1108,20 +1150,16 @@ describe('Hervald command-room routing', () => {
 
     expect(rawSend).not.toHaveBeenCalled()
     await vi.waitFor(() => {
-      expect(mocks.fetchJson).toHaveBeenCalledWith(
-        '/api/conversations/conversation-1/message',
-        expect.objectContaining({
-          body: JSON.stringify({
-            message: '',
-            images: [
-              {
-                mediaType: 'image/png',
-                data: 'ZmFrZS1pbWFnZQ==',
-              },
-            ],
-          }),
-        }),
-      )
+      expect(latestConversationMessagePostBody()).toEqual({
+        message: '',
+        images: [
+          {
+            mediaType: 'image/png',
+            data: 'ZmFrZS1pbWFnZQ==',
+          },
+        ],
+        clientSendId: expect.any(String),
+      })
     })
   })
 

@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState } from 'react'
 import { ChevronRight, Cpu, Monitor } from 'lucide-react'
 import { findProviderEntry, getProviderLabel, useProviderRegistry } from '@/hooks/use-providers'
 import { timeAgo, cn } from '@/lib/utils'
+import { ConfirmModal } from '@modules/components/ConfirmModal'
 import type { AgentType, Machine } from '@/types'
 import { DEFAULT_CLAUDE_EFFORT_LEVEL } from '../../claude-effort.js'
 import {
@@ -82,7 +83,9 @@ export function SessionCard({
   ].filter((value): value is string => Boolean(value))
   const supportsEffort = currentProvider?.uiCapabilities.supportsEffort ?? (rawAgentType === 'claude')
   const [isExpanded, setIsExpanded] = useState(variant === 'row' && selected)
+  const [confirmKillOpen, setConfirmKillOpen] = useState(false)
   const previousSelectedRef = useRef(selected)
+  const killConfirmationMessage = getKillConfirmationMessage(session.name, rawAgentType as AgentType | null)
 
   useEffect(() => {
     if (variant !== 'row') {
@@ -107,10 +110,11 @@ export function SessionCard({
   }
 
   const handleKill = () => {
-    const confirmed = window.confirm(getKillConfirmationMessage(session.name, rawAgentType as AgentType | null))
-    if (!confirmed) {
-      return
-    }
+    setConfirmKillOpen(true)
+  }
+
+  const handleConfirmKill = () => {
+    setConfirmKillOpen(false)
     void Promise.resolve(onKill()).catch(() => {
       // error handled by page-level session action state
     })
@@ -242,151 +246,169 @@ export function SessionCard({
     </>
   )
 
+  const killConfirmModal = (
+    <ConfirmModal
+      open={confirmKillOpen}
+      title="Kill session?"
+      message={killConfirmationMessage}
+      confirmLabel="Kill session"
+      confirmTone="danger"
+      onClose={() => setConfirmKillOpen(false)}
+      onConfirm={handleConfirmKill}
+    />
+  )
+
   if (variant === 'row') {
     return (
-      <div
-        className="w-full"
-        onKeyDown={(event) => {
-          if (event.key !== 'Escape' || !isExpanded) {
-            return
-          }
-          event.preventDefault()
-          event.stopPropagation()
-          setIsExpanded(false)
-          rowButtonRef.current?.focus()
-        }}
-      >
-        <button
-          ref={rowButtonRef}
-          type="button"
-          aria-expanded={isExpanded}
-          aria-controls={detailsId}
-          onClick={() => {
-            onSelect()
-            setIsExpanded((current) => (selected ? !current : true))
-          }}
+      <>
+        <div
+          className="w-full"
           onKeyDown={(event) => {
-            if (event.key !== 'Enter' && event.key !== ' ') {
+            if (event.key !== 'Escape' || !isExpanded) {
               return
             }
             event.preventDefault()
-            onSelect()
-            setIsExpanded((current) => (selected ? !current : true))
+            event.stopPropagation()
+            setIsExpanded(false)
+            rowButtonRef.current?.focus()
           }}
-          className={cn(
-            'flex w-full items-center gap-3 rounded-md px-3 py-2 text-left transition-colors duration-200 ease-gentle',
-            'hover:bg-ink-wash focus-visible:bg-ink-wash focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-sumi-black/10',
-            (selected || isExpanded) && 'bg-ink-wash',
-          )}
         >
-          <div
-            data-session-card-row-content
-            className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden whitespace-nowrap"
-          >
-            <span aria-hidden className={cn('h-2 w-2 shrink-0 rounded-full', rowStatusClass)} />
-            <span
-              title={sessionLabel}
-              className="min-w-0 shrink truncate font-mono text-xs text-sumi-black"
-            >
-              {sessionLabel}
-            </span>
-            {rowMeta.length > 0 && (
-              <span className="truncate text-[11px] text-sumi-diluted">
-                · {rowMeta.join(' · ')}
-              </span>
-            )}
-          </div>
-
-          <ChevronRight
-            size={15}
+          <button
+            ref={rowButtonRef}
+            type="button"
+            aria-expanded={isExpanded}
+            aria-controls={detailsId}
+            onClick={() => {
+              onSelect()
+              setIsExpanded((current) => (selected ? !current : true))
+            }}
+            onKeyDown={(event) => {
+              if (event.key !== 'Enter' && event.key !== ' ') {
+                return
+              }
+              event.preventDefault()
+              onSelect()
+              setIsExpanded((current) => (selected ? !current : true))
+            }}
             className={cn(
-              'shrink-0 text-sumi-mist transition-transform duration-200',
-              isExpanded && 'rotate-90 text-sumi-gray',
+              'flex w-full items-center gap-3 rounded-md px-3 py-2 text-left transition-colors duration-200 ease-gentle',
+              'hover:bg-ink-wash focus-visible:bg-ink-wash focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-sumi-black/10',
+              (selected || isExpanded) && 'bg-ink-wash',
             )}
-          />
-        </button>
-
-        {isExpanded && (
-          <div
-            id={detailsId}
-            role="region"
-            aria-label={`${sessionLabel} lifecycle controls`}
-            className="mx-2 mb-2 rounded-md border border-ink-border bg-washi-white px-3 pb-3 pt-2"
           >
-            <div className="flex flex-wrap items-center gap-2">
-              {sessionActions}
+            <div
+              data-session-card-row-content
+              className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden whitespace-nowrap"
+            >
+              <span aria-hidden className={cn('h-2 w-2 shrink-0 rounded-full', rowStatusClass)} />
+              <span
+                title={sessionLabel}
+                className="min-w-0 shrink truncate font-mono text-xs text-sumi-black"
+              >
+                {sessionLabel}
+              </span>
+              {rowMeta.length > 0 && (
+                <span className="truncate text-[11px] text-sumi-diluted">
+                  · {rowMeta.join(' · ')}
+                </span>
+              )}
             </div>
-            {sessionLifecycleMeta}
-          </div>
-        )}
-      </div>
+
+            <ChevronRight
+              size={15}
+              className={cn(
+                'shrink-0 text-sumi-mist transition-transform duration-200',
+                isExpanded && 'rotate-90 text-sumi-gray',
+              )}
+            />
+          </button>
+
+          {isExpanded && (
+            <div
+              id={detailsId}
+              role="region"
+              aria-label={`${sessionLabel} lifecycle controls`}
+              className="mx-2 mb-2 rounded-md border border-ink-border bg-washi-white px-3 pb-3 pt-2"
+            >
+              <div className="flex flex-wrap items-center gap-2">
+                {sessionActions}
+              </div>
+              {sessionLifecycleMeta}
+            </div>
+          )}
+        </div>
+        {killConfirmModal}
+      </>
     )
   }
 
   return (
-    <div
-      role="button"
-      tabIndex={0}
-      onClick={() => {
-        onSelect()
-      }}
-      onKeyDown={(event) => {
-        if (event.target !== event.currentTarget) {
-          return
-        }
-        if (event.key === 'Enter' || event.key === ' ') {
-          event.preventDefault()
+    <>
+      <div
+        role="button"
+        tabIndex={0}
+        onClick={() => {
           onSelect()
-        }
-      }}
-      className={cn(
-        'w-full text-left p-5 card-sumi transition-all duration-300 ease-gentle',
-        'cursor-pointer',
-        transportType === 'pty' && 'border-2 border-sumi-black',
-        workerOrchestrationComplete && !isCommander && 'opacity-75',
-        selected && 'ring-1 ring-sumi-black/10 shadow-ink-md',
-      )}
-    >
-      <div className="flex items-start justify-between gap-2">
-        <div className="flex items-center gap-3 min-w-0 flex-wrap">
-          <Icon size={18} className="shrink-0 text-sumi-diluted" />
-          <span className="font-mono text-sm text-sumi-black truncate">{sessionLabel}</span>
-          {transportType === 'pty' && (
-            <span className="badge-sumi bg-ink-wash text-sumi-gray text-[10px]">pty</span>
-          )}
-          {agentBadge && (
-            <span className="badge-sumi text-[10px] bg-accent-indigo/10 text-accent-indigo">{agentBadge}</span>
-          )}
-          {isRemote && (
-            <span className="badge-sumi bg-ink-wash text-sumi-gray text-[10px]">
-              {machine ? `${machine.label} · ${machine.host}` : session.host}
-            </span>
-          )}
-          {workerOrchestrationComplete && !isCommander && (
-            <span className="badge-sumi bg-ink-wash text-sumi-diluted text-[10px]">completed</span>
-          )}
-          {session.status === 'stale' && (
-            <span className="badge-sumi bg-amber-500/10 text-amber-700 text-[10px]">stale</span>
-          )}
-          {queuedMessageCount > 0 && (
-            <span className="badge-sumi bg-sky-500/10 text-sky-700 text-[10px]">
-              {queuedMessageCount} queued
-            </span>
-          )}
-        </div>
-        <div className="flex items-center gap-1.5 shrink-0">
-          {sessionActions}
-          <ChevronRight
-            size={16}
-            className={cn(
-              'text-sumi-mist transition-transform duration-300',
-              selected && 'rotate-90 text-sumi-gray',
+        }}
+        onKeyDown={(event) => {
+          if (event.target !== event.currentTarget) {
+            return
+          }
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault()
+            onSelect()
+          }
+        }}
+        className={cn(
+          'w-full text-left p-5 card-sumi transition-all duration-300 ease-gentle',
+          'cursor-pointer',
+          transportType === 'pty' && 'border-2 border-sumi-black',
+          workerOrchestrationComplete && !isCommander && 'opacity-75',
+          selected && 'ring-1 ring-sumi-black/10 shadow-ink-md',
+        )}
+      >
+        <div className="flex items-start justify-between gap-2">
+          <div className="flex items-center gap-3 min-w-0 flex-wrap">
+            <Icon size={18} className="shrink-0 text-sumi-diluted" />
+            <span className="font-mono text-sm text-sumi-black truncate">{sessionLabel}</span>
+            {transportType === 'pty' && (
+              <span className="badge-sumi bg-ink-wash text-sumi-gray text-[10px]">pty</span>
             )}
-          />
+            {agentBadge && (
+              <span className="badge-sumi text-[10px] bg-accent-indigo/10 text-accent-indigo">{agentBadge}</span>
+            )}
+            {isRemote && (
+              <span className="badge-sumi bg-ink-wash text-sumi-gray text-[10px]">
+                {machine ? `${machine.label} · ${machine.host}` : session.host}
+              </span>
+            )}
+            {workerOrchestrationComplete && !isCommander && (
+              <span className="badge-sumi bg-ink-wash text-sumi-diluted text-[10px]">completed</span>
+            )}
+            {session.status === 'stale' && (
+              <span className="badge-sumi bg-amber-500/10 text-amber-700 text-[10px]">stale</span>
+            )}
+            {queuedMessageCount > 0 && (
+              <span className="badge-sumi bg-sky-500/10 text-sky-700 text-[10px]">
+                {queuedMessageCount} queued
+              </span>
+            )}
+          </div>
+          <div className="flex items-center gap-1.5 shrink-0">
+            {sessionActions}
+            <ChevronRight
+              size={16}
+              className={cn(
+                'text-sumi-mist transition-transform duration-300',
+                selected && 'rotate-90 text-sumi-gray',
+              )}
+            />
+          </div>
         </div>
-      </div>
 
-      {sessionLifecycleMeta}
-    </div>
+        {sessionLifecycleMeta}
+      </div>
+      {killConfirmModal}
+    </>
   )
 }

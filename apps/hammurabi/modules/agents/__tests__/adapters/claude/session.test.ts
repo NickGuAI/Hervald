@@ -3,7 +3,7 @@ import type { ChildProcess } from 'node:child_process'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { buildClaudePromptAudit, createClaudeStreamSession, type ClaudeStreamSessionDeps } from '../../../adapters/claude/session'
 
-const UNSET_CLAUDE_CHILD_ENV = 'unset CLAUDECODE ANTHROPIC_MODEL ANTHROPIC_DEFAULT_OPUS_MODEL ANTHROPIC_DEFAULT_SONNET_MODEL'
+const UNSET_CLAUDE_CHILD_ENV = 'unset CLAUDECODE HAMMURABI_INTERNAL_TOKEN ANTHROPIC_MODEL ANTHROPIC_DEFAULT_OPUS_MODEL ANTHROPIC_DEFAULT_SONNET_MODEL'
 
 function createFakeChildProcess(): ChildProcess {
   const child = new EventEmitter() as ChildProcess
@@ -225,7 +225,7 @@ describe('agents/adapters/claude/session', () => {
     ).toThrow(/Claude append prompt is 20 bytes/)
   })
 
-  it('reverse-tunnels the approval daemon and propagates the internal token when launching Claude on a remote machine (issue/1225)', () => {
+  it('reverse-tunnels the approval daemon and propagates only the scoped approval bridge token when launching Claude on a remote machine (issue/1225)', () => {
     const child = createFakeChildProcess()
     const spawnImpl = vi.fn().mockReturnValue(child)
     const deps = createDeps(spawnImpl)
@@ -270,16 +270,20 @@ describe('agents/adapters/claude/session', () => {
     expect(args).toContain('ControlMaster=auto')
     expect(args).toContain('ControlPersist=600')
     expect((args as string[]).find((arg: string) => arg.startsWith('ControlPath='))).toBeTruthy()
-    // Internal token propagated via SendEnv without leaking the value into argv.
-    expect(args).toContain('SendEnv=HAMMURABI_INTERNAL_TOKEN')
+    // Scoped approval bridge token is propagated via SendEnv without leaking either secret into argv.
+    expect(args).toContain('SendEnv=HAMMURABI_APPROVAL_BRIDGE_TOKEN')
+    expect(args).not.toContain('SendEnv=HAMMURABI_INTERNAL_TOKEN')
     expect((args as string[]).join(' ')).not.toContain('remote-bridge-token')
     // Bridge flags appear before the user@host destination so SSH parses them as options.
     const destinationIdx = (args as string[]).indexOf('yugu@yus-mac-mini')
     const sendEnvIdx = (args as string[]).findIndex((arg: string) =>
-      arg === 'SendEnv=HAMMURABI_INTERNAL_TOKEN',
+      arg === 'SendEnv=HAMMURABI_APPROVAL_BRIDGE_TOKEN',
     )
     expect(rIdx).toBeLessThan(destinationIdx)
     expect(sendEnvIdx).toBeLessThan(destinationIdx)
+    const spawnOptions = spawnImpl.mock.calls[0]![2] as { env?: NodeJS.ProcessEnv }
+    expect(spawnOptions.env?.HAMMURABI_INTERNAL_TOKEN).toBeUndefined()
+    expect(spawnOptions.env?.HAMMURABI_APPROVAL_BRIDGE_TOKEN).toEqual(expect.any(String))
   })
 
   it('does not add the reverse-tunnel or SendEnv flags for local Claude launches', () => {
@@ -301,10 +305,12 @@ describe('agents/adapters/claude/session', () => {
     )
 
     expect(spawnImpl).toHaveBeenCalledTimes(1)
-    const [, args] = spawnImpl.mock.calls[0]!
+    const [, args, spawnOptions] = spawnImpl.mock.calls[0]!
     expect(args).not.toContain('-R')
     expect(
       (args as string[]).find((arg: string) => arg === 'SendEnv=HAMMURABI_INTERNAL_TOKEN'),
     ).toBeUndefined()
+    expect((spawnOptions as { env?: NodeJS.ProcessEnv }).env?.HAMMURABI_INTERNAL_TOKEN).toBeUndefined()
+    expect((spawnOptions as { env?: NodeJS.ProcessEnv }).env?.HAMMURABI_APPROVAL_BRIDGE_TOKEN).toEqual(expect.any(String))
   })
 })

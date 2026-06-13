@@ -63,34 +63,23 @@ export function MobileAutomations({
         <p className="mt-2 text-sm italic text-sumi-diluted">how commanders wake up on their own</p>
       </div>
 
-      <div className="hv-scroll flex gap-2 overflow-x-auto px-4 pb-3">
-        <button
-          type="button"
-          onClick={() => updateParams({ commander: 'global' })}
-          className="shrink-0 rounded-full px-3 py-1.5 text-[11px] font-mono"
-          style={{
-            background: commanderFilter === 'global' ? 'var(--hv-fg)' : 'transparent',
-            color: commanderFilter === 'global' ? 'var(--hv-bg)' : 'var(--hv-fg-subtle)',
-            border: commanderFilter === 'global' ? '1px solid var(--hv-fg)' : '1px solid var(--hv-border-hair)',
-          }}
-        >
-          global
-        </button>
-        {commanders.map((commander) => (
-          <button
-            key={commander.id}
-            type="button"
-            onClick={() => updateParams({ commander: commander.id })}
-            className="shrink-0 rounded-full px-3 py-1.5 text-[11px] font-mono"
-            style={{
-              background: commanderFilter === commander.id ? 'var(--hv-fg)' : 'transparent',
-              color: commanderFilter === commander.id ? 'var(--hv-bg)' : 'var(--hv-fg-subtle)',
-              border: commanderFilter === commander.id ? '1px solid var(--hv-fg)' : '1px solid var(--hv-border-hair)',
-            }}
+      <div className="px-5 pb-3">
+        <label className="block">
+          <span className="section-title block mb-2">Commander</span>
+          <select
+            value={commanderFilter}
+            onChange={(event) => updateParams({ commander: event.target.value })}
+            className="w-full rounded-lg border border-ink-border bg-washi-white px-3 py-2 text-[16px] font-mono text-sumi-black focus:outline-none focus:border-ink-border-hover"
+            data-testid="mobile-automation-commander-select"
           >
-            {(commander.displayName?.trim() || commander.host?.trim() || commander.id).toLowerCase()}
-          </button>
-        ))}
+            <option value="global">global</option>
+            {commanders.map((commander) => (
+              <option key={commander.id} value={commander.id}>
+                {(commander.displayName?.trim() || commander.host?.trim() || commander.id).toLowerCase()}
+              </option>
+            ))}
+          </select>
+        </label>
       </div>
 
       <div className="min-h-0 flex-1 overflow-hidden">

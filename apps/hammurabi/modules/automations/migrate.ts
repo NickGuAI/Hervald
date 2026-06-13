@@ -24,6 +24,16 @@ const ATHENA_HYGIENE_AUTOMATION_NAMES = new Set([
   'daily-review',
   'domain-distill',
 ])
+const MEMORY_CONSOLIDATION_AUTOMATION_NAME = 'memory-consolidation'
+const COMMANDER_MEMORY_CLEANUP_SKILL = 'commander-memory-cleanup'
+const MEMORY_CONSOLIDATION_CLEANUP_INSTRUCTION = [
+  'For each active commander listed via hammurabi commander list (or the commanders API),',
+  'invoke /commander-memory-cleanup in observer mode first, then reflector mode only for commanders that need cleanup.',
+  'Report per-commander KEEP/PROMOTE/DROP/PROPOSE counts, changed files, and skipped commanders.',
+  'Skip commanders in state=stopped.',
+].join(' ')
+const MEMORY_CONSOLIDATION_CLEANUP_DESCRIPTION =
+  'Nightly commander memory cleanup across active commanders - midnight ET'
 
 interface LegacyCronTask {
   id: string
@@ -625,6 +635,65 @@ async function globalizeAthenaHygieneAutomations(
   return migratedIds.sort((left, right) => left.localeCompare(right))
 }
 
+function hasSkill(skills: readonly string[], skillName: string): boolean {
+  return skills.some((skill) => skill.trim() === skillName)
+}
+
+function hasDeadMemoryCompactInstruction(instruction: string): boolean {
+  return /\bhammurabi\s+memory\s+compact\b/u.test(instruction)
+}
+
+function shouldRepairMemoryConsolidationAutomation(automation: Automation): boolean {
+  const normalizedName = automation.name.trim().toLowerCase()
+  const isMemoryConsolidation = normalizedName === MEMORY_CONSOLIDATION_AUTOMATION_NAME
+  return hasDeadMemoryCompactInstruction(automation.instruction)
+    || (isMemoryConsolidation && !hasSkill(automation.skills, COMMANDER_MEMORY_CLEANUP_SKILL))
+}
+
+function repairMemoryConsolidationAutomation(automation: Automation): Automation {
+  const skills = hasSkill(automation.skills, COMMANDER_MEMORY_CLEANUP_SKILL)
+    ? automation.skills
+    : [...automation.skills, COMMANDER_MEMORY_CLEANUP_SKILL]
+  return {
+    ...automation,
+    instruction: MEMORY_CONSOLIDATION_CLEANUP_INSTRUCTION,
+    skills,
+    description: MEMORY_CONSOLIDATION_CLEANUP_DESCRIPTION,
+  }
+}
+
+async function repairMemoryCleanupAutomations(
+  automationsDir: string,
+): Promise<string[]> {
+  const migratedIds: string[] = []
+  let entries: Dirent[]
+  try {
+    entries = await readdir(automationsDir, { withFileTypes: true })
+  } catch (error) {
+    if (isObject(error) && 'code' in error && error.code === 'ENOENT') {
+      return migratedIds
+    }
+    throw error
+  }
+
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith('.json') || entry.name === MANIFEST_FILE) {
+      continue
+    }
+
+    const filePath = path.join(automationsDir, entry.name)
+    const automation = asAutomationRecord(await readJsonFile(filePath))
+    if (!automation || !shouldRepairMemoryConsolidationAutomation(automation)) {
+      continue
+    }
+
+    await writeJsonFileAtomic(filePath, repairMemoryConsolidationAutomation(automation))
+    migratedIds.push(automation.id)
+  }
+
+  return migratedIds.sort((left, right) => left.localeCompare(right))
+}
+
 async function ensureAutomationArtifacts(
   automationDir: string,
   automation: Pick<Automation, 'name' | 'seedMemory' | 'memoryPath' | 'outputDir'>,
@@ -764,6 +833,9 @@ export async function migrateLegacyAutomations(
 
   const manifest = await readManifest(roots.manifestPath)
   const migratedIds = new Set<string>()
+  for (const automationId of await repairMemoryCleanupAutomations(automationsDir)) {
+    migratedIds.add(automationId)
+  }
   if (!manifest.athenaHygieneAutomationsGlobalized) {
     for (const automationId of await globalizeAthenaHygieneAutomations(automationsDir)) {
       migratedIds.add(automationId)

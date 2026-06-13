@@ -29,5 +29,7 @@ describe('CreateCommanderForm', () => {
     expect(html).toContain('host (e.g. my-agent-1)')
     expect(html).toContain('Agent type')
     expect(html).toContain('Claude effort')
+    expect(html).toContain('Working directory')
+    expect(html).toContain('Browse directories')
   })
 })

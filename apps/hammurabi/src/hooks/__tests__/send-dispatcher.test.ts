@@ -76,6 +76,7 @@ describe('SendDispatcher', () => {
     }
     const image = { mediaType: 'image/png', data: 'base64-data' }
     const fallbackHttp = vi.fn(async () => true)
+    const paintOptimistic = vi.fn()
     const dispatcher = createWsDirectDispatcher({
       wsRef: { current: socket },
       sessionName: 'commander-test',
@@ -83,15 +84,17 @@ describe('SendDispatcher', () => {
     })
 
     const ok = await dispatcher.send(
-      { text: 'see attached', images: [image] },
-      vi.fn(),
+      { text: 'see attached', images: [image], clientSendId: 'send-image-1' },
+      paintOptimistic,
     )
 
     expect(ok).toBe(true)
     expect(socket.send).not.toHaveBeenCalled()
+    expect(paintOptimistic).toHaveBeenCalledWith('see attached', [image], 'send-image-1')
     expect(fallbackHttp).toHaveBeenCalledWith({
       text: 'see attached',
       images: [image],
+      clientSendId: 'send-image-1',
     })
   })
 

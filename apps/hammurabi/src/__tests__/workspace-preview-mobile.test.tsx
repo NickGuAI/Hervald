@@ -11,12 +11,13 @@ import type {
 } from '../../modules/workspace/types'
 
 const mocks = vi.hoisted(() => ({
+  fetchJson: vi.fn(),
   getAccessToken: vi.fn(),
 }))
 
 vi.mock('@/lib/api', () => ({
   buildRequestHeaders: vi.fn(async () => new Headers()),
-  fetchJson: vi.fn(),
+  fetchJson: mocks.fetchJson,
   getAccessToken: mocks.getAccessToken,
   isAuthRecoveryRequiredError: () => false,
 }))
@@ -57,6 +58,11 @@ async function renderNode(node: ReactNode) {
 describe('workspace mobile preview fixes', () => {
   beforeEach(() => {
     ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
+    let ticketCounter = 0
+    mocks.fetchJson.mockImplementation(async () => {
+      ticketCounter += 1
+      return { ticket: `ticket-${ticketCounter}` }
+    })
     mocks.getAccessToken.mockResolvedValue('token-123')
   })
 
@@ -70,6 +76,7 @@ describe('workspace mobile preview fixes', () => {
     container?.remove()
     container = null
     document.body.innerHTML = ''
+    mocks.fetchJson.mockReset()
     mocks.getAccessToken.mockReset()
     delete (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT
   })
@@ -108,9 +115,9 @@ describe('workspace mobile preview fixes', () => {
     const source: WorkspaceSourceDescriptor = {
       kind: 'target',
       id: 'wt-1',
-      label: 'local:/tmp/workspace',
+      label: 'Local',
     }
-    const expectedUrl = '/api/workspace/raw?path=docs%2Freport.pdf&access_token=token-123&targetId=wt-1'
+    const expectedUrl = '/api/workspace/raw?path=docs%2Freport.pdf&ticket=ticket-1&targetId=wt-1'
 
     await renderNode(
       <WorkspaceFilePreview

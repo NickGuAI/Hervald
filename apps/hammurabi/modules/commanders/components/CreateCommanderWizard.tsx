@@ -16,6 +16,7 @@ import {
 } from '../runtime-config.shared.js'
 import { CommanderMdPreview } from './CommanderMdPreview'
 import { CreateCommanderForm } from './CreateCommanderForm'
+import { DirectoryPicker } from '../../agents/components/DirectoryPicker'
 import { ProviderModelSelect, resolveProviderModelOptions } from './ProviderModelSelect'
 import { WizardChatPanel } from './WizardChatPanel'
 
@@ -525,12 +526,7 @@ export function CreateCommanderWizard({
 
           <label className="block">
             <span className={`${LABEL_CLASS} mb-1 block`}>Working directory</span>
-            <input
-              value={cwd}
-              onChange={(event) => setCwd(event.target.value)}
-              placeholder="Optional absolute path"
-              className={INPUT_CLASS}
-            />
+            <DirectoryPicker value={cwd} onChange={setCwd} host={host} />
           </label>
 
           <div className="grid gap-3 md:grid-cols-2">

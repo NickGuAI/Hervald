@@ -1,5 +1,6 @@
 import { formatStoredApiKeyUnauthorizedMessage } from './api-key-recovery.js'
 import { type HammurabiConfig, normalizeEndpoint, readHammurabiConfig } from './config.js'
+import { fetchJson as fetchJsonStrict } from './http-json.js'
 import { listWorkerDispatchProviderIds, loadProviderRegistry } from './providers.js'
 import {
   isOwnedByCommander,
@@ -122,20 +123,7 @@ async function fetchJson(
   url: string,
   init: RequestInit,
 ): Promise<{ ok: true; data: unknown } | { ok: false; response: Response }> {
-  const response = await fetchImpl(url, init)
-  if (!response.ok) {
-    return { ok: false, response }
-  }
-
-  if (response.status === 204) {
-    return { ok: true, data: null }
-  }
-
-  try {
-    return { ok: true, data: (await response.json()) as unknown }
-  } catch {
-    return { ok: true, data: null }
-  }
+  return fetchJsonStrict(fetchImpl, url, init)
 }
 
 async function readErrorDetail(response: Response): Promise<string | null> {
@@ -391,12 +379,12 @@ function parseWorkerStatus(payload: unknown): WorkerSessionStatus | null {
   const host = typeof payload.host === 'string' ? payload.host.trim() : ''
   const processAlive = typeof payload.processAlive === 'boolean' ? payload.processAlive : undefined
 
-  if (!name && !status) {
+  if (!name) {
     return null
   }
 
   return {
-    name: name.length > 0 ? name : '(unknown)',
+    name,
     completed,
     status: status.length > 0 ? status : undefined,
     sessionType: sessionType.length > 0 ? sessionType : undefined,
@@ -611,8 +599,19 @@ async function runDispatch(
     return 1
   }
 
-  const payload = isObject(result.data) ? result.data : {}
-  const name = typeof payload.name === 'string' ? payload.name : '(unknown)'
+  const payload = isObject(result.data) ? result.data : null
+  if (!payload) {
+    stderr.write('Worker dispatch response was malformed: expected a JSON object with a string name.\n')
+    return 1
+  }
+
+  const name = typeof payload.name === 'string' && payload.name.trim().length > 0
+    ? payload.name
+    : null
+  if (!name) {
+    stderr.write('Worker dispatch response was malformed: expected a JSON object with a string name.\n')
+    return 1
+  }
   const cwd = typeof payload.cwd === 'string' ? payload.cwd : undefined
 
   stdout.write(`Worker dispatched: ${name}\n`)

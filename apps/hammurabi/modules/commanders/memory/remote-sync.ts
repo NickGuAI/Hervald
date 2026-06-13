@@ -1,5 +1,11 @@
 import path from 'node:path'
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { readFile } from 'node:fs/promises'
+import {
+  readJsonFileFailClosed,
+  writeJsonFileAtomically,
+  writeTextFileAtomically,
+} from '../../json-file.js'
+import { withMemoryMutationLock } from './mutation-lock.js'
 
 const DEFAULT_MEMORY_MD = '# Commander Memory\n\n'
 
@@ -54,27 +60,23 @@ async function readMemoryMd(memoryRoot: string): Promise<string> {
 
 export async function readRemoteSyncRevision(memoryRoot: string): Promise<number> {
   const statePath = path.join(memoryRoot, REMOTE_SYNC_STATE_FILENAME)
-  try {
-    const raw = JSON.parse(await readFile(statePath, 'utf8')) as unknown
-    if (!isObject(raw)) {
-      throw new Error(`Remote sync state at "${statePath}" is invalid`)
-    }
-    const revision = parseNonNegativeInteger((raw as Partial<RemoteSyncState>).revision)
-    if (revision === null) {
-      throw new Error(`Remote sync state at "${statePath}" is invalid`)
-    }
-    return revision
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-      return 0
-    }
-    throw error
+  const raw = await readJsonFileFailClosed(statePath)
+  if (raw === null) {
+    return 0
   }
+  if (!isObject(raw)) {
+    throw new Error(`Remote sync state at "${statePath}" is invalid`)
+  }
+  const revision = parseNonNegativeInteger((raw as Partial<RemoteSyncState>).revision)
+  if (revision === null) {
+    throw new Error(`Remote sync state at "${statePath}" is invalid`)
+  }
+  return revision
 }
 
 export async function writeRemoteSyncRevision(memoryRoot: string, revision: number): Promise<void> {
   const statePath = path.join(memoryRoot, REMOTE_SYNC_STATE_FILENAME)
-  await writeFile(statePath, `${JSON.stringify({ revision }, null, 2)}\n`, 'utf8')
+  await writeJsonFileAtomically(statePath, { revision }, { trailingNewline: true })
 }
 
 export async function advanceRemoteSyncRevision(
@@ -103,31 +105,31 @@ export async function applyRemoteMemorySnapshot(
   baseRevision: number,
   memoryMd?: string,
 ): Promise<RemoteMemorySnapshotApplyResult> {
-  await mkdir(memoryRoot, { recursive: true })
+  return withMemoryMutationLock(memoryRoot, async () => {
+    const currentRevision = await readRemoteSyncRevision(memoryRoot)
+    if (baseRevision !== currentRevision) {
+      return {
+        status: 'conflict',
+        currentSyncRevision: currentRevision,
+      }
+    }
 
-  const currentRevision = await readRemoteSyncRevision(memoryRoot)
-  if (baseRevision !== currentRevision) {
+    let memoryUpdated = false
+    if (memoryMd !== undefined) {
+      const currentMemoryMd = await readMemoryMd(memoryRoot)
+      if (currentMemoryMd !== memoryMd) {
+        const memoryPath = path.join(memoryRoot, 'MEMORY.md')
+        await writeTextFileAtomically(memoryPath, memoryMd)
+        memoryUpdated = true
+      }
+    }
+
     return {
-      status: 'conflict',
-      currentSyncRevision: currentRevision,
+      status: 'applied',
+      appliedRevision: memoryUpdated
+        ? await advanceRemoteSyncRevision(memoryRoot, currentRevision)
+        : currentRevision,
+      memoryUpdated,
     }
-  }
-
-  let memoryUpdated = false
-  if (memoryMd !== undefined) {
-    const currentMemoryMd = await readMemoryMd(memoryRoot)
-    if (currentMemoryMd !== memoryMd) {
-      const memoryPath = path.join(memoryRoot, 'MEMORY.md')
-      await writeFile(memoryPath, memoryMd, 'utf8')
-      memoryUpdated = true
-    }
-  }
-
-  return {
-    status: 'applied',
-    appliedRevision: memoryUpdated
-      ? await advanceRemoteSyncRevision(memoryRoot, currentRevision)
-      : currentRevision,
-    memoryUpdated,
-  }
+  })
 }

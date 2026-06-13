@@ -1,8 +1,14 @@
-import { createReadStream, createWriteStream } from 'node:fs'
-import { appendFile, mkdir, readFile, rename, stat, unlink } from 'node:fs/promises'
+import { createReadStream } from 'node:fs'
+import { randomUUID } from 'node:crypto'
+import { mkdir, open, readFile, rename, stat, unlink } from 'node:fs/promises'
 import path from 'node:path'
 import { createInterface } from 'node:readline'
 import { resolveModuleDataDir } from '../data-dir.js'
+import {
+  appendFileDurably,
+  fsyncDirectory,
+  withFileMutationLock,
+} from '../durable-file.js'
 import type { NormalizedCall, TelemetryMetadata } from './normalizer.js'
 
 export interface TelemetryIngestRecord {
@@ -265,7 +271,7 @@ export class TelemetryJsonlStore {
 
   async append(entry: TelemetryStoreEntry): Promise<void> {
     await mkdir(path.dirname(this.filePath), { recursive: true })
-    await appendFile(this.filePath, `${JSON.stringify(entry)}\n`, 'utf8')
+    await appendFileDurably(this.filePath, `${JSON.stringify(entry)}\n`)
   }
 
   /** Max file size to eagerly restore. V8 string limit ~512MB; use 100MB to avoid startup stalls. */
@@ -340,80 +346,101 @@ export class TelemetryJsonlStore {
    * No-ops if the file does not exist.
    */
   async compact(retentionDays: number, options: { maxBytes?: number } = {}): Promise<void> {
-    try {
-      const st = await stat(this.filePath)
-      if (options.maxBytes !== undefined && st.size > options.maxBytes) {
-        console.warn(
-          `[TelemetryJsonlStore] Skipping compact: ${this.filePath} is ${(st.size / 1024 / 1024).toFixed(1)}MB (max ${(options.maxBytes / 1024 / 1024).toFixed(1)}MB). Use manual rotation for oversized telemetry stores.`,
-        )
-        return
-      }
-    } catch (err) {
-      if (isObject(err) && 'code' in err && err.code === 'ENOENT') return
-      throw err
-    }
-
-    const cutoff = new Date()
-    cutoff.setUTCDate(cutoff.getUTCDate() - retentionDays)
-    const cutoffISO = cutoff.toISOString()
-
-    const tmpPath = `${this.filePath}.tmp`
-    const writeStream = createWriteStream(tmpPath, { encoding: 'utf8' })
-    const fileStream = createReadStream(this.filePath, { encoding: 'utf8' })
-    const rl = createInterface({ input: fileStream, crlfDelay: Infinity })
-    const localRollups = new Map<string, LocalIngestRollup>()
-
-    const writeLine = (line: string) =>
-      new Promise<void>((resolve, reject) => {
-        writeStream.write(`${line}\n`, (err) => (err ? reject(err) : resolve()))
-      })
-
-    try {
-      for await (const line of rl) {
-        if (!line.trim()) continue
-        const entry = parseEntry(line)
-        if (!entry) {
-          continue
+    await withFileMutationLock(this.filePath, async () => {
+      try {
+        const st = await stat(this.filePath)
+        if (options.maxBytes !== undefined && st.size > options.maxBytes) {
+          console.warn(
+            `[TelemetryJsonlStore] Skipping compact: ${this.filePath} is ${(st.size / 1024 / 1024).toFixed(1)}MB (max ${(options.maxBytes / 1024 / 1024).toFixed(1)}MB). Use manual rotation for oversized telemetry stores.`,
+          )
+          return
         }
-        if (entry.recordedAt < cutoffISO) {
-          continue
-        }
-        if (entry.type === 'ingest' && isLocalIngestRecord(entry.payload)) {
-          addLocalIngestRollup(localRollups, entry)
-          continue
-        }
-        if (
-          (entry.type === 'otel_log' || entry.type === 'otel_metric') &&
-          !normalizedHasUsage(entry.payload.normalized)
-        ) {
-          continue
-        }
-        await writeLine(JSON.stringify(entry))
+      } catch (err) {
+        if (isObject(err) && 'code' in err && err.code === 'ENOENT') return
+        throw err
       }
 
-      for (const rollup of localRollups.values()) {
-        await writeLine(JSON.stringify({
-          type: 'ingest',
-          recordedAt: rollup.recordedAt,
-          payload: {
-            ...rollup.payload,
-            cost: Number(rollup.payload.cost.toFixed(12)),
-          },
-        } satisfies TelemetryStoreEntry))
-      }
-    } finally {
-      rl.close()
-      fileStream.destroy()
-      await new Promise<void>((resolve) => writeStream.end(resolve))
-    }
+      const cutoff = new Date()
+      cutoff.setUTCDate(cutoff.getUTCDate() - retentionDays)
+      const cutoffISO = cutoff.toISOString()
 
-    try {
-      await rename(tmpPath, this.filePath)
-    } catch (err) {
-      // Clean up tmp on rename failure
-      await unlink(tmpPath).catch(() => undefined)
-      throw err
-    }
+      const tmpPath = `${this.filePath}.${process.pid}.${randomUUID()}.tmp`
+      const fileStream = createReadStream(this.filePath, { encoding: 'utf8' })
+      const rl = createInterface({ input: fileStream, crlfDelay: Infinity })
+      const localRollups = new Map<string, LocalIngestRollup>()
+      const tmpHandle = await open(tmpPath, 'w')
+      let renamedTmp = false
+      let inputClosed = false
+      const closeInput = () => {
+        if (inputClosed) return
+        inputClosed = true
+        rl.close()
+        fileStream.destroy()
+      }
+      const writeEntry = async (entry: TelemetryStoreEntry) => {
+        await tmpHandle.writeFile(`${JSON.stringify(entry)}\n`, 'utf8')
+      }
+
+      try {
+        try {
+          for await (const line of rl) {
+            if (!line.trim()) continue
+            const entry = parseEntry(line)
+            if (!entry) {
+              continue
+            }
+            if (entry.recordedAt < cutoffISO) {
+              continue
+            }
+            if (entry.type === 'ingest' && isLocalIngestRecord(entry.payload)) {
+              addLocalIngestRollup(localRollups, entry)
+              continue
+            }
+            if (
+              (entry.type === 'otel_log' || entry.type === 'otel_metric') &&
+              !normalizedHasUsage(entry.payload.normalized)
+            ) {
+              continue
+            }
+            await writeEntry(entry)
+          }
+        } finally {
+          closeInput()
+        }
+
+        for (const rollup of localRollups.values()) {
+          await writeEntry({
+            type: 'ingest',
+            recordedAt: rollup.recordedAt,
+            payload: {
+              ...rollup.payload,
+              cost: Number(rollup.payload.cost.toFixed(12)),
+            },
+          })
+        }
+
+        await tmpHandle.sync()
+        await tmpHandle.close()
+        await rename(tmpPath, this.filePath)
+        renamedTmp = true
+        await fsyncDirectory(path.dirname(this.filePath))
+      } catch (err) {
+        if (!renamedTmp) {
+          try {
+            await tmpHandle.close()
+          } catch {
+            // Ignore close errors while cleaning up a failed compaction.
+          }
+        }
+        await unlink(tmpPath).catch(() => undefined)
+        throw err
+      } finally {
+        closeInput()
+        if (!renamedTmp) {
+          await tmpHandle.close().catch(() => undefined)
+        }
+      }
+    })
   }
 }
 

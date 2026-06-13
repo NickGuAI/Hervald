@@ -1,9 +1,9 @@
 import { randomUUID } from 'node:crypto'
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import {
   parseClaudePermissionMode,
 } from '../agents/session/input.js'
+import { readJsonFileFailClosed, writeJsonFileAtomically } from '../json-file.js'
 import { resolveCommanderDataDir } from './paths.js'
 import type { AutomationQuestEventBus } from '../automations/quest-event-bus.js'
 
@@ -363,15 +363,6 @@ function sortQuests(quests: CommanderQuest[]): CommanderQuest[] {
   // Preserve file insertion order when timestamps collide so heartbeat summaries
   // remain stable across fast back-to-back quest creation in tests and UI flows.
   return [...quests].sort((left, right) => left.createdAt.localeCompare(right.createdAt))
-}
-
-function isNodeErrorWithCode(error: unknown, code: string): error is NodeJS.ErrnoException {
-  return (
-    isObject(error) &&
-    'code' in error &&
-    typeof error.code === 'string' &&
-    error.code === code
-  )
 }
 
 export function defaultQuestStoreDataDir(): string {
@@ -845,21 +836,8 @@ export class QuestStore {
 
   private async readQuestsForCommander(commanderId: string): Promise<CommanderQuest[]> {
     const filePath = this.resolveCommanderFilePath(commanderId)
-
-    let raw: string
-    try {
-      raw = await readFile(filePath, 'utf8')
-    } catch (error) {
-      if (isNodeErrorWithCode(error, 'ENOENT')) {
-        return []
-      }
-      throw error
-    }
-
-    let parsed: unknown
-    try {
-      parsed = JSON.parse(raw) as unknown
-    } catch {
+    const parsed = await readJsonFileFailClosed(filePath)
+    if (parsed === null) {
       return []
     }
 
@@ -897,11 +875,9 @@ export class QuestStore {
 
   private async writeQuestsForCommander(commanderId: string, quests: CommanderQuest[]): Promise<void> {
     const filePath = this.resolveCommanderFilePath(commanderId)
-    await mkdir(path.dirname(filePath), { recursive: true })
-    await writeFile(
+    await writeJsonFileAtomically(
       filePath,
-      JSON.stringify({ quests: sortQuests(quests) } satisfies PersistedCommanderQuests, null, 2),
-      'utf8',
+      { quests: sortQuests(quests) } satisfies PersistedCommanderQuests,
     )
   }
 

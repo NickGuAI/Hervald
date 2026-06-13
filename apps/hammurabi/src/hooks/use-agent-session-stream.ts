@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { getAccessToken, isAuthRecoveryRequiredError } from '@/lib/api'
+import { fetchJson, getAccessToken, handleUnauthorized, isAuthRecoveryRequiredError } from '@/lib/api'
 import { getFullUrl, getWsBase } from '@/lib/api-base'
 import type { SessionQueueSnapshot, StreamEvent } from '@/types'
 import {
@@ -29,14 +29,27 @@ export function decodeAgentSessionSocketData(data: unknown): string | null {
   return null
 }
 
-export function agentSessionWsUrl(sessionName: string, token: string | null): string {
-  return apiWebSocketUrl(`/api/agents/sessions/${encodeURIComponent(sessionName)}/ws`, token)
+interface TransportAuthTicketResponse {
+  ticket?: unknown
 }
 
-export function apiWebSocketUrl(path: string, token: string | null): string {
+export async function issueAgentSessionStreamTicket(): Promise<string | null> {
+  const response = await fetchJson<TransportAuthTicketResponse>('/api/agents/auth/stream-ticket', {
+    method: 'POST',
+  })
+  return typeof response.ticket === 'string' && response.ticket.trim().length > 0
+    ? response.ticket.trim()
+    : null
+}
+
+export function agentSessionWsUrl(sessionName: string, ticket: string | null): string {
+  return apiWebSocketUrl(`/api/agents/sessions/${encodeURIComponent(sessionName)}/ws`, ticket)
+}
+
+export function apiWebSocketUrl(path: string, ticket: string | null): string {
   const params = new URLSearchParams()
-  if (token) {
-    params.set('access_token', token)
+  if (ticket) {
+    params.set('ticket', ticket)
   }
 
   const query = params.toString()
@@ -83,9 +96,10 @@ export async function postInputViaHttpFallback(
   getToken: () => Promise<string | null>,
   fetchImpl: typeof fetch = fetch,
 ): Promise<boolean> {
+  const path = `/api/agents/sessions/${encodeURIComponent(sessionName)}/message`
   try {
     const token = await getToken()
-    const response = await fetchImpl(getFullUrl(`/api/agents/sessions/${encodeURIComponent(sessionName)}/message`), {
+    const response = await fetchImpl(getFullUrl(path), {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -94,9 +108,17 @@ export async function postInputViaHttpFallback(
       body: JSON.stringify({
         text: body.text,
         images: body.images && body.images.length > 0 ? body.images : undefined,
+        clientSendId: body.clientSendId,
         workspaceContext: body.workspaceContext,
       }),
     })
+    if (response.status === 401) {
+      handleUnauthorized({
+        phase: 'response',
+        path,
+        status: response.status,
+      })
+    }
     return response.ok
   } catch {
     return false
@@ -169,9 +191,9 @@ export function useAgentSessionStream(sessionName?: string, options: AgentSessio
       clearReconnectTimer()
       setStatus('connecting')
 
-      let token: string | null
+      let ticket: string | null
       try {
-        token = await getAccessToken()
+        ticket = await issueAgentSessionStreamTicket()
       } catch (error) {
         if (isAuthRecoveryRequiredError(error)) {
           if (!disposed) {
@@ -186,8 +208,8 @@ export function useAgentSessionStream(sessionName?: string, options: AgentSessio
       }
 
       const nextSocket = new WebSocket(websocketPath
-        ? apiWebSocketUrl(websocketPath, token)
-        : agentSessionWsUrl(sessionName, token))
+        ? apiWebSocketUrl(websocketPath, ticket)
+        : agentSessionWsUrl(sessionName, ticket))
       wsRef.current = nextSocket
 
       nextSocket.onopen = () => {
@@ -304,10 +326,10 @@ export function useAgentSessionStream(sessionName?: string, options: AgentSessio
   }, [enabled, hydrateReplayMessages, onQueueUpdate, processEvent, resetMessages, sessionName, websocketPath])
 
   const pushOptimisticUserMessage = useCallback(
-    (text: string, images?: AgentSessionStreamInputImage[]) => {
+    (text: string, images?: AgentSessionStreamInputImage[], clientSendId?: string) => {
       const id = `user-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
       setMessages((prev) =>
-        capMessages([...prev, createUserMessage(id, text || '[image]', images)]),
+        capMessages([...prev, createUserMessage(id, text || '[image]', images, clientSendId)]),
       )
     },
     [setMessages],

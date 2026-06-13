@@ -162,6 +162,7 @@ function renderHarness({
   function TestHarness() {
     const [conversationState, setConversationState] = useState<ConversationRecord[]>(conversations)
     const [selectedConversationId, setSelectedConversationId] = useState<string | null>(initialConversationId)
+    const [requestedNewChatCommanderId, setRequestedNewChatCommanderId] = useState<string | null>(null)
     const refreshConversations = () => {
       setConversationState((current) => current.map((conversation) => ({ ...conversation })))
     }
@@ -213,10 +214,16 @@ function renderHarness({
           onQueue={vi.fn()}
           onSend={vi.fn()}
           workspaceSource={null as WorkspaceSource | null}
+          onCreateChatForCommander={(commanderId) => {
+            setRequestedNewChatCommanderId(commanderId)
+            handleSelectConversationId(null)
+          }}
+          requestedNewChatCommanderId={requestedNewChatCommanderId}
           onCreateConversation={async (commanderId, agentType, model, reasoningConfig) => {
             const created = await onCreateConversation(commanderId, agentType, model, reasoningConfig)
             if (created) {
               setConversationState((current) => [...current, created])
+              setRequestedNewChatCommanderId(null)
             }
             return created
           }}
@@ -548,6 +555,87 @@ describe('MobileCommandRoom conversation mode', () => {
     expect(onCreateConversation).toHaveBeenCalledWith('cmd-1', 'codex', 'gpt-5.5', {})
     // Per #1362 contract: never auto-start. The user must explicitly tap Start
     // chat in the session shell after creation.
+    expect(onStartConversation).not.toHaveBeenCalled()
+    await vi.waitFor(() => {
+      expect(document.body.querySelector('[data-testid="selected-conversation-id"]')?.textContent).toBe('conv-new')
+    })
+  })
+
+  it('opens the create-chat panel from an existing mobile conversation', async () => {
+    const onCreateConversation = vi.fn(async (
+      _commanderId: string,
+      agentType: AgentType,
+      model: string | null,
+    ) => buildConversation({
+      id: 'conv-new',
+      name: 'Fresh chat',
+      status: 'idle',
+      liveSession: null,
+      agentType,
+      model,
+      createdAt: '2026-05-01T08:15:00.000Z',
+      lastMessageAt: '2026-05-01T08:15:00.000Z',
+    }))
+    const onStartConversation = vi.fn(async () => undefined)
+
+    renderHarness({
+      conversations: [
+        buildConversation({
+          id: 'conv-existing',
+          name: 'Existing chat',
+          status: 'active',
+          createdAt: '2026-05-01T08:00:00.000Z',
+        }),
+      ],
+      initialConversationId: 'conv-existing',
+      path: '/command-room?surface=mobile&commander=cmd-1&conversation=conv-existing',
+      onCreateConversation,
+      onStartConversation,
+    })
+
+    await flushTimers()
+
+    const newChatButton = document.body.querySelector(
+      '[data-testid="mobile-new-chat-button"]',
+    ) as HTMLButtonElement | null
+    expect(newChatButton).not.toBeNull()
+
+    flushSync(() => {
+      newChatButton?.click()
+    })
+    await flushTimers()
+
+    expect(document.body.querySelector('[data-testid="selected-conversation-id"]')?.textContent).toBe('')
+    expect(window.location.search).toContain('commander=cmd-1')
+    expect(window.location.search).not.toContain('conversation=')
+
+    const providerSelect = document.body.querySelector(
+      '[data-testid="create-chat-provider-select"]',
+    ) as HTMLSelectElement | null
+    const modelSelect = document.body.querySelector(
+      '[data-testid="create-chat-model-select"]',
+    ) as HTMLSelectElement | null
+    const createButton = document.body.querySelector(
+      '[data-testid="create-chat-panel-button"]',
+    ) as HTMLButtonElement | null
+    expect(providerSelect).not.toBeNull()
+    expect(modelSelect).not.toBeNull()
+    expect(createButton).not.toBeNull()
+
+    flushSync(() => {
+      if (providerSelect) {
+        providerSelect.value = 'codex'
+        providerSelect.dispatchEvent(new Event('change', { bubbles: true }))
+      }
+      if (modelSelect) {
+        modelSelect.value = 'gpt-5.5'
+        modelSelect.dispatchEvent(new Event('change', { bubbles: true }))
+      }
+      createButton?.click()
+    })
+    await flushTimers()
+
+    expect(onCreateConversation).toHaveBeenCalledWith('cmd-1', 'codex', 'gpt-5.5', {})
     expect(onStartConversation).not.toHaveBeenCalled()
     await vi.waitFor(() => {
       expect(document.body.querySelector('[data-testid="selected-conversation-id"]')?.textContent).toBe('conv-new')

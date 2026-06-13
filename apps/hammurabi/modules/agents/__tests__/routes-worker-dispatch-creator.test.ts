@@ -64,7 +64,7 @@ describe('dispatch worker creator wiring', () => {
     }
   })
 
-  it('accepts an explicit commander creator for standalone worker dispatches', async () => {
+  it('rejects explicit creator on standalone legacy worker dispatches', async () => {
     const spawned: ReturnType<typeof createMockChildProcess>[] = []
     mockedSpawn.mockImplementation(() => {
       const mock = createMockChildProcess()
@@ -88,28 +88,46 @@ describe('dispatch worker creator wiring', () => {
         }),
       })
 
-      expect(dispatchResponse.status).toBe(202)
-      const body = await dispatchResponse.json() as {
-        name: string
-        sessionType?: string
-        spawnedBy?: string
-        creator?: { kind?: string; id?: string }
-      }
-      expect(body).toEqual(expect.objectContaining({
-        sessionType: 'worker',
-        creator: { kind: 'commander', id: 'cmdr-cli' },
-      }))
+      expect(dispatchResponse.status).toBe(400)
+      const body = await dispatchResponse.json() as { error: string }
+      expect(body.error).toContain('creator must not be provided')
+      expect(body.error).toContain('/api/agents/sessions/dispatch-worker')
+      expect(spawned).toHaveLength(0)
+    } finally {
+      await server.close()
+    }
+  })
 
-      const statusResponse = await fetch(
-        `${server.baseUrl}/api/agents/sessions/${encodeURIComponent(body.name)}`,
-        { headers: AUTH_HEADERS },
-      )
-      expect(statusResponse.status).toBe(200)
-      expect(await statusResponse.json()).toEqual(expect.objectContaining({
-        creator: { kind: 'commander', id: 'cmdr-cli' },
-        sessionType: 'worker',
-      }))
-      expect(spawned).toHaveLength(1)
+  it('rejects creator key presence even when the value is empty', async () => {
+    const spawned: ReturnType<typeof createMockChildProcess>[] = []
+    mockedSpawn.mockImplementation(() => {
+      const mock = createMockChildProcess()
+      spawned.push(mock)
+      return mock.cp as never
+    })
+
+    const server = await startServer()
+
+    try {
+      for (const creator of [null, '']) {
+        const dispatchResponse = await fetch(`${server.baseUrl}/api/agents/sessions/dispatch-worker`, {
+          method: 'POST',
+          headers: {
+            ...AUTH_HEADERS,
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify({
+            cwd: '/tmp/standalone-worker',
+            task: 'Do standalone work',
+            creator,
+          }),
+        })
+
+        expect(dispatchResponse.status).toBe(400)
+        const body = await dispatchResponse.json() as { error: string }
+        expect(body.error).toContain('creator must not be provided')
+      }
+      expect(spawned).toHaveLength(0)
     } finally {
       await server.close()
     }

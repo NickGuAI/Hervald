@@ -7,13 +7,22 @@
  * covered by session/persistence tests that live alongside the underlying
  * store module.
  */
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 import {
   createPersistenceHelpers,
   type PersistenceHelpersContext,
 } from '../persistence-helpers'
 import { COMMAND_ROOM_COMPLETED_SESSION_TTL_MS } from '../constants'
+import {
+  appendTranscriptEvent,
+  readTranscriptEvents,
+  resetTranscriptStoreRoot,
+  setTranscriptStoreRoot,
+} from '../transcript-store'
 import type {
   AnySession,
   CompletedSession,
@@ -25,6 +34,23 @@ interface TestPersistenceHelpersContext extends PersistenceHelpersContext {
   restoreProviderSessionMock: ReturnType<typeof vi.fn>
   teardownProviderSessionMock: ReturnType<typeof vi.fn>
 }
+
+const tempDirs: string[] = []
+
+async function createTempDir(): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), 'hammurabi-persistence-helpers-'))
+  tempDirs.push(dir)
+  return dir
+}
+
+afterEach(async () => {
+  resetTranscriptStoreRoot()
+  await Promise.all(
+    tempDirs.splice(0).map((directory) =>
+      rm(directory, { recursive: true, force: true }),
+    ),
+  )
+})
 
 function makeCommandRoomCodexSession(
   name: string,
@@ -207,6 +233,33 @@ describe('createPersistenceHelpers — pruneStaleCommandRoomSessions', () => {
     pruneStaleCommandRoomSessions(futureNow)
 
     expect(ctx.sessions.has('command-room-t')).toBe(false)
+  })
+
+  it('compacts a pruned session transcript to the restore replay window', async () => {
+    const transcriptRoot = await createTempDir()
+    setTranscriptStoreRoot(transcriptRoot)
+    const sessionName = 'command-room-transcript'
+    const stale = makeCommandRoomCodexSession(
+      sessionName,
+      COMMAND_ROOM_COMPLETED_SESSION_TTL_MS + 10_000,
+    )
+    const ctx = makeBaseContext({
+      sessions: new Map<string, AnySession>([[sessionName, stale]]),
+    })
+    const helpers = createPersistenceHelpers(ctx)
+
+    for (let turn = 1; turn <= 25; turn += 1) {
+      await appendTranscriptEvent(sessionName, { type: 'message', marker: `turn-${turn}-message` })
+      await appendTranscriptEvent(sessionName, { type: 'result', marker: `turn-${turn}-result` })
+    }
+
+    helpers.pruneStaleCommandRoomSessions()
+    await helpers.flushPersistedSessionsWrite()
+
+    const events = await readTranscriptEvents(sessionName)
+    expect(events).toHaveLength(40)
+    expect(events[0]).toMatchObject({ marker: 'turn-6-message' })
+    expect(events.at(-1)).toMatchObject({ marker: 'turn-25-result' })
   })
 })
 

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { fetchJson, getAccessToken, isAuthRecoveryRequiredError } from '@/lib/api'
+import { fetchJson, isAuthRecoveryRequiredError } from '@/lib/api'
 import { getWsBase } from '@/lib/api-base'
 import { createReconnectBackoff, shouldReconnectWebSocketClose } from '../../modules/agents/ws-reconnect'
 
@@ -422,10 +422,19 @@ function normalizeApprovalHistory(payload: unknown): ApprovalHistoryEntry[] {
     .filter((entry): entry is ApprovalHistoryEntry => entry !== null)
 }
 
-function approvalStreamUrl(path: string, token: string | null): string {
+async function issueApprovalStreamTicket(): Promise<string | null> {
+  const response = await fetchJson<{ ticket?: unknown }>('/api/approvals/stream-ticket', {
+    method: 'POST',
+  })
+  return typeof response.ticket === 'string' && response.ticket.trim().length > 0
+    ? response.ticket.trim()
+    : null
+}
+
+function approvalStreamUrl(path: string, ticket: string | null): string {
   const query = new URLSearchParams()
-  if (token) {
-    query.set('access_token', token)
+  if (ticket) {
+    query.set('ticket', ticket)
   }
 
   const wsBase = getWsBase()
@@ -626,9 +635,9 @@ export function useApprovalStream(options?: {
 
     async function connect(): Promise<void> {
       setStatus('connecting')
-      let token: string | null
+      let ticket: string | null
       try {
-        token = await getAccessToken()
+        ticket = await issueApprovalStreamTicket()
       } catch (error) {
         if (isAuthRecoveryRequiredError(error)) {
           if (!cancelled) {
@@ -642,7 +651,7 @@ export function useApprovalStream(options?: {
         return
       }
 
-      socket = new WebSocket(approvalStreamUrl(path, token))
+      socket = new WebSocket(approvalStreamUrl(path, ticket))
 
       socket.addEventListener('open', () => {
         backoff.reset()

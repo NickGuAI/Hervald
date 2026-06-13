@@ -143,6 +143,7 @@ export interface QueuedMessage {
     mediaType: string
     data: string
   }>
+  clientSendId?: string
   priority: QueuedMessagePriority
   queuedAt: string
 }

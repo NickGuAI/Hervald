@@ -1,21 +1,69 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type SetStateAction } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type SetStateAction } from 'react'
+import {
+  ALLOWED_MESSAGE_IMAGE_TYPES,
+  MAX_MESSAGE_IMAGE_B64_LEN,
+  MAX_MESSAGE_IMAGE_COUNT,
+} from '../message-images'
 
 const DRAFT_STORAGE_PREFIX = 'hammurabi:draft:'
+const DRAFT_IMAGES_STORAGE_PREFIX = 'hammurabi:draft-images:'
 const DRAFT_MAX_BYTES = 50 * 1024
+const DRAFT_IMAGES_MAX_BYTES = 12 * 1024 * 1024
 const DRAFT_SAVE_DEBOUNCE_MS = 500
 const DRAFT_SAVED_LABEL_MS = 2000
 
+export interface SessionDraftImage {
+  mediaType: string
+  data: string
+}
+
+function normalizeDraftImages(value: unknown): SessionDraftImage[] {
+  const rawImages = Array.isArray(value)
+    ? value
+    : (
+        value
+        && typeof value === 'object'
+        && Array.isArray((value as { images?: unknown }).images)
+          ? (value as { images: unknown[] }).images
+          : []
+      )
+  const images: SessionDraftImage[] = []
+  for (const rawImage of rawImages) {
+    if (!rawImage || typeof rawImage !== 'object') {
+      continue
+    }
+    const mediaType = (rawImage as { mediaType?: unknown }).mediaType
+    const data = (rawImage as { data?: unknown }).data
+    if (
+      typeof mediaType === 'string'
+      && ALLOWED_MESSAGE_IMAGE_TYPES.has(mediaType)
+      && typeof data === 'string'
+      && data.length > 0
+      && data.length <= MAX_MESSAGE_IMAGE_B64_LEN
+    ) {
+      images.push({ mediaType, data })
+    }
+    if (images.length >= MAX_MESSAGE_IMAGE_COUNT) {
+      break
+    }
+  }
+  return images
+}
+
 export function useSessionDraft(sessionName: string) {
   const [inputText, setInputTextState] = useState('')
+  const [pendingImages, setPendingImagesState] = useState<SessionDraftImage[]>([])
   const [showDraftSaved, setShowDraftSaved] = useState(false)
 
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const latestInputTextRef = useRef('')
+  const latestPendingImagesRef = useRef<SessionDraftImage[]>([])
   const draftSaveTimerRef = useRef<number | null>(null)
   const draftSavedIndicatorTimerRef = useRef<number | null>(null)
   const skipDraftSaveCountRef = useRef(1)
 
   const draftStorageKey = useMemo(() => `${DRAFT_STORAGE_PREFIX}${sessionName}`, [sessionName])
+  const draftImagesStorageKey = useMemo(() => `${DRAFT_IMAGES_STORAGE_PREFIX}${sessionName}`, [sessionName])
 
   const setInputText = useCallback((nextInputText: SetStateAction<string>) => {
     const resolvedInputText = typeof nextInputText === 'function'
@@ -24,6 +72,16 @@ export function useSessionDraft(sessionName: string) {
 
     latestInputTextRef.current = resolvedInputText
     setInputTextState(resolvedInputText)
+  }, [])
+
+  const setPendingImages = useCallback((nextPendingImages: SetStateAction<SessionDraftImage[]>) => {
+    const resolvedPendingImages = typeof nextPendingImages === 'function'
+      ? (nextPendingImages as (previousPendingImages: SessionDraftImage[]) => SessionDraftImage[])(latestPendingImagesRef.current)
+      : nextPendingImages
+    const normalizedPendingImages = normalizeDraftImages(resolvedPendingImages)
+
+    latestPendingImagesRef.current = normalizedPendingImages
+    setPendingImagesState(normalizedPendingImages)
   }, [])
 
   const resizeTextarea = useCallback(() => {
@@ -57,32 +115,45 @@ export function useSessionDraft(sessionName: string) {
     }, DRAFT_SAVED_LABEL_MS)
   }, [clearDraftSavedIndicatorTimer])
 
-  const persistDraft = useCallback((value: string, showIndicator = true) => {
+  const persistDraft = useCallback((value: string, images: SessionDraftImage[], showIndicator = true) => {
+    let persistedSomething = false
     try {
       if (!value) {
         localStorage.removeItem(draftStorageKey)
-        if (showIndicator) {
-          setShowDraftSaved(false)
-        }
-        return
-      }
-
-      if (new Blob([value]).size > DRAFT_MAX_BYTES) {
+      } else if (new Blob([value]).size > DRAFT_MAX_BYTES) {
         localStorage.removeItem(draftStorageKey)
-        if (showIndicator) {
-          setShowDraftSaved(false)
-        }
-        return
-      }
-
-      localStorage.setItem(draftStorageKey, value)
-      if (showIndicator) {
-        showDraftSavedIndicator()
+      } else {
+        localStorage.setItem(draftStorageKey, value)
+        persistedSomething = true
       }
     } catch {
       // Ignore localStorage errors (quota, private mode, etc.)
     }
-  }, [draftStorageKey, showDraftSavedIndicator])
+
+    try {
+      if (images.length === 0) {
+        localStorage.removeItem(draftImagesStorageKey)
+      } else {
+        const payload = JSON.stringify({ images })
+        if (new Blob([payload]).size > DRAFT_IMAGES_MAX_BYTES) {
+          localStorage.removeItem(draftImagesStorageKey)
+        } else {
+          localStorage.setItem(draftImagesStorageKey, payload)
+          persistedSomething = true
+        }
+      }
+    } catch {
+      // Ignore localStorage errors (quota, private mode, etc.)
+    }
+
+    if (showIndicator) {
+      if (persistedSomething) {
+        showDraftSavedIndicator()
+      } else {
+        setShowDraftSaved(false)
+      }
+    }
+  }, [draftImagesStorageKey, draftStorageKey, showDraftSavedIndicator])
 
   const focusTextarea = useCallback(() => {
     requestAnimationFrame(() => {
@@ -93,42 +164,58 @@ export function useSessionDraft(sessionName: string) {
 
   const clearDraft = useCallback(() => {
     latestInputTextRef.current = ''
+    latestPendingImagesRef.current = []
     clearDraftSaveTimer()
     clearDraftSavedIndicatorTimer()
     try {
       localStorage.removeItem(draftStorageKey)
+      localStorage.removeItem(draftImagesStorageKey)
     } catch {
       // Ignore localStorage errors.
     }
     setInputTextState('')
+    setPendingImagesState([])
     setShowDraftSaved(false)
     requestAnimationFrame(() => {
       resizeTextarea()
     })
-  }, [clearDraftSaveTimer, clearDraftSavedIndicatorTimer, draftStorageKey, resizeTextarea])
+  }, [clearDraftSaveTimer, clearDraftSavedIndicatorTimer, draftImagesStorageKey, draftStorageKey, resizeTextarea])
 
   useEffect(() => {
     resizeTextarea()
   }, [inputText, resizeTextarea])
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const previousInput = latestInputTextRef.current
     setShowDraftSaved(false)
 
     let restoredDraft = ''
+    let restoredImages: SessionDraftImage[] = []
     try {
       restoredDraft = localStorage.getItem(draftStorageKey) ?? ''
     } catch {
       restoredDraft = ''
     }
+    try {
+      const rawImages = localStorage.getItem(draftImagesStorageKey)
+      restoredImages = rawImages && new Blob([rawImages]).size <= DRAFT_IMAGES_MAX_BYTES
+        ? normalizeDraftImages(JSON.parse(rawImages))
+        : []
+    } catch {
+      restoredImages = []
+    }
 
-    skipDraftSaveCountRef.current = restoredDraft === previousInput ? 1 : 2
+    const previousImages = latestPendingImagesRef.current
+    const imagesUnchanged = JSON.stringify(restoredImages) === JSON.stringify(previousImages)
+    skipDraftSaveCountRef.current = restoredDraft === previousInput && imagesUnchanged ? 1 : 2
     latestInputTextRef.current = restoredDraft
+    latestPendingImagesRef.current = restoredImages
     setInputTextState(restoredDraft)
+    setPendingImagesState(restoredImages)
     requestAnimationFrame(() => {
       resizeTextarea()
     })
-  }, [draftStorageKey, resizeTextarea])
+  }, [draftImagesStorageKey, draftStorageKey, resizeTextarea])
 
   useEffect(() => {
     if (skipDraftSaveCountRef.current > 0) {
@@ -139,18 +226,24 @@ export function useSessionDraft(sessionName: string) {
     clearDraftSaveTimer()
     draftSaveTimerRef.current = window.setTimeout(() => {
       draftSaveTimerRef.current = null
-      persistDraft(inputText)
+      persistDraft(inputText, pendingImages)
     }, DRAFT_SAVE_DEBOUNCE_MS)
 
     return () => {
       clearDraftSaveTimer()
     }
-  }, [clearDraftSaveTimer, inputText, persistDraft])
+  }, [clearDraftSaveTimer, inputText, pendingImages, persistDraft])
 
   const flushLatestDraft = useCallback(() => {
     clearDraftSaveTimer()
-    persistDraft(latestInputTextRef.current, false)
+    persistDraft(latestInputTextRef.current, latestPendingImagesRef.current, false)
   }, [clearDraftSaveTimer, persistDraft])
+
+  useLayoutEffect(() => {
+    return () => {
+      flushLatestDraft()
+    }
+  }, [flushLatestDraft])
 
   useEffect(() => {
     window.addEventListener('beforeunload', flushLatestDraft)
@@ -164,15 +257,17 @@ export function useSessionDraft(sessionName: string) {
   useEffect(() => {
     return () => {
       clearDraftSavedIndicatorTimer()
-      flushLatestDraft()
     }
-  }, [clearDraftSavedIndicatorTimer, flushLatestDraft])
+  }, [clearDraftSavedIndicatorTimer])
 
   return {
     inputText,
     latestInputTextRef,
+    pendingImages,
+    latestPendingImagesRef,
     resizeTextarea,
     setInputText,
+    setPendingImages,
     showDraftSaved,
     focusTextarea,
     textareaRef,

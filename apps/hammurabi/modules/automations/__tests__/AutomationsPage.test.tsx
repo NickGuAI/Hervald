@@ -97,19 +97,6 @@ async function renderAt(path: string) {
   })
 }
 
-async function clickButton(label: string) {
-  const button = Array.from(document.body.querySelectorAll('button')).find((candidate) =>
-    candidate.textContent?.toLowerCase().includes(label),
-  )
-  if (!(button instanceof HTMLButtonElement)) {
-    throw new Error(`missing button: ${label}`)
-  }
-
-  await act(async () => {
-    button.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-  })
-}
-
 describe('AutomationsPage', () => {
   beforeEach(() => {
     mocks.useIsMobile.mockReturnValue(false)
@@ -148,7 +135,15 @@ describe('AutomationsPage', () => {
     await renderAt('/automations?trigger=schedule&commander=global')
 
     expect(document.body.querySelector('[data-testid="mobile-automations"]')).not.toBeNull()
-    await clickButton('atlas')
+    const commanderSelect = document.body.querySelector('[data-testid="mobile-automation-commander-select"]')
+    if (!(commanderSelect instanceof HTMLSelectElement)) {
+      throw new Error('missing commander select')
+    }
+
+    await act(async () => {
+      commanderSelect.value = 'cmd-1'
+      commanderSelect.dispatchEvent(new Event('change', { bubbles: true }))
+    })
 
     expect(window.location.pathname).toBe('/automations')
     expect(new URLSearchParams(window.location.search).get('commander')).toBe('cmd-1')

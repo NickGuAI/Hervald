@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { FolderOpen, GitBranch, Loader2, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { ConfirmModal } from '@modules/components/ConfirmModal'
+import { Toast } from '@modules/components/Toast'
 import type { WorkspaceTreeNode } from '../types'
 import {
   downloadWorkspaceFile,
@@ -88,6 +90,8 @@ export function WorkspacePanel({
   const [busyLabel, setBusyLabel] = useState<string | null>(null)
   const [panelError, setPanelError] = useState<string | null>(null)
   const [downloadError, setDownloadError] = useState<{ path: string; message: string } | null>(null)
+  const [pendingDeletePath, setPendingDeletePath] = useState<string | null>(null)
+  const [toastMessage, setToastMessage] = useState<string | null>(null)
   const [downloadingPath, setDownloadingPath] = useState<string | null>(null)
   const [draftContent, setDraftContent] = useState('')
   const [isInitializingGit, setIsInitializingGit] = useState(false)
@@ -162,12 +166,28 @@ export function WorkspacePanel({
     setDraftContent('')
     setPanelError(null)
     setDownloadError(null)
+    setPendingDeletePath(null)
+    setToastMessage(null)
     setDownloadingPath(null)
     setActiveTab('files')
     clearAddFeedbackTimers()
   }, [clearAddFeedbackTimers, sourceKey])
 
   useEffect(() => () => clearAddFeedbackTimers(), [clearAddFeedbackTimers])
+
+  useEffect(() => {
+    if (!toastMessage) {
+      return
+    }
+
+    const timer = window.setTimeout(() => {
+      setToastMessage(null)
+    }, 2500)
+
+    return () => {
+      window.clearTimeout(timer)
+    }
+  }, [toastMessage])
 
   useEffect(() => {
     const nextContent = previewQuery.data?.kind === 'text'
@@ -452,10 +472,16 @@ export function WorkspacePanel({
     if (!selectedPath) {
       return
     }
+    const savedPath = selectedPath
+    let saved = false
     await runBusyTask('Saving file…', async () => {
-      await actions.saveFile(selectedPath, draftContent)
+      await actions.saveFile(savedPath, draftContent)
       await previewQuery.refetch()
+      saved = true
     })
+    if (saved) {
+      setToastMessage(`Saved ${savedPath}.`)
+    }
   }
 
   async function handleRename(): Promise<void> {
@@ -475,18 +501,28 @@ export function WorkspacePanel({
   }
 
   async function handleDelete(): Promise<void> {
-    if (!selectedNode || typeof window === 'undefined') {
+    if (!selectedNode) {
       return
     }
-    const confirmed = window.confirm(`Delete "${selectedNode.path}"?`)
-    if (!confirmed) {
+    setPendingDeletePath(selectedNode.path)
+  }
+
+  async function handleConfirmDelete(): Promise<void> {
+    const pathToDelete = pendingDeletePath
+    if (!pathToDelete) {
       return
     }
+    setPendingDeletePath(null)
+    let deleted = false
     await runBusyTask('Deleting…', async () => {
-      await actions.deletePath(selectedNode.path)
+      await actions.deletePath(pathToDelete)
       setSelectedPath(null)
       await refreshWorkspace()
+      deleted = true
     })
+    if (deleted) {
+      setToastMessage(`Deleted ${pathToDelete}.`)
+    }
   }
 
   async function handleUpload(files: FileList | null): Promise<void> {
@@ -581,6 +617,21 @@ export function WorkspacePanel({
       onDraftChange={setDraftContent}
       onSave={() => void handleSave()}
     />
+  )
+
+  const feedbackOverlays = (
+    <>
+      <Toast open={Boolean(toastMessage)} message={toastMessage ?? ''} />
+      <ConfirmModal
+        open={Boolean(pendingDeletePath)}
+        title="Delete workspace path?"
+        message={`Delete "${pendingDeletePath ?? ''}" from this workspace? This cannot be undone.`}
+        confirmLabel="Delete"
+        confirmTone="danger"
+        onClose={() => setPendingDeletePath(null)}
+        onConfirm={() => void handleConfirmDelete()}
+      />
+    </>
   )
 
   const panelBody = (
@@ -774,6 +825,7 @@ export function WorkspacePanel({
           )}
         </div>
         {previewModal}
+        {feedbackOverlays}
       </>
     )
   }
@@ -793,6 +845,7 @@ export function WorkspacePanel({
         {panelBody}
       </div>
       {previewModal}
+      {feedbackOverlays}
     </>
   )
 }

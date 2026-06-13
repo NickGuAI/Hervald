@@ -210,15 +210,15 @@ describe('workspace components', () => {
     expect(html.indexOf('Working tree is clean.')).toBeLessThan(html.indexOf('No commits yet.'))
   })
 
-  it('builds a tokenized raw URL for target workspaces', () => {
+  it('builds a ticketed raw URL for target workspaces', () => {
     expect(
       buildWorkspaceRawUrl({
         kind: 'target',
         id: 'wt-1',
         label: 'local:/tmp/workspace',
-      }, 'docs/report.pdf', 'token-123'),
+      }, 'docs/report.pdf', 'ticket-123'),
     ).toBe(
-      '/api/workspace/raw?path=docs%2Freport.pdf&access_token=token-123&targetId=wt-1',
+      '/api/workspace/raw?path=docs%2Freport.pdf&ticket=ticket-123&targetId=wt-1',
     )
   })
 
@@ -234,15 +234,15 @@ describe('workspace components', () => {
     )
   })
 
-  it('builds authenticated download URLs without changing inline raw URLs', () => {
+  it('builds ticketed download URLs without changing inline raw URLs', () => {
     expect(
       buildWorkspaceRawUrl({
         kind: 'target',
         id: 'wt-1',
         label: 'local:/tmp/workspace',
-      }, 'docs/report.pdf', 'token-123', { download: true }),
+      }, 'docs/report.pdf', 'ticket-123', { download: true }),
     ).toBe(
-      '/api/workspace/raw?path=docs%2Freport.pdf&access_token=token-123&targetId=wt-1&download=1',
+      '/api/workspace/raw?path=docs%2Freport.pdf&ticket=ticket-123&targetId=wt-1&download=1',
     )
   })
 

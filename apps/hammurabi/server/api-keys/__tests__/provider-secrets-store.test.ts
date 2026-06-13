@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import { mkdtemp, readFile, rename, rm } from 'node:fs/promises'
+import { mkdtemp, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import {
@@ -14,6 +14,15 @@ async function createTempDirectory(): Promise<string> {
   const directory = await mkdtemp(path.join(tmpdir(), 'hammurabi-provider-secrets-store-'))
   testDirectories.push(directory)
   return directory
+}
+
+async function readOnlyCorruptFile(directory: string, baseName: string): Promise<string> {
+  const files = await readdir(directory)
+  const corruptFile = files.find((file) => file.startsWith(`${baseName}.corrupt.`))
+  if (!corruptFile) {
+    throw new Error(`Expected ${baseName} corrupt quarantine file in ${directory}`)
+  }
+  return readFile(path.join(directory, corruptFile), 'utf8')
 }
 
 afterEach(async () => {
@@ -87,6 +96,36 @@ describe('ProviderSecretsStore', () => {
       configured: false,
       updatedAt: null,
     })
+  })
+
+  it('fails closed and quarantines corrupt provider secret JSON before mutating', async () => {
+    const directory = await createTempDirectory()
+    const filePath = path.join(directory, 'provider-secrets.json')
+    const keyFilePath = path.join(directory, 'provider-secrets.key')
+    const store = new ProviderSecretsStore({
+      filePath,
+      keyFilePath,
+      encryptionKey: 'test-secret',
+    })
+
+    await store.setSecret(
+      OPENAI_REALTIME_TRANSCRIPTION_PROVIDER_ID,
+      'sk-existing-openai-key',
+      { now: new Date('2026-05-05T04:15:00.000Z') },
+    )
+    const original = await readFile(filePath, 'utf8')
+    const truncated = original.slice(0, -2)
+    await writeFile(filePath, truncated, 'utf8')
+
+    await expect(store.setSecret(
+      GEMINI_IMAGE_GENERATION_PROVIDER_ID,
+      'AIza-new-gemini-key',
+      { now: new Date('2026-05-05T04:16:00.000Z') },
+    )).rejects.toThrow(/Corrupt JSON file/)
+
+    await expect(readFile(filePath, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(readOnlyCorruptFile(directory, 'provider-secrets.json'))
+      .resolves.toBe(truncated)
   })
 
   it('migrates legacy transcription secret files to provider secret files on first load', async () => {

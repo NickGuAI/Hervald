@@ -47,6 +47,7 @@ export interface AgentsWebSocketContext {
     text: string,
     images?: { mediaType: string; data: string }[],
     displayText?: string,
+    clientSendId?: string,
   ): Promise<{ ok: true } | { ok: false; error: string }>
   getWorkspaceResolver?: () => WorkspaceResolverCapability | undefined
   writeToStdin(session: StreamSession, data: string): boolean
@@ -70,6 +71,10 @@ function extractSessionNameFromUrl(url: URL): string | null {
   }
 
   return SESSION_NAME_PATTERN.test(decoded) ? decoded : null
+}
+
+function readClientSendId(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined
 }
 
 function hasLatestSystemEvent(session: StreamSession, text: string): boolean {
@@ -140,7 +145,6 @@ export function createAgentsWebSocket(ctx: AgentsWebSocketContext): {
             })
             ws.send(JSON.stringify({
               type: 'replay',
-              events: replayEvents,
               ...(projection.envelopes ? { envelopes: projection.envelopes } : {}),
               messages: projection.messages,
               projection,
@@ -176,6 +180,7 @@ export function createAgentsWebSocket(ctx: AgentsWebSocketContext): {
                 type: string
                 text?: string
                 images?: { mediaType: string; data: string }[]
+                clientSendId?: unknown
                 workspaceContext?: unknown
                 toolId?: string
                 answers?: Record<string, string[]>
@@ -218,6 +223,7 @@ export function createAgentsWebSocket(ctx: AgentsWebSocketContext): {
                     inputText,
                     validImages,
                     rawInputText,
+                    readClientSendId(msg.clientSendId),
                   )
                   if (!immediateResult.ok) {
                     if (!hasLatestSystemEvent(liveSession, immediateResult.error)) {

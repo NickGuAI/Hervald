@@ -352,13 +352,17 @@ export default function PoliciesPage() {
   }
 
   return (
-    <div className="h-full flex flex-col">
-      <header className="border-b border-ink-border bg-washi-aged/40 px-5 py-5 md:px-7">
-        <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+    <section
+      aria-labelledby="policies-page-title"
+      data-testid="policies-page"
+      className="min-h-full w-full min-w-0 bg-washi-white"
+    >
+      <header className="border-b border-ink-border bg-washi-aged/40 px-4 py-5 md:px-6">
+        <div className="flex w-full flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
           <div className="flex items-start gap-3">
             <ShieldCheck size={20} className="mt-0.5 text-sumi-diluted" />
             <div>
-              <h2 className="font-display text-display text-sumi-black">Action Policies</h2>
+              <h2 id="policies-page-title" className="font-display text-display text-sumi-black">Action Policies</h2>
               <p className="mt-2 max-w-3xl text-sm leading-relaxed text-sumi-diluted">
                 Configure which external actions run automatically, require review, or stay blocked.
                 Built-in actions use allowlists and blocklists, and user-invocable skills are discovered automatically.
@@ -367,7 +371,7 @@ export default function PoliciesPage() {
           </div>
 
           <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
-            <div className="min-w-[17rem]">
+            <div className="w-full sm:min-w-[17rem]">
               <label className="section-title mb-1.5 block" htmlFor="policies-scope-select">
                 Scope
               </label>
@@ -398,7 +402,7 @@ export default function PoliciesPage() {
                   skillsQuery.refetch(),
                 ])
               }}
-              className="card-sumi inline-flex items-center justify-center gap-2 px-4 py-3 text-sm text-sumi-black transition-colors hover:bg-ink-wash"
+              className="card-sumi inline-flex w-full items-center justify-center gap-2 px-4 py-3 text-sm text-sumi-black transition-colors hover:bg-ink-wash sm:w-auto"
             >
               <RefreshCw
                 size={14}
@@ -415,78 +419,80 @@ export default function PoliciesPage() {
         </div>
       </header>
 
-      <div className="flex-1 min-h-0 overflow-y-auto p-4 md:p-6">
-        <div className="mx-auto max-w-6xl space-y-4">
-          <div className="card-sumi flex flex-col gap-3 p-4 md:flex-row md:items-center md:justify-between">
-            <div>
-              <p className="section-title">Active Scope</p>
-              <p className="mt-2 text-sm text-sumi-black">{scopeLabel(scope, commanders)}</p>
-              <p className="mt-1 text-sm text-sumi-diluted">
-                Default action policy is <span className="font-medium text-sumi-black">Review</span>.
-                Allowlists override to Auto and blocklists override to Block.
-              </p>
-            </div>
-            <div className="flex flex-wrap gap-2">
-              <span className="badge-sumi">{channelsRows.length} channel actions</span>
-              <span className="badge-sumi">{codeInfraRows.length} code &amp; infra actions</span>
-              <span className="badge-sumi">{skillRows.length} discovered skills</span>
-              <span className="badge-sumi">Fallback policy</span>
-            </div>
-          </div>
-
-          <div className="card-sumi flex flex-col gap-4 p-4 lg:flex-row lg:items-end lg:justify-between">
-            <div>
-              <div className="flex items-center gap-2">
-                <Clock3 size={16} className="text-sumi-diluted" />
-                <p className="section-title">Queue Defaults</p>
+      <div data-testid="policies-page-content" className="w-full max-w-full p-4 md:p-6">
+        <div className="space-y-4">
+          <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(24rem,32rem)]">
+            <div className="card-sumi flex flex-col gap-3 p-4 md:flex-row md:items-center md:justify-between">
+              <div>
+                <p className="section-title">Active Scope</p>
+                <p className="mt-2 text-sm text-sumi-black">{scopeLabel(scope, commanders)}</p>
+                <p className="mt-1 text-sm text-sumi-diluted">
+                  Default action policy is <span className="font-medium text-sumi-black">Review</span>.
+                  Allowlists override to Auto and blocklists override to Block.
+                </p>
               </div>
-              <p className="mt-2 max-w-2xl text-sm leading-relaxed text-sumi-diluted">
-                Configure what happens when a queued approval sits without a human response.
-              </p>
+              <div className="flex flex-wrap gap-2">
+                <span className="badge-sumi">{channelsRows.length} channel actions</span>
+                <span className="badge-sumi">{codeInfraRows.length} code &amp; infra actions</span>
+                <span className="badge-sumi">{skillRows.length} discovered skills</span>
+                <span className="badge-sumi">Fallback policy</span>
+              </div>
             </div>
 
-            <div className="grid gap-3 sm:grid-cols-2">
-              <div className="min-w-[12rem]">
-                <label className="section-title mb-1.5 block" htmlFor="approval-timeout-minutes">
-                  Timeout Window
-                </label>
-                <select
-                  id="approval-timeout-minutes"
-                  value={settings.timeoutMinutes}
-                  onChange={(event) =>
-                    updateSettings.mutate({
-                      ...settings,
-                      timeoutMinutes: Number.parseInt(event.target.value, 10) || settings.timeoutMinutes,
-                    })
-                  }
-                  className="w-full rounded-lg border border-ink-border bg-washi-aged px-3 py-2 text-sm text-sumi-black focus:outline-none focus:ring-1 focus:ring-sumi-mist"
-                >
-                  {TIMEOUT_MINUTE_OPTIONS.map((minutes) => (
-                    <option key={minutes} value={minutes}>
-                      {minutes} minute{minutes === 1 ? '' : 's'}
-                    </option>
-                  ))}
-                </select>
+            <div className="card-sumi flex flex-col gap-4 p-4">
+              <div>
+                <div className="flex items-center gap-2">
+                  <Clock3 size={16} className="text-sumi-diluted" />
+                  <p className="section-title">Queue Defaults</p>
+                </div>
+                <p className="mt-2 max-w-2xl text-sm leading-relaxed text-sumi-diluted">
+                  Configure what happens when a queued approval sits without a human response.
+                </p>
               </div>
 
-              <div className="min-w-[12rem]">
-                <label className="section-title mb-1.5 block" htmlFor="approval-timeout-action">
-                  No-Response Action
-                </label>
-                <select
-                  id="approval-timeout-action"
-                  value={settings.timeoutAction}
-                  onChange={(event) =>
-                    updateSettings.mutate({
-                      ...settings,
-                      timeoutAction: event.target.value === 'auto' ? 'auto' : 'block',
-                    })
-                  }
-                  className="w-full rounded-lg border border-ink-border bg-washi-aged px-3 py-2 text-sm text-sumi-black focus:outline-none focus:ring-1 focus:ring-sumi-mist"
-                >
-                  <option value="block">Reject after timeout</option>
-                  <option value="auto">Auto-approve after timeout</option>
-                </select>
+              <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-1 2xl:grid-cols-2">
+                <div>
+                  <label className="section-title mb-1.5 block" htmlFor="approval-timeout-minutes">
+                    Timeout Window
+                  </label>
+                  <select
+                    id="approval-timeout-minutes"
+                    value={settings.timeoutMinutes}
+                    onChange={(event) =>
+                      updateSettings.mutate({
+                        ...settings,
+                        timeoutMinutes: Number.parseInt(event.target.value, 10) || settings.timeoutMinutes,
+                      })
+                    }
+                    className="w-full rounded-lg border border-ink-border bg-washi-aged px-3 py-2 text-sm text-sumi-black focus:outline-none focus:ring-1 focus:ring-sumi-mist"
+                  >
+                    {TIMEOUT_MINUTE_OPTIONS.map((minutes) => (
+                      <option key={minutes} value={minutes}>
+                        {minutes} minute{minutes === 1 ? '' : 's'}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="section-title mb-1.5 block" htmlFor="approval-timeout-action">
+                    No-Response Action
+                  </label>
+                  <select
+                    id="approval-timeout-action"
+                    value={settings.timeoutAction}
+                    onChange={(event) =>
+                      updateSettings.mutate({
+                        ...settings,
+                        timeoutAction: event.target.value === 'auto' ? 'auto' : 'block',
+                      })
+                    }
+                    className="w-full rounded-lg border border-ink-border bg-washi-aged px-3 py-2 text-sm text-sumi-black focus:outline-none focus:ring-1 focus:ring-sumi-mist"
+                  >
+                    <option value="block">Reject after timeout</option>
+                    <option value="auto">Auto-approve after timeout</option>
+                  </select>
+                </div>
               </div>
             </div>
           </div>
@@ -499,8 +505,8 @@ export default function PoliciesPage() {
           )}
 
           <div className="card-sumi overflow-hidden">
-            <div className="overflow-x-auto">
-              <table className="min-w-full text-left text-sm">
+            <div data-testid="policies-table-scroll" className="overflow-x-auto">
+              <table className="w-full min-w-[900px] text-left text-sm">
                 <thead className="bg-washi-aged text-xs uppercase tracking-[0.18em] text-sumi-mist">
                   <tr>
                     <th className="w-14 px-4 py-3"> </th>
@@ -654,6 +660,6 @@ export default function PoliciesPage() {
           </div>
         </div>
       </div>
-    </div>
+    </section>
   )
 }

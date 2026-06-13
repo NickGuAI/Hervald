@@ -73,6 +73,111 @@ describe('mergeHistoricalAndLiveTranscript', () => {
     expect(merged.some((message) => message.text.includes('<workspace-'))).toBe(false)
   })
 
+  it('does not render both optimistic and backend copies for image-only user prompts', () => {
+    const image = {
+      mediaType: 'image/png',
+      data: 'base64-product-logo',
+      alt: 'Product logo upload',
+    }
+    const historicalMessages: MsgItem[] = [
+      {
+        id: 'history-user-image',
+        kind: 'user',
+        text: '',
+        images: [image],
+        transcript: {
+          source: { provider: 'codex', backend: 'rpc' },
+          turnId: 'turn-user-image',
+          itemId: 'user-image-1',
+        },
+      },
+    ]
+    const liveMessages: MsgItem[] = [
+      {
+        id: 'optimistic-user-image',
+        kind: 'user',
+        text: '[image]',
+        images: [image],
+      },
+    ]
+
+    expect(mergeHistoricalAndLiveTranscript(historicalMessages, liveMessages)).toEqual([
+      liveMessages[0],
+    ])
+  })
+
+  it('dedupes separated historical and live user image rows by client send id when image bytes differ', () => {
+    const clientSendId = 'conversation-image-send-1705'
+    const historicalMessages: MsgItem[] = [
+      {
+        id: 'history-user-image',
+        kind: 'user',
+        text: '',
+        clientSendId,
+        images: [{ mediaType: 'image/png', data: 'history-image-bytes' }],
+        transcript: {
+          source: { provider: 'codex', backend: 'rpc' },
+          turnId: 'turn-user-image',
+          itemId: 'user-image-history',
+        },
+      },
+      {
+        id: 'history-agent-between',
+        kind: 'agent',
+        text: 'I will inspect the image.',
+      },
+    ]
+    const liveMessages: MsgItem[] = [
+      {
+        id: 'live-user-image',
+        kind: 'user',
+        text: '[image]',
+        clientSendId,
+        images: [{ mediaType: 'image/png', data: 'live-image-bytes' }],
+      },
+    ]
+
+    const merged = mergeHistoricalAndLiveTranscript(historicalMessages, liveMessages)
+
+    expect(merged).toEqual([
+      liveMessages[0],
+      historicalMessages[1],
+    ])
+    expect(merged.filter((message) => (
+      message.kind === 'user'
+      && message.clientSendId === clientSendId
+      && (message.images?.length ?? 0) > 0
+    ))).toHaveLength(1)
+  })
+
+  it('keeps repeated same-image user prompts when their text differs', () => {
+    const image = {
+      mediaType: 'image/png',
+      data: 'base64-product-logo',
+    }
+    const historicalMessages: MsgItem[] = [
+      {
+        id: 'history-user-image',
+        kind: 'user',
+        text: 'Use this product logo.',
+        images: [image],
+      },
+    ]
+    const liveMessages: MsgItem[] = [
+      {
+        id: 'live-user-image',
+        kind: 'user',
+        text: 'Now use it for the app icon.',
+        images: [image],
+      },
+    ]
+
+    expect(mergeHistoricalAndLiveTranscript(historicalMessages, liveMessages)).toEqual([
+      historicalMessages[0],
+      liveMessages[0],
+    ])
+  })
+
   it('folds a live replay tail into the fuller historical assistant message with the same transcript identity', () => {
     const fullText = [
       'CommandRoom.tsx](/home/builder/App/apps/hammurabi/modules/command-room/components/CommandRoom.tsx:825).',

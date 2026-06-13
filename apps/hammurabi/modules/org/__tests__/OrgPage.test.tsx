@@ -690,7 +690,7 @@ describe('OrgPage', () => {
     expect(document.body.querySelectorAll('[data-testid="commander-tile"]')).toHaveLength(1)
   })
 
-  it('asks before closing an active hire wizard session', async () => {
+  it('asks in a modal before closing an active hire wizard session', async () => {
     mocks.useOrgTree.mockReturnValue({
       data: createOrgTree(),
       isLoading: false,
@@ -702,19 +702,17 @@ describe('OrgPage', () => {
     await click('[data-testid="commander-hire-button"]')
     await click('[data-testid="mock-create-commander-busy"]')
 
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
-    try {
-      await pressEscape()
-      expect(confirmSpy).toHaveBeenCalledTimes(1)
-      expect(document.body.querySelector('[data-testid="mock-create-commander-wizard"]')).not.toBeNull()
+    await pressEscape()
+    expect(document.body.textContent).toContain('Close setup chat?')
+    expect(document.body.querySelector('[data-testid="mock-create-commander-wizard"]')).not.toBeNull()
 
-      confirmSpy.mockReturnValue(true)
-      await pressEscape()
-      expect(confirmSpy).toHaveBeenCalledTimes(2)
-      expect(document.body.querySelector('[data-testid="mock-create-commander-wizard"]')).toBeNull()
-    } finally {
-      confirmSpy.mockRestore()
-    }
+    await clickButtonWithText('Cancel')
+    expect(document.body.textContent).not.toContain('Close setup chat?')
+    expect(document.body.querySelector('[data-testid="mock-create-commander-wizard"]')).not.toBeNull()
+
+    await pressEscape()
+    await clickButtonWithText('Close setup')
+    expect(document.body.querySelector('[data-testid="mock-create-commander-wizard"]')).toBeNull()
   })
 
   it('clears the first-run onboarding signal without auto-opening the hire wizard', async () => {

@@ -1,8 +1,10 @@
 import type { FormEvent } from 'react'
 import { AlertTriangle, Plus } from 'lucide-react'
 import { useProviderRegistry } from '@/hooks/use-providers'
+import { useSkills } from '@/hooks/use-skills'
 import type { AgentType } from '@/types'
 import { cn } from '@/lib/utils'
+import { DirectoryPicker } from '../../agents/components/DirectoryPicker'
 
 export type QuestSource = 'idea' | 'github-issue' | 'manual' | 'voice-log'
 export type QuestAgentType = AgentType
@@ -47,12 +49,13 @@ interface QuestCreateFormProps {
   onInstructionChange: (value: string) => void
   cwd: string
   onCwdChange: (value: string) => void
+  directoryHost?: string
   agentType: QuestAgentType
   onAgentTypeChange: (value: QuestAgentType) => void
   permissionMode: QuestPermissionMode
   onPermissionModeChange: (value: QuestPermissionMode) => void
-  skillsInput: string
-  onSkillsInputChange: (value: string) => void
+  selectedSkills: string[]
+  onSelectedSkillsChange: (value: string[]) => void
   artifacts: QuestArtifact[]
   showArtifactForm: boolean
   onToggleArtifactForm: () => void
@@ -66,7 +69,9 @@ interface QuestCreateFormProps {
   onRemoveArtifact: (indexToRemove: number) => void
   formError: string | null
   submitPending: boolean
+  canClearDraft: boolean
   onSubmit: (event: FormEvent<HTMLFormElement>) => void
+  onClearDraft: () => void
 }
 
 export function QuestCreateForm({
@@ -80,12 +85,13 @@ export function QuestCreateForm({
   onInstructionChange,
   cwd,
   onCwdChange,
+  directoryHost,
   agentType,
   onAgentTypeChange,
   permissionMode,
   onPermissionModeChange,
-  skillsInput,
-  onSkillsInputChange,
+  selectedSkills,
+  onSelectedSkillsChange,
   artifacts,
   showArtifactForm,
   onToggleArtifactForm,
@@ -99,9 +105,28 @@ export function QuestCreateForm({
   onRemoveArtifact,
   formError,
   submitPending,
+  canClearDraft,
   onSubmit,
+  onClearDraft,
 }: QuestCreateFormProps) {
   const { data: providers = [] } = useProviderRegistry()
+  const {
+    data: skills,
+    error: skillsError,
+    isError: skillsIsError,
+    isLoading: skillsLoading,
+    refetch: refetchSkills,
+  } = useSkills()
+  const skillList = skills ?? []
+  const selectedSkillSet = new Set(selectedSkills)
+
+  function toggleSkill(skillName: string): void {
+    if (selectedSkillSet.has(skillName)) {
+      onSelectedSkillsChange(selectedSkills.filter((selectedSkill) => selectedSkill !== skillName))
+      return
+    }
+    onSelectedSkillsChange([...selectedSkills, skillName])
+  }
 
   return (
     <form onSubmit={onSubmit} className="space-y-3">
@@ -163,12 +188,7 @@ export function QuestCreateForm({
       <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
         <div>
           <label className="section-title block mb-2">cwd</label>
-          <input
-            value={cwd}
-            onChange={(event) => onCwdChange(event.target.value)}
-            placeholder="~/App"
-            className="w-full px-3 py-2 rounded-lg border border-ink-border bg-washi-aged font-mono text-[16px] md:text-sm focus:outline-none focus:border-ink-border-hover"
-          />
+          <DirectoryPicker value={cwd} onChange={onCwdChange} host={directoryHost} />
         </div>
         <div>
           <label className="section-title block mb-2">agentType</label>
@@ -197,13 +217,50 @@ export function QuestCreateForm({
       </div>
 
       <div>
-        <label className="section-title block mb-2">skills (comma-separated)</label>
-        <input
-          value={skillsInput}
-          onChange={(event) => onSkillsInputChange(event.target.value)}
-          placeholder="legion-investigate, legion-implement"
-          className="w-full px-3 py-2 rounded-lg border border-ink-border bg-washi-aged text-[16px] md:text-sm focus:outline-none focus:border-ink-border-hover"
-        />
+        <label className="section-title block mb-2">Skills</label>
+        <div
+          className="rounded-lg border border-ink-border bg-washi-aged px-3 py-2"
+          role="group"
+          aria-label="Skills to use"
+        >
+          {skillsLoading ? (
+            <p className="text-sm text-sumi-diluted">Loading skills...</p>
+          ) : skillsIsError ? (
+            <div className="text-sm text-accent-vermillion">
+              <p>{skillsError instanceof Error ? skillsError.message : 'Unable to load skills.'}</p>
+              <button
+                type="button"
+                className="mt-1 font-mono text-xs underline"
+                onClick={() => {
+                  void refetchSkills()
+                }}
+              >
+                Retry
+              </button>
+            </div>
+          ) : skillList.length === 0 ? (
+            <p className="text-sm text-sumi-diluted">No user-invocable skills installed.</p>
+          ) : (
+            <div className="grid gap-2 md:grid-cols-2">
+              {skillList.map((skill) => (
+                <label key={skill.name} className="flex items-start gap-2 text-sm text-sumi-gray">
+                  <input
+                    type="checkbox"
+                    checked={selectedSkillSet.has(skill.name)}
+                    onChange={() => toggleSkill(skill.name)}
+                    className="mt-0.5"
+                  />
+                  <span>
+                    <span className="font-mono text-sumi-black">/{skill.name}</span>
+                    {skill.description ? (
+                      <span className="mt-0.5 block text-xs text-sumi-diluted">{skill.description}</span>
+                    ) : null}
+                  </span>
+                </label>
+              ))}
+            </div>
+          )}
+        </div>
       </div>
 
       <div className="space-y-2">
@@ -287,14 +344,24 @@ export function QuestCreateForm({
         </div>
       )}
 
-      <button
-        type="submit"
-        disabled={submitPending}
-        className="btn-primary disabled:opacity-60 disabled:cursor-not-allowed inline-flex items-center gap-2"
-      >
-        <Plus size={14} />
-        {submitPending ? 'Adding...' : 'Add Quest'}
-      </button>
+      <div className="flex flex-wrap items-center gap-2">
+        <button
+          type="submit"
+          disabled={submitPending}
+          className="btn-primary disabled:opacity-60 disabled:cursor-not-allowed inline-flex items-center gap-2"
+        >
+          <Plus size={14} />
+          {submitPending ? 'Adding...' : 'Add Quest'}
+        </button>
+        <button
+          type="button"
+          disabled={submitPending || !canClearDraft}
+          className="rounded-lg border border-ink-border px-3 py-2 text-sm hover:bg-ink-wash transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+          onClick={onClearDraft}
+        >
+          Clear draft
+        </button>
+      </div>
     </form>
   )
 }

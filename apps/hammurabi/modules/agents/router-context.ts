@@ -2,8 +2,17 @@ import type { IncomingMessage } from 'node:http'
 import type { Duplex } from 'node:stream'
 import type { RequestHandler, Router } from 'express'
 import type { WebSocketServer } from 'ws'
-import { combinedAuth } from '../../server/middleware/combined-auth.js'
+import { bearerTokenFromHeader } from '@gehirn/auth-providers'
+import {
+  auth0UserHasCombinedPermissions,
+  combinedAuth,
+} from '../../server/middleware/combined-auth.js'
 import { createAuth0Verifier } from '../../server/middleware/auth0.js'
+import {
+  InMemoryTransportAuthTicketStore,
+  readTransportAuthTicketFromUrl,
+  type TransportAuthTicket,
+} from '../../server/auth/transport-tickets.js'
 import type { MachineRegistryStore } from './machines.js'
 import type { ProviderCreateOptions } from './providers/provider-adapter.js'
 import type {
@@ -24,6 +33,7 @@ export interface AgentsAuthContext {
   requireReadAccess: RequestHandler
   requireWriteAccess: RequestHandler
   requireDispatchWorkerAccess: RequestHandler
+  issueSessionStreamTicket(): TransportAuthTicket
   verifyWsAuth(req: IncomingMessage): Promise<boolean>
 }
 
@@ -123,13 +133,25 @@ export function createAgentsAuthContext(options: AgentsRouterOptions): AgentsAut
     clientId: options.auth0ClientId,
     verifyToken: options.verifyAuth0Token,
   })
+  const streamTickets = new InMemoryTransportAuthTicketStore()
 
   async function verifyWsAuth(req: IncomingMessage): Promise<boolean> {
     const url = new URL(req.url ?? '', `http://${req.headers.host ?? 'localhost'}`)
-    const accessToken = url.searchParams.get('access_token')
-    const apiKeyParam = url.searchParams.get('api_key')
+    if (
+      streamTickets.consume(
+        readTransportAuthTicketFromUrl(url),
+        'agents.session-stream',
+      )
+    ) {
+      return true
+    }
+
+    const authorizationHeader = Array.isArray(req.headers.authorization)
+      ? req.headers.authorization[0]
+      : req.headers.authorization
+    const bearerToken = bearerTokenFromHeader(authorizationHeader)
     const apiKeyHeader = req.headers['x-hammurabi-api-key'] as string | undefined
-    const token = accessToken ?? apiKeyParam ?? apiKeyHeader
+    const token = bearerToken ?? apiKeyHeader
 
     if (!token) {
       return false
@@ -137,8 +159,10 @@ export function createAgentsAuthContext(options: AgentsRouterOptions): AgentsAut
 
     if (auth0Verifier) {
       try {
-        await auth0Verifier(token)
-        return true
+        const user = await auth0Verifier(token)
+        return auth0UserHasCombinedPermissions(user, {
+          requiredApiKeyScopes: ['agents:write'],
+        })
       } catch {
         // Fall through to API key verification.
       }
@@ -158,6 +182,7 @@ export function createAgentsAuthContext(options: AgentsRouterOptions): AgentsAut
     requireReadAccess,
     requireWriteAccess,
     requireDispatchWorkerAccess,
+    issueSessionStreamTicket: () => streamTickets.issue('agents.session-stream'),
     verifyWsAuth,
   }
 }

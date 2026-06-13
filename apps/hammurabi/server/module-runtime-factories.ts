@@ -42,30 +42,35 @@ export interface HammurabiRuntimeFactoryResult {
   otelRouter: Router
 }
 
-const RUNTIME_SETUP_FACTORIES: readonly ModuleRuntimeFactory[] = [
-  createApiKeysRuntime,
-  createAutomationsEventBusFoundation,
-  createCommandersFoundation,
-  createChannelsFoundation,
-  createOperatorsRuntime,
-  createPoliciesFoundation,
-  createAgentsRuntime,
-  createProviderRegistryRuntime,
-  createAutomationsFoundation,
-  createPoliciesRuntime,
-  createApprovalsRuntime,
-  createCommandersRuntime,
-  createWorkspaceRuntime,
-  createChannelsRuntime,
-  createConversationRuntime,
-  createOrgRuntime,
-  createOnboardingRuntime,
-  createSettingsRuntime,
-  createAutomationsRuntime,
-  createRealtimeRuntime,
-  createSkillsRuntime,
-  createModuleGraphRuntime,
-  createEvalRuntime,
+interface ScopedRuntimeFactory {
+  moduleId: string
+  factory: ModuleRuntimeFactory
+}
+
+const RUNTIME_SETUP_FACTORIES: readonly ScopedRuntimeFactory[] = [
+  { moduleId: 'api-keys', factory: createApiKeysRuntime },
+  { moduleId: 'automations', factory: createAutomationsEventBusFoundation },
+  { moduleId: 'commanders', factory: createCommandersFoundation },
+  { moduleId: 'channels', factory: createChannelsFoundation },
+  { moduleId: 'operators', factory: createOperatorsRuntime },
+  { moduleId: 'policies', factory: createPoliciesFoundation },
+  { moduleId: 'agents', factory: createAgentsRuntime },
+  { moduleId: 'providers', factory: createProviderRegistryRuntime },
+  { moduleId: 'automations', factory: createAutomationsFoundation },
+  { moduleId: 'policies', factory: createPoliciesRuntime },
+  { moduleId: 'approvals', factory: createApprovalsRuntime },
+  { moduleId: 'commanders', factory: createCommandersRuntime },
+  { moduleId: 'workspace', factory: createWorkspaceRuntime },
+  { moduleId: 'channels', factory: createChannelsRuntime },
+  { moduleId: 'conversation', factory: createConversationRuntime },
+  { moduleId: 'org', factory: createOrgRuntime },
+  { moduleId: 'onboarding', factory: createOnboardingRuntime },
+  { moduleId: 'settings', factory: createSettingsRuntime },
+  { moduleId: 'automations', factory: createAutomationsRuntime },
+  { moduleId: 'realtime', factory: createRealtimeRuntime },
+  { moduleId: 'skills', factory: createSkillsRuntime },
+  { moduleId: 'module-graph', factory: createModuleGraphRuntime },
+  { moduleId: 'eval', factory: createEvalRuntime },
 ]
 
 const RUNTIME_MOUNT_ORDER = [
@@ -112,11 +117,11 @@ export function createHammurabiModuleRuntimeRegistrations(
   context: ModuleRuntimeContext,
 ): HammurabiRuntimeFactoryResult {
   const registrations: ModuleRouteRegistration[] = []
-  for (const factory of RUNTIME_SETUP_FACTORIES) {
-    appendRegistration(registrations, factory(context))
+  for (const { moduleId, factory } of RUNTIME_SETUP_FACTORIES) {
+    appendRegistration(registrations, context.capabilities.withProviderModule(moduleId, () => factory(context)))
   }
 
-  const telemetry = createTelemetryRuntime(context)
+  const telemetry = context.capabilities.withProviderModule('telemetry', () => createTelemetryRuntime(context))
   registrations.push(telemetry.registration)
 
   registrations.sort((left, right) => (

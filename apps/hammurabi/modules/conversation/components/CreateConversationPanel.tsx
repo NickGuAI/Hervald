@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react'
 import { Plus } from 'lucide-react'
 import type { AgentType, ProviderRegistryEntry } from '@/types'
 import {
@@ -65,6 +65,8 @@ export function CreateConversationPanel({
   )
   const [maxThinkingTokens, setMaxThinkingTokens] = useState(String(DEFAULT_CLAUDE_MAX_THINKING_TOKENS))
   const [reasoningError, setReasoningError] = useState<string | null>(null)
+  const userSelectedAgentTypeRef = useRef(false)
+  const previousDefaultAgentTypeRef = useRef(defaultAgentType)
   const activeProvider = useMemo(
     () => providerOptions.find((provider) => provider.id === agentType) ?? null,
     [agentType, providerOptions],
@@ -74,11 +76,21 @@ export function CreateConversationPanel({
   const disabled = !onCreateChat || createChatPending || !agentType
 
   useEffect(() => {
-    setAgentType((current) => (
-      current && providerOptions.some((provider) => provider.id === current)
-        ? current
-        : resolveInitialAgentType(providerOptions, defaultAgentType)
-    ))
+    const defaultAgentTypeChanged = previousDefaultAgentTypeRef.current !== defaultAgentType
+    previousDefaultAgentTypeRef.current = defaultAgentType
+
+    setAgentType((current) => {
+      const currentIsAvailable = Boolean(
+        current && providerOptions.some((provider) => provider.id === current),
+      )
+
+      if (currentIsAvailable && (!defaultAgentTypeChanged || userSelectedAgentTypeRef.current)) {
+        return current
+      }
+
+      userSelectedAgentTypeRef.current = false
+      return resolveInitialAgentType(providerOptions, defaultAgentType)
+    })
   }, [defaultAgentType, providerOptions])
 
   useEffect(() => {
@@ -125,11 +137,16 @@ export function CreateConversationPanel({
   }
 
   function handleAgentTypeChange(nextAgentType: AgentType): void {
+    userSelectedAgentTypeRef.current = true
     setAgentType(nextAgentType)
     const nextModels = providerOptions.find((provider) => provider.id === nextAgentType)?.availableModels ?? []
     if (model && !nextModels.some((option) => option.id === model)) {
       setModel(null)
     }
+  }
+
+  function handleAgentTypeSelectEvent(event: ChangeEvent<HTMLSelectElement>): void {
+    handleAgentTypeChange(event.currentTarget.value as AgentType)
   }
 
   return (
@@ -191,7 +208,7 @@ export function CreateConversationPanel({
               className="font-body"
               data-testid="create-chat-provider-select"
               value={agentType ?? ''}
-              onChange={(event) => handleAgentTypeChange(event.target.value as AgentType)}
+              onChange={handleAgentTypeSelectEvent}
               disabled={disabled}
               style={{
                 background: 'transparent',

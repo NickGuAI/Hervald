@@ -28,4 +28,12 @@ describe('frontend module graph boundaries', () => {
     expect(mobileTabsSource).not.toContain("name: 'automations'")
     expect(mobileTabsSource).not.toContain("path: '/org'")
   })
+
+  it('keeps desktop shell layout-only and free of feature fetch ownership', () => {
+    const shellSource = readSource('surfaces/desktop/Shell.tsx')
+
+    expect(shellSource).not.toContain('useAgentSessions')
+    expect(shellSource).not.toContain('usePendingApprovals')
+    expect(shellSource).not.toContain('workerLifecycle')
+  })
 })

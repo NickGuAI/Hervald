@@ -184,6 +184,26 @@ export function findModuleGraphWebSocket(
   return graph.websockets.find((websocket) => websocket.id === websocketId) ?? null
 }
 
+export function resolveModuleGraphWebSocketPath(
+  graph: HammurabiModuleGraphResponse | null | undefined,
+  websocketId: string,
+  params: Readonly<Record<string, string>>,
+): string | null {
+  if (!graph) {
+    return null
+  }
+
+  const websocket = findModuleGraphWebSocket(graph, websocketId)
+  if (!websocket) {
+    return null
+  }
+
+  return websocket.path.replace(/:([A-Za-z0-9_]+)/g, (match, key: string) => {
+    const value = params[key]
+    return typeof value === 'string' ? encodeURIComponent(value) : match
+  })
+}
+
 export function findModuleGraphUiRouteMetadata(
   graph: HammurabiModuleGraphResponse | null | undefined,
   routeId: string,

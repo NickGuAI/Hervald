@@ -144,10 +144,9 @@ vi.mock('@modules/workspace/use-workspace', () => ({
   fetchWorkspaceExpandedTree: vi.fn(async () => ({ nodes: [], parentPath: '' })),
   openWorkspaceTarget: vi.fn(async () => ({
     targetId: 'wt-test',
-    label: 'local:/tmp/workspace',
+    label: 'Local',
     host: 'local',
-    rootPath: '/tmp/workspace',
-    isReadOnly: false,
+    readOnly: false,
   })),
   useWorkspaceActions: () => ({
     invalidateAll: vi.fn(),

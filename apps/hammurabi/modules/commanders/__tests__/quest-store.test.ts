@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -20,6 +20,15 @@ describe('QuestStore', () => {
   afterEach(async () => {
     await rm(tmpDir, { recursive: true, force: true })
   })
+
+  async function readOnlyCorruptFile(directory: string, baseName: string): Promise<string> {
+    const files = await readdir(directory)
+    const corruptFile = files.find((file) => file.startsWith(`${baseName}.corrupt.`))
+    if (!corruptFile) {
+      throw new Error(`Expected ${baseName} corrupt quarantine file in ${directory}`)
+    }
+    return readFile(join(directory, corruptFile), 'utf8')
+  }
 
   it('creates, lists, updates, and deletes quests', async () => {
     const created = await store.create({
@@ -61,6 +70,43 @@ describe('QuestStore', () => {
     const deleted = await store.delete('cmdr-1', created.id)
     expect(deleted).toBe(true)
     expect(await store.list('cmdr-1')).toEqual([])
+  })
+
+  it('fails closed and quarantines corrupt quest JSON before mutating', async () => {
+    await store.create({
+      commanderId: 'cmdr-corrupt',
+      status: 'pending',
+      source: 'manual',
+      instruction: 'Preserve this quest if JSON is truncated',
+      contract: {
+        cwd: '/tmp/example-repo',
+        permissionMode: 'default',
+        agentType: 'claude',
+        skillsToUse: [],
+      },
+    })
+
+    const filePath = store.getCommanderFilePath('cmdr-corrupt')
+    const original = await readFile(filePath, 'utf8')
+    const truncated = original.slice(0, -2)
+    await writeFile(filePath, truncated, 'utf8')
+
+    await expect(store.create({
+      commanderId: 'cmdr-corrupt',
+      status: 'pending',
+      source: 'manual',
+      instruction: 'This mutation must not overwrite the corrupt file as empty',
+      contract: {
+        cwd: '/tmp/example-repo',
+        permissionMode: 'default',
+        agentType: 'claude',
+        skillsToUse: [],
+      },
+    })).rejects.toThrow(/Corrupt JSON file/)
+
+    await expect(readFile(filePath, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(readOnlyCorruptFile(join(tmpDir, 'cmdr-corrupt'), 'quests.json'))
+      .resolves.toBe(truncated)
   })
 
   it('resets active quests back to pending', async () => {

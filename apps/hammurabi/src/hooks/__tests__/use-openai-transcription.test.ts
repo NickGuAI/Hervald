@@ -36,18 +36,39 @@ vi.mock('@/lib/api-base', () => ({
 
 const WS_OPEN = 1
 const WS_CLOSED = 3
+let operationLog: string[] = []
+let mockAudioContextState: AudioContextState = 'running'
+let mockAudioContextResume: () => Promise<void> = async () => undefined
+let mockAudioWorkletAddModule: (moduleUrl: string) => Promise<void> = async () => undefined
+let mockGetUserMedia: ReturnType<typeof vi.fn>
+let mockTrackStop: ReturnType<typeof vi.fn>
 
 class MockAudioContext {
+  static instances: MockAudioContext[] = []
+
+  readonly constructorOptions?: AudioContextOptions
   readonly audioWorklet = {
-    addModule: vi.fn(async () => undefined),
+    addModule: vi.fn((moduleUrl: string) => {
+      operationLog.push('worklet')
+      return mockAudioWorkletAddModule(moduleUrl)
+    }),
   }
   readonly close = vi.fn(async () => undefined)
-  readonly resume = vi.fn(async () => undefined)
+  readonly resume = vi.fn(() => {
+    operationLog.push('resume')
+    return mockAudioContextResume()
+  })
   readonly createMediaStreamSource = vi.fn(() => ({
     connect: vi.fn(),
     disconnect: vi.fn(),
   }))
-  state: AudioContextState = 'running'
+  state: AudioContextState = mockAudioContextState
+
+  constructor(contextOptions?: AudioContextOptions) {
+    this.constructorOptions = contextOptions
+    operationLog.push('audio-context')
+    MockAudioContext.instances.push(this)
+  }
 }
 
 class MockAudioWorkletNode {
@@ -88,6 +109,7 @@ class MockWebSocket {
 
   constructor(url: string) {
     this.url = url
+    operationLog.push('websocket')
     MockWebSocket.instances.push(this)
   }
 
@@ -168,7 +190,7 @@ function HookHarness({
   return null
 }
 
-async function flushMicrotasks(rounds = 4): Promise<void> {
+async function flushMicrotasks(rounds = 8): Promise<void> {
   for (let index = 0; index < rounds; index += 1) {
     await Promise.resolve()
   }
@@ -203,7 +225,19 @@ async function startListeningAndGetSocket(): Promise<MockWebSocket> {
 beforeEach(() => {
   latestHookState = null
   MockWebSocket.instances = []
+  MockAudioContext.instances = []
   MockAudioWorkletNode.instances = []
+  operationLog = []
+  mockAudioContextState = 'running'
+  mockAudioContextResume = async () => undefined
+  mockAudioWorkletAddModule = async () => undefined
+  mockTrackStop = vi.fn()
+  mockGetUserMedia = vi.fn(async () => {
+    operationLog.push('get-user-media')
+    return {
+      getTracks: () => [{ stop: mockTrackStop }],
+    }
+  })
 
   originalAudioContext = window.AudioContext
   originalWebkitAudioContext = window.webkitAudioContext
@@ -217,12 +251,18 @@ beforeEach(() => {
   window.webkitAudioContext = undefined
   window.AudioWorkletNode = MockAudioWorkletNode as unknown as typeof window.AudioWorkletNode
   window.WebSocket = MockWebSocket as unknown as typeof window.WebSocket
+  mocks.fetchJson.mockReset()
+  mocks.fetchJson.mockImplementation(async (path: string) => {
+    if (path === '/api/realtime/transcription-ticket') {
+      operationLog.push('ticket')
+      return { ticket: 'transcription-ticket-123' }
+    }
+    return {}
+  })
   Object.defineProperty(navigator, 'mediaDevices', {
     configurable: true,
     value: {
-      getUserMedia: vi.fn(async () => ({
-        getTracks: () => [{ stop: vi.fn() }],
-      })),
+      getUserMedia: mockGetUserMedia,
     } satisfies Partial<MediaDevices>,
   })
 })
@@ -238,7 +278,9 @@ afterEach(() => {
   container = null
   latestHookState = null
   MockWebSocket.instances = []
+  MockAudioContext.instances = []
   MockAudioWorkletNode.instances = []
+  operationLog = []
   window.AudioContext = originalAudioContext
   window.webkitAudioContext = originalWebkitAudioContext
   window.AudioWorkletNode = originalAudioWorkletNode
@@ -353,6 +395,58 @@ describe('useOpenAITranscription helpers', () => {
 })
 
 describe('useOpenAITranscription websocket lifecycle', () => {
+  it('creates and resumes a native-rate AudioContext synchronously before awaited setup work', async () => {
+    let resolveResume: (() => void) | null = null
+    mockAudioContextState = 'suspended'
+    mockAudioContextResume = () =>
+      new Promise<void>((resolve) => {
+        resolveResume = resolve
+      })
+
+    await renderHook()
+
+    latestHookState?.startListening()
+
+    expect(operationLog).toEqual(['audio-context', 'resume'])
+    expect(MockAudioContext.instances).toHaveLength(1)
+    expect(MockAudioContext.instances[0]?.constructorOptions).toBeUndefined()
+    expect(MockAudioContext.instances[0]?.resume).toHaveBeenCalledOnce()
+    expect(mockGetUserMedia).not.toHaveBeenCalled()
+    expect(mocks.fetchJson).not.toHaveBeenCalled()
+
+    resolveResume?.()
+    await flushMicrotasks()
+
+    expect(operationLog).toEqual([
+      'audio-context',
+      'resume',
+      'get-user-media',
+      'worklet',
+      'ticket',
+      'websocket',
+    ])
+  })
+
+  it('routes setup failures through onError and releases partial capture resources', async () => {
+    const onError = vi.fn()
+    mockAudioWorkletAddModule = async () => {
+      throw new Error('worklet unavailable')
+    }
+
+    await renderHook({ onError })
+
+    latestHookState?.startListening()
+    await flushMicrotasks()
+
+    expect(onError).toHaveBeenCalledWith(
+      'Unable to start realtime transcription: worklet unavailable',
+    )
+    expect(mockTrackStop).toHaveBeenCalledOnce()
+    expect(MockAudioContext.instances[0]?.close).toHaveBeenCalledOnce()
+    expect(MockWebSocket.instances).toHaveLength(0)
+    expect(latestHookState?.isListening).toBe(false)
+  })
+
   it('sends start with context terms and ignores final frames while actively recording', async () => {
     await renderHook({
       terms: ['Claude Code', 'Kubernetes'],

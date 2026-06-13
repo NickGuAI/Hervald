@@ -18,6 +18,10 @@ export function createAgentsRuntime(context: ModuleRuntimeContext): ModuleRouteR
     getActionPolicyGate: () => capabilities.consume('policies.action-gate', 'agents'),
     maxSessions: options.maxAgentSessions,
     internalToken,
+    commanderSessionStore: capabilities.consume('commanders.store', 'agents'),
+    commanderConversationStore: capabilities.consume('commanders.conversations', 'agents'),
+    buildCommanderSessionSeed: capabilities.consume('commanders.session-seed-builder', 'agents'),
+    commanderTranscriptAppender: capabilities.consume('commanders.transcripts', 'agents'),
     questStore: capabilities.consume('commanders.quest-store', 'agents'),
     getWorkspaceResolver: () => capabilities.consume('workspace.resolver', 'agents'),
   })

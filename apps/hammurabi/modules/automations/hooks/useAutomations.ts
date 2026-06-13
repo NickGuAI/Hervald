@@ -270,7 +270,7 @@ function mapCreateSentinelInput(
     trigger: 'schedule',
     schedule: input.schedule.trim(),
     instruction: input.instruction.trim(),
-    agentType: input.agentType ?? 'claude',
+    agentType: input.agentType ?? 'codex',
     permissionMode: input.permissionMode ?? 'default',
     status: input.status ?? 'active',
     ...(input.timezone?.trim() ? { timezone: input.timezone.trim() } : {}),

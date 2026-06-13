@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import { ChevronDown } from 'lucide-react'
 import { cn, formatCost, timeAgo } from '@/lib/utils'
+import { ConfirmModal } from '@modules/components/ConfirmModal'
 import { ModalFormContainer } from '../../components/ModalFormContainer'
 import { useSentinelHistory, useSentinels } from '../hooks/useSentinels'
 import type { Sentinel } from '../types'
@@ -61,6 +62,7 @@ function lastRunSummary(sentinel: Sentinel): string {
 
 function SentinelPanelClient({ commanderId, showCreateForm, onCloseCreateForm }: SentinelPanelProps) {
   const [expandedSentinelId, setExpandedSentinelId] = useState<string | null>(null)
+  const [pendingDeleteSentinelId, setPendingDeleteSentinelId] = useState<string | null>(null)
 
   const sentinelState = useSentinels(commanderId)
   const historyState = useSentinelHistory(expandedSentinelId)
@@ -69,6 +71,21 @@ function SentinelPanelClient({ commanderId, showCreateForm, onCloseCreateForm }:
     () => sentinelState.sentinels.find((sentinel) => sentinel.id === expandedSentinelId) ?? null,
     [expandedSentinelId, sentinelState.sentinels],
   )
+  const pendingDeleteSentinel = useMemo(
+    () => sentinelState.sentinels.find((sentinel) => sentinel.id === pendingDeleteSentinelId) ?? null,
+    [pendingDeleteSentinelId, sentinelState.sentinels],
+  )
+
+  async function handleConfirmDeleteSentinel(): Promise<void> {
+    const sentinelId = pendingDeleteSentinelId
+    if (!sentinelId) {
+      return
+    }
+
+    setPendingDeleteSentinelId(null)
+    await sentinelState.deleteSentinel(sentinelId)
+    setExpandedSentinelId((current) => (current === sentinelId ? null : current))
+  }
 
   return (
     <section className="card-sumi min-h-[12rem] overflow-hidden flex flex-col">
@@ -147,13 +164,8 @@ function SentinelPanelClient({ commanderId, showCreateForm, onCloseCreateForm }:
                   onTrigger={async (sentinelId) => {
                     await sentinelState.triggerSentinel(sentinelId)
                   }}
-                  onDelete={async (sentinelId) => {
-                    const confirmed = window.confirm('Delete this sentinel and all run artifacts?')
-                    if (!confirmed) {
-                      return
-                    }
-                    await sentinelState.deleteSentinel(sentinelId)
-                    setExpandedSentinelId((current) => (current === sentinelId ? null : current))
+                  onDelete={(sentinelId) => {
+                    setPendingDeleteSentinelId(sentinelId)
                   }}
                 />
               )}
@@ -169,6 +181,15 @@ function SentinelPanelClient({ commanderId, showCreateForm, onCloseCreateForm }:
           <p className="text-sm text-accent-vermillion">{sentinelState.actionError}</p>
         )}
       </div>
+      <ConfirmModal
+        open={Boolean(pendingDeleteSentinelId)}
+        title="Delete sentinel?"
+        message={`Delete ${pendingDeleteSentinel?.name ?? 'this sentinel'} and all run artifacts? This cannot be undone.`}
+        confirmLabel="Delete sentinel"
+        confirmTone="danger"
+        onClose={() => setPendingDeleteSentinelId(null)}
+        onConfirm={() => void handleConfirmDeleteSentinel()}
+      />
     </section>
   )
 }
@@ -180,4 +201,3 @@ export function SentinelPanel(props: SentinelPanelProps) {
 
   return <SentinelPanelClient {...props} />
 }
-

@@ -10,7 +10,7 @@ import {
   type FormEvent,
   type KeyboardEvent,
 } from 'react'
-import { ArrowUp, BrainCircuit, ListChecks, ListPlus, Mic, Paperclip, Plus, X, Zap } from 'lucide-react'
+import { AlertTriangle, ArrowUp, BrainCircuit, ListChecks, ListPlus, Mic, Paperclip, Plus, X, Zap } from 'lucide-react'
 import { useOpenAITranscription, useOpenAITranscriptionConfig } from '@/hooks/use-openai-transcription'
 import { useSpeechRecognition } from '@/hooks/use-speech-recognition'
 import { useComposerAbilities } from '@/hooks/use-composer-abilities'
@@ -26,6 +26,12 @@ import {
   applyComposerAbilitiesToText,
   type ComposerAbility,
 } from '@modules/settings/composer-abilities'
+import {
+  ALLOWED_MESSAGE_IMAGE_TYPES,
+  MAX_MESSAGE_IMAGE_BYTES,
+  MAX_MESSAGE_IMAGE_COUNT,
+  MAX_MESSAGE_IMAGE_SIZE_MB,
+} from '../message-images'
 
 export interface SessionComposerImage {
   mediaType: string
@@ -35,6 +41,7 @@ export interface SessionComposerImage {
 export interface SessionComposerSubmitPayload {
   text: string
   images?: SessionComposerImage[]
+  clientSendId?: string
   context?: Pick<WorkspaceContextRequest, 'filePaths' | 'directoryPaths' | 'fileAnnotations'>
 }
 
@@ -76,7 +83,6 @@ export interface SessionComposerHandle {
   openSkillsPicker: () => void
 }
 
-const MAX_PENDING_IMAGES = 5
 type SkillsPickerMode = 'insert' | 'quick-slot'
 
 function basename(filePath: string): string {
@@ -84,6 +90,15 @@ function basename(filePath: string): string {
   const parts = cleanPath.split('/')
   const name = parts[parts.length - 1] || cleanPath
   return filePath.endsWith('/') ? `${name}/` : name
+}
+
+function formatFileSize(bytes: number): string {
+  const mb = bytes / (1024 * 1024)
+  return `${mb >= 10 ? mb.toFixed(1) : mb.toFixed(2)} MB`
+}
+
+function createClientSendId(): string {
+  return `send-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
 }
 
 export const SessionComposer = forwardRef<SessionComposerHandle, SessionComposerProps>(function SessionComposer({
@@ -121,8 +136,11 @@ export const SessionComposer = forwardRef<SessionComposerHandle, SessionComposer
     focusTextarea,
     textareaRef,
     clearDraft,
+    pendingImages,
+    setPendingImages,
   } = useSessionDraft(sessionName)
-  const [pendingImages, setPendingImages] = useState<SessionComposerImage[]>([])
+  const [imageError, setImageError] = useState<string | null>(null)
+  const [isQueueSubmitPending, setIsQueueSubmitPending] = useState(false)
   const [skillsPickerMode, setSkillsPickerMode] = useState<SkillsPickerMode | null>(null)
   const [showQueuePanel, setShowQueuePanel] = useState(false)
   const [selectedAbilityIds, setSelectedAbilityIds] = useState<string[]>([])
@@ -130,18 +148,23 @@ export const SessionComposer = forwardRef<SessionComposerHandle, SessionComposer
   const [customAbilityLabel, setCustomAbilityLabel] = useState('')
   const [customAbilityPrompt, setCustomAbilityPrompt] = useState('')
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const queueSubmitPendingRef = useRef(false)
   const {
     abilities: composerAbilities,
     customAbilitiesEnabled,
     addCustomAbility,
     removeCustomAbility,
     isSaving: isSavingComposerAbility,
+    loadError: composerAbilitiesLoadError,
+    retryLoad: retryComposerAbilitiesLoad,
   } = useComposerAbilities()
   const {
     primarySkillName,
     setPrimarySkillName,
     clearPrimarySkillName,
     isSaving: isSavingSkillSlot,
+    loadError: composerSkillSlotsLoadError,
+    retryLoad: retryComposerSkillSlotsLoad,
   } = useComposerSkillSlots()
   const { data: realtimeTranscriptionConfig } = useOpenAITranscriptionConfig()
   const realtimeTranscriptionTerms = useMemo(
@@ -172,15 +195,17 @@ export const SessionComposer = forwardRef<SessionComposerHandle, SessionComposer
   const canOpenQueuePanel = !disabled && queueMaxSize > 0
   const showMobileQueueButton = isMobileVariant && canOpenQueuePanel
   const showMobileQueueDraftButton = isMobileVariant && canOpenQueuePanel && queueDraftsSupported
+  const isQueueDraftBlocked = isQueueSubmitPending || isQueueMutating
   const queueButtonLabel = queueMaxSize > 0
     ? `Queue ${totalQueuedCount}/${queueMaxSize}`
     : 'Queue'
   const hasContextAttachments = contextFilePaths.length > 0 || contextDirectoryPaths.length > 0 || contextFileAnnotations.length > 0
   const canQueueDraft = (
     queueDraftsSupported
+    && !isQueueDraftBlocked
     && (inputText.trim().length > 0 || pendingImages.length > 0 || hasContextAttachments)
   )
-  const canSend = !disabled && sendReady && (inputText.trim().length > 0 || pendingImages.length > 0 || hasContextAttachments)
+  const canSend = !disabled && !isQueueSubmitPending && sendReady && (inputText.trim().length > 0 || pendingImages.length > 0 || hasContextAttachments)
   const primaryActionDisabled = !canSend
   const primaryActionLabel = isMobileVariant ? 'Send message' : 'Send'
   const primaryActionTitle = !sendReady && !disabled ? 'Connecting…' : primaryActionLabel
@@ -191,11 +216,14 @@ export const SessionComposer = forwardRef<SessionComposerHandle, SessionComposer
       : 'Queue unavailable'
   const footerHint = disabled
     ? (disabledMessage ?? 'Composer unavailable')
+    : isQueueSubmitPending
+      ? 'Queuing message...'
     : queueDraftsSupported
       ? 'Enter send · Tab queue'
       : 'Enter send'
   const selectedAbilities = composerAbilities.filter((ability) => selectedAbilityIds.includes(ability.id))
   const showSkills = skillsPickerMode !== null
+  const composerSettingsLoadError = composerAbilitiesLoadError ?? composerSkillSlotsLoadError
 
   useImperativeHandle(ref, () => ({
     seedText(nextText: string) {
@@ -225,6 +253,7 @@ export const SessionComposer = forwardRef<SessionComposerHandle, SessionComposer
 
   function clearComposer() {
     setPendingImages([])
+    setImageError(null)
     setSelectedAbilityIds([])
     onClearContextFilePaths?.()
     clearDraft()
@@ -251,7 +280,7 @@ export const SessionComposer = forwardRef<SessionComposerHandle, SessionComposer
     }
   }
 
-  function handleSend() {
+  async function handleSend() {
     const text = inputText.trim()
     const context = buildContextPayload()
     if ((!text && pendingImages.length === 0 && !context) || disabled || !sendReady) {
@@ -259,47 +288,90 @@ export const SessionComposer = forwardRef<SessionComposerHandle, SessionComposer
     }
 
     const images = pendingImages.slice()
+    const clientSendId = images.length > 0 ? createClientSendId() : undefined
     let sent: boolean | void | Promise<boolean | void>
     try {
       sent = onSend({
         text: applyComposerAbilitiesToText(text, selectedAbilities),
         images: images.length > 0 ? images : undefined,
+        ...(clientSendId ? { clientSendId } : {}),
         context,
       })
     } catch {
       return
     }
-    if (sent === false) {
+    try {
+      const resolved = await Promise.resolve(sent)
+      if (resolved === false) {
+        return
+      }
+    } catch {
       return
     }
     clearComposer()
-    void Promise.resolve(sent).catch(() => {
-      // Transport errors are surfaced by the owner callback; the composer only owns draft state.
-    })
   }
 
   async function handleQueueDraft() {
-    if (!canQueueDraft || !onQueue) {
+    if (!canQueueDraft || !onQueue || queueSubmitPendingRef.current) {
       return
     }
 
     const images = pendingImages.slice()
+    const clientSendId = images.length > 0 ? createClientSendId() : undefined
     const context = buildContextPayload()
-    const queued = await onQueue({
-      text: applyComposerAbilitiesToText(inputText.trim(), selectedAbilities),
-      images: images.length > 0 ? images : undefined,
-      context,
-    })
-    if (queued === false) {
+    queueSubmitPendingRef.current = true
+    setIsQueueSubmitPending(true)
+    try {
+      const queued = await onQueue({
+        text: applyComposerAbilitiesToText(inputText.trim(), selectedAbilities),
+        images: images.length > 0 ? images : undefined,
+        ...(clientSendId ? { clientSendId } : {}),
+        context,
+      })
+      if (queued === false) {
+        return
+      }
+    } catch {
       return
+    } finally {
+      queueSubmitPendingRef.current = false
+      setIsQueueSubmitPending(false)
     }
     clearComposer()
   }
 
   function handleImageFiles(files: FileList | File[]) {
-    const imageFiles = Array.from(files).filter((file) => file.type.startsWith('image/'))
-    if (imageFiles.length === 0) {
+    const selectedImageFiles = Array.from(files).filter((file) => file.type.startsWith('image/'))
+    if (selectedImageFiles.length === 0) {
       return
+    }
+
+    const unsupportedImage = selectedImageFiles.find((file) => !ALLOWED_MESSAGE_IMAGE_TYPES.has(file.type))
+    if (unsupportedImage) {
+      setImageError('Unsupported image type. Use PNG, JPEG, GIF, or WebP.')
+      return
+    }
+
+    const oversizedImage = selectedImageFiles.find((file) => file.size > MAX_MESSAGE_IMAGE_BYTES)
+    if (oversizedImage) {
+      const name = oversizedImage.name.trim() || 'Selected image'
+      setImageError(
+        `Image too large: ${name} is ${formatFileSize(oversizedImage.size)}. Maximum is ${MAX_MESSAGE_IMAGE_SIZE_MB} MB per image.`,
+      )
+      return
+    }
+
+    const availableSlots = Math.max(0, MAX_MESSAGE_IMAGE_COUNT - pendingImages.length)
+    if (availableSlots === 0) {
+      setImageError(`At most ${MAX_MESSAGE_IMAGE_COUNT} images can be sent at once.`)
+      return
+    }
+
+    const imageFiles = selectedImageFiles.slice(0, availableSlots)
+    if (selectedImageFiles.length > availableSlots) {
+      setImageError(`At most ${MAX_MESSAGE_IMAGE_COUNT} images can be sent at once. Extra images were not attached.`)
+    } else {
+      setImageError(null)
     }
 
     imageFiles.forEach((file) => {
@@ -314,11 +386,14 @@ export const SessionComposer = forwardRef<SessionComposerHandle, SessionComposer
           return
         }
         setPendingImages((prev) => {
-          if (prev.length >= MAX_PENDING_IMAGES) {
+          if (prev.length >= MAX_MESSAGE_IMAGE_COUNT) {
             return prev
           }
           return [...prev, { mediaType: file.type, data }]
         })
+      }
+      reader.onerror = () => {
+        setImageError('Could not read image. Try another file.')
       }
       reader.readAsDataURL(file)
     })
@@ -534,7 +609,30 @@ export const SessionComposer = forwardRef<SessionComposerHandle, SessionComposer
     )
   }
 
+  function retryComposerSettingsLoad() {
+    if (composerAbilitiesLoadError) {
+      retryComposerAbilitiesLoad()
+    }
+    if (composerSkillSlotsLoadError) {
+      retryComposerSkillSlotsLoad()
+    }
+  }
+
   function renderComposerField() {
+    if (isQueueSubmitPending) {
+      return (
+        <div
+          className="composer-queueing-overlay"
+          role="status"
+          aria-live="polite"
+          aria-label="Queuing message"
+        >
+          <ListPlus size={16} aria-hidden="true" />
+          <span>Queuing message...</span>
+        </div>
+      )
+    }
+
     return (
       <textarea
         ref={textareaRef}
@@ -621,13 +719,35 @@ export const SessionComposer = forwardRef<SessionComposerHandle, SessionComposer
                 <button
                   type="button"
                   className="composer-attachment-remove absolute -top-1 -right-1 flex h-4 w-4 items-center justify-center rounded-full bg-[var(--hv-button-primary-bg)] text-[color:var(--hv-fg-inverse)] text-xs leading-none"
-                  onClick={() => setPendingImages((prev) => prev.filter((_, imageIndex) => imageIndex !== index))}
+                  onClick={() => {
+                    setImageError(null)
+                    setPendingImages((prev) => prev.filter((_, imageIndex) => imageIndex !== index))
+                  }}
                   aria-label="Remove image"
                 >
                   ×
                 </button>
               </div>
             ))}
+          </div>
+        )}
+        {imageError && (
+          <div className="composer-image-error" role="alert" aria-live="assertive">
+            <AlertTriangle size={14} aria-hidden="true" />
+            <span>{imageError}</span>
+          </div>
+        )}
+        {composerSettingsLoadError && (
+          <div className="composer-image-error" role="alert" aria-live="assertive">
+            <AlertTriangle size={14} aria-hidden="true" />
+            <span>Unable to load composer settings.</span>
+            <button
+              type="button"
+              className="font-mono text-[11px] underline"
+              onClick={retryComposerSettingsLoad}
+            >
+              Retry
+            </button>
           </div>
         )}
         {customAbilitiesEnabled && showCustomAbilityForm && (
@@ -701,6 +821,21 @@ export const SessionComposer = forwardRef<SessionComposerHandle, SessionComposer
                   disabled={disabled}
                 >
                   <Plus size={18} />
+                </button>
+
+                <button
+                  type="button"
+                  className={cn(
+                    'composer-add-btn',
+                    showSkills && skillsPickerMode === 'insert' && 'composer-add-btn--active',
+                  )}
+                  onClick={() => setSkillsPickerMode('insert')}
+                  aria-label="Insert skill"
+                  aria-pressed={showSkills && skillsPickerMode === 'insert'}
+                  title="Insert skill"
+                  disabled={disabled}
+                >
+                  <Zap size={18} />
                 </button>
 
                 {showMobileQueueButton && (
@@ -779,7 +914,7 @@ export const SessionComposer = forwardRef<SessionComposerHandle, SessionComposer
                   onClick={() => fileInputRef.current?.click()}
                   aria-label="Attach image"
                   title="Attach image"
-                  disabled={disabled || pendingImages.length >= MAX_PENDING_IMAGES}
+                  disabled={disabled || pendingImages.length >= MAX_MESSAGE_IMAGE_COUNT}
                 >
                   <Paperclip size={18} />
                 </button>

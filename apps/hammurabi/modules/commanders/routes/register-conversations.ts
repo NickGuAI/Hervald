@@ -286,6 +286,16 @@ function launchConversationBootstrap(
         },
         null,
         spawnOptions,
+        undefined,
+        false,
+        0,
+        {
+          onConversationActivated: () => {
+            if (!conversationBootstrapCancelRequested(conversation.id, generation)) {
+              completeConversationBootstrap(conversation.id, generation)
+            }
+          },
+        },
       )
       if (!started.sent) {
         failConversationBootstrap(
@@ -976,6 +986,10 @@ export function registerConversationRoutes(
     }
     const images = parsedImages.images
     const workspaceContext = readWorkspaceContextPayload(req.body?.workspaceContext)
+    const rawClientSendId = typeof req.body?.clientSendId === 'string'
+      ? req.body.clientSendId.trim()
+      : ''
+    const clientSendId = rawClientSendId.length > 0 ? rawClientSendId : undefined
     if (!message && images.length === 0 && !hasWorkspaceContextPayload(workspaceContext)) {
       res.status(400).json({ error: 'message must be a non-empty string or images must be provided' })
       return
@@ -1016,7 +1030,7 @@ export function registerConversationRoutes(
     const delivered = await deliverConversationMessage(
       context,
       conversation,
-      { message: messageWithContext, displayMessage: message, images },
+      { message: messageWithContext, displayMessage: message, images, clientSendId },
       {
         ...(queue ? { queue: true, priority: 'normal' as const } : {}),
         abortSignal: requestAbortSignal(req, res),
@@ -1039,6 +1053,7 @@ export function registerConversationRoutes(
       accepted: true,
       createdSession: delivered.createdSession,
       conversation: withLiveSession(context, delivered.conversation),
+      ...(delivered.operationId ? { operationId: delivered.operationId } : {}),
       ...(messagePage ? { messagePage } : {}),
     })
   })
@@ -1068,7 +1083,10 @@ export function registerConversationRoutes(
           })
           return
         }
-        if (requestConversationBootstrapCancel(conversation.id, context.now().toISOString(), 'idle')) {
+        if (
+          getConversationRuntimeOverlay(conversation.id)?.state === 'starting'
+          && requestConversationBootstrapCancel(conversation.id, context.now().toISOString(), 'idle')
+        ) {
           res.status(202).json(withLiveSession(context, conversation))
           return
         }

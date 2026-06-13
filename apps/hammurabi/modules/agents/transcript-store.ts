@@ -1,10 +1,11 @@
-import { appendFile, mkdir, open, readFile, rm } from 'node:fs/promises'
+import { mkdir, open, readFile, rm } from 'node:fs/promises'
 import * as path from 'node:path'
 import {
   migrateProviderContext,
   migratedProviderContextChanged,
 } from './providers/provider-context-migration.js'
 import { writeJsonFileAtomically } from '../json-file.js'
+import { appendFileDurably, writeFileAtomically } from '../durable-file.js'
 import {
   isTranscriptEnvelope,
   type TranscriptEnvelope,
@@ -22,6 +23,11 @@ export type TranscriptMeta = Record<string, unknown>
 export interface TranscriptTailPage {
   events: TranscriptEvent[]
   hasMore: boolean
+}
+
+export interface TranscriptPruneResult {
+  pruned: boolean
+  eventsKept: number
 }
 
 import { resolveModuleDataDir } from '../data-dir.js'
@@ -55,28 +61,31 @@ function resolveMetaPath(sessionName: string): string {
   return path.join(resolveSessionDir(sessionName), 'meta.json')
 }
 
-async function queueWrite(filePath: string, write: () => Promise<void>): Promise<void> {
+async function queueWrite<T>(filePath: string, write: () => Promise<T>): Promise<T> {
   const previous = writeQueues.get(filePath) ?? Promise.resolve()
-  let currentResolve!: () => void
+  let currentResolve!: (value: T) => void
   let currentReject!: (error: unknown) => void
-  const current = new Promise<void>((resolve, reject) => {
+  const current = new Promise<T>((resolve, reject) => {
     currentResolve = resolve
     currentReject = reject
   })
 
-  writeQueues.set(filePath, current)
+  const currentTail = current.then(
+    () => undefined,
+    () => undefined,
+  )
+  writeQueues.set(filePath, currentTail)
 
   void previous
     .catch(() => undefined)
     .then(async () => {
-      await write()
-      currentResolve()
+      currentResolve(await write())
     })
     .catch((error) => {
       currentReject(error)
     })
     .finally(() => {
-      if (writeQueues.get(filePath) === current) {
+      if (writeQueues.get(filePath) === currentTail) {
         writeQueues.delete(filePath)
       }
     })
@@ -126,7 +135,7 @@ export async function appendTranscriptEvent(sessionName: string, event: Transcri
 
   await queueWrite(transcriptPath, async () => {
     await mkdir(path.dirname(transcriptPath), { recursive: true })
-    await appendFile(transcriptPath, line, 'utf8')
+    await appendFileDurably(transcriptPath, line)
   })
 }
 
@@ -229,6 +238,38 @@ export async function readTranscriptTailPage(
   },
 ): Promise<TranscriptTailPage> {
   return readTranscriptTailPageInternal(sessionName, options.maxTurns, options.maxEvents)
+}
+
+export async function pruneSessionTranscript(
+  sessionName: string,
+  options: {
+    maxTurns: number
+    maxEvents: number
+  },
+): Promise<TranscriptPruneResult> {
+  const transcriptPath = resolveTranscriptPath(sessionName)
+  return queueWrite(transcriptPath, async () => {
+    const page = await readTranscriptTailPageInternal(
+      sessionName,
+      options.maxTurns,
+      options.maxEvents,
+    )
+    if (!page.hasMore) {
+      return {
+        pruned: false,
+        eventsKept: page.events.length,
+      }
+    }
+
+    const contents = page.events.length > 0
+      ? `${page.events.map((event) => JSON.stringify(event)).join('\n')}\n`
+      : ''
+    await writeFileAtomically(transcriptPath, contents)
+    return {
+      pruned: true,
+      eventsKept: page.events.length,
+    }
+  })
 }
 
 export async function readTranscriptEvents(sessionName: string): Promise<TranscriptEvent[]> {

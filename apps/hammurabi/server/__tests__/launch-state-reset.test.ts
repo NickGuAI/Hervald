@@ -244,4 +244,24 @@ describe('launch state reset', () => {
     expect(rawPersistedSessions).not.toContain('daemon-process-1')
     expect(rawPersistedSessions).not.toContain('turn-1')
   })
+
+  it('fails fast when a reset store cannot be read', async () => {
+    const dir = await createTempDir('hammurabi-launch-reset-failure-')
+    const sessionStorePath = join(dir, 'agents')
+    const commanderDataDir = join(dir, 'commander')
+    const commanderSessionStorePath = join(commanderDataDir, 'sessions.json')
+    await mkdir(sessionStorePath, { recursive: true })
+
+    const result = await resetActiveRuntimeStateForLaunch({
+      sessionStorePath,
+      commanderDataDir,
+      commanderSessionStorePath,
+    })
+
+    expect(result.streamSessionsStopped).toBe(0)
+    expect(result.conversationsStopped).toBe(0)
+    expect(result.commanderSessionsStopped).toBe(0)
+    expect(result.errors).toHaveLength(1)
+    expect(result.errors[0]).toContain('stream sessions:')
+  })
 })

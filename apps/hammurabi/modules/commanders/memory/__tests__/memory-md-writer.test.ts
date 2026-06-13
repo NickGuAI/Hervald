@@ -71,4 +71,18 @@ describe('MemoryMdWriter.updateFacts()', () => {
     expect(memory.match(/- fact-1/g)).toHaveLength(1)
     expect(memory.match(/- fact-2/g)).toHaveLength(1)
   })
+
+  it('serializes concurrent MEMORY.md fact updates for the same commander memory root', async () => {
+    await Promise.all(
+      Array.from({ length: 12 }, (_value, index) => {
+        const writer = new MemoryMdWriter(memoryRoot)
+        return writer.updateFacts([`concurrent fact ${index + 1}`])
+      }),
+    )
+
+    const memory = await readFile(join(memoryRoot, 'MEMORY.md'), 'utf-8')
+    for (let index = 0; index < 12; index += 1) {
+      expect(memory).toContain(`- concurrent fact ${index + 1}`)
+    }
+  })
 })

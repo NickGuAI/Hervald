@@ -52,12 +52,30 @@ type CapabilityKey<TCapabilities extends object> = Extract<keyof TCapabilities, 
 export class HammurabiCapabilityContainer<TCapabilities extends object = Record<string, unknown>> {
   private readonly providers = new Map<CapabilityKey<TCapabilities>, { moduleId: string; value: unknown }>()
   private readonly consumers = new Map<CapabilityKey<TCapabilities>, Set<string>>()
+  private activeProviderModuleId: string | null = null
+
+  withProviderModule<T>(moduleId: string, operation: () => T): T {
+    const previousProviderModuleId = this.activeProviderModuleId
+    this.activeProviderModuleId = moduleId
+    try {
+      return operation()
+    } finally {
+      this.activeProviderModuleId = previousProviderModuleId
+    }
+  }
 
   provide<TKey extends CapabilityKey<TCapabilities>>(
     capabilityId: TKey,
     ownerModuleId: string,
     value: TCapabilities[TKey],
   ): void {
+    if (this.activeProviderModuleId && ownerModuleId !== this.activeProviderModuleId) {
+      throw new HammurabiModuleLoaderError(
+        `Runtime module "${this.activeProviderModuleId}" cannot provide capability "${capabilityId}" `
+        + `as owner "${ownerModuleId}"`,
+      )
+    }
+
     const existing = this.providers.get(capabilityId)
     if (existing) {
       throw new HammurabiModuleLoaderError(

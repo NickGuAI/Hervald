@@ -8,6 +8,7 @@ import {
   type Auth0AuthorizationResult,
   type Auth0Options,
 } from './auth0.js'
+import { secureTokenEqual } from './secure-compare.js'
 
 export interface CombinedAuthOptions extends ApiKeyAuthOptions, Auth0Options {
   requiredApiKeyScopes?: readonly string[]
@@ -21,9 +22,11 @@ export interface CombinedAuthOptions extends ApiKeyAuthOptions, Auth0Options {
   optional?: boolean
   /** Server-generated token accepted via `x-hammurabi-internal-token` header. */
   internalToken?: string
+  /** Route-local scopes granted only to the internal token synthetic user. */
+  internalApiKeyScopes?: readonly string[]
 }
 
-function auth0UserHasCombinedPermissions(
+export function auth0UserHasCombinedPermissions(
   user: AuthUser,
   options: CombinedAuthOptions,
 ): boolean {
@@ -41,28 +44,35 @@ function auth0UserHasCombinedPermissions(
   return auth0UserHasRequiredPermissions(user, requiredPermissions)
 }
 
+function internalUserForRoute(options: CombinedAuthOptions): AuthUser {
+  const scopes = [...(options.internalApiKeyScopes ?? options.requiredApiKeyScopes ?? [])]
+  const permissions = options.requiredAuth0Permissions
+    ? [...options.requiredAuth0Permissions]
+    : scopes
+  return {
+    id: 'internal',
+    email: 'system',
+    metadata: {
+      scopes,
+      permissions,
+    },
+  }
+}
+
 export function combinedAuth(options: CombinedAuthOptions = {}): RequestHandler {
   const verifyAuth0Token = createAuth0Verifier(options)
 
   return async (req, res, next) => {
-    // Internal server-to-self calls bypass all external auth
+    // Internal server-to-self calls are route-scoped: the synthetic user only
+    // receives the scopes declared by this specific middleware instance.
     if (options.internalToken) {
       const provided = req.header('x-hammurabi-internal-token')
-      if (provided && provided === options.internalToken) {
-        req.user = { id: 'internal', email: 'system' }
+      if (secureTokenEqual(provided, options.internalToken)) {
+        req.user = internalUserForRoute(options)
         req.authMode = 'api-key'
         next()
         return
       }
-    }
-
-    // Support access_token query param for SSE (EventSource can't send headers)
-    if (
-      !req.headers.authorization &&
-      typeof req.query.access_token === 'string' &&
-      req.query.access_token.length > 0
-    ) {
-      req.headers.authorization = `Bearer ${req.query.access_token}`
     }
 
     const bearerToken = bearerTokenFromHeader(req.header('authorization'))

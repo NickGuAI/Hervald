@@ -71,20 +71,21 @@ describe('agents/machines: buildSshArgs', () => {
     it('reverse-tunnels the approval daemon via -R 127.0.0.1:<port>:127.0.0.1:<port> bound to remote loopback only', () => {
       const args = buildSshArgs(remoteMachine, 'claude', false, {
         port: 20001,
-        internalToken: 'tok-abc',
+        approvalBridgeToken: 'tok-abc',
       })
       expect(args).toContain('-R')
       const rIdx = args.indexOf('-R')
       expect(args[rIdx + 1]).toBe('127.0.0.1:20001:127.0.0.1:20001')
     })
 
-    it('propagates HAMMURABI_INTERNAL_TOKEN via -o SendEnv when token is provided without leaking the value into argv', () => {
+    it('propagates HAMMURABI_APPROVAL_BRIDGE_TOKEN via -o SendEnv when token is provided without leaking the value into argv', () => {
       const args = buildSshArgs(remoteMachine, 'claude', false, {
         port: 20001,
-        internalToken: 'tok-abc',
+        approvalBridgeToken: 'tok-abc',
       })
       expect(args).toContain('-o')
-      expect(args).toContain('SendEnv=HAMMURABI_INTERNAL_TOKEN')
+      expect(args).toContain('SendEnv=HAMMURABI_APPROVAL_BRIDGE_TOKEN')
+      expect(args).not.toContain('SendEnv=HAMMURABI_INTERNAL_TOKEN')
       expect(args.join(' ')).not.toContain('tok-abc')
     })
 
@@ -93,16 +94,17 @@ describe('agents/machines: buildSshArgs', () => {
         port: 20001,
       })
       expect(args).toContain('-R')
+      expect(args.find((arg) => arg === 'SendEnv=HAMMURABI_APPROVAL_BRIDGE_TOKEN')).toBeUndefined()
       expect(args.find((arg) => arg === 'SendEnv=HAMMURABI_INTERNAL_TOKEN')).toBeUndefined()
     })
 
     it('places approvalBridge flags before the user@host destination so SSH parses them as options', () => {
       const args = buildSshArgs(remoteMachine, 'claude', false, {
         port: 20001,
-        internalToken: 'tok-abc',
+        approvalBridgeToken: 'tok-abc',
       })
       const rIdx = args.indexOf('-R')
-      const sendEnvIdx = args.findIndex((arg) => arg === 'SendEnv=HAMMURABI_INTERNAL_TOKEN')
+      const sendEnvIdx = args.findIndex((arg) => arg === 'SendEnv=HAMMURABI_APPROVAL_BRIDGE_TOKEN')
       const destinationIdx = args.indexOf('yugu@yus-mac-mini')
       const commandIdx = args.indexOf('claude')
       expect(rIdx).toBeGreaterThan(-1)
@@ -117,7 +119,7 @@ describe('agents/machines: buildSshArgs', () => {
     it('honors a custom port consistently in the reverse-tunnel argument', () => {
       const args = buildSshArgs(remoteMachine, 'claude', false, {
         port: 20002,
-        internalToken: 'tok-abc',
+        approvalBridgeToken: 'tok-abc',
       })
       const rIdx = args.indexOf('-R')
       expect(args[rIdx + 1]).toBe('127.0.0.1:20002:127.0.0.1:20002')
@@ -126,7 +128,7 @@ describe('agents/machines: buildSshArgs', () => {
     it('accepts string port values without changing the bind format', () => {
       const args = buildSshArgs(remoteMachine, 'claude', false, {
         port: '20003',
-        internalToken: 'tok-abc',
+        approvalBridgeToken: 'tok-abc',
       })
       const rIdx = args.indexOf('-R')
       expect(args[rIdx + 1]).toBe('127.0.0.1:20003:127.0.0.1:20003')
@@ -137,7 +139,7 @@ describe('agents/machines: buildSshArgs', () => {
         { ...remoteMachine, port: 2222 },
         'claude',
         true,
-        { port: 20001, internalToken: 'tok-abc' },
+        { port: 20001, approvalBridgeToken: 'tok-abc' },
       )
       // Order: -tt, then hardening options, then -p 2222, then -R + SendEnv, then destination, then command.
       expect(args[0]).toBe('-tt')
@@ -145,18 +147,19 @@ describe('agents/machines: buildSshArgs', () => {
       expect(args).toContain('-p')
       expect(args).toContain('2222')
       expect(args).toContain('-R')
-      expect(args).toContain('SendEnv=HAMMURABI_INTERNAL_TOKEN')
+      expect(args).toContain('SendEnv=HAMMURABI_APPROVAL_BRIDGE_TOKEN')
+      expect(args).not.toContain('SendEnv=HAMMURABI_INTERNAL_TOKEN')
       expect(args.indexOf('-R')).toBeGreaterThan(args.indexOf('2222'))
       const destinationIdx = args.indexOf('yugu@yus-mac-mini')
       expect(args.indexOf('-R')).toBeLessThan(destinationIdx)
     })
 
-    it('does not leak whitespace-padded internal token values into argv', () => {
+    it('does not leak whitespace-padded bridge token values into argv', () => {
       const args = buildSshArgs(remoteMachine, 'claude', false, {
         port: 20001,
-        internalToken: '  tok-with-spaces  ',
+        approvalBridgeToken: '  tok-with-spaces  ',
       })
-      expect(args).toContain('SendEnv=HAMMURABI_INTERNAL_TOKEN')
+      expect(args).toContain('SendEnv=HAMMURABI_APPROVAL_BRIDGE_TOKEN')
       expect(args.join(' ')).not.toContain('tok-with-spaces')
     })
 
@@ -165,7 +168,7 @@ describe('agents/machines: buildSshArgs', () => {
         remoteMachine,
         'claude',
         false,
-        { port: 20001, internalToken: 'tok-abc' },
+        { port: 20001, approvalBridgeToken: 'tok-abc' },
         ['HAMMURABI_MACHINE_ENV_0000', 'HAMMURABI_MACHINE_ENV_0001'],
       )
       const destinationIdx = args.indexOf('yugu@yus-mac-mini')

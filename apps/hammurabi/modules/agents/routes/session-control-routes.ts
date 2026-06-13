@@ -11,7 +11,7 @@ import { parseMessageImagesForRequest } from '../message-images.js'
 import type { ProviderCreateOptions } from '../providers/provider-adapter.js'
 import { getProvider } from '../providers/registry.js'
 import { ProviderAuthRequiredError } from '../provider-auth.js'
-import { parseCodexApprovalDecision, parseSessionName } from '../session/input.js'
+import { parseSessionName } from '../session/input.js'
 import { snapshotDeletedResumableStreamSession } from '../session/state.js'
 import {
   applyWorkspaceContextToText,
@@ -23,7 +23,6 @@ import { toWorkspaceError } from '../../workspace/resolver.js'
 import type {
   AnySession,
   ClaudePermissionMode,
-  CodexApprovalDecision,
   CompletedSession,
   ExitedStreamSessionState,
   MachineConfig,
@@ -58,15 +57,6 @@ interface SessionControlRouteDeps {
   completedSessions: Map<string, CompletedSession>
   exitedStreamSessions: Map<string, ExitedStreamSessionState>
   sessionEventHandlers: Map<string, Set<(event: StreamJsonEvent) => void>>
-  applyCodexApprovalDecision(
-    session: StreamSession,
-    requestId: number,
-    decision: CodexApprovalDecision,
-  ): { ok: true } | {
-    ok: false
-    code: 'invalid_session' | 'unavailable' | 'not_found' | 'protocol_error'
-    reason: string
-  }
   clearCodexResumeMetadata(sessionName: string): void
   createProviderStreamSession(
     sessionName: string,
@@ -90,18 +80,21 @@ interface SessionControlRouteDeps {
     text: string,
     images?: QueuedMessageImage[],
     displayText?: string,
+    clientSendId?: string,
   ): Promise<ImmediateSendResult>
   queueTextToStreamSession(
     session: StreamSession,
     text: string,
     images?: QueuedMessageImage[],
     displayText?: string,
+    clientSendId?: string,
   ): Promise<{ ok: true; message: QueuedMessage; position: number } | { ok: false; status: number; error: string }>
   createQueuedMessage(
     text: string,
     priority: QueuedMessagePriority,
     images?: QueuedMessageImage[],
     displayText?: string,
+    clientSendId?: string,
   ): QueuedMessage
   enqueueQueuedMessage(session: StreamSession, message: QueuedMessage): QueueMutationResult
   getQueueSnapshot(session: StreamSession): SessionQueueSnapshot
@@ -122,6 +115,10 @@ interface SessionControlRouteDeps {
   resumeRestoredQueueDrain(session: StreamSession): void
   teardownProviderSession(session: StreamSession, reason: string): Promise<void>
   initializeAutoRotationState(session: StreamSession): void
+}
+
+function readClientSendId(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined
 }
 
 export function registerSessionControlRoutes(deps: SessionControlRouteDeps): void {
@@ -150,6 +147,7 @@ export function registerSessionControlRoutes(deps: SessionControlRouteDeps): voi
     }
 
     const text = typeof req.body?.text === 'string' ? req.body.text.trim() : ''
+    const clientSendId = readClientSendId(req.body?.clientSendId)
     const workspaceContext = readWorkspaceContextPayload(req.body?.workspaceContext)
     if (text.length === 0 && !hasWorkspaceContextPayload(workspaceContext)) {
       res.status(400).json({ error: 'text must be a non-empty string' })
@@ -172,7 +170,7 @@ export function registerSessionControlRoutes(deps: SessionControlRouteDeps): voi
       return
     }
 
-    const result = await deps.sendImmediateTextToStreamSession(session, messageText, undefined, text)
+    const result = await deps.sendImmediateTextToStreamSession(session, messageText, undefined, text, clientSendId)
     if (!result.ok) {
       const isQueueBackpressure = deps.isQueueBackpressureError(result.error)
       res.status(isQueueBackpressure ? 409 : 503).json({
@@ -204,6 +202,7 @@ export function registerSessionControlRoutes(deps: SessionControlRouteDeps): voi
     }
 
     const text = typeof req.body?.text === 'string' ? req.body.text.trim() : ''
+    const clientSendId = readClientSendId(req.body?.clientSendId)
     const parsedImages = parseMessageImagesForRequest(req.body?.images)
     if (!parsedImages.ok) {
       res.status(parsedImages.status).json({ error: parsedImages.error })
@@ -233,7 +232,7 @@ export function registerSessionControlRoutes(deps: SessionControlRouteDeps): voi
     }
 
     if (req.query.queue === 'true') {
-      const queued = await deps.queueTextToStreamSession(session, messageText, images, text)
+      const queued = await deps.queueTextToStreamSession(session, messageText, images, text, clientSendId)
       if (!queued.ok) {
         res.status(queued.status).json({ error: queued.error })
         return
@@ -243,7 +242,7 @@ export function registerSessionControlRoutes(deps: SessionControlRouteDeps): voi
       return
     }
 
-    const result = await deps.sendImmediateTextToStreamSession(session, messageText, images, text)
+    const result = await deps.sendImmediateTextToStreamSession(session, messageText, images, text, clientSendId)
     if (!result.ok) {
       const isQueueBackpressure = deps.isQueueBackpressureError(result.error)
       res.status(isQueueBackpressure ? 409 : 503).json({
@@ -362,54 +361,6 @@ export function registerSessionControlRoutes(deps: SessionControlRouteDeps): voi
     deps.broadcastQueueUpdate(session)
     deps.schedulePersistedSessionsWrite()
     res.json({ cleared: true })
-  })
-
-  router.post('/sessions/:name/codex-approvals/:requestId', requireWriteAccess, (req, res) => {
-    const sessionName = parseSessionName(req.params.name)
-    if (!sessionName) {
-      res.status(400).json({ error: 'Invalid session name' })
-      return
-    }
-
-    const rawRequestIdParam = req.params.requestId
-    const rawRequestId = Array.isArray(rawRequestIdParam) ? rawRequestIdParam[0] ?? '' : rawRequestIdParam ?? ''
-    if (!/^\d+$/.test(rawRequestId)) {
-      res.status(400).json({ error: 'Invalid Codex approval request id' })
-      return
-    }
-    const requestId = Number.parseInt(rawRequestId, 10)
-    if (!Number.isInteger(requestId) || requestId < 0) {
-      res.status(400).json({ error: 'Invalid Codex approval request id' })
-      return
-    }
-
-    const decision = parseCodexApprovalDecision(req.body?.decision)
-    if (!decision) {
-      res.status(400).json({ error: 'decision must be "accept" or "decline"' })
-      return
-    }
-
-    const session = sessions.get(sessionName)
-    if (!session || session.kind !== 'stream') {
-      res.status(404).json({ error: `Stream session "${sessionName}" not found` })
-      return
-    }
-
-    const decisionResult = deps.applyCodexApprovalDecision(session, requestId, decision)
-    if (!decisionResult.ok) {
-      if (decisionResult.code === 'not_found') {
-        res.status(404).json({ error: decisionResult.reason })
-        return
-      }
-      if (decisionResult.code === 'invalid_session') {
-        res.status(409).json({ error: decisionResult.reason })
-        return
-      }
-      res.status(503).json({ error: decisionResult.reason })
-      return
-    }
-
-    res.json({ sent: true, requestId, decision })
   })
 
   router.post('/sessions/:name/pre-kill-debrief', requireWriteAccess, async (req, res) => {

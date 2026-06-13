@@ -159,11 +159,13 @@ function buildGeminiUserEvent(
   text: string,
   subtype?: string,
   displayText?: string,
+  clientSendId?: string,
 ): StreamJsonEvent {
   return {
     type: 'user',
     ...(subtype ? { subtype } : {}),
     ...(displayText !== undefined ? { displayText: displayText.trim() } : {}),
+    ...(clientSendId ? { clientSendId } : {}),
     message: { role: 'user', content: text },
   } as unknown as StreamJsonEvent
 }
@@ -248,6 +250,7 @@ export function createGeminiSessionAdapter(
           text,
           displayText: options?.displayText,
           images: normalizedImages,
+          clientSendId: options?.clientSendId,
           priority: 'normal',
         })
         return { ok: true, delivered: 'queued', message, position }
@@ -269,7 +272,12 @@ export function createGeminiSessionAdapter(
       }
 
       deps.resetActiveTurnState(session)
-      const userEvent = buildGeminiUserEvent(text, options?.userEventSubtype, options?.displayText)
+      const userEvent = buildGeminiUserEvent(
+        text,
+        options?.userEventSubtype,
+        options?.displayText,
+        options?.clientSendId,
+      )
       deps.appendEvent(session, userEvent)
       deps.broadcastEvent(session, userEvent)
 

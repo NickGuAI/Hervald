@@ -1028,6 +1028,138 @@ describe('useStreamEventProcessor replay user handling', () => {
     harness.cleanup()
   })
 
+  it('dedupes optimistic, live echo, and historical image prompts by client send id across a tool row', () => {
+    const harness = createHarness()
+    const clientSendId = 'send-image-123'
+    const imageEvent = (data: string): StreamEvent => ({
+      type: 'user',
+      subtype: 'queued_message',
+      clientSendId,
+      message: {
+        role: 'user',
+        content: [
+          { type: 'text', text: 'Generate a visual summary' },
+          {
+            type: 'image',
+            source: {
+              type: 'base64',
+              media_type: 'image/png',
+              data,
+            },
+          },
+        ],
+      },
+    } as StreamEvent)
+
+    harness.hydrateReplayMessages([
+      {
+        id: 'optimistic-image',
+        kind: 'user',
+        text: 'Generate a visual summary',
+        clientSendId,
+        images: [{ mediaType: 'image/png', data: 'optimistic-image-data' }],
+      },
+      {
+        id: 'separating-tool',
+        kind: 'tool',
+        text: '',
+        toolId: 'tool-between-image-echoes',
+        toolName: 'Bash',
+        toolStatus: 'running',
+      },
+    ], [])
+    harness.dispatchLiveEvent(imageEvent('live-echo-image-data'))
+    harness.dispatchReplayEvent(imageEvent('historical-image-data'))
+
+    const imageUserMessages = harness.getMessages().filter((message) => (
+      message.kind === 'user'
+      && message.clientSendId === clientSendId
+      && (message.images?.length ?? 0) > 0
+    ))
+    expect(imageUserMessages).toEqual([
+      expect.objectContaining({
+        id: 'optimistic-image',
+        kind: 'user',
+        text: 'Generate a visual summary',
+        images: [{ mediaType: 'image/png', data: 'optimistic-image-data' }],
+      }),
+    ])
+    expect(harness.getMessages().filter((message) => message.kind === 'tool')).toHaveLength(1)
+
+    harness.cleanup()
+  })
+
+  it('does not render Codex reflected userMessage item images as agent images', () => {
+    const harness = createHarness()
+    const clientSendId = 'send-image-reflection-1709'
+    const reflectedUserMessageItem = {
+      id: 'codex-user-reflection',
+      type: 'userMessage',
+      input: [
+        {
+          type: 'image',
+          url: 'data:image/png;base64,reflected-provider-image',
+        },
+      ],
+    }
+
+    harness.dispatchLiveEvent({
+      type: 'user',
+      subtype: 'queued_message',
+      clientSendId,
+      message: {
+        role: 'user',
+        content: [
+          { type: 'text', text: 'Inspect this screenshot' },
+          {
+            type: 'image',
+            source: {
+              type: 'base64',
+              media_type: 'image/png',
+              data: 'synthetic-user-image',
+            },
+          },
+        ],
+      },
+    } as StreamEvent)
+
+    for (const [id, rawEventType, title] of [
+      ['env-codex-user-start', 'item/started', 'User message item started'],
+      ['env-codex-user-complete', 'item/completed', 'userMessage completed'],
+    ] as const) {
+      harness.dispatchLiveEvent({
+        schemaVersion: 2,
+        id,
+        time: '2026-06-12T00:00:00.000Z',
+        source: { provider: 'codex', backend: 'rpc', rawEventType },
+        turnId: 'turn-codex-reflection',
+        itemId: reflectedUserMessageItem.id,
+        ev: {
+          type: 'provider.activity',
+          title,
+          detail: 'userMessage',
+          data: reflectedUserMessageItem,
+        },
+      })
+    }
+
+    const imageMessages = harness.getMessages().filter((message) => (
+      (message.images?.length ?? 0) > 0
+    ))
+    expect(imageMessages).toEqual([
+      expect.objectContaining({
+        kind: 'user',
+        clientSendId,
+        images: [{ mediaType: 'image/png', data: 'synthetic-user-image' }],
+      }),
+    ])
+    expect(harness.getMessages().filter((message) => (
+      message.kind === 'agent' && (message.images?.length ?? 0) > 0
+    ))).toHaveLength(0)
+
+    harness.cleanup()
+  })
+
   it('preserves repeated queued_message text after an assistant response', () => {
     const harness = createHarness()
     const event: StreamEvent = {

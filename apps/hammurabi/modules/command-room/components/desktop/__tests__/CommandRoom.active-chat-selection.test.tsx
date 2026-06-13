@@ -5,6 +5,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { BrowserRouter, Route, Routes } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { fetchSessionQueueSnapshot } from '@modules/agents/session-queue-api'
 
 type ConversationStatus = 'active' | 'idle' | 'archived'
 
@@ -31,6 +32,18 @@ interface TestConversationRecord {
     created?: string
     pid?: number
   }
+  websocketReady?: boolean
+  sendTarget?: {
+    kind: 'conversation'
+    conversationId: string
+    commanderId: string
+    sessionName: string
+    transportType: string
+    agentType: string
+    queue: { supported: boolean; reason: string | null }
+    media: { supported: boolean; reason: string | null }
+  } | null
+  allowedActions?: Record<string, boolean>
 }
 
 const mocks = vi.hoisted(() => ({
@@ -153,10 +166,9 @@ vi.mock('@modules/workspace/use-workspace', () => ({
   fetchWorkspaceExpandedTree: vi.fn(async () => ({ nodes: [], parentPath: '' })),
   openWorkspaceTarget: vi.fn(async () => ({
     targetId: 'wt-test',
-    label: 'local:/tmp/workspace',
+    label: 'Local',
     host: 'local',
-    rootPath: '/tmp/workspace',
-    isReadOnly: false,
+    readOnly: false,
   })),
   useWorkspaceActions: () => ({
     invalidateAll: vi.fn(),
@@ -240,12 +252,48 @@ vi.mock('../SessionsColumn', () => ({
 vi.mock('../CenterColumn', () => ({
   CenterColumn: ({
     hasSelectedConversation,
+    conversationLoadError,
+    onRetryConversations,
+    onQueue,
+    queueSnapshot,
+    queueError,
   }: {
     hasSelectedConversation?: boolean
+    conversationLoadError?: string | null
+    onRetryConversations?: () => void
+    onQueue?: (draft: { text: string; images?: never }) => void | Promise<void>
+    queueSnapshot?: { totalCount?: number; items?: unknown[] }
+    queueError?: string | null
   }) => createElement(
     'div',
     { 'data-testid': 'center-column' },
-    hasSelectedConversation
+    createElement('div', { 'data-testid': 'queue-count' }, String(queueSnapshot?.totalCount ?? queueSnapshot?.items?.length ?? 0)),
+    createElement('div', { 'data-testid': 'queue-error' }, queueError ?? ''),
+    createElement(
+      'button',
+      {
+        type: 'button',
+        'data-testid': 'queue-draft',
+        onClick: () => {
+          const queueResult = onQueue?.({ text: 'Queue this draft' })
+          if (queueResult && typeof queueResult.catch === 'function') {
+            void queueResult.catch(() => undefined)
+          }
+        },
+      },
+      'Queue draft',
+    ),
+    conversationLoadError
+      ? createElement(
+          'button',
+          {
+            type: 'button',
+            'data-testid': 'conversation-retry',
+            onClick: onRetryConversations,
+          },
+          conversationLoadError,
+        )
+      : hasSelectedConversation
       ? 'Chat selected'
       : createElement('button', { type: 'button' }, 'Create Chat'),
   ),
@@ -333,6 +381,47 @@ function buildConversation(
     createdAt: '2026-05-01T00:00:00.000Z',
     lastMessageAt,
     liveSession: null,
+  }
+}
+
+function buildLiveQueueConversation(
+  id: string,
+  commanderId: string,
+  sessionName: string,
+): TestConversationRecord {
+  return {
+    ...buildConversation(id, commanderId, 'active', '2026-05-01T00:50:00.000Z'),
+    websocketReady: true,
+    liveSession: {
+      name: sessionName,
+      status: 'active',
+      transportType: 'stream',
+      processAlive: true,
+      agentType: 'claude',
+      created: '2026-05-01T00:45:00.000Z',
+      pid: 123,
+    },
+    sendTarget: {
+      kind: 'conversation',
+      conversationId: id,
+      commanderId,
+      sessionName,
+      transportType: 'stream',
+      agentType: 'claude',
+      queue: { supported: true, reason: null },
+      media: { supported: true, reason: null },
+    },
+    allowedActions: {
+      send: true,
+      queue: true,
+      media: true,
+      start: false,
+      pause: false,
+      resume: false,
+      archive: true,
+      delete: true,
+      updateProvider: true,
+    },
   }
 }
 
@@ -621,6 +710,66 @@ describe('CommandRoom backend active chat selection', () => {
     expect(window.location.search).toContain('commander=atlas')
     expect(window.location.search).toContain('conversation=conv-old')
     expect(window.location.search).not.toContain('conversation=conv-new')
+  })
+
+  it('shows a conversation fetch error instead of the create-chat empty state', async () => {
+    mocks.useConversations.mockImplementation(() => ({
+      conversations: [],
+      selectedConversation: null,
+      isLoading: false,
+      isFetching: false,
+      error: new Error('Request failed (401): Unauthorized'),
+      refetch: vi.fn(async () => undefined),
+    }))
+
+    await renderAt('/command-room?commander=atlas')
+
+    await vi.waitFor(() => {
+      expect(document.body.querySelector('[data-testid="conversation-retry"]')?.textContent)
+        .toContain('Request failed (401): Unauthorized')
+    })
+    expect(document.body.textContent).not.toContain('Create Chat')
+  })
+
+  it('preserves the previous queue snapshot when a refresh fails', async () => {
+    conversationsByCommander.atlas = [
+      buildLiveQueueConversation('conv-live', 'atlas', 'conversation-live'),
+    ]
+    mocks.useConversationMessage.mockReturnValue({
+      mutateAsync: vi.fn(async () => ({ accepted: true })),
+    })
+    vi.mocked(fetchSessionQueueSnapshot)
+      .mockResolvedValueOnce({
+        currentMessage: null,
+        items: [{
+          id: 'queued-1',
+          text: 'Keep this visible',
+          priority: 'normal',
+          queuedAt: '2026-05-01T00:55:00.000Z',
+        }],
+        totalCount: 1,
+        maxSize: 8,
+      })
+      .mockRejectedValueOnce(new Error('Request failed (401): Unauthorized'))
+
+    await renderAt('/command-room?commander=atlas&conversation=conv-live')
+
+    await vi.waitFor(() => {
+      expect(document.body.querySelector('[data-testid="queue-count"]')?.textContent).toBe('1')
+    })
+
+    const queueButton = document.body.querySelector('[data-testid="queue-draft"]')
+    if (!(queueButton instanceof HTMLButtonElement)) {
+      throw new Error('missing queue button')
+    }
+    await act(async () => {
+      queueButton.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    await vi.waitFor(() => {
+      expect(document.body.querySelector('[data-testid="queue-error"]')?.textContent).toContain('401')
+    })
+    expect(document.body.querySelector('[data-testid="queue-count"]')?.textContent).toBe('1')
   })
 
   it('does not let the previous default commander active chat overwrite a deep-linked conversation', async () => {

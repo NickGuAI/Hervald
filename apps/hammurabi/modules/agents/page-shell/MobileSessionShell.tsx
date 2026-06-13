@@ -23,6 +23,7 @@ import {
 } from 'lucide-react'
 import { useProviderRegistry } from '@/hooks/use-providers'
 import { cn, formatCost } from '@/lib/utils'
+import { ConfirmModal } from '@modules/components/ConfirmModal'
 import type { AgentType, ProviderModelOption, ProviderRegistryEntry, SessionQueueSnapshot } from '@/types'
 import type { PendingApproval } from '@/hooks/use-approvals'
 import { AddToChatSheet } from '@modules/agents/components/AddToChatSheet'
@@ -196,6 +197,7 @@ export function MobileSessionShell({
   const [showAddToChatSheet, setShowAddToChatSheet] = useState(false)
   const [showLoadOlderControl, setShowLoadOlderControl] = useState(false)
   const [isKilling, setIsKilling] = useState(false)
+  const [confirmKillOpen, setConfirmKillOpen] = useState(false)
   const [conversationActionBusy, setConversationActionBusy] = useState<string | null>(null)
   const [conversationProviderDraft, setConversationProviderDraft] = useState<AgentType | ''>('')
   const [conversationModelDraft, setConversationModelDraft] = useState('')
@@ -374,18 +376,22 @@ export function MobileSessionShell({
       return
     }
 
-    const confirmed = window.confirm(getKillConfirmationMessage(sessionName, agentType))
-    if (!confirmed) {
+    setConfirmKillOpen(true)
+  }, [isKilling, onKill])
+
+  const handleConfirmKill = useCallback(async () => {
+    if (!onKill || isKilling) {
       return
     }
 
+    setConfirmKillOpen(false)
     setIsKilling(true)
     try {
       await onKill()
     } finally {
       setIsKilling(false)
     }
-  }, [agentType, isKilling, onKill, sessionName])
+  }, [isKilling, onKill])
 
   const handleOpenAddToChat = useCallback(() => {
     setShowAddToChatSheet(true)
@@ -555,7 +561,7 @@ export function MobileSessionShell({
           <button
             type="button"
             className={cn(
-              'session-back inline-flex h-8 min-h-0 w-8 min-w-0 items-center justify-center rounded-md transition-colors',
+              'session-back inline-flex h-11 w-11 items-center justify-center rounded-md transition-colors',
               'text-sumi-diluted hover:bg-ink-wash',
             )}
             onClick={onBack}
@@ -639,7 +645,7 @@ export function MobileSessionShell({
               <button
                 type="button"
                 className={cn(
-                  'inline-flex h-8 w-8 items-center justify-center rounded-md border border-ink-border bg-washi-aged/80 text-sumi-diluted backdrop-blur-[2px] transition-colors hover:bg-ink-wash',
+                  'inline-flex h-11 w-11 items-center justify-center rounded-md border border-ink-border bg-washi-aged/80 text-sumi-diluted backdrop-blur-[2px] transition-colors hover:bg-ink-wash',
                 )}
                 onClick={() => {
                   if (showOverflowMenu) {
@@ -1124,6 +1130,15 @@ export function MobileSessionShell({
         onPickImage={handlePickImage}
         onPickSkill={handlePickSkill}
         onPickFile={handlePickFile}
+      />
+      <ConfirmModal
+        open={confirmKillOpen}
+        title="Kill session?"
+        message={getKillConfirmationMessage(sessionName, agentType)}
+        confirmLabel="Kill session"
+        confirmTone="danger"
+        onClose={() => setConfirmKillOpen(false)}
+        onConfirm={() => void handleConfirmKill()}
       />
     </section>
   )

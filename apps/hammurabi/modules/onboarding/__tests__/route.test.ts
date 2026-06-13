@@ -88,7 +88,7 @@ function testProvider(): ProviderAdapter {
       label: 'Codex',
       cliBinaryName: 'codex',
       authEnvKeys: ['CODEX_API_KEY'],
-      loginStatusCommand: 'codex auth status',
+      loginStatusCommand: 'codex login status',
       supportedAuthModes: ['api-key', 'device-auth'],
       modeRequiresSecret: (mode: string) => mode === 'api-key',
       classifyAuthMethod: ({

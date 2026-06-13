@@ -1,5 +1,6 @@
 import { formatStoredApiKeyUnauthorizedMessage } from './api-key-recovery.js'
 import { type HammurabiConfig, normalizeEndpoint, readHammurabiConfig } from './config.js'
+import { fetchJson as fetchJsonStrict } from './http-json.js'
 
 const DEFAULT_TRANSCRIPT_SEARCH_TOP_K = 8
 
@@ -80,16 +81,7 @@ async function fetchJson(
   url: string,
   init: RequestInit,
 ): Promise<{ ok: true; data: unknown } | { ok: false; response: Response }> {
-  const response = await fetchImpl(url, init)
-  if (!response.ok) {
-    return { ok: false, response }
-  }
-
-  try {
-    return { ok: true, data: (await response.json()) as unknown }
-  } catch {
-    return { ok: true, data: null }
-  }
+  return fetchJsonStrict(fetchImpl, url, init)
 }
 
 async function readErrorDetail(response: Response): Promise<string | null> {

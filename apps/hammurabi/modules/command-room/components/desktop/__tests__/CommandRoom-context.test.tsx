@@ -357,10 +357,9 @@ describe('CommandRoom context file wiring', () => {
     }))
     mocks.openWorkspaceTarget.mockImplementation(async (input: { sessionName?: string }) => ({
       targetId: input.sessionName ? 'wt-worker-1' : 'wt-commander-1',
-      label: input.sessionName ? 'local:/tmp/worker-1' : 'local:/tmp/atlas',
+      label: input.sessionName ? 'Worker 1' : 'Atlas',
       host: 'local',
-      rootPath: input.sessionName ? '/tmp/worker-1' : '/tmp/atlas',
-      isReadOnly: false,
+      readOnly: false,
     }))
 
     const commander = buildCommander()
@@ -474,15 +473,13 @@ describe('CommandRoom context file wiring', () => {
       targetId: string
       label: string
       host: string
-      rootPath: string
-      isReadOnly: boolean
+      readOnly: boolean
     }) => void
     const initialAutoOpen = new Promise<{
       targetId: string
       label: string
       host: string
-      rootPath: string
-      isReadOnly: boolean
+      readOnly: boolean
     }>((resolve) => {
       resolveInitialAutoOpen = resolve
     })
@@ -494,10 +491,9 @@ describe('CommandRoom context file wiring', () => {
       }
       return {
         targetId: 'wt-commander-1',
-        label: 'local:/tmp/atlas',
+        label: 'Atlas',
         host: 'local',
-        rootPath: '/tmp/atlas',
-        isReadOnly: false,
+        readOnly: false,
       }
     })
     mocks.fetchWorkspacePathResolution.mockResolvedValue({
@@ -507,7 +503,7 @@ describe('CommandRoom context file wiring', () => {
       type: 'file',
       treePath: '',
       targetId: 'wt-location-1',
-      targetLabel: 'local:/tmp/external',
+      targetLabel: 'External',
       targetReadOnly: false,
     })
 
@@ -532,10 +528,9 @@ describe('CommandRoom context file wiring', () => {
     await act(async () => {
       resolveInitialAutoOpen({
         targetId: 'wt-commander-stale',
-        label: 'local:/tmp/stale-atlas',
+        label: 'Stale Atlas',
         host: 'local',
-        rootPath: '/tmp/stale-atlas',
-        isReadOnly: false,
+        readOnly: false,
       })
       await Promise.resolve()
       await Promise.resolve()
@@ -599,10 +594,9 @@ describe('CommandRoom context file wiring', () => {
       openCount += 1
       return {
         targetId: openCount === 1 ? 'wt-stale' : 'wt-reopened',
-        label: openCount === 1 ? 'local:/tmp/stale' : 'local:/tmp/reopened',
+        label: openCount === 1 ? 'Stale' : 'Reopened',
         host: 'local',
-        rootPath: openCount === 1 ? '/tmp/stale' : '/tmp/reopened',
-        isReadOnly: false,
+        readOnly: false,
       }
     })
 
@@ -637,15 +631,13 @@ describe('CommandRoom context file wiring', () => {
       targetId: string
       label: string
       host: string
-      rootPath: string
-      isReadOnly: boolean
+      readOnly: boolean
     }) => void
     const recoveryOpen = new Promise<{
       targetId: string
       label: string
       host: string
-      rootPath: string
-      isReadOnly: boolean
+      readOnly: boolean
     }>((resolve) => {
       resolveRecoveryOpen = resolve
     })
@@ -655,10 +647,9 @@ describe('CommandRoom context file wiring', () => {
       if (openCount === 1) {
         return {
           targetId: 'wt-stale',
-          label: 'local:/tmp/stale',
+          label: 'Stale',
           host: 'local',
-          rootPath: '/tmp/stale',
-          isReadOnly: false,
+          readOnly: false,
         }
       }
       return recoveryOpen
@@ -670,7 +661,7 @@ describe('CommandRoom context file wiring', () => {
       type: 'file',
       treePath: '',
       targetId: 'wt-location-1',
-      targetLabel: 'local:/tmp/external',
+      targetLabel: 'External',
       targetReadOnly: false,
     })
 
@@ -710,10 +701,9 @@ describe('CommandRoom context file wiring', () => {
     await act(async () => {
       resolveRecoveryOpen({
         targetId: 'wt-reopened',
-        label: 'local:/tmp/reopened',
+        label: 'Reopened',
         host: 'local',
-        rootPath: '/tmp/reopened',
-        isReadOnly: false,
+        readOnly: false,
       })
       await Promise.resolve()
       await Promise.resolve()

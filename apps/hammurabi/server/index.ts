@@ -10,6 +10,7 @@ import { ApiKeyJsonStore } from './api-keys/store.js'
 import { createModules } from './module-registry.js'
 import { mountDeclaredBodyParsers } from './module-http-mount.js'
 import { createWebSocketUpgradeResolver } from './websocket-upgrade-resolver.js'
+import { HammurabiModuleLoaderError } from './module-loader.js'
 import { isCorsOriginAllowed, parseAllowedCorsOrigins } from './cors.js'
 import {
   resetActiveRuntimeStateForLaunch,
@@ -17,6 +18,7 @@ import {
 } from './launch-state-reset.js'
 import { createInstallScriptRouter } from './routes/install-script.js'
 import { configureHttpServerTimeouts } from './http-server-timeouts.js'
+import { acquireHammurabiStoreProcessLock } from './store-process-lock.js'
 import { AppSettingsStore } from '../modules/settings/store.js'
 import type { AppTheme } from '../modules/settings/types.js'
 
@@ -51,6 +53,21 @@ const formatError = (value: unknown): string => {
   }
 }
 
+const storeProcessLock = await acquireHammurabiStoreProcessLock().catch((error) => {
+  logError(`[store] Refusing to start because the Hammurabi data store lock is unavailable\n${formatError(error)}`)
+  process.exit(1)
+})
+
+async function exitStartupFailure(message: string): Promise<never> {
+  logError(message)
+  await storeProcessLock.release()
+  process.exit(1)
+}
+
+process.on('exit', () => {
+  storeProcessLock.releaseSync()
+})
+
 process.on('uncaughtException', (error) => {
   logError(`Uncaught exception\n${formatError(error)}`)
   process.exit(1)
@@ -72,22 +89,25 @@ const appSettingsStore = new AppSettingsStore()
 
 if (shouldStopActiveSessionsOnBoot(process.env.HAMMURABI_STOP_ACTIVE_SESSIONS_ON_BOOT)) {
   const resetResult = await resetActiveRuntimeStateForLaunch()
+  if (resetResult.errors.length > 0) {
+    await exitStartupFailure(
+      `[launch] Refusing to serve after stale active-state reset failed\n` +
+      resetResult.errors.map((error) => `- ${error}`).join('\n'),
+    )
+  }
   logInfo(
     `[launch] Stopped stale active state before module init: ` +
     `${resetResult.streamSessionsStopped} stream session(s), ` +
     `${resetResult.conversationsStopped} conversation(s), ` +
     `${resetResult.commanderSessionsStopped} commander session(s)`,
   )
-  for (const error of resetResult.errors) {
-    logWarn(`[launch] Failed to stop stale active state for ${error}`)
-  }
 }
 
-void bootstrapDefaultMasterKey(apiKeyStore, {
-  logWarn,
-}).catch((error) => {
-  logError(`[api-keys] Failed to inspect bootstrap key state\n${formatError(error)}`)
-})
+try {
+  await bootstrapDefaultMasterKey(apiKeyStore, { logWarn })
+} catch (error) {
+  await exitStartupFailure(`[api-keys] Failed to inspect bootstrap key state\n${formatError(error)}`)
+}
 
 const providerSecretsStore = new ProviderSecretsStore()
 const maxAgentSessions = process.env.HAMMURABI_MAX_AGENT_SESSIONS
@@ -196,16 +216,19 @@ if (process.env.NODE_ENV === 'production' && existsSync(distDir)) {
 const server = createServer(app)
 const httpServerTimeouts = configureHttpServerTimeouts(server)
 const websocketUpgradeResolver = createWebSocketUpgradeResolver(
-  moduleGraph.mountPlan.websockets.flatMap((declaration) => {
+  moduleGraph.mountPlan.websockets.map((declaration) => {
     const ownerModule = modules.find((module) => module.name === declaration.ownerModuleId)
     if (!ownerModule?.handleUpgrade) {
-      return []
+      throw new HammurabiModuleLoaderError(
+        `WebSocket "${declaration.id}" is declared by "${declaration.ownerModuleId}" `
+        + 'but no upgrade handler is registered',
+      )
     }
 
-    return [{
+    return {
       declaration,
       handleUpgrade: ownerModule.handleUpgrade,
-    }]
+    }
   }),
 )
 
@@ -242,15 +265,20 @@ server.listen(port, host, () => {
         try {
           await shutdownModules()
           server.close((error) => {
-            if (error) {
-              logError(`Error during shutdown\n${formatError(error)}`)
-              process.exit(1)
-            }
-            logInfo(`Shutdown complete (${signal})`)
-            process.exit(0)
+            void (async () => {
+              if (error) {
+                logError(`Error during shutdown\n${formatError(error)}`)
+                await storeProcessLock.release()
+                process.exit(1)
+              }
+              await storeProcessLock.release()
+              logInfo(`Shutdown complete (${signal})`)
+              process.exit(0)
+            })()
           })
         } catch (error) {
           logError(`Error during shutdown\n${formatError(error)}`)
+          await storeProcessLock.release()
           process.exit(1)
         }
       })()

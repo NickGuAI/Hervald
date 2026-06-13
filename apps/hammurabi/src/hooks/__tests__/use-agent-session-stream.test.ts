@@ -19,6 +19,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { postInputViaHttpFallback } from '@/hooks/use-agent-session-stream'
+import { setUnauthorizedHandler } from '@/lib/api'
 
 const INSTANCE_URL_STORAGE = 'hammurabi_instance_url'
 
@@ -38,6 +39,7 @@ describe('postInputViaHttpFallback', () => {
   afterEach(() => {
     delete (window as unknown as { Capacitor?: unknown }).Capacitor
     localStorage.clear()
+    setUnauthorizedHandler(null)
     vi.clearAllMocks()
   })
 
@@ -64,7 +66,11 @@ describe('postInputViaHttpFallback', () => {
   it('forwards the images array when present', async () => {
     const ok = await postInputViaHttpFallback(
       'commander-test',
-      { text: '', images: [{ mediaType: 'image/png', data: 'base64-data' }] },
+      {
+        text: '',
+        images: [{ mediaType: 'image/png', data: 'base64-data' }],
+        clientSendId: 'send-image-1',
+      },
       async () => null,
       fetchSpy as unknown as typeof fetch,
     )
@@ -73,6 +79,7 @@ describe('postInputViaHttpFallback', () => {
     const [, init] = fetchSpy.mock.calls[0] ?? []
     const payload = JSON.parse((init as RequestInit).body as string)
     expect(payload.images).toEqual([{ mediaType: 'image/png', data: 'base64-data' }])
+    expect(payload.clientSendId).toBe('send-image-1')
   })
 
   it('omits the Authorization header when no token is available', async () => {
@@ -128,6 +135,27 @@ describe('postInputViaHttpFallback', () => {
     )
 
     expect(ok).toBe(false)
+  })
+
+  it('invokes the centralized unauthorized handler on 401 response', async () => {
+    const unauthorizedHandler = vi.fn()
+    setUnauthorizedHandler(unauthorizedHandler)
+    fetchSpy.mockResolvedValueOnce(new Response('unauthorized', { status: 401 }))
+
+    const ok = await postInputViaHttpFallback(
+      'commander-test',
+      { text: 'hi' },
+      async () => 'tok',
+      fetchSpy as unknown as typeof fetch,
+    )
+
+    expect(ok).toBe(false)
+    expect(unauthorizedHandler).toHaveBeenCalledWith({
+      authMode: 'anonymous',
+      phase: 'response',
+      path: '/api/agents/sessions/commander-test/message',
+      status: 401,
+    })
   })
 
   it('returns false on thrown fetch error', async () => {

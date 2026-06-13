@@ -1,6 +1,12 @@
-import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises'
+import { randomUUID } from 'node:crypto'
+import { mkdir, readdir, readFile, rename, rm } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import path from 'node:path'
+import {
+  fsyncDirectory,
+  writeFileAtomically,
+  writeFileDurably,
+} from '../durable-file.js'
 import {
   EVAL_BENCHES,
   EVAL_RUNNER_MODES,
@@ -229,7 +235,16 @@ export class EvalRunStore {
     leaderboard?: EvalLeaderboardState
   }): Promise<EvalRunManifest> {
     const runDir = this.resolveRunDir(input.config)
-    await mkdir(path.join(runDir, 'trajectories'), { recursive: true })
+    const parentDir = path.dirname(runDir)
+    const stagingDir = path.join(
+      parentDir,
+      `.${path.basename(runDir)}.${process.pid}.${randomUUID()}.staging`,
+    )
+    const replacedDir = path.join(
+      parentDir,
+      `.${path.basename(runDir)}.${process.pid}.${randomUUID()}.replace`,
+    )
+    await mkdir(path.join(stagingDir, 'trajectories'), { recursive: true })
 
     const now = new Date().toISOString()
     const leaderboard = input.leaderboard ?? {
@@ -237,10 +252,43 @@ export class EvalRunStore {
       updatedAt: now,
     }
 
-    await writeFile(path.join(runDir, 'config.json'), `${JSON.stringify(input.config, null, 2)}\n`, 'utf8')
-    await writeFile(path.join(runDir, 'result.json'), `${JSON.stringify(input.result, null, 2)}\n`, 'utf8')
-    await writeFile(path.join(runDir, 'summary.md'), `${input.summaryMarkdown.trimEnd()}\n`, 'utf8')
-    await writeFile(path.join(runDir, 'leaderboard.json'), `${JSON.stringify(leaderboard, null, 2)}\n`, 'utf8')
+    try {
+      await writeFileDurably(path.join(stagingDir, 'config.json'), `${JSON.stringify(input.config, null, 2)}\n`)
+      await writeFileDurably(path.join(stagingDir, 'result.json'), `${JSON.stringify(input.result, null, 2)}\n`)
+      await writeFileDurably(path.join(stagingDir, 'summary.md'), `${input.summaryMarkdown.trimEnd()}\n`)
+      await writeFileDurably(path.join(stagingDir, 'leaderboard.json'), `${JSON.stringify(leaderboard, null, 2)}\n`)
+      await fsyncDirectory(stagingDir)
+      await fsyncDirectory(parentDir)
+
+      let replacedExisting = false
+      try {
+        await rename(runDir, replacedDir)
+        replacedExisting = true
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+          throw error
+        }
+      }
+
+      try {
+        await rename(stagingDir, runDir)
+        await fsyncDirectory(parentDir)
+      } catch (error) {
+        if (replacedExisting) {
+          await rename(replacedDir, runDir).catch(() => undefined)
+          await fsyncDirectory(parentDir).catch(() => undefined)
+        }
+        throw error
+      }
+
+      if (replacedExisting) {
+        await rm(replacedDir, { recursive: true, force: true })
+        await fsyncDirectory(parentDir)
+      }
+    } catch (error) {
+      await rm(stagingDir, { recursive: true, force: true }).catch(() => undefined)
+      throw error
+    }
 
     const manifest = await this.readRunManifestFromDir(runDir)
     if (!manifest) {
@@ -305,7 +353,7 @@ export class EvalRunStore {
       blocker,
       updatedAt: new Date().toISOString(),
     }
-    await writeFile(manifest.leaderboardPath, `${JSON.stringify(leaderboard, null, 2)}\n`, 'utf8')
+    await writeFileAtomically(manifest.leaderboardPath, `${JSON.stringify(leaderboard, null, 2)}\n`)
     return this.get(runId)
   }
 

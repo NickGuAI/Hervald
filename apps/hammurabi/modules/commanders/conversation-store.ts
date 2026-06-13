@@ -60,6 +60,11 @@ const CREATED_BY_KINDS = new Set<ConversationCreatedByKind>([
   'channel',
   'unknown',
 ])
+const CHANNEL_REPLY_DELIVERY_STATUSES = new Set<ChannelReplyDelivery['status']>([
+  'pending',
+  'delivered',
+  'failed',
+])
 const DEFAULT_CHAT_STATUSES = new Set<Conversation['status']>([
   'active',
   'idle',
@@ -77,6 +82,7 @@ export interface Conversation {
   surface: CommanderConversationSurface
   channelMeta?: CommanderChannelMeta
   lastRoute?: CommanderLastRoute
+  channelReplyDelivery?: ChannelReplyDelivery
   voiceConfig?: VoiceConfigOverride
   agentType?: AgentType | null
   model?: string | null
@@ -112,6 +118,21 @@ export type ConversationCreatedByKind =
   | 'system'
   | 'channel'
   | 'unknown'
+
+export interface ChannelReplyDelivery {
+  id: string
+  status: 'pending' | 'delivered' | 'failed'
+  message: string
+  provider: CommanderChannelMeta['provider']
+  sessionKey: string
+  lastRoute: CommanderLastRoute
+  attemptCount: number
+  attemptedAt: string
+  updatedAt: string
+  deliveredAt?: string
+  failedAt?: string
+  error?: string
+}
 
 export interface ConversationStoreOptions {
   logger?: Pick<Console, 'info' | 'warn'>
@@ -213,6 +234,55 @@ function parseCreatedByKind(raw: unknown): ConversationCreatedByKind | null {
     : null
 }
 
+function parseChannelReplyProvider(raw: unknown): CommanderChannelMeta['provider'] | null {
+  if (typeof raw !== 'string') {
+    return null
+  }
+  const normalized = raw.trim().toLowerCase()
+  return /^[a-z][a-z0-9_-]{1,63}$/i.test(normalized)
+    ? normalized as CommanderChannelMeta['provider']
+    : null
+}
+
+function parseChannelReplyDelivery(raw: unknown): ChannelReplyDelivery | undefined {
+  if (!isObject(raw)) {
+    return undefined
+  }
+
+  const id = asOptionalString(raw.id)
+  const status = typeof raw.status === 'string' && CHANNEL_REPLY_DELIVERY_STATUSES.has(raw.status as ChannelReplyDelivery['status'])
+    ? raw.status as ChannelReplyDelivery['status']
+    : null
+  const message = asOptionalString(raw.message)
+  const provider = parseChannelReplyProvider(raw.provider)
+  const sessionKey = asOptionalString(raw.sessionKey)
+  const lastRoute = parseCommanderLastRoute(raw.lastRoute)
+  const attemptedAt = asOptionalString(raw.attemptedAt)
+  const updatedAt = asOptionalString(raw.updatedAt)
+  if (!id || !status || !message || !provider || !sessionKey || !lastRoute || !attemptedAt || !updatedAt) {
+    return undefined
+  }
+
+  const attemptCount = typeof raw.attemptCount === 'number' && Number.isFinite(raw.attemptCount)
+    ? Math.max(1, Math.floor(raw.attemptCount))
+    : 1
+
+  return {
+    id,
+    status,
+    message,
+    provider,
+    sessionKey,
+    lastRoute,
+    attemptCount,
+    attemptedAt,
+    updatedAt,
+    ...(asOptionalString(raw.deliveredAt) ? { deliveredAt: asOptionalString(raw.deliveredAt) } : {}),
+    ...(asOptionalString(raw.failedAt) ? { failedAt: asOptionalString(raw.failedAt) } : {}),
+    ...(asOptionalString(raw.error) ? { error: asOptionalString(raw.error) } : {}),
+  }
+}
+
 function parseProviderContext(
   raw: Record<string, unknown>,
 ): ProviderSessionContext | undefined {
@@ -225,6 +295,12 @@ function cloneConversation(conversation: Conversation): Conversation {
     currentTask: conversation.currentTask ? { ...conversation.currentTask } : null,
     channelMeta: conversation.channelMeta ? { ...conversation.channelMeta } : undefined,
     lastRoute: conversation.lastRoute ? { ...conversation.lastRoute } : undefined,
+    channelReplyDelivery: conversation.channelReplyDelivery
+      ? {
+        ...conversation.channelReplyDelivery,
+        lastRoute: { ...conversation.channelReplyDelivery.lastRoute },
+      }
+      : undefined,
     voiceConfig: conversation.voiceConfig
       ? {
         ...(conversation.voiceConfig.tts ? { tts: { ...conversation.voiceConfig.tts } } : {}),
@@ -274,6 +350,7 @@ function parseConversation(raw: unknown): ParsedConversation | null {
     surface,
     channelMeta: parseCommanderChannelMeta(raw.channelMeta),
     lastRoute: parseCommanderLastRoute(raw.lastRoute),
+    channelReplyDelivery: parseChannelReplyDelivery(raw.channelReplyDelivery),
     voiceConfig: normalizeVoiceConfig(raw.voiceConfig),
     agentType,
     ...(model !== undefined ? { model } : {}),
@@ -334,6 +411,14 @@ function normalizeConversation(
     surface: input.surface,
     ...(input.channelMeta ? { channelMeta: { ...input.channelMeta } } : {}),
     ...(input.lastRoute ? { lastRoute: { ...input.lastRoute } } : {}),
+    ...(input.channelReplyDelivery
+      ? {
+        channelReplyDelivery: {
+          ...input.channelReplyDelivery,
+          lastRoute: { ...input.channelReplyDelivery.lastRoute },
+        },
+      }
+      : {}),
     ...(input.voiceConfig ? { voiceConfig: normalizeVoiceConfig(input.voiceConfig) } : {}),
     agentType: input.agentType ?? null,
     ...(model !== undefined ? { model } : {}),

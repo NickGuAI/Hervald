@@ -12,6 +12,7 @@ import {
   createDefaultCommanderRuntimeConfig,
   type CommanderRuntimeConfig,
 } from '../runtime-config.shared.js'
+import { DirectoryPicker } from '../../agents/components/DirectoryPicker'
 import { ProviderModelSelect, resolveProviderModelOptions } from './ProviderModelSelect'
 
 const HOST_PATTERN = /^[a-zA-Z0-9_-]+$/
@@ -303,12 +304,10 @@ export function CreateCommanderForm({
           </label>
         ) : null}
 
-        <input
-          value={cwd}
-          onChange={(event) => setCwd(event.target.value)}
-          placeholder="Working directory (optional, e.g. /home/user/project)"
-          className={INPUT_CLASS}
-        />
+        <label className="block">
+          <span className={`${LABEL_CLASS} mb-1 block`}>Working directory</span>
+          <DirectoryPicker value={cwd} onChange={setCwd} host={host} />
+        </label>
       </div>
 
       {/* COMMANDER.md identity */}

@@ -107,8 +107,10 @@ async function openRealtimeSocket(server: RunningServer): Promise<{
 }> {
   const wsUrl =
     server.baseUrl.replace('http://', 'ws://') +
-    '/api/realtime/transcription?api_key=test-key'
-  const ws = new WebSocket(wsUrl)
+    '/api/realtime/transcription'
+  const ws = new WebSocket(wsUrl, {
+    headers: { 'x-hammurabi-api-key': 'test-key' },
+  })
   const received: Array<{ type: string; text?: string; message?: string }> = []
   ws.on('message', (data) => {
     received.push(JSON.parse(data.toString()) as { type: string; text?: string; message?: string })
@@ -332,8 +334,10 @@ describe('realtime proxy websocket', () => {
 
     const wsUrl =
       server.baseUrl.replace('http://', 'ws://') +
-      '/api/realtime/transcription?api_key=test-key&prompt=Preserve%20issue%20terms&term=VoiceFlow&terms=Kubernetes,gRPC'
-    const ws = new WebSocket(wsUrl)
+      '/api/realtime/transcription?prompt=Preserve%20issue%20terms&term=VoiceFlow&terms=Kubernetes,gRPC'
+    const ws = new WebSocket(wsUrl, {
+      headers: { 'x-hammurabi-api-key': 'test-key' },
+    })
     const received: Array<{ type: string; text?: string; message?: string }> = []
     ws.on('message', (data) => {
       received.push(JSON.parse(data.toString()) as { type: string; text?: string; message?: string })
@@ -458,8 +462,10 @@ describe('realtime proxy websocket', () => {
 
     const wsUrl =
       server.baseUrl.replace('http://', 'ws://') +
-      '/api/realtime/transcription?api_key=test-key'
-    const ws = new WebSocket(wsUrl)
+      '/api/realtime/transcription'
+    const ws = new WebSocket(wsUrl, {
+      headers: { 'x-hammurabi-api-key': 'test-key' },
+    })
 
     const error = await new Promise<Error>((resolve) => {
       ws.once('unexpected-response', (_request, response) => {

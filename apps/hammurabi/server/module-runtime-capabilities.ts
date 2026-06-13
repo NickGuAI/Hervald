@@ -11,8 +11,10 @@ import type { AutomationStore } from '../modules/automations/store.js'
 import type { CommanderChannelBindingStore } from '../modules/channels/store.js'
 import type { ConversationStore } from '../modules/commanders/conversation-store.js'
 import type { QuestStore } from '../modules/commanders/quest-store.js'
+import type { createCommanderTranscriptAppender } from '../modules/commanders/transcripts.js'
 import type { CommandersRouterResult } from '../modules/commanders/routes.js'
 import type { CommanderSessionStore } from '../modules/commanders/store.js'
+import type { CommanderSessionSeedParams } from '../modules/commanders/memory/module.js'
 import type { OperatorStore } from '../modules/operators/store.js'
 import type { ActionPolicyGate } from '../modules/policies/action-policy-gate.js'
 import type { ApprovalCoordinator } from '../modules/policies/pending-store.js'
@@ -42,7 +44,6 @@ export interface HammurabiRuntimeCapabilities {
   'realtime.transcription-key-store': OpenAITranscriptionKeyStoreLike | undefined
 
   'agents.provider-registry': ProviderRegistryCapability
-  'agents.machineDescriptor': WorkspaceMachineDescriptorCapability
   'agents.sessions': AgentsRouterResult['sessionsInterface']
   'agents.sessions-interface': CommanderSessionsInterface
   'agents.approval-sessions-interface': ApprovalSessionsInterface
@@ -60,6 +61,10 @@ export interface HammurabiRuntimeCapabilities {
   'commanders.quest-store': QuestStore
   'commanders.runtime': CommandersRouterResult
   'commanders.data-dir': string
+  'commanders.session-seed-builder': (
+    params: Omit<CommanderSessionSeedParams, 'memoryBasePath'>,
+  ) => Promise<{ systemPrompt?: string; maxTurns?: number }>
+  'commanders.transcripts': ReturnType<typeof createCommanderTranscriptAppender>
 
   'channels.bindings': CommanderChannelBindingStore
   'channels.ingest': Router
@@ -76,5 +81,6 @@ export interface HammurabiRuntimeCapabilities {
   'telemetry.hub': TelemetryHub
   'telemetry.store': TelemetryRouterResult['store']
 
+  'workspace.machineDescriptor': WorkspaceMachineDescriptorCapability
   'workspace.resolver': WorkspaceResolverCapability
 }

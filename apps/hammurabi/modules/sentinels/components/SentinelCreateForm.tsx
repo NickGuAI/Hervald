@@ -33,7 +33,7 @@ export function SentinelCreateForm({
   const [skills, setSkills] = useState<string[]>([])
   const [seedMemory, setSeedMemory] = useState('')
   const [maxRuns, setMaxRuns] = useState('')
-  const [agentType, setAgentType] = useState<AgentType>('claude')
+  const [agentType, setAgentType] = useState<AgentType>('codex')
   const [permissionMode] = useState<'default'>('default')
   const [formError, setFormError] = useState<string | null>(null)
   const { data: providers = [] } = useProviderRegistry()
@@ -95,7 +95,7 @@ export function SentinelCreateForm({
       setSkills([])
       setSeedMemory('')
       setMaxRuns('')
-      setAgentType('claude')
+      setAgentType('codex')
       onCancel()
     } catch {
       // Error is surfaced by hook state.
@@ -186,7 +186,7 @@ export function SentinelCreateForm({
           className="w-full px-3 py-2 rounded-lg border border-ink-border bg-washi-aged text-[16px] md:text-sm focus:outline-none focus:border-ink-border-hover"
           required
         >
-          {providers.map((provider) => (
+          {providers.filter((provider) => provider.capabilities.supportsAutomation).map((provider) => (
             <option key={provider.id} value={provider.id}>
               {provider.label}
             </option>

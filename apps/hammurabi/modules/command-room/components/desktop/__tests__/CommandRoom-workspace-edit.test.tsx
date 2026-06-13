@@ -8,12 +8,12 @@ describe('resolveWorkspaceSource', () => {
   it('returns a target workspace source', () => {
     expect(resolveWorkspaceSource({
       targetId: 'wt-1',
-      label: 'local:/tmp/project',
+      label: 'Project',
       readOnly: false,
     })).toEqual({
       kind: 'target',
       targetId: 'wt-1',
-      label: 'local:/tmp/project',
+      label: 'Project',
       readOnly: false,
     })
   })

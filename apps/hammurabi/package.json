@@ -18,7 +18,7 @@
     "build": "pnpm run build:deps && vite build && tsc -p tsconfig.node.json",
     "preview": "vite preview",
     "test": "NODE_ENV=development pnpm run build:deps && NODE_ENV=development vitest run",
-    "lint": "eslint src server modules --ext .ts,.tsx",
+    "lint": "tsx tools/check-agent-session-name-prefixes.ts && eslint src server modules --ext .ts,.tsx",
     "onboard": "hammurabi onboard",
     "cap:sync": "cap sync ios",
     "cap:ios": "cap open ios",

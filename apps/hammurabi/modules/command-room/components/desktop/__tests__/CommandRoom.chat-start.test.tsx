@@ -39,6 +39,7 @@ vi.mock('@/hooks/use-agents', () => ({
   triggerPreKillDebrief: vi.fn(),
   useAgentSessions: mocks.useAgentSessions,
   useMachines: mocks.useMachines,
+  useDirectories: vi.fn(() => ({ data: undefined, error: null, isLoading: false })),
   verifyTailscaleHostname: vi.fn(),
 }))
 
@@ -555,7 +556,8 @@ describe('CommandRoom chat-row Start (one-click resume)', () => {
     )
   })
 
-  it('shows the provider picker and creates with the explicitly chosen provider from the New Chat row action', async () => {
+  it('shows the provider picker and creates with the selected provider from the New Chat row action', async () => {
+    mocks.useCommander.mockReturnValue(buildCommanderState(buildCommander({ agentType: 'codex' })))
     const conversations = [buildIdleConversation({ id: 'conv-existing', agentType: 'claude' })]
     createMutateAsync.mockImplementation(async (input: { commanderId: string, agentType?: string }) => {
       const created = buildIdleConversation({
@@ -585,15 +587,7 @@ describe('CommandRoom chat-row Start (one-click resume)', () => {
     })
 
     expect(document.body.querySelector('[data-testid="start-conversation-panel"]')).not.toBeNull()
-    expect(document.body.querySelector('[data-testid="create-chat-reasoning-settings"]')).not.toBeNull()
-    expect(document.body.textContent ?? '').toContain('Effort')
-    expect(document.body.textContent ?? '').toContain('max')
-    expect(document.body.textContent ?? '').toContain('Adaptive')
-    expect(document.body.textContent ?? '').toContain('disabled')
-    expect(document.body.textContent ?? '').toContain('Max tokens')
-    expect(
-      document.body.querySelector<HTMLInputElement>('[data-testid="create-chat-max-thinking-tokens-input"]')?.value,
-    ).toBe('128000')
+    expect(document.body.querySelector('[data-testid="create-chat-reasoning-settings"]')).toBeNull()
     expect(createMutateAsync).not.toHaveBeenCalled()
 
     const providerSelect = document.body.querySelector(
@@ -602,16 +596,16 @@ describe('CommandRoom chat-row Start (one-click resume)', () => {
     const createButton = document.body.querySelector(
       '[data-testid="create-chat-panel-button"]',
     ) as HTMLButtonElement | null
-
     expect(providerSelect).not.toBeNull()
+    expect(providerSelect?.disabled).toBe(false)
+    expect(Array.from(providerSelect?.options ?? []).map((option) => option.value)).toContain('codex')
+    expect(providerSelect?.value).toBe('codex')
+    expect(document.body.querySelectorAll('[data-testid="create-chat-provider-select"]')).toHaveLength(1)
     expect(createButton).not.toBeNull()
+    expect(createButton?.disabled).toBe(false)
 
     flushSync(() => {
-      if (providerSelect) {
-        providerSelect.value = 'codex'
-        providerSelect.dispatchEvent(new Event('change', { bubbles: true }))
-      }
-      createButton?.click()
+      createButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
 
     expect(createMutateAsync).toHaveBeenCalledTimes(1)

@@ -284,7 +284,7 @@ function mapCodexStartedItem(method: string, params: Record<string, unknown>): T
     return []
   }
   if (itemType === 'userMessage') {
-    return [createCodexActivityEnvelope(method, params, 'User message item started', itemType, item)]
+    return []
   }
   if (itemType === 'agentMessage') {
     return [createCodexEnvelope(method, params, { type: 'message.start', role: 'assistant' })]
@@ -321,6 +321,8 @@ function mapCodexCompletedItem(method: string, params: Record<string, unknown>):
   const itemType = readTrimmedString(item.type)
   const itemId = readTrimmedString(item.id) ?? createTranscriptId()
   switch (itemType) {
+    case 'userMessage':
+      return []
     case 'agentMessage':
       return [createCodexEnvelope(method, params, { type: 'message.end' }, { itemId })]
     case 'reasoning':
@@ -557,11 +559,6 @@ export function normalizeCodexEvent(method: string, params: unknown): HammurabiE
       const item = asObject(p.item)
       if (!item) return null
       const itemType = item.type as string | undefined
-      if (itemType === 'userMessage') {
-        // Hammurabi already appends a local user echo immediately after turn/start.
-        // Re-emitting Codex userMessage item/started duplicates transcript entries.
-        return null
-      }
       if (itemType === 'reasoning') {
         return withCodexSource({
           type: 'content_block_start',

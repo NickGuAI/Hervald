@@ -91,6 +91,31 @@ describe('runEvalCli', () => {
     expect(body.heartbeat).toMatchObject({ intervalMs: 1800000 })
   })
 
+  it('fails bootstrap when the API omits commander or session ids', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ id: 'cmdr-benchmark' }), {
+        status: 201,
+        headers: { 'content-type': 'application/json' },
+      }),
+    )
+    const stdout = createBufferWriter()
+    const stderr = createBufferWriter()
+
+    const exitCode = await runEvalCli(
+      ['commander', 'bootstrap', '--host', 'builder-host', '--model', 'gpt-5.5'],
+      {
+        fetchImpl,
+        readConfig: async () => config,
+        stdout: stdout.writer,
+        stderr: stderr.writer,
+      },
+    )
+
+    expect(exitCode).toBe(1)
+    expect(stdout.read()).toBe('')
+    expect(stderr.read()).toContain('Eval bootstrap response was malformed')
+  })
+
   it('calls eval doctor with subscription runner mode without treating it as an api key', async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(JSON.stringify({ ok: true }), {
@@ -265,13 +290,54 @@ describe('runEvalCli', () => {
     }
   })
 
-  it('calls list, status, report, and submit eval endpoints', async () => {
+  it('fails eval run when the worker response omits the session name', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(1800000000000)
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
-      new Response(JSON.stringify({ ok: true }), {
-        status: 200,
+      new Response(JSON.stringify({ created: true }), {
+        status: 201,
         headers: { 'content-type': 'application/json' },
       }),
     )
+    const stdout = createBufferWriter()
+    const stderr = createBufferWriter()
+
+    try {
+      const exitCode = await runEvalCli(
+        [
+          'run',
+          'terminal-bench',
+          '--trials',
+          '4',
+          '--commander',
+          'cmdr-benchmark',
+          '--profile',
+          'smoke',
+          '--runner',
+          'subscription-sbx',
+        ],
+        {
+          fetchImpl,
+          readConfig: async () => config,
+          stdout: stdout.writer,
+          stderr: stderr.writer,
+        },
+      )
+
+      expect(exitCode).toBe(1)
+      expect(stdout.read()).toBe('')
+      expect(stderr.read()).toContain('Eval worker dispatch response was malformed')
+    } finally {
+      vi.restoreAllMocks()
+    }
+  })
+
+  it('calls list, status, report, and submit eval endpoints', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async () => (
+      new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    ))
     const stdout = createBufferWriter()
     const stderr = createBufferWriter()
 
@@ -309,6 +375,28 @@ describe('runEvalCli', () => {
     ])
   })
 
+  it('fails list when the API returns malformed success JSON', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response('', {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    )
+    const stdout = createBufferWriter()
+    const stderr = createBufferWriter()
+
+    const exitCode = await runEvalCli(['list'], {
+      fetchImpl,
+      readConfig: async () => config,
+      stdout: stdout.writer,
+      stderr: stderr.writer,
+    })
+
+    expect(exitCode).toBe(1)
+    expect(stdout.read()).toBe('')
+    expect(stderr.read()).toContain('Request failed (200): Malformed JSON response from Hammurabi API')
+  })
+
   it('prints stored api key recovery guidance on 401', async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(JSON.stringify({ error: 'Unauthorized' }), {
@@ -330,6 +418,6 @@ describe('runEvalCli', () => {
     expect(stdout.read()).toBe('')
     expect(stderr.read()).toContain('.hammurabi.json')
     expect(stderr.read()).toContain('api-keys/keys.json')
-    expect(stderr.read()).toContain('hammurabi onboard')
+    expect(stderr.read()).toContain('restart the Hervald installer')
   })
 })

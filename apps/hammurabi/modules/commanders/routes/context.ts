@@ -74,6 +74,10 @@ import {
   resolveCommanderWorkflow,
   resolveEffectiveBasePrompt,
 } from '../workflow-resolution.js'
+import {
+  ChannelMessageIdempotencyLedger,
+  channelMessageIdempotencyLedgerPathForDataRoot,
+} from '../channel-idempotency-ledger.js'
 import type {
   CommanderRoutesContext,
   CommanderRuntime,
@@ -799,6 +803,10 @@ export function buildCommandersContext(
     ?? new ChannelSurfaceBindingStore(channelSurfaceBindingStorePathForDataRoot(surfaceBindingDataRoot))
   const channelBindingStore = options.channelBindingStore
     ?? new CommanderChannelBindingStore(path.join(surfaceBindingDataRoot, 'channels.json'))
+  const channelMessageIdempotencyLedger = options.channelMessageIdempotencyLedger
+    ?? new ChannelMessageIdempotencyLedger({
+      rootDir: channelMessageIdempotencyLedgerPathForDataRoot(surfaceBindingDataRoot),
+    })
   const sessionStore = options.sessionStore
     ?? new CommanderSessionStore(options.sessionStorePath, { runtimeConfig })
   const questStore = options.questStore ?? (
@@ -867,6 +875,17 @@ export function buildCommandersContext(
     verifyToken: options.verifyAuth0Token,
   })
 
+  const requireChannelWriteAccess = combinedAuth({
+    apiKeyStore: options.apiKeyStore,
+    internalToken: options.internalToken,
+    requiredApiKeyScopes: ['agents:write'],
+    internalApiKeyScopes: ['agents:write', CHANNEL_INGEST_SCOPE],
+    domain: options.auth0Domain,
+    audience: options.auth0Audience,
+    clientId: options.auth0ClientId,
+    verifyToken: options.verifyAuth0Token,
+  })
+
   const requireWorkerDispatchAccess = combinedAuth({
     apiKeyStore: options.apiKeyStore,
     internalToken: options.internalToken,
@@ -880,7 +899,7 @@ export function buildCommandersContext(
   const requireConversationCreateAccess = requireWorkerDispatchAccess
 
   const requireChannelIngestAccess = composeRequestHandlers(
-    requireWriteAccess,
+    requireChannelWriteAccess,
     requireAdditionalApiKeyScope(CHANNEL_INGEST_SCOPE),
   )
 
@@ -1421,6 +1440,7 @@ export function buildCommandersContext(
   }): Promise<
     | {
       ok: true
+      conversationId: string
       provider: CommanderChannelMeta['provider']
       sessionKey: string
       lastRoute: CommanderLastRoute
@@ -1477,6 +1497,7 @@ export function buildCommandersContext(
 
     return {
       ok: true,
+      conversationId: channelConversation.id,
       provider,
       sessionKey: channelConversation.channelMeta.sessionKey,
       lastRoute: normalizedLastRoute,
@@ -1530,6 +1551,7 @@ export function buildCommandersContext(
     conversationStore,
     surfaceBindingStore,
     channelBindingStore,
+    channelMessageIdempotencyLedger,
     questStore,
     ghTasksFactory,
     heartbeatLog,

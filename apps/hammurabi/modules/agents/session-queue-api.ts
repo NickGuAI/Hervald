@@ -5,6 +5,7 @@ import type { WorkspaceContextPayload } from '@modules/workspace/types'
 interface QueueMessagePayload {
   text: string
   images?: { mediaType: string; data: string }[]
+  clientSendId?: string
   workspaceContext?: WorkspaceContextPayload
 }
 

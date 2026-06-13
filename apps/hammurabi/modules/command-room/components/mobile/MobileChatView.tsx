@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { cn } from '@/lib/utils'
+import { Plus } from 'lucide-react'
 import type { AgentType, SessionQueueSnapshot } from '@/types'
 import type { PendingApproval } from '@/hooks/use-approvals'
 import { useProviderRegistry } from '@/hooks/use-providers'
@@ -49,6 +50,7 @@ interface MobileChatViewProps {
     model: string | null,
     reasoningConfig: CreateConversationReasoningConfig,
   ) => Promise<ConversationRecord | null> | ConversationRecord | null
+  onRequestCreateConversation?: () => void | Promise<void>
   onStartConversation?: (conversationId: string) => void | Promise<void>
   onStopConversation?: (conversationId: string) => void | Promise<void>
   onRenameConversation?: (conversationId: string, name: string) => void | Promise<void>
@@ -175,6 +177,7 @@ export function MobileChatView({
   onOpenWorkspaceFile,
   onSelectConversationId,
   onCreateConversation,
+  onRequestCreateConversation,
   onStartConversation,
   onStopConversation,
   onRenameConversation,
@@ -673,16 +676,38 @@ export function MobileChatView({
                 onSwapConversationProvider={onSwapConversationProvider}
                 onArchiveConversation={handleArchiveConversation}
                 onRemoveConversation={handleRemoveConversation}
-                headerAccessory={isActive
+                headerAccessory={isActive && onRequestCreateConversation
                   ? (
-                    <PageDots
-                      conversations={visibleConversations}
-                      activeConversationId={activeConversationId}
-                      theme={theme}
-                      onSelectConversationId={onSelectConversationId ?? undefined}
-                    />
+                    <div className="flex items-center gap-2">
+                      <PageDots
+                        conversations={visibleConversations}
+                        activeConversationId={activeConversationId}
+                        theme={theme}
+                        onSelectConversationId={onSelectConversationId ?? undefined}
+                      />
+                      <button
+                        type="button"
+                        className="inline-flex h-9 w-9 items-center justify-center rounded-md border border-[color:var(--hv-border-hair)] bg-[var(--hv-bg-raised)] text-[color:var(--hv-fg-muted)] transition-colors hover:bg-[var(--hv-surface-hover)] hover:text-[color:var(--hv-fg)]"
+                        aria-label={`New chat for ${commander.name}`}
+                        data-testid="mobile-new-chat-button"
+                        onClick={() => {
+                          void onRequestCreateConversation()
+                        }}
+                      >
+                        <Plus size={15} aria-hidden="true" />
+                      </button>
+                    </div>
                   )
-                  : undefined}
+                  : isActive
+                    ? (
+                      <PageDots
+                        conversations={visibleConversations}
+                        activeConversationId={activeConversationId}
+                        theme={theme}
+                        onSelectConversationId={onSelectConversationId ?? undefined}
+                      />
+                    )
+                    : undefined}
               />
             </div>
           )

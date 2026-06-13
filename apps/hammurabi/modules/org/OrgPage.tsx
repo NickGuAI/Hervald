@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { useNavigate, useSearchParams } from 'react-router-dom'
+import { ConfirmModal } from '@modules/components/ConfirmModal'
 import { ModalFormContainer } from '@modules/components/ModalFormContainer'
+import { Toast } from '@modules/components/Toast'
 import { CreateCommanderWizard } from '@modules/commanders/components/CreateCommanderWizard'
 import { useCommander } from '@modules/commanders/hooks/useCommander'
 import { ORG_QUERY_KEY } from '@modules/org/hooks/useOrgTree'
@@ -14,7 +16,6 @@ import { exportOrgCommanderTemplate, restoreOrgCommander } from '@modules/org/ho
 import { useOrgTree } from '@modules/org/hooks/useOrgTree'
 import { useIsMobile } from '@/hooks/use-is-mobile'
 import { MobileOrgPage } from './MobileOrgPage'
-import { Toast } from './components'
 import { ConfirmDelete } from './dialogs/ConfirmDelete'
 import { EditCommander } from './panels/EditCommander'
 import { ReplicateCommander } from './panels/ReplicateCommander'
@@ -90,17 +91,22 @@ export function OrgPage() {
   const [toast, setToast] = useState<ToastState | null>(null)
   const [highlightedCommanderId, setHighlightedCommanderId] = useState<string | null>(null)
   const [expandedCommanderId, setExpandedCommanderId] = useState<string | null>(null)
+  const [confirmHireWizardCloseOpen, setConfirmHireWizardCloseOpen] = useState(false)
 
   const handleCloseCreateCommander = useCallback(() => {
-    if (
-      hireWizardBusy &&
-      !window.confirm('A commander setup chat is still active. Close and cancel it?')
-    ) {
+    if (hireWizardBusy) {
+      setConfirmHireWizardCloseOpen(true)
       return
     }
     setHireWizardOpen(false)
     setHireWizardBusy(false)
   }, [hireWizardBusy])
+
+  const handleConfirmCloseCreateCommander = useCallback(() => {
+    setConfirmHireWizardCloseOpen(false)
+    setHireWizardOpen(false)
+    setHireWizardBusy(false)
+  }, [])
 
   const handleCreateCommander = useCallback(async (
     input: Parameters<typeof commanderState.createCommander>[0],
@@ -425,6 +431,15 @@ export function OrgPage() {
         />
       ) : null}
 
+      <ConfirmModal
+        open={confirmHireWizardCloseOpen}
+        title="Close setup chat?"
+        message="A commander setup chat is still active. Close and cancel it?"
+        confirmLabel="Close setup"
+        confirmTone="danger"
+        onClose={() => setConfirmHireWizardCloseOpen(false)}
+        onConfirm={handleConfirmCloseCreateCommander}
+      />
       <Toast open={Boolean(toast)} message={toast?.message ?? ''} tone={toast?.tone} />
     </>
   )

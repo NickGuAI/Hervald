@@ -92,15 +92,14 @@ describe('MobileAutomations', () => {
     expect(panel?.getAttribute('data-filter')).toBe('schedule')
     expect(panel?.getAttribute('data-scope')).toBe('global')
 
-    const commanderButton = Array.from(document.body.querySelectorAll('button')).find((button) =>
-      button.textContent?.includes('test commander'),
-    )
-    if (!(commanderButton instanceof HTMLButtonElement)) {
-      throw new Error('expected commander filter button')
+    const commanderSelect = document.body.querySelector('[data-testid="mobile-automation-commander-select"]')
+    if (!(commanderSelect instanceof HTMLSelectElement)) {
+      throw new Error('expected commander filter select')
     }
 
     await act(async () => {
-      commanderButton.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      commanderSelect.value = 'cmd-1'
+      commanderSelect.dispatchEvent(new Event('change', { bubbles: true }))
     })
     await flushEffects()
 

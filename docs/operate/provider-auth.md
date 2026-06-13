@@ -23,7 +23,7 @@ provider tool.
 Common checks:
 
 ```bash
-codex auth status
+codex login status
 claude auth status
 gemini auth status
 opencode auth status
@@ -31,6 +31,18 @@ opencode auth status
 
 If status is missing or unknown, run the native provider login command on that
 same host, then refresh the Provider Auth panel.
+
+## Codex Invalid Authorize Request
+
+If OpenAI returns `authorize_hydra_invalid_request` during Codex authentication,
+the failing path is the retired Hervald-managed Codex OAuth reconnect flow, not
+native Codex CLI login. Use native Codex login on the machine that will run
+Codex, or reuse a valid Codex `auth.json`; do not treat the OpenAI authorize
+error as a missing subscription by itself.
+
+See the
+[provider subscription auth comparison](../diagrams/features/providers/provider-subscription-auth-comparison.svg)
+for the Hervald, Happy, and Paperclip flow comparison.
 
 Source references:
 

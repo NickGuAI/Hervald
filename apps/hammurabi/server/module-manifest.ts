@@ -107,8 +107,8 @@ export const HAMMURABI_MODULE_SERVER_METADATA = [
     },
     storage: storage('agents', 'owned', 'Agent runtime state is persisted under the Hammurabi data root.', {
       keys: ['agents.stream-sessions', 'agents.machines', 'agents.transcripts'],
-      roots: ['${HAMMURABI_DATA_DIR}/agents'],
-      files: ['stream-sessions.json'],
+      roots: ['${HAMMURABI_DATA_DIR}/agents', '${HAMMURABI_DATA_DIR}'],
+      files: ['stream-sessions.json', 'machines.json'],
     }),
     dependencies: HAMMURABI_MODULE_GRAPH[0].dependencies,
     capabilities: HAMMURABI_MODULE_GRAPH[0].capabilities,
@@ -225,7 +225,7 @@ export const HAMMURABI_MODULE_SERVER_METADATA = [
     },
     storage: storage('automations', 'owned', 'Automation definitions and run artifacts live under the automation store root.', {
       keys: ['automations.definitions', 'automations.runs', 'automations.memory'],
-      roots: ['${HAMMURABI_DATA_DIR}/commander/automations'],
+      roots: ['${HAMMURABI_DATA_DIR}/automations'],
       files: ['*.json', 'runs/*.json', 'runs/*.md', 'memory.md'],
     }),
     dependencies: HAMMURABI_MODULE_GRAPH[3].dependencies,
@@ -522,8 +522,8 @@ export const HAMMURABI_MODULE_SERVER_METADATA = [
     lifecycle: noLifecycle(),
     storage: storage('org-identity', 'owned', 'Organization identity is a distinct store surfaced through org and settings UI.', {
       keys: ['org.identity'],
-      roots: ['${HAMMURABI_DATA_DIR}/org'],
-      files: ['identity.json'],
+      roots: ['${HAMMURABI_DATA_DIR}'],
+      files: ['org.json'],
     }),
     dependencies: HAMMURABI_MODULE_GRAPH[12].dependencies,
     capabilities: HAMMURABI_MODULE_GRAPH[12].capabilities,
@@ -657,7 +657,7 @@ export const HAMMURABI_MODULE_SERVER_METADATA = [
     storage: storage('settings', 'owned', 'Application settings, including theme, are persisted by the settings store.', {
       keys: ['settings.app'],
       roots: ['${HAMMURABI_DATA_DIR}/settings'],
-      files: ['settings.json'],
+      files: ['app-settings.json'],
     }),
     dependencies: HAMMURABI_MODULE_GRAPH[17].dependencies,
     capabilities: HAMMURABI_MODULE_GRAPH[17].capabilities,
@@ -671,7 +671,7 @@ export const HAMMURABI_MODULE_SERVER_METADATA = [
         id: 'skills.api',
         surface: 'api',
         mount: '/api/skills',
-        methods: ['GET', 'PUT'],
+        methods: ['GET'],
         auth: 'api-key-or-auth0',
         ownerModuleId: 'skills',
       },
@@ -679,9 +679,9 @@ export const HAMMURABI_MODULE_SERVER_METADATA = [
     parsers: [],
     websockets: [],
     lifecycle: noLifecycle(),
-    storage: storage('skills', 'external', 'Skills reads installed skill directories and commander skill config/history roots.', {
-      keys: ['skills.config', 'skills.history'],
-      roots: ['${COMMANDER_DATA_DIR}', '~/.claude/skills', '~/.codex/skills'],
+    storage: storage('skills', 'external', 'Skills reads installed skill directories for discovery only.', {
+      roots: ['agent-skills', '~/.claude/skills', '~/.codex/skills', '~/.openclaw/skills'],
+      files: ['*/SKILL.md'],
     }),
     dependencies: HAMMURABI_MODULE_GRAPH[18].dependencies,
     capabilities: HAMMURABI_MODULE_GRAPH[18].capabilities,

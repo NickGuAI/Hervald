@@ -85,7 +85,9 @@ function withTargetQuery(basePath: string, source: WorkspaceSource): string {
 type WorkspaceRawSource = WorkspaceSource | WorkspaceSourceDescriptor
 
 function getWorkspaceRawTargetId(source: WorkspaceRawSource): string {
-  return 'targetId' in source ? source.targetId : source.id
+  return 'targetId' in source && typeof source.targetId === 'string'
+    ? source.targetId
+    : source.id
 }
 
 function fallbackDownloadFileName(relativePath: string): string {
@@ -160,7 +162,7 @@ function triggerBrowserDownload(blob: Blob, fileName: string): void {
 export function buildWorkspaceRawUrl(
   source: WorkspaceRawSource,
   path: string,
-  accessToken?: string | null,
+  ticket?: string | null,
   options: { download?: boolean } = {},
 ): string | null {
   const targetId = getWorkspaceRawTargetId(source).trim()
@@ -168,14 +170,33 @@ export function buildWorkspaceRawUrl(
     return null
   }
   const query = new URLSearchParams({ path })
-  if (accessToken) {
-    query.set('access_token', accessToken)
+  if (ticket) {
+    query.set('ticket', ticket)
   }
   query.set('targetId', targetId)
   if (options.download) {
     query.set('download', '1')
   }
   return getFullUrl(`/api/workspace/raw?${query.toString()}`)
+}
+
+export async function issueWorkspaceRawTicket(
+  source: WorkspaceRawSource,
+  path: string,
+): Promise<string | null> {
+  const targetId = getWorkspaceRawTargetId(source).trim()
+  if (!targetId) {
+    return null
+  }
+
+  const response = await fetchJson<{ ticket?: unknown }>('/api/workspace/raw-ticket', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ targetId, path }),
+  })
+  return typeof response.ticket === 'string' && response.ticket.trim().length > 0
+    ? response.ticket.trim()
+    : null
 }
 
 async function downloadWorkspaceFileOnce(
@@ -216,8 +237,7 @@ export interface WorkspaceOpenResponse {
   targetId: string
   label: string
   host: string
-  rootPath: string
-  isReadOnly: boolean
+  readOnly: boolean
 }
 
 export async function openWorkspaceTarget(input: {

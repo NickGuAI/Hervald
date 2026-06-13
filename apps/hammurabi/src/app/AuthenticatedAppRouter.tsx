@@ -1,13 +1,14 @@
-import { Suspense, lazy, useMemo, type ComponentType, type LazyExoticComponent } from 'react'
+import { Suspense, lazy, useMemo, type ComponentType, type LazyExoticComponent, type ReactNode } from 'react'
 import { Navigate, Route, Routes } from 'react-router-dom'
 import { FOUNDER_SETUP_PATH, type OnboardingStatus } from '@modules/onboarding/contracts'
 import { useOnboardingStatus } from '@modules/onboarding/hooks/useFounderOnboarding'
 import { bindFrontendGraphToStaticBindings } from '@/module-graph-bindings'
 import { useModuleGraph } from '@/hooks/use-module-graph'
 import { ModuleGraphProvider } from '@/module-graph-context'
-import type { FrontendModule, FrontendModuleBinding } from '@/types'
+import type { FrontendModuleBinding, FrontendNavItem } from '@/types'
 import type { HammurabiModuleGraphResponse } from '@/types/module-graph-api'
 import { Shell } from '@/surfaces/desktop/Shell'
+import { useShellCounts } from './use-shell-counts'
 
 interface ModuleRoute {
   path: string
@@ -51,6 +52,21 @@ function requiresInitialOnboardingGate(status: OnboardingStatus): boolean {
     !status.founderSetup.setupComplete ||
     !status.gaia.exists ||
     !status.starterWorkforce.complete
+  )
+}
+
+function AppShell({
+  children,
+  modules,
+}: {
+  children: ReactNode
+  modules: FrontendNavItem[]
+}) {
+  const shellCounts = useShellCounts()
+  return (
+    <Shell modules={modules} counts={shellCounts}>
+      {children}
+    </Shell>
   )
 }
 
@@ -137,7 +153,7 @@ export function AuthenticatedAppRouter({
           <Route
             path="/*"
             element={(
-              <Shell modules={boundGraph.nav}>
+              <AppShell modules={boundGraph.nav}>
                 <Routes>
                   <Route path="/" element={<Navigate to={defaultRoutePath} replace />} />
                   {boundGraph.redirects.map((redirect) => (
@@ -155,7 +171,7 @@ export function AuthenticatedAppRouter({
                     />
                   ))}
                 </Routes>
-              </Shell>
+              </AppShell>
             )}
           />
         </Routes>

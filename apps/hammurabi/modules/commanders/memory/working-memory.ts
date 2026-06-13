@@ -1,6 +1,8 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { readFile } from 'node:fs/promises'
 import path from 'node:path'
+import { readJsonFileFailClosed, writeJsonFileAtomically, writeTextFileAtomically } from '../../json-file.js'
 import { resolveCommanderPaths } from '../paths.js'
+import { withMemoryMutationLock } from './mutation-lock.js'
 
 const WORKING_MEMORY_VERSION = 1
 const MAX_FILES = 24
@@ -103,60 +105,57 @@ export class WorkingMemoryStore {
   }
 
   async ensure(): Promise<void> {
-    const state = await this.readState()
-    await this.writeState(state)
+    await withMemoryMutationLock(this.memoryRoot, async () => {
+      const state = await this.readState()
+      await this.writeState(state)
+    })
   }
 
   async readState(): Promise<WorkingMemoryState> {
     const nowIso = this.now().toISOString()
-    try {
-      const raw = await readFile(this.jsonPath, 'utf-8')
-      const parsed = JSON.parse(raw) as Partial<WorkingMemoryState>
-      if (!parsed || typeof parsed !== 'object') {
-        return defaultState(nowIso)
-      }
-      if (parsed.version !== WORKING_MEMORY_VERSION) {
-        return defaultState(nowIso)
-      }
-      const checkpoints = Array.isArray(parsed.checkpoints)
-        ? parsed.checkpoints.filter((entry) =>
-          entry &&
-          typeof entry === 'object' &&
-          typeof entry.timestamp === 'string' &&
-          typeof entry.source === 'string' &&
-          typeof entry.summary === 'string')
-        : []
-
-      return {
-        version: WORKING_MEMORY_VERSION,
-        updatedAt: typeof parsed.updatedAt === 'string' ? parsed.updatedAt : nowIso,
-        activeHypothesis:
-          typeof parsed.activeHypothesis === 'string' && parsed.activeHypothesis.trim()
-            ? parsed.activeHypothesis.trim()
-            : null,
-        filesInFocus: Array.isArray(parsed.filesInFocus)
-          ? parsed.filesInFocus
-              .filter((entry): entry is string => typeof entry === 'string')
-              .map((entry) => entry.trim())
-              .filter((entry) => entry.length > 0)
-              .slice(0, MAX_FILES)
-          : [],
-        checkpoints: checkpoints.map((entry) => ({
-          timestamp: entry.timestamp as string,
-          source: normalizeSource(typeof entry.source === 'string' ? entry.source : null),
-          summary: compactText(entry.summary as string).slice(0, MAX_SUMMARY_CHARS),
-          issueNumber:
-            typeof entry.issueNumber === 'number' && Number.isInteger(entry.issueNumber)
-              ? entry.issueNumber
-              : null,
-          repo: typeof entry.repo === 'string' && entry.repo.trim() ? entry.repo.trim() : null,
-          tags: Array.isArray(entry.tags)
-            ? normalizeTags(entry.tags.filter((tag): tag is string => typeof tag === 'string'))
-            : [],
-        })),
-      }
-    } catch {
+    const parsed = await readJsonFileFailClosed(this.jsonPath) as Partial<WorkingMemoryState> | null
+    if (!parsed || typeof parsed !== 'object') {
       return defaultState(nowIso)
+    }
+    if (parsed.version !== WORKING_MEMORY_VERSION) {
+      return defaultState(nowIso)
+    }
+    const checkpoints = Array.isArray(parsed.checkpoints)
+      ? parsed.checkpoints.filter((entry) =>
+        entry &&
+        typeof entry === 'object' &&
+        typeof entry.timestamp === 'string' &&
+        typeof entry.source === 'string' &&
+        typeof entry.summary === 'string')
+      : []
+
+    return {
+      version: WORKING_MEMORY_VERSION,
+      updatedAt: typeof parsed.updatedAt === 'string' ? parsed.updatedAt : nowIso,
+      activeHypothesis:
+        typeof parsed.activeHypothesis === 'string' && parsed.activeHypothesis.trim()
+          ? parsed.activeHypothesis.trim()
+          : null,
+      filesInFocus: Array.isArray(parsed.filesInFocus)
+        ? parsed.filesInFocus
+            .filter((entry): entry is string => typeof entry === 'string')
+            .map((entry) => entry.trim())
+            .filter((entry) => entry.length > 0)
+            .slice(0, MAX_FILES)
+        : [],
+      checkpoints: checkpoints.map((entry) => ({
+        timestamp: entry.timestamp as string,
+        source: normalizeSource(typeof entry.source === 'string' ? entry.source : null),
+        summary: compactText(entry.summary as string).slice(0, MAX_SUMMARY_CHARS),
+        issueNumber:
+          typeof entry.issueNumber === 'number' && Number.isInteger(entry.issueNumber)
+            ? entry.issueNumber
+            : null,
+        repo: typeof entry.repo === 'string' && entry.repo.trim() ? entry.repo.trim() : null,
+        tags: Array.isArray(entry.tags)
+          ? normalizeTags(entry.tags.filter((tag): tag is string => typeof tag === 'string'))
+          : [],
+      })),
     }
   }
 
@@ -164,38 +163,40 @@ export class WorkingMemoryStore {
     const summary = compactText(input.summary).slice(0, MAX_SUMMARY_CHARS)
     if (!summary) return
 
-    const state = await this.readState()
-    const nowIso = this.now().toISOString()
-    const checkpoint: WorkingMemoryEntry = {
-      timestamp: nowIso,
-      source: normalizeSource(input.source),
-      summary,
-      issueNumber:
-        typeof input.issueNumber === 'number' && Number.isInteger(input.issueNumber)
-          ? input.issueNumber
-          : null,
-      repo: typeof input.repo === 'string' && input.repo.trim() ? input.repo.trim() : null,
-      tags: normalizeTags(input.tags ?? []),
-    }
+    await withMemoryMutationLock(this.memoryRoot, async () => {
+      const state = await this.readState()
+      const nowIso = this.now().toISOString()
+      const checkpoint: WorkingMemoryEntry = {
+        timestamp: nowIso,
+        source: normalizeSource(input.source),
+        summary,
+        issueNumber:
+          typeof input.issueNumber === 'number' && Number.isInteger(input.issueNumber)
+            ? input.issueNumber
+            : null,
+        repo: typeof input.repo === 'string' && input.repo.trim() ? input.repo.trim() : null,
+        tags: normalizeTags(input.tags ?? []),
+      }
 
-    state.checkpoints.push(checkpoint)
-    if (state.checkpoints.length > MAX_CHECKPOINTS) {
-      state.checkpoints = state.checkpoints.slice(-MAX_CHECKPOINTS)
-    }
+      state.checkpoints.push(checkpoint)
+      if (state.checkpoints.length > MAX_CHECKPOINTS) {
+        state.checkpoints = state.checkpoints.slice(-MAX_CHECKPOINTS)
+      }
 
-    const nextHypothesis = compactText(input.hypothesis ?? '')
-    if (nextHypothesis) {
-      state.activeHypothesis = nextHypothesis.slice(0, MAX_SUMMARY_CHARS)
-    }
+      const nextHypothesis = compactText(input.hypothesis ?? '')
+      if (nextHypothesis) {
+        state.activeHypothesis = nextHypothesis.slice(0, MAX_SUMMARY_CHARS)
+      }
 
-    const files = normalizeTags((input.files ?? []).map((file) => file.replace(/\\/g, '/')))
-    if (files.length > 0) {
-      const merged = [...state.filesInFocus, ...files]
-      state.filesInFocus = normalizeTags(merged).slice(-MAX_FILES)
-    }
+      const files = normalizeTags((input.files ?? []).map((file) => file.replace(/\\/g, '/')))
+      if (files.length > 0) {
+        const merged = [...state.filesInFocus, ...files]
+        state.filesInFocus = normalizeTags(merged).slice(-MAX_FILES)
+      }
 
-    state.updatedAt = nowIso
-    await this.writeState(state)
+      state.updatedAt = nowIso
+      await this.writeState(state)
+    })
   }
 
   async render(maxCheckpoints: number = 8): Promise<string> {
@@ -223,9 +224,8 @@ export class WorkingMemoryStore {
   }
 
   private async writeState(state: WorkingMemoryState): Promise<void> {
-    await mkdir(this.memoryRoot, { recursive: true })
-    await writeFile(this.jsonPath, JSON.stringify(state, null, 2), 'utf-8')
-    await writeFile(this.markdownPath, `${await this.renderFromState(state)}\n`, 'utf-8')
+    await writeJsonFileAtomically(this.jsonPath, state, { trailingNewline: true })
+    await writeTextFileAtomically(this.markdownPath, `${await this.renderFromState(state)}\n`)
   }
 
   private async renderFromState(state: WorkingMemoryState): Promise<string> {
@@ -303,9 +303,10 @@ export class WorkingMemory {
   }
 
   async clear(): Promise<void> {
-    await mkdir(this.memoryRoot, { recursive: true })
-    const state = defaultState(this.now().toISOString())
-    await writeFile(this.jsonPath, JSON.stringify(state, null, 2), 'utf-8')
-    await writeFile(this.markdownPath, '', 'utf-8')
+    await withMemoryMutationLock(this.memoryRoot, async () => {
+      const state = defaultState(this.now().toISOString())
+      await writeJsonFileAtomically(this.jsonPath, state, { trailingNewline: true })
+      await writeTextFileAtomically(this.markdownPath, '')
+    })
   }
 }

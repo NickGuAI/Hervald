@@ -169,9 +169,9 @@ async function main() {
   const headers = {
     'content-type': 'application/json',
   }
-  const internalToken = process.env.HAMMURABI_INTERNAL_TOKEN?.trim()
-  if (internalToken) {
-    headers['x-hammurabi-internal-token'] = internalToken
+  const bridgeToken = process.env.HAMMURABI_APPROVAL_BRIDGE_TOKEN?.trim()
+  if (bridgeToken) {
+    headers['x-hammurabi-approval-bridge-token'] = bridgeToken
   }
 
   let responsePayload = await fetchApprovalPayload(

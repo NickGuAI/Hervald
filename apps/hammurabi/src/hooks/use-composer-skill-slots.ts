@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { fetchJson } from '@/lib/api'
 import {
   getDefaultComposerSkillSlotSettings,
@@ -13,6 +14,8 @@ interface AppSettingsResponse {
     composerSkillSlots?: unknown
   }
 }
+
+const COMPOSER_SKILL_SLOT_SETTINGS_QUERY_KEY = ['settings', 'composer-skill-slots'] as const
 
 function normalizeComposerSkillSlotSettings(payload: unknown): ComposerSkillSlotSettings {
   const source = (
@@ -46,37 +49,25 @@ export function useComposerSkillSlots(): {
   clearPrimarySkillName: () => Promise<boolean>
   isLoading: boolean
   isSaving: boolean
+  loadError: Error | null
+  retryLoad: () => void
 } {
   const [settings, setSettings] = useState<ComposerSkillSlotSettings>(() =>
     getDefaultComposerSkillSlotSettings(),
   )
-  const [isLoading, setIsLoading] = useState(true)
   const [isSaving, setIsSaving] = useState(false)
+  const queryClient = useQueryClient()
+  const settingsQuery = useQuery({
+    queryKey: COMPOSER_SKILL_SLOT_SETTINGS_QUERY_KEY,
+    queryFn: fetchComposerSkillSlotSettings,
+    staleTime: 60_000,
+  })
 
   useEffect(() => {
-    let disposed = false
-
-    async function loadSettings() {
-      try {
-        const nextSettings = await fetchComposerSkillSlotSettings()
-        if (!disposed) {
-          setSettings(nextSettings)
-        }
-      } catch {
-        // Keep the empty slot available when settings are unavailable.
-      } finally {
-        if (!disposed) {
-          setIsLoading(false)
-        }
-      }
+    if (settingsQuery.data) {
+      setSettings(settingsQuery.data)
     }
-
-    void loadSettings()
-
-    return () => {
-      disposed = true
-    }
-  }, [])
+  }, [settingsQuery.data])
 
   const persistSettings = useCallback(async (nextSettings: ComposerSkillSlotSettings): Promise<boolean> => {
     const previous = settings
@@ -84,6 +75,7 @@ export function useComposerSkillSlots(): {
     setIsSaving(true)
     try {
       const savedSettings = await patchComposerSkillSlotSettings(nextSettings)
+      queryClient.setQueryData(COMPOSER_SKILL_SLOT_SETTINGS_QUERY_KEY, savedSettings)
       setSettings(savedSettings)
       return true
     } catch {
@@ -92,7 +84,7 @@ export function useComposerSkillSlots(): {
     } finally {
       setIsSaving(false)
     }
-  }, [settings])
+  }, [queryClient, settings])
 
   const updatePrimarySkillName = useCallback(async (skillName: string | null): Promise<boolean> => {
     return persistSettings(setPrimaryComposerSkillName(settings, skillName))
@@ -103,7 +95,11 @@ export function useComposerSkillSlots(): {
     primarySkillName: getPrimaryComposerSkillName(settings),
     setPrimarySkillName: (skillName: string) => updatePrimarySkillName(skillName),
     clearPrimarySkillName: () => updatePrimarySkillName(null),
-    isLoading,
+    isLoading: settingsQuery.isLoading,
     isSaving,
+    loadError: settingsQuery.error,
+    retryLoad: () => {
+      void settingsQuery.refetch()
+    },
   }
 }

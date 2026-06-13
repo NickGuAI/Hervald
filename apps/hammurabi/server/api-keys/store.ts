@@ -1,7 +1,7 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { resolveModuleDataDir } from '../../modules/data-dir.js'
+import { readJsonFileFailClosed, writeJsonFileAtomically } from '../../modules/json-file.js'
 
 export const API_KEY_SCOPES = [
   'telemetry:read',
@@ -16,7 +16,6 @@ export const API_KEY_SCOPES = [
   'services:read',
   'services:write',
   'skills:read',
-  'skills:write',
 ] as const
 
 export type ApiKeyScope = (typeof API_KEY_SCOPES)[number]
@@ -24,6 +23,8 @@ export type ApiKeyScope = (typeof API_KEY_SCOPES)[number]
 export const DEFAULT_BOOTSTRAP_MASTER_KEY_SCOPES: readonly ApiKeyScope[] = [
   ...API_KEY_SCOPES,
 ]
+
+export const DEFAULT_BOOTSTRAP_MASTER_KEY_TTL_MS = 24 * 60 * 60 * 1000
 
 const API_KEY_SCOPE_SET = new Set<string>(API_KEY_SCOPES)
 
@@ -138,6 +139,12 @@ function mergeBootstrapMasterKeyScopes(scopes: readonly string[]): string[] {
   return [...DEFAULT_BOOTSTRAP_MASTER_KEY_SCOPES, ...extraScopes]
 }
 
+function bootstrapMasterKeyExpiresAt(createdAt: string, now: Date): string {
+  const createdAtMs = Date.parse(createdAt)
+  const baseMs = Number.isFinite(createdAtMs) ? createdAtMs : now.getTime()
+  return new Date(baseMs + DEFAULT_BOOTSTRAP_MASTER_KEY_TTL_MS).toISOString()
+}
+
 function toPersistedCollection(value: unknown): PersistedApiKeyCollection {
   if (Array.isArray(value)) {
     return {
@@ -205,6 +212,14 @@ function isExpired(expiresAt: string | null | undefined, nowMs: number): boolean
   return nowMs >= expiresAtMs
 }
 
+function isExpiredSystemBootstrapRecord(record: ApiKeyRecord, nowMs: number): boolean {
+  return record.createdBy === 'system' && isExpired(record.expiresAt, nowMs)
+}
+
+function canSeedDefaultKeyFromRecords(records: readonly ApiKeyRecord[], nowMs: number): boolean {
+  return records.every((record) => isExpiredSystemBootstrapRecord(record, nowMs))
+}
+
 export class ApiKeyJsonStore implements ApiKeyStoreLike {
   private mutationQueue: Promise<void> = Promise.resolve()
   private readonly pendingLastUsedAtById = new Map<string, number>()
@@ -222,6 +237,11 @@ export class ApiKeyJsonStore implements ApiKeyStoreLike {
   async hasAnyKeys(): Promise<boolean> {
     const records = await this.readRecordsConsistent()
     return records.length > 0
+  }
+
+  async canSeedDefaultKey(now = new Date()): Promise<boolean> {
+    const records = await this.readRecordsConsistent()
+    return canSeedDefaultKeyFromRecords(records, now.getTime())
   }
 
   async createKey(input: CreateApiKeyInput): Promise<CreatedApiKey> {
@@ -255,19 +275,29 @@ export class ApiKeyJsonStore implements ApiKeyStoreLike {
    * Seeds a caller-provided bootstrap master key when no keys exist.
    * Returns the raw key if seeded, or null if keys already exist.
    */
-  async seedDefaultKey(rawKey: string, label = 'Master Key'): Promise<string | null> {
+  async seedDefaultKey(rawKey: string, label = 'Master Key', now = new Date()): Promise<string | null> {
     return this.withMutationLock(async () => {
       const records = await this.readRecords()
+      const nowMs = now.getTime()
       const defaultKeyHash = hashApiKey(rawKey)
       const matchingRecord = records.find((record) =>
         secureStringEqual(record.keyHash, defaultKeyHash),
       )
 
       if (matchingRecord) {
+        if (isExpiredSystemBootstrapRecord(matchingRecord, nowMs)) {
+          return null
+        }
+
         const nextScopes = mergeBootstrapMasterKeyScopes(matchingRecord.scopes)
+        const nextExpiresAt = matchingRecord.expiresAt
+          ?? bootstrapMasterKeyExpiresAt(matchingRecord.createdAt, now)
         if (
           matchingRecord.createdBy === 'system'
-          && !hasSameScopes(matchingRecord.scopes, nextScopes)
+          && (
+            !hasSameScopes(matchingRecord.scopes, nextScopes)
+            || matchingRecord.expiresAt !== nextExpiresAt
+          )
         ) {
           await this.writeRecords(
             records.map((record) =>
@@ -275,6 +305,7 @@ export class ApiKeyJsonStore implements ApiKeyStoreLike {
                 ? {
                     ...record,
                     scopes: nextScopes,
+                    expiresAt: nextExpiresAt,
                   }
                 : record,
             ),
@@ -284,7 +315,7 @@ export class ApiKeyJsonStore implements ApiKeyStoreLike {
       }
 
       // Double-check inside lock to avoid races.
-      if (records.length > 0) return null
+      if (!canSeedDefaultKeyFromRecords(records, nowMs)) return null
 
       const record: ApiKeyRecord = {
         id: randomUUID(),
@@ -292,8 +323,8 @@ export class ApiKeyJsonStore implements ApiKeyStoreLike {
         keyHash: hashApiKey(rawKey),
         prefix: rawKey.slice(0, 9),
         createdBy: 'system',
-        createdAt: new Date().toISOString(),
-        expiresAt: null,
+        createdAt: now.toISOString(),
+        expiresAt: bootstrapMasterKeyExpiresAt(now.toISOString(), now),
         lastUsedAt: null,
         scopes: [...DEFAULT_BOOTSTRAP_MASTER_KEY_SCOPES],
       }
@@ -477,29 +508,17 @@ export class ApiKeyJsonStore implements ApiKeyStoreLike {
   }
 
   private async readRecords(): Promise<ApiKeyRecord[]> {
-    let contents: string
-    try {
-      contents = await readFile(this.filePath, 'utf8')
-    } catch (error) {
-      if (isObject(error) && 'code' in error && error.code === 'ENOENT') {
-        return []
-      }
-      throw error
-    }
-
-    try {
-      const parsed = JSON.parse(contents) as unknown
-      return toPersistedCollection(parsed).keys
-    } catch {
+    const parsed = await readJsonFileFailClosed(this.filePath)
+    if (parsed === null) {
       return []
     }
+    return toPersistedCollection(parsed).keys
   }
 
   private async writeRecords(records: ApiKeyRecord[]): Promise<void> {
-    await mkdir(path.dirname(this.filePath), { recursive: true })
     const payload: PersistedApiKeyCollection = {
       keys: records,
     }
-    await writeFile(this.filePath, `${JSON.stringify(payload, null, 2)}\n`, 'utf8')
+    await writeJsonFileAtomically(this.filePath, payload, { trailingNewline: true })
   }
 }

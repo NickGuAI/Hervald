@@ -140,6 +140,56 @@ describe('runWorkersCli', () => {
     )
   })
 
+  it('fails dispatch when the API returns malformed success JSON', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response('', {
+        status: 202,
+        headers: { 'content-type': 'application/json' },
+      }),
+    )
+    const stdout = createBufferWriter()
+    const stderr = createBufferWriter()
+
+    const exitCode = await runWorkersCli(
+      ['dispatch', '--session', 'commander-main', '--task', 'Handle edge cases'],
+      {
+        fetchImpl,
+        readConfig: async () => config,
+        stdout: stdout.writer,
+        stderr: stderr.writer,
+      },
+    )
+
+    expect(exitCode).toBe(1)
+    expect(stdout.read()).toBe('')
+    expect(stderr.read()).toContain('Request failed (202): Malformed JSON response from Hammurabi API')
+  })
+
+  it('fails dispatch when the API omits the worker name', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ cwd: '/tmp/worktree-a' }), {
+        status: 202,
+        headers: { 'content-type': 'application/json' },
+      }),
+    )
+    const stdout = createBufferWriter()
+    const stderr = createBufferWriter()
+
+    const exitCode = await runWorkersCli(
+      ['dispatch', '--session', 'commander-main', '--task', 'Handle edge cases'],
+      {
+        fetchImpl,
+        readConfig: async () => config,
+        stdout: stdout.writer,
+        stderr: stderr.writer,
+      },
+    )
+
+    expect(exitCode).toBe(1)
+    expect(stdout.read()).toBe('')
+    expect(stderr.read()).toContain('Worker dispatch response was malformed')
+  })
+
   it('prints keystore recovery guidance on 401 from dispatch', async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(
@@ -167,7 +217,7 @@ describe('runWorkersCli', () => {
     expect(stderr.read()).toContain('.hammurabi.json')
     expect(stderr.read()).toContain('api-keys/keys.json')
     expect(stderr.read()).toContain('HAMMURABI_ALLOW_DEFAULT_MASTER_KEY=1')
-    expect(stderr.read()).toContain('hammurabi onboard')
+    expect(stderr.read()).toContain('restart the Hervald installer')
   })
 
   it('dispatches a worker without an initial task', async () => {
@@ -367,6 +417,28 @@ describe('runWorkersCli', () => {
         }),
       }),
     )
+  })
+
+  it('fails status when the API omits the worker name', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ completed: false, status: 'running' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    )
+    const stdout = createBufferWriter()
+    const stderr = createBufferWriter()
+
+    const exitCode = await runWorkersCli(['status', 'worker-1710000000000'], {
+      fetchImpl,
+      readConfig: async () => config,
+      stdout: stdout.writer,
+      stderr: stderr.writer,
+    })
+
+    expect(exitCode).toBe(1)
+    expect(stdout.read()).toBe('')
+    expect(stderr.read()).toContain('Request succeeded but response was malformed.')
   })
 
   it('renders a tail section when --tail is provided', async () => {

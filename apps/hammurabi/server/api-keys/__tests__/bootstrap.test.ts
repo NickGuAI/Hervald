@@ -18,6 +18,7 @@ async function createTempStoreFilePath(): Promise<string> {
 }
 
 afterEach(async () => {
+  vi.useRealTimers()
   await Promise.all(
     testDirectories.splice(0).map((directory) =>
       rm(directory, { recursive: true, force: true }),
@@ -73,6 +74,8 @@ describe('bootstrapDefaultMasterKey', () => {
     const [record] = await store.listKeys()
     expect(record?.name).toBe('Bootstrap Master Key')
     expect(record?.createdBy).toBe('system')
+    expect(typeof record?.expiresAt).toBe('string')
+    expect(Date.parse(record?.expiresAt ?? '')).toBeGreaterThan(Date.parse(record?.createdAt ?? ''))
     // The bootstrap master key is the founder's full-admin key. It includes
     // agents:admin so the founder can manage their own API keys via the
     // /keys management routes without hand-editing the on-disk store.
@@ -119,5 +122,75 @@ describe('bootstrapDefaultMasterKey', () => {
     const retrievalLogs = warnings.filter((message) => message.includes(seeded ?? ''))
     expect(retrievalLogs).toHaveLength(1)
     expect(retrievalLogs[0]).toContain('fallback, logged once')
+  })
+
+  it('mints a fresh bootstrap key when the only existing key is an expired system bootstrap key', async () => {
+    vi.useFakeTimers()
+    const expiredCreatedAt = new Date('2026-01-01T00:00:00.000Z')
+    const recoveryAt = new Date('2026-01-03T00:00:00.000Z')
+    vi.setSystemTime(recoveryAt)
+
+    const filePath = await createTempStoreFilePath()
+    const bootstrapKeyPath = path.join(path.dirname(filePath), DEFAULT_BOOTSTRAP_KEY_FILENAME)
+    const store = new ApiKeyJsonStore(filePath)
+    const expiredKey = 'expired-bootstrap-key'
+    const replacementBytes = Buffer.from('0011223344556677'.repeat(4), 'hex')
+    const warnings: string[] = []
+    const randomBytesImpl = vi.fn().mockReturnValue(replacementBytes)
+
+    expect(await store.seedDefaultKey(expiredKey, 'Bootstrap Master Key', expiredCreatedAt)).toBe(expiredKey)
+    expect(await store.verifyKey(expiredKey, { now: recoveryAt })).toMatchObject({
+      ok: false,
+      reason: 'expired',
+    })
+
+    const seeded = await bootstrapDefaultMasterKey(store, {
+      env: { [DEFAULT_MASTER_KEY_OPT_IN_ENV]: '1' },
+      keystorePath: filePath,
+      bootstrapKeyPath,
+      logWarn: (message) => warnings.push(message),
+      randomBytesImpl,
+    })
+
+    expect(seeded).toBe(replacementBytes.toString('hex'))
+    expect(randomBytesImpl).toHaveBeenCalledTimes(1)
+    expect(await readFile(bootstrapKeyPath, 'utf8')).toBe(`${seeded}\n`)
+    expect(await store.verifyKey(expiredKey, { now: recoveryAt })).toMatchObject({
+      ok: false,
+      reason: 'expired',
+    })
+    expect(await store.verifyKey(seeded ?? '', { now: recoveryAt })).toMatchObject({ ok: true })
+    expect((await store.listKeys()).map((record) => record.name)).toEqual([
+      'Bootstrap Master Key',
+      'Bootstrap Master Key',
+    ])
+    expect(warnings.join('\n')).toContain('Expired bootstrap-only keystore detected')
+  })
+
+  it('does not seed a bootstrap key when any operator-created key exists', async () => {
+    vi.useFakeTimers()
+    const now = new Date('2026-01-03T00:00:00.000Z')
+    vi.setSystemTime(now)
+
+    const filePath = await createTempStoreFilePath()
+    const store = new ApiKeyJsonStore(filePath)
+    const randomBytesImpl = vi.fn()
+
+    await store.createKey({
+      name: 'Permanent operator key',
+      scopes: ['agents:read'],
+      createdBy: 'operator',
+      now,
+    })
+
+    const seeded = await bootstrapDefaultMasterKey(store, {
+      env: { [DEFAULT_MASTER_KEY_OPT_IN_ENV]: '1' },
+      keystorePath: filePath,
+      randomBytesImpl,
+    })
+
+    expect(seeded).toBeNull()
+    expect(randomBytesImpl).not.toHaveBeenCalled()
+    expect(await store.listKeys()).toHaveLength(1)
   })
 })

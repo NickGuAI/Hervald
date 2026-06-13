@@ -324,4 +324,45 @@ describe('runCommanderCli', () => {
       await rm(cwd, { recursive: true, force: true })
     }
   })
+
+  it('fails commander load when the import route returns malformed success JSON', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'hammurabi-cli-load-malformed-'))
+    const packagePath = join(cwd, 'commander-atlas.json')
+    const stdout = createBufferWriter()
+    const stderr = createBufferWriter()
+    await writeFile(
+      packagePath,
+      JSON.stringify({
+        schemaVersion: 1,
+        commander: { displayName: 'Atlas' },
+        commanderMd: '# Commander',
+        memorySnapshot: { syncRevision: 0, memoryMd: '# Commander Memory\n' },
+        skillBindings: [],
+      }),
+      'utf8',
+    )
+
+    try {
+      const exitCode = await runCommanderCli(['load', packagePath], {
+        fetchImpl: vi.fn(async () => new Response('', {
+          status: 201,
+          headers: { 'content-type': 'application/json' },
+        })) as unknown as typeof fetch,
+        readConfig: async () => ({
+          endpoint: 'https://hervald.gehirn.ai',
+          apiKey: 'hmrb_test_key',
+          agents: ['codex'],
+          configuredAt: '2026-05-01T00:00:00.000Z',
+        }),
+        stdout: stdout.writer,
+        stderr: stderr.writer,
+      })
+
+      expect(exitCode).toBe(1)
+      expect(stdout.read()).toBe('')
+      expect(stderr.read()).toContain('Commander import failed (201): Malformed JSON response from Hammurabi API')
+    } finally {
+      await rm(cwd, { recursive: true, force: true })
+    }
+  })
 })

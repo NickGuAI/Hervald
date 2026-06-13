@@ -7,6 +7,10 @@ import { combinedAuth } from '../../server/middleware/combined-auth.js'
 import type { Auth0TokenVerifier } from '../../server/middleware/auth0.js'
 import type { ApiKeyStoreLike } from '../../server/api-keys/store.js'
 import {
+  InMemoryTransportAuthTicketStore,
+  readTransportAuthTicketFromUrl,
+} from '../../server/auth/transport-tickets.js'
+import {
   createWorkspaceFile,
   createWorkspaceFolder,
   createWorkspaceUploadMiddleware,
@@ -69,6 +73,10 @@ function readTargetId(query: Record<string, unknown>): string {
 
 function readPath(query: Record<string, unknown>): string {
   return typeof query.path === 'string' ? query.path : ''
+}
+
+function workspaceRawTicketSubject(targetId: string, requestedPath: string): string {
+  return `${targetId}\u0000${requestedPath}`
 }
 
 function readBodyPath(body: unknown, key = 'path'): string {
@@ -136,6 +144,58 @@ function readRequiredBodyString(body: unknown, key: string): string {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
+}
+
+function redactWorkspaceLabel(
+  labelValue: unknown,
+  host: string,
+  rootPathValue?: unknown,
+): string {
+  const label = typeof labelValue === 'string' ? labelValue.trim() : ''
+  const rootPath = typeof rootPathValue === 'string' ? rootPathValue.trim() : ''
+  if (label && (!rootPath || !label.includes(rootPath))) {
+    return label
+  }
+  return host === 'local' ? 'Local workspace' : `${host} workspace`
+}
+
+function toPublicWorkspaceSource(
+  source: Record<string, unknown>,
+  rootPathValue?: unknown,
+): Record<string, unknown> {
+  const host = typeof source.host === 'string' && source.host.trim()
+    ? source.host
+    : 'local'
+  const targetId = typeof source.id === 'string' ? source.id : ''
+  return {
+    kind: source.kind,
+    id: targetId,
+    targetId,
+    label: redactWorkspaceLabel(source.label, host, rootPathValue),
+    host,
+    readOnly: source.readOnly === true,
+  }
+}
+
+function toPublicWorkspaceSummary(workspace: Record<string, unknown>): Record<string, unknown> {
+  const source = isRecord(workspace.source)
+    ? workspace.source
+    : {}
+  return {
+    source: toPublicWorkspaceSource(source, workspace.rootPath),
+    readOnly: workspace.readOnly === true,
+    isRemote: workspace.isRemote === true,
+  }
+}
+
+function toPublicWorkspaceResponse<T>(value: T): T {
+  if (!isRecord(value) || !isRecord(value.workspace)) {
+    return value
+  }
+  return {
+    ...value,
+    workspace: toPublicWorkspaceSummary(value.workspace),
+  } as T
 }
 
 function expandLocalAbsoluteWorkspaceReference(requestedPath: string): string | null {
@@ -240,7 +300,7 @@ async function resolveExternalLocalWorkspaceReference(
   return {
     ...selection,
     targetId: target.targetId,
-    targetLabel: target.label,
+    targetLabel: redactWorkspaceLabel(target.label, target.host, retargeted.workspace.rootPath),
     targetReadOnly: target.readOnly,
   }
 }
@@ -269,6 +329,7 @@ function runUploadMiddleware(req: Request, res: Response, destinationPath: strin
 export function createWorkspaceRouter(options: WorkspaceRouterOptions): Router {
   const router = Router()
   const preferencesStore = options.preferencesStore ?? new WorkspacePreferencesStore()
+  const rawTickets = new InMemoryTransportAuthTicketStore()
   const requireReadAccess = combinedAuth({
     apiKeyStore: options.apiKeyStore,
     requiredApiKeyScopes: ['agents:read'],
@@ -285,6 +346,30 @@ export function createWorkspaceRouter(options: WorkspaceRouterOptions): Router {
     clientId: options.auth0ClientId,
     verifyToken: options.verifyAuth0Token,
   })
+  const requireRawReadAccess: typeof requireReadAccess = (req, res, next) => {
+    try {
+      const targetId = readTargetId(req.query)
+      const requestedPath = readRequiredPath(req.query)
+      const url = new URL(req.originalUrl || req.url, `http://${req.headers.host ?? 'localhost'}`)
+      if (
+        rawTickets.consume(
+          readTransportAuthTicketFromUrl(url),
+          'workspace.raw',
+          { subject: workspaceRawTicketSubject(targetId, requestedPath) },
+        )
+      ) {
+        req.user = { id: 'transport-ticket', email: 'system' }
+        req.authMode = 'api-key'
+        next()
+        return
+      }
+    } catch {
+      // Fall through to normal auth. That preserves auth failures for missing
+      // credentials instead of turning them into workspace validation errors.
+    }
+
+    requireReadAccess(req, res, next)
+  }
 
   router.post('/open', requireReadAccess, async (req, res) => {
     try {
@@ -308,8 +393,7 @@ export function createWorkspaceRouter(options: WorkspaceRouterOptions): Router {
         targetId: target.targetId,
         label: target.label,
         host: target.host,
-        isReadOnly: target.readOnly,
-        rootPath: target.rootPath,
+        readOnly: target.readOnly,
       })
     } catch (error) {
       sendWorkspaceError(res, error)
@@ -319,11 +403,11 @@ export function createWorkspaceRouter(options: WorkspaceRouterOptions): Router {
   router.get('/tree', requireReadAccess, async (req, res) => {
     try {
       const resolved = await options.resolver.resolveTarget(readTargetId(req.query))
-      res.json(await listWorkspaceTree(
+      res.json(toPublicWorkspaceResponse(await listWorkspaceTree(
         resolved.workspace,
         readPath(req.query),
         resolved.commandRunner,
-      ))
+      )))
     } catch (error) {
       sendWorkspaceError(res, error)
     }
@@ -332,11 +416,11 @@ export function createWorkspaceRouter(options: WorkspaceRouterOptions): Router {
   router.get('/expand', requireReadAccess, async (req, res) => {
     try {
       const resolved = await options.resolver.resolveTarget(readTargetId(req.query))
-      res.json(await listWorkspaceTree(
+      res.json(toPublicWorkspaceResponse(await listWorkspaceTree(
         resolved.workspace,
         readPath(req.query),
         resolved.commandRunner,
-      ))
+      )))
     } catch (error) {
       sendWorkspaceError(res, error)
     }
@@ -347,17 +431,17 @@ export function createWorkspaceRouter(options: WorkspaceRouterOptions): Router {
       const resolved = await options.resolver.resolveTarget(readTargetId(req.query))
       const requestedPath = readRequiredPath(req.query)
       try {
-        res.json(await resolveWorkspacePathSelection(
+        res.json(toPublicWorkspaceResponse(await resolveWorkspacePathSelection(
           resolved.workspace,
           requestedPath,
           resolved.commandRunner,
-        ))
+        )))
       } catch (error) {
         const retargetedSelection = isWorkspaceRootEscape(error)
           ? await resolveExternalLocalWorkspaceReference(options, resolved, requestedPath)
           : null
         if (retargetedSelection) {
-          res.json(retargetedSelection)
+          res.json(toPublicWorkspaceResponse(retargetedSelection))
           return
         }
         throw error
@@ -370,17 +454,29 @@ export function createWorkspaceRouter(options: WorkspaceRouterOptions): Router {
   router.get('/file', requireReadAccess, async (req, res) => {
     try {
       const resolved = await options.resolver.resolveTarget(readTargetId(req.query))
-      res.json(await readWorkspaceFilePreview(
+      res.json(toPublicWorkspaceResponse(await readWorkspaceFilePreview(
         resolved.workspace,
         readRequiredPath(req.query),
         resolved.commandRunner,
-      ))
+      )))
     } catch (error) {
       sendWorkspaceError(res, error)
     }
   })
 
-  router.get('/raw', requireReadAccess, async (req, res) => {
+  router.post('/raw-ticket', requireReadAccess, (req, res) => {
+    try {
+      const targetId = readRequiredBodyString(req.body, 'targetId')
+      const requestedPath = readRequiredBodyPath(req.body)
+      res.json(rawTickets.issue('workspace.raw', {
+        subject: workspaceRawTicketSubject(targetId, requestedPath),
+      }))
+    } catch (error) {
+      sendWorkspaceError(res, error)
+    }
+  })
+
+  router.get('/raw', requireRawReadAccess, async (req, res) => {
     try {
       const resolved = await options.resolver.resolveTarget(readTargetId(req.query))
       const requestedPath = readRequiredPath(req.query)
@@ -431,7 +527,9 @@ export function createWorkspaceRouter(options: WorkspaceRouterOptions): Router {
   router.get('/git/status', requireReadAccess, async (req, res) => {
     try {
       const resolved = await options.resolver.resolveTarget(readTargetId(req.query))
-      res.json(await readWorkspaceGitStatus(resolved.workspace, resolved.commandRunner))
+      res.json(toPublicWorkspaceResponse(
+        await readWorkspaceGitStatus(resolved.workspace, resolved.commandRunner),
+      ))
     } catch (error) {
       sendWorkspaceError(res, error)
     }
@@ -441,11 +539,11 @@ export function createWorkspaceRouter(options: WorkspaceRouterOptions): Router {
     try {
       const resolved = await options.resolver.resolveTarget(readTargetId(req.query))
       const limit = typeof req.query.limit === 'string' ? Number.parseInt(req.query.limit, 10) : 15
-      res.json(await readWorkspaceGitLog(
+      res.json(toPublicWorkspaceResponse(await readWorkspaceGitLog(
         resolved.workspace,
         Number.isFinite(limit) ? limit : 15,
         resolved.commandRunner,
-      ))
+      )))
     } catch (error) {
       sendWorkspaceError(res, error)
     }
@@ -454,11 +552,11 @@ export function createWorkspaceRouter(options: WorkspaceRouterOptions): Router {
   router.put('/file', requireWriteAccess, async (req, res) => {
     try {
       const resolved = await options.resolver.resolveTarget(readTargetId(req.query))
-      res.json(await saveWorkspaceTextFile(
+      res.json(toPublicWorkspaceResponse(await saveWorkspaceTextFile(
         resolved.workspace,
         readRequiredBodyPath(req.body),
         readContent(req.body),
-      ))
+      )))
     } catch (error) {
       sendWorkspaceError(res, error)
     }
@@ -467,7 +565,9 @@ export function createWorkspaceRouter(options: WorkspaceRouterOptions): Router {
   router.post('/new-file', requireWriteAccess, async (req, res) => {
     try {
       const resolved = await options.resolver.resolveTarget(readTargetId(req.query))
-      res.json(await createWorkspaceFile(resolved.workspace, readRequiredBodyPath(req.body)))
+      res.json(toPublicWorkspaceResponse(
+        await createWorkspaceFile(resolved.workspace, readRequiredBodyPath(req.body)),
+      ))
     } catch (error) {
       sendWorkspaceError(res, error)
     }
@@ -476,7 +576,9 @@ export function createWorkspaceRouter(options: WorkspaceRouterOptions): Router {
   router.post('/new-folder', requireWriteAccess, async (req, res) => {
     try {
       const resolved = await options.resolver.resolveTarget(readTargetId(req.query))
-      res.json(await createWorkspaceFolder(resolved.workspace, readRequiredBodyPath(req.body)))
+      res.json(toPublicWorkspaceResponse(
+        await createWorkspaceFolder(resolved.workspace, readRequiredBodyPath(req.body)),
+      ))
     } catch (error) {
       sendWorkspaceError(res, error)
     }
@@ -485,11 +587,11 @@ export function createWorkspaceRouter(options: WorkspaceRouterOptions): Router {
   router.post('/rename', requireWriteAccess, async (req, res) => {
     try {
       const resolved = await options.resolver.resolveTarget(readTargetId(req.query))
-      res.json(await renameWorkspaceEntry(
+      res.json(toPublicWorkspaceResponse(await renameWorkspaceEntry(
         resolved.workspace,
         readRequiredBodyPath(req.body, 'fromPath'),
         readRequiredBodyPath(req.body, 'toPath'),
-      ))
+      )))
     } catch (error) {
       sendWorkspaceError(res, error)
     }
@@ -498,7 +600,9 @@ export function createWorkspaceRouter(options: WorkspaceRouterOptions): Router {
   router.delete('/path', requireWriteAccess, async (req, res) => {
     try {
       const resolved = await options.resolver.resolveTarget(readTargetId(req.query))
-      res.json(await deleteWorkspaceEntry(resolved.workspace, readRequiredPath(req.query)))
+      res.json(toPublicWorkspaceResponse(
+        await deleteWorkspaceEntry(resolved.workspace, readRequiredPath(req.query)),
+      ))
     } catch (error) {
       sendWorkspaceError(res, error)
     }

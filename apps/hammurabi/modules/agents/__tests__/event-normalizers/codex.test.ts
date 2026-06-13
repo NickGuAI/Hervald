@@ -140,7 +140,6 @@ describe('agents/event-normalizers/codex', () => {
 
     it('covers the Codex item lifecycle families without dropping to raw fallback', () => {
       const itemTypes = [
-        'userMessage',
         'agentMessage',
         'plan',
         'reasoning',
@@ -187,6 +186,31 @@ describe('agents/event-normalizers/codex', () => {
         expect(started.every((envelope) => envelope.ev.type !== 'provider.raw'), `${itemType} started`).toBe(true)
         expect(completed.every((envelope) => envelope.ev.type !== 'provider.raw'), `${itemType} completed`).toBe(true)
       }
+    })
+
+    it('suppresses Codex userMessage item reflections in the live transcript envelope mapper', () => {
+      const userMessageItem = {
+        id: 'user-message-reflection',
+        type: 'userMessage',
+        input: [
+          {
+            type: 'image',
+            url: 'data:image/png;base64,reflected-image',
+          },
+        ],
+      }
+
+      expect(mapCodexToTranscriptEnvelopes('item/started', {
+        threadId: 'thread-user-reflection',
+        turnId: 'turn-user-reflection',
+        item: userMessageItem,
+      })).toEqual([])
+
+      expect(mapCodexToTranscriptEnvelopes('item/completed', {
+        threadId: 'thread-user-reflection',
+        turnId: 'turn-user-reflection',
+        item: userMessageItem,
+      })).toEqual([])
     })
 
     it('normalizes Codex collabAgentToolCall items into Agent tool lifecycle envelopes', () => {

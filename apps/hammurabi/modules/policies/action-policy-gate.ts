@@ -138,6 +138,7 @@ export class ActionPolicyGate {
         ? {
           commanderId: sessionContext.commanderScopeId,
           sessionId: sessionContext.sessionName,
+          cwd: sessionContext.cwd,
           currentSkillId: sessionContext.currentSkillInvocation.skillId,
           currentSkillName: sessionContext.currentSkillInvocation.displayName,
           currentSkillPolicy: getCurrentSkillPolicy(

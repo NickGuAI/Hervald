@@ -2,11 +2,18 @@ import { describe, expect, it } from 'vitest'
 
 import {
   MAX_MESSAGE_IMAGE_B64_LEN,
+  MAX_MESSAGE_IMAGE_BYTES,
   MAX_MESSAGE_IMAGE_COUNT,
+  MAX_MESSAGE_IMAGE_SIZE_MB,
   parseMessageImagesForRequest,
 } from '../message-images'
 
 describe('parseMessageImagesForRequest', () => {
+  it('uses a 30 MB decoded image limit', () => {
+    expect(MAX_MESSAGE_IMAGE_SIZE_MB).toBe(30)
+    expect(MAX_MESSAGE_IMAGE_BYTES).toBe(30 * 1024 * 1024)
+  })
+
   it('accepts supported image payloads', () => {
     const image = { mediaType: 'image/png', data: 'base64-data' }
 
@@ -44,7 +51,7 @@ describe('parseMessageImagesForRequest', () => {
     }])).toEqual({
       ok: false,
       status: 413,
-      error: 'Image is too large. Maximum size is 20 MB per image.',
+      error: 'Image is too large. Maximum size is 30 MB per image.',
     })
   })
 })

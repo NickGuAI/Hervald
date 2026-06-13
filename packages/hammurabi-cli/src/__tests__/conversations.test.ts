@@ -270,7 +270,29 @@ describe('runConversationsCli', () => {
     expect(stderr.read()).toContain('.hammurabi.json')
     expect(stderr.read()).toContain('api-keys/keys.json')
     expect(stderr.read()).toContain('HAMMURABI_ALLOW_DEFAULT_MASTER_KEY=1')
-    expect(stderr.read()).toContain('hammurabi onboard')
+    expect(stderr.read()).toContain('restart the Hervald installer')
+  })
+
+  it('fails list when the API returns malformed success JSON', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response('', {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    )
+    const stdout = createBufferWriter()
+    const stderr = createBufferWriter()
+
+    const exitCode = await runConversationsCli(['list', '--commander', 'cmdr-1'], {
+      fetchImpl,
+      readConfig: async () => config,
+      stdout: stdout.writer,
+      stderr: stderr.writer,
+    })
+
+    expect(exitCode).toBe(1)
+    expect(stdout.read()).toBe('')
+    expect(stderr.read()).toContain('Request failed (200): Malformed JSON response from Hammurabi API')
   })
 
   it('prints usage for invalid arguments', async () => {

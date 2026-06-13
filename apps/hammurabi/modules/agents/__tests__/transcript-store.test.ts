@@ -15,8 +15,10 @@ import { tmpdir } from 'node:os'
 import {
   appendTranscriptEvent,
   readSessionMeta,
+  pruneSessionTranscript,
   readTranscriptTail,
   readTranscriptTailPage,
+  readTranscriptEvents,
   resetTranscriptStoreRoot,
   setTranscriptStoreRoot,
   writeSessionMeta,
@@ -152,5 +154,30 @@ describe('transcript-store', () => {
       hasMore: true,
     })
     expect(readFileMock).not.toHaveBeenCalled()
+  })
+
+  it('prunes persisted transcripts to a bounded recent tail', async () => {
+    const sessionName = 'pruned-session'
+    const events = Array.from({ length: 25 }, (_, index) => ([
+      { type: 'message', marker: `turn-${index + 1}-message` },
+      { type: 'result', marker: `turn-${index + 1}-result` },
+    ])).flat()
+
+    for (const event of events) {
+      await appendTranscriptEvent(sessionName, event)
+    }
+
+    await expect(pruneSessionTranscript(sessionName, {
+      maxTurns: 20,
+      maxEvents: 1000,
+    })).resolves.toEqual({
+      pruned: true,
+      eventsKept: 40,
+    })
+
+    const prunedEvents = await readTranscriptEvents(sessionName)
+    expect(prunedEvents).toHaveLength(40)
+    expect(prunedEvents[0]).toMatchObject({ marker: 'turn-6-message' })
+    expect(prunedEvents.at(-1)).toMatchObject({ marker: 'turn-25-result' })
   })
 })

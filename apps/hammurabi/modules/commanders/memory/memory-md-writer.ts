@@ -1,5 +1,7 @@
-import { readFile, writeFile } from 'node:fs/promises'
+import { readFile } from 'node:fs/promises'
 import path from 'node:path'
+import { writeTextFileAtomically } from '../../json-file.js'
+import { withMemoryMutationLock } from './mutation-lock.js'
 
 export interface MemoryUpdateResult {
   factsAdded: number
@@ -34,11 +36,17 @@ export class MemoryMdWriter {
   }
 
   async updateFacts(facts: string[]): Promise<MemoryUpdateResult> {
+    return withMemoryMutationLock(this.memoryRoot, async () => this.updateFactsLocked(facts))
+  }
+
+  private async updateFactsLocked(facts: string[]): Promise<MemoryUpdateResult> {
     let current = '# Commander Memory\n\n'
     try {
       current = await readFile(this.memoryPath, 'utf-8')
-    } catch {
-      // Use default content.
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+        throw error
+      }
     }
 
     const existingKeys = parseExistingFactKeys(current)
@@ -62,7 +70,7 @@ export class MemoryMdWriter {
     }
 
     const next = `${current.trimEnd()}\n\n${nextFacts.map((fact) => `- ${fact}`).join('\n')}\n`
-    await writeFile(this.memoryPath, next, 'utf-8')
+    await writeTextFileAtomically(this.memoryPath, next)
 
     return {
       factsAdded: nextFacts.length,

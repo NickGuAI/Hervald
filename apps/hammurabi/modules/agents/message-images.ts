@@ -1,11 +1,14 @@
 import type { QueuedMessageImage } from './message-queue.js'
 
 export const ALLOWED_MESSAGE_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp'])
-export const MAX_MESSAGE_IMAGE_B64_LEN = Math.ceil(20 * 1024 * 1024 / 3) * 4
+export const MAX_MESSAGE_IMAGE_SIZE_MB = 30
+export const MAX_MESSAGE_IMAGE_BYTES = MAX_MESSAGE_IMAGE_SIZE_MB * 1024 * 1024
+export const MAX_MESSAGE_IMAGE_B64_LEN = Math.ceil(MAX_MESSAGE_IMAGE_BYTES / 3) * 4
 export const MAX_MESSAGE_IMAGE_COUNT = 5
 export const MAX_MESSAGE_IMAGES_TOTAL_B64_LEN = MAX_MESSAGE_IMAGE_COUNT * MAX_MESSAGE_IMAGE_B64_LEN
-export const MESSAGE_IMAGE_JSON_BODY_LIMIT = '160mb'
-export const MESSAGE_IMAGE_WEBSOCKET_MAX_PAYLOAD_BYTES = 160 * 1024 * 1024
+export const MESSAGE_IMAGE_TRANSPORT_LIMIT_MB = 240
+export const MESSAGE_IMAGE_JSON_BODY_LIMIT = `${MESSAGE_IMAGE_TRANSPORT_LIMIT_MB}mb`
+export const MESSAGE_IMAGE_WEBSOCKET_MAX_PAYLOAD_BYTES = MESSAGE_IMAGE_TRANSPORT_LIMIT_MB * 1024 * 1024
 
 export type MessageImagesParseResult =
   | { ok: true; images: QueuedMessageImage[] }
@@ -38,7 +41,7 @@ export function parseMessageImagesForRequest(value: unknown): MessageImagesParse
       return { ok: false, status: 400, error: 'Each image must include base64 data' }
     }
     if (data.length > MAX_MESSAGE_IMAGE_B64_LEN) {
-      return { ok: false, status: 413, error: 'Image is too large. Maximum size is 20 MB per image.' }
+      return { ok: false, status: 413, error: `Image is too large. Maximum size is ${MAX_MESSAGE_IMAGE_SIZE_MB} MB per image.` }
     }
     totalBase64Length += data.length
     if (totalBase64Length > MAX_MESSAGE_IMAGES_TOTAL_B64_LEN) {

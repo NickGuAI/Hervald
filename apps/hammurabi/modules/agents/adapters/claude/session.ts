@@ -62,6 +62,7 @@ import {
   buildClaudeStreamArgs,
   resolveClaudeApprovalPort,
 } from './helpers.js'
+import { createApprovalBridgeToken } from '../../../policies/approval-bridge-token.js'
 
 export interface ClaudeStreamSessionDeps {
   appendEvent(session: StreamSession, event: StreamJsonEvent): void
@@ -110,11 +111,13 @@ function buildUserEvent(
   images?: QueuedMessageImage[],
   subtype?: string,
   displayText?: string,
+  clientSendId?: string,
 ): StreamJsonEvent {
   return {
     type: 'user',
     ...(subtype ? { subtype } : {}),
     ...(displayText !== undefined ? { displayText: displayText.trim() } : {}),
+    ...(clientSendId ? { clientSendId } : {}),
     message: { role: 'user', content: buildPromptContent(text, images) },
   } as unknown as StreamJsonEvent
 }
@@ -205,6 +208,7 @@ export function createClaudeSessionAdapter(
           text,
           displayText: options?.displayText,
           images: normalizedImages,
+          clientSendId: options?.clientSendId,
           priority: 'normal',
         })
         return { ok: true, delivered: 'queued', message, position }
@@ -220,7 +224,13 @@ export function createClaudeSessionAdapter(
       }
 
       deps.resetActiveTurnState(session)
-      const displayEvent = buildUserEvent(text, normalizedImages, options?.userEventSubtype, options?.displayText)
+      const displayEvent = buildUserEvent(
+        text,
+        normalizedImages,
+        options?.userEventSubtype,
+        options?.displayText,
+        options?.clientSendId,
+      )
       deps.appendEvent(session, displayEvent)
       deps.broadcastEvent(session, displayEvent)
       return { ok: true, delivered: 'live' }
@@ -297,14 +307,17 @@ export function createClaudeStreamSession(
   // Remote Claude needs the EC2 approval daemon reachable on the remote machine
   // for every PreToolUse hook call. SSH does not propagate spawn env by default,
   // so we (a) reverse-tunnel the daemon back via `-R 127.0.0.1:<port>:127.0.0.1:<port>`
-  // and (b) propagate the internal token via `-o SendEnv=HAMMURABI_INTERNAL_TOKEN`.
+  // and (b) propagate the scoped approval token via SSH's environment channel.
   // Token may be undefined when the local server has not minted one — we still
   // open the tunnel so the hook can reach the daemon (auth fails with a clear
   // 401, not a `fetch failed`). See the upstream session-launch issue.
+  const approvalBridgeToken = deps.internalToken
+    ? createApprovalBridgeToken({ internalToken: deps.internalToken, sessionName })
+    : undefined
   const remoteApprovalBridge = remote
     ? {
         port: resolveClaudeApprovalPort(process.env),
-        internalToken: deps.internalToken,
+        approvalBridgeToken,
       }
     : undefined
   const spawnCommand = remote ? 'ssh' : (daemon ? 'sh' : localShellSpawn.command)
@@ -322,7 +335,7 @@ export function createClaudeStreamSession(
   const spawnCwd = remote ? localSpawnCwd : (daemon ? requestedCwd : sessionCwd)
   const spawnImpl = deps.spawnImpl ?? spawn
   const spawnEnv = buildClaudeSpawnEnv(preparedLaunch.env, adaptiveThinking, maxThinkingTokens, {
-    internalToken: deps.internalToken,
+    approvalBridgeToken,
   })
   if (!options.providerAuth?.env?.CLAUDE_CODE_OAUTH_TOKEN) {
     spawnEnv.CLAUDE_CODE_OAUTH_TOKEN = undefined

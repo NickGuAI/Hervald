@@ -94,6 +94,7 @@ export interface ConversationMessageInput {
     mediaType: string
     data: string
   }>
+  clientSendId?: string
   queue?: boolean
   workspaceContext?: WorkspaceContextPayload
 }
@@ -352,6 +353,7 @@ async function postConversationMessage(
       body: JSON.stringify({
         message: input.message,
         ...(input.images && input.images.length > 0 ? { images: input.images } : {}),
+        ...(input.clientSendId ? { clientSendId: input.clientSendId } : {}),
         ...(input.queue ? { queue: true } : {}),
         ...(input.workspaceContext ? { workspaceContext: input.workspaceContext } : {}),
       }),

@@ -1,11 +1,12 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import {
   API_KEY_SCOPES,
   ApiKeyJsonStore,
   DEFAULT_BOOTSTRAP_MASTER_KEY_SCOPES,
+  DEFAULT_BOOTSTRAP_MASTER_KEY_TTL_MS,
   hashApiKey,
 } from '../store'
 
@@ -15,6 +16,15 @@ async function createTempStoreFilePath(): Promise<string> {
   const directory = await mkdtemp(path.join(tmpdir(), 'hammurabi-api-key-store-'))
   testDirectories.push(directory)
   return path.join(directory, 'keys.json')
+}
+
+async function readOnlyCorruptFile(directory: string, baseName: string): Promise<string> {
+  const files = await readdir(directory)
+  const corruptFile = files.find((file) => file.startsWith(`${baseName}.corrupt.`))
+  if (!corruptFile) {
+    throw new Error(`Expected ${baseName} corrupt quarantine file in ${directory}`)
+  }
+  return readFile(path.join(directory, corruptFile), 'utf8')
 }
 
 afterEach(async () => {
@@ -202,23 +212,38 @@ describe('ApiKeyJsonStore', () => {
     expect(idsToRevoke.every((id) => !remainingIds.has(id))).toBe(true)
   })
 
-  it('handles missing and corrupt JSON files gracefully', async () => {
+  it('handles missing JSON files gracefully', async () => {
     const filePath = await createTempStoreFilePath()
     const store = new ApiKeyJsonStore(filePath)
 
     expect(await store.listKeys()).toEqual([])
     expect(await store.hasAnyKeys()).toBe(false)
+  })
 
-    await writeFile(filePath, '{broken json', 'utf8')
+  it('fails closed and quarantines corrupt API key JSON before mutating', async () => {
+    const filePath = await createTempStoreFilePath()
+    const store = new ApiKeyJsonStore(filePath)
 
-    expect(await store.listKeys()).toEqual([])
-    expect(await store.hasAnyKeys()).toBe(false)
-
-    const verification = await store.verifyKey('hmrb_does-not-exist')
-    expect(verification).toEqual({
-      ok: false,
-      reason: 'not_found',
+    await store.createKey({
+      name: 'Existing Key',
+      scopes: ['telemetry:write'],
+      createdBy: 'ops@gehirn.ai',
+      now: new Date('2026-02-16T00:00:00.000Z'),
     })
+    const original = await readFile(filePath, 'utf8')
+    const truncated = original.slice(0, -2)
+    await writeFile(filePath, truncated, 'utf8')
+
+    await expect(store.createKey({
+      name: 'New Key',
+      scopes: ['agents:read'],
+      createdBy: 'ops@gehirn.ai',
+      now: new Date('2026-02-16T00:01:00.000Z'),
+    })).rejects.toThrow(/Corrupt JSON file/)
+
+    await expect(readFile(filePath, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(readOnlyCorruptFile(path.dirname(filePath), 'keys.json'))
+      .resolves.toBe(truncated)
   })
 
   it('handles malformed persisted hashes without throwing during verification', async () => {
@@ -296,12 +321,18 @@ describe('ApiKeyJsonStore', () => {
 
     const [refreshed] = await store.listKeys()
     expect(refreshed?.scopes).toEqual([...DEFAULT_BOOTSTRAP_MASTER_KEY_SCOPES])
+    expect(refreshed?.expiresAt).toBe(
+      new Date(
+        new Date('2026-02-16T00:00:00.000Z').getTime() + DEFAULT_BOOTSTRAP_MASTER_KEY_TTL_MS,
+      ).toISOString(),
+    )
     // Backfill brings the on-disk key up to the current bootstrap shape, which
     // includes agents:admin so the founder can manage their own API keys.
     expect(refreshed?.scopes).toContain('agents:admin')
 
     const verification = await store.verifyKey(rawKey, {
       requiredScopes: ['skills:read'],
+      now: new Date('2026-02-16T12:00:00.000Z'),
     })
     expect(verification).toMatchObject({ ok: true })
   })
@@ -327,5 +358,27 @@ describe('ApiKeyJsonStore', () => {
     // scoped keys, etc.) via the /keys management routes without hand-editing
     // the on-disk store.
     expect(DEFAULT_BOOTSTRAP_MASTER_KEY_SCOPES).toContain('agents:admin')
+  })
+
+  it('seeds bootstrap master keys with a short expiry', async () => {
+    const filePath = await createTempStoreFilePath()
+    const store = new ApiKeyJsonStore(filePath)
+    const rawKey = 'HAMMURABI!'
+    const now = new Date('2026-06-10T00:00:00.000Z')
+
+    expect(await store.seedDefaultKey(rawKey, 'Bootstrap Master Key', now)).toBe(rawKey)
+
+    const [record] = await store.listKeys()
+    expect(record?.expiresAt).toBe(
+      new Date(now.getTime() + DEFAULT_BOOTSTRAP_MASTER_KEY_TTL_MS).toISOString(),
+    )
+    expect(await store.verifyKey(rawKey, {
+      requiredScopes: ['agents:admin'],
+      now: new Date(now.getTime() + DEFAULT_BOOTSTRAP_MASTER_KEY_TTL_MS - 1),
+    })).toMatchObject({ ok: true })
+    expect(await store.verifyKey(rawKey, {
+      requiredScopes: ['agents:admin'],
+      now: new Date(now.getTime() + DEFAULT_BOOTSTRAP_MASTER_KEY_TTL_MS),
+    })).toEqual({ ok: false, reason: 'expired' })
   })
 })

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { fetchJson, getAccessToken } from '@/lib/api'
+import { fetchJson } from '@/lib/api'
 import { getWsBase } from '@/lib/api-base'
 
 interface RealtimeTranscriptionConfig {
@@ -74,6 +74,19 @@ function asNonEmptyString(value: unknown): string | null {
   return normalized.length > 0 ? normalized : null
 }
 
+function getTranscriptionSetupErrorMessage(error: unknown): string {
+  const message =
+    error instanceof Error
+      ? asNonEmptyString(error.message)
+      : typeof error === 'string'
+        ? asNonEmptyString(error)
+        : null
+
+  return message
+    ? `Unable to start realtime transcription: ${message}`
+    : 'Unable to start realtime transcription'
+}
+
 function normalizeLanguage(value: string): string {
   const normalized = value.trim()
   if (!/^[a-z]{2}(?:-[A-Z]{2})?$/.test(normalized)) {
@@ -100,13 +113,22 @@ function browserSupportsOpenAITranscription(): boolean {
   )
 }
 
+async function issueRealtimeTranscriptionTicket(): Promise<string | null> {
+  const response = await fetchJson<{ ticket?: unknown }>('/api/realtime/transcription-ticket', {
+    method: 'POST',
+  })
+  return typeof response.ticket === 'string' && response.ticket.trim().length > 0
+    ? response.ticket.trim()
+    : null
+}
+
 function buildRealtimeTranscriptionUrl(
-  token: string | null,
+  ticket: string | null,
   options: RealtimeTranscriptionUrlOptions,
 ): string {
   const params = new URLSearchParams()
-  if (token) {
-    params.set('access_token', token)
+  if (ticket) {
+    params.set('ticket', ticket)
   }
   params.set('language', normalizeLanguage(options.language))
   const model = asNonEmptyString(options.model)
@@ -282,6 +304,7 @@ export function useOpenAITranscription(
   const [isListening, setIsListening] = useState(false)
   const [transcript, setTranscript] = useState('')
   const sessionRef = useRef<ActiveTranscriptionSession | null>(null)
+  const setupInFlightRef = useRef(false)
   const partialTranscriptRef = useRef('')
   const transcriptSegmentsRef = useRef<string[]>([])
 
@@ -346,27 +369,73 @@ export function useOpenAITranscription(
   }, [])
 
   const startListening = useCallback(() => {
-    if (!isSupported || sessionRef.current) {
+    if (!isSupported || sessionRef.current || setupInFlightRef.current) {
       return
     }
 
+    setTranscript('')
+    partialTranscriptRef.current = ''
+    transcriptSegmentsRef.current = []
+
+    const audioWindow = window as AudioWindow
+    const AudioContextCtor = resolveAudioContextConstructor(audioWindow)
+    if (!AudioContextCtor) {
+      onError?.('AudioContext is not available')
+      return
+    }
+
+    let audioContext: AudioContext
+    let audioContextResume: Promise<void>
+    try {
+      audioContext = new AudioContextCtor()
+      audioContextResume = audioContext.resume()
+    } catch (error) {
+      onError?.(getTranscriptionSetupErrorMessage(error))
+      return
+    }
+
+    setupInFlightRef.current = true
+
     let mediaStream: MediaStream | null = null
-    let audioContext: AudioContext | null = null
     let sourceNode: MediaStreamAudioSourceNode | null = null
     let workletNode: AudioWorkletNode | null = null
     let ws: WebSocket | null = null
 
-    const setup = async () => {
-      setTranscript('')
-      partialTranscriptRef.current = ''
-      transcriptSegmentsRef.current = []
-
-      const audioWindow = window as AudioWindow
-      const AudioContextCtor = resolveAudioContextConstructor(audioWindow)
-      if (!AudioContextCtor) {
-        throw new Error('AudioContext is not available')
+    const cleanupSetupFailure = () => {
+      if (sessionRef.current?.audioContext === audioContext) {
+        sessionRef.current = null
       }
 
+      if (workletNode) {
+        workletNode.port.onmessage = null
+        try {
+          workletNode.disconnect()
+        } catch {
+          // no-op
+        }
+      }
+
+      if (sourceNode) {
+        try {
+          sourceNode.disconnect()
+        } catch {
+          // no-op
+        }
+      }
+
+      if (mediaStream) {
+        for (const track of mediaStream.getTracks()) {
+          track.stop()
+        }
+      }
+
+      void audioContext.close().catch(() => undefined)
+      ws?.close()
+      setIsListening(false)
+    }
+
+    const setup = async () => {
+      await audioContextResume
       mediaStream = await navigator.mediaDevices.getUserMedia({
         audio: {
           channelCount: 1,
@@ -376,11 +445,7 @@ export function useOpenAITranscription(
         },
       })
 
-      audioContext = new AudioContextCtor({ sampleRate: 24000 })
       await audioContext.audioWorklet.addModule('/audio-processor.js')
-      if (audioContext.state === 'suspended') {
-        await audioContext.resume()
-      }
 
       sourceNode = audioContext.createMediaStreamSource(mediaStream)
       workletNode = new AudioWorkletNode(audioContext, 'pcm16-worklet', {
@@ -393,8 +458,8 @@ export function useOpenAITranscription(
       })
       sourceNode.connect(workletNode)
 
-      const token = await getAccessToken()
-      ws = new WebSocket(buildRealtimeTranscriptionUrl(token, {
+      const ticket = await issueRealtimeTranscriptionTicket()
+      ws = new WebSocket(buildRealtimeTranscriptionUrl(ticket, {
         language,
         model,
         prompt,
@@ -525,40 +590,17 @@ export function useOpenAITranscription(
         if (sessionRef.current !== activeSession) {
           return
         }
+        onError?.('Realtime transcription connection failed')
         closeSession({ closeSocket: false })
       }
+
+      setupInFlightRef.current = false
     }
 
-    void setup().catch(() => {
-      if (workletNode) {
-        workletNode.port.onmessage = null
-        try {
-          workletNode.disconnect()
-        } catch {
-          // no-op
-        }
-      }
-
-      if (sourceNode) {
-        try {
-          sourceNode.disconnect()
-        } catch {
-          // no-op
-        }
-      }
-
-      if (mediaStream) {
-        for (const track of mediaStream.getTracks()) {
-          track.stop()
-        }
-      }
-
-      if (audioContext) {
-        void audioContext.close().catch(() => undefined)
-      }
-
-      ws?.close()
-      setIsListening(false)
+    void setup().catch((error) => {
+      setupInFlightRef.current = false
+      cleanupSetupFailure()
+      onError?.(getTranscriptionSetupErrorMessage(error))
     })
   }, [closeSession, finalizeTranscript, isSupported, language, model, onError, onShortAudio, prompt, terms])
 

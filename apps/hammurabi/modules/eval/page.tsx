@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { Activity, FileText, RefreshCw } from 'lucide-react'
 import { fetchJson } from '@/lib/api'
 import {
@@ -9,7 +10,7 @@ import {
   type EvalRunnerMode,
 } from './types'
 
-interface EvalRunsResponse {
+export interface EvalRunsResponse {
   runs: EvalRunManifest[]
   filters?: {
     sources?: string[]
@@ -19,6 +20,25 @@ interface EvalRunsResponse {
 }
 
 type FilterValue = 'all' | string
+
+function readFilterValue(value: string | null): FilterValue {
+  const normalized = value?.trim()
+  return normalized ? normalized : 'all'
+}
+
+function readBenchFilter(value: string | null): FilterValue {
+  const normalized = readFilterValue(value)
+  return normalized === 'all' || EVAL_BENCHES.includes(normalized as EvalBench)
+    ? normalized
+    : 'all'
+}
+
+function readRunnerModeFilter(value: string | null): FilterValue {
+  const normalized = readFilterValue(value)
+  return normalized === 'all' || EVAL_RUNNER_MODES.includes(normalized as EvalRunnerMode)
+    ? normalized
+    : 'all'
+}
 
 function formatPercent(value: number | undefined): string {
   return typeof value === 'number' ? `${Math.round(value * 100)}%` : '-'
@@ -42,9 +62,10 @@ function buildRunsPath(filters: {
 }
 
 export default function EvalPage() {
-  const [source, setSource] = useState<FilterValue>('all')
-  const [bench, setBench] = useState<FilterValue>('all')
-  const [runnerMode, setRunnerMode] = useState<FilterValue>('all')
+  const [searchParams, setSearchParams] = useSearchParams()
+  const source = readFilterValue(searchParams.get('source'))
+  const bench = readBenchFilter(searchParams.get('bench'))
+  const runnerMode = readRunnerModeFilter(searchParams.get('runner_mode'))
   const [data, setData] = useState<EvalRunsResponse>({ runs: [] })
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -53,6 +74,16 @@ export default function EvalPage() {
     () => buildRunsPath({ source, bench, runnerMode }),
     [source, bench, runnerMode],
   )
+
+  function setFilter(key: 'source' | 'bench' | 'runner_mode', value: FilterValue) {
+    const nextParams = new URLSearchParams(searchParams)
+    if (value === 'all') {
+      nextParams.delete(key)
+    } else {
+      nextParams.set(key, value)
+    }
+    setSearchParams(nextParams, { replace: false })
+  }
 
   const loadRuns = async () => {
     setLoading(true)
@@ -71,8 +102,11 @@ export default function EvalPage() {
   }, [path])
 
   const sourceOptions = useMemo(
-    () => [...new Set(data.filters?.sources ?? data.runs.map((run) => run.source))].sort(),
-    [data],
+    () => {
+      const options = data.filters?.sources ?? data.runs.map((run) => run.source)
+      return [...new Set(source === 'all' ? options : [source, ...options])].sort()
+    },
+    [data, source],
   )
 
   return (
@@ -99,7 +133,7 @@ export default function EvalPage() {
           Source
           <select
             value={source}
-            onChange={(event) => setSource(event.target.value)}
+            onChange={(event) => setFilter('source', event.target.value)}
             className="h-10 rounded-md border border-sumi-ink/15 bg-washi-white px-3 text-sm text-sumi-black"
           >
             <option value="all">All sources</option>
@@ -112,7 +146,7 @@ export default function EvalPage() {
           Benchmark
           <select
             value={bench}
-            onChange={(event) => setBench(event.target.value)}
+            onChange={(event) => setFilter('bench', event.target.value)}
             className="h-10 rounded-md border border-sumi-ink/15 bg-washi-white px-3 text-sm text-sumi-black"
           >
             <option value="all">All benchmarks</option>
@@ -125,7 +159,7 @@ export default function EvalPage() {
           Runner
           <select
             value={runnerMode}
-            onChange={(event) => setRunnerMode(event.target.value)}
+            onChange={(event) => setFilter('runner_mode', event.target.value)}
             className="h-10 rounded-md border border-sumi-ink/15 bg-washi-white px-3 text-sm text-sumi-black"
           >
             <option value="all">All runners</option>
@@ -152,8 +186,11 @@ export default function EvalPage() {
             No eval runs match the selected filters.
           </div>
         ) : (
-          <div className="overflow-hidden rounded-md border border-sumi-ink/10 bg-washi-white">
-            <table className="w-full min-w-[860px] border-collapse text-left text-sm">
+          <div
+            className="overflow-x-auto overflow-y-hidden rounded-md border border-sumi-ink/10 bg-washi-white"
+            data-testid="eval-runs-table-scroll"
+          >
+            <table className="w-full min-w-[900px] border-collapse text-left text-sm">
               <thead className="bg-sumi-mist/25 text-xs uppercase tracking-normal text-sumi-diluted">
                 <tr>
                   <th className="px-4 py-3 font-medium">Run</th>

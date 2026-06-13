@@ -6,6 +6,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const mocks = vi.hoisted(() => ({
+  fetchJson: vi.fn(),
   getAccessToken: vi.fn(async () => 'token-123'),
 }))
 
@@ -13,6 +14,7 @@ vi.mock('@/lib/api', async () => {
   const actual = await vi.importActual<typeof import('@/lib/api')>('@/lib/api')
   return {
     ...actual,
+    fetchJson: mocks.fetchJson,
     getAccessToken: mocks.getAccessToken,
   }
 })
@@ -168,6 +170,13 @@ describe('useApprovalNotifications', () => {
     latestSuppressed = false
     originalWebSocket = window.WebSocket
     window.WebSocket = FakeWebSocket as unknown as typeof WebSocket
+    mocks.fetchJson.mockReset()
+    mocks.fetchJson.mockImplementation(async (path: string) => {
+      if (path === '/api/approvals/stream-ticket') {
+        return { ticket: 'approval-ticket-123' }
+      }
+      return {}
+    })
     mocks.getAccessToken.mockReset()
     mocks.getAccessToken.mockResolvedValue('token-123')
   })

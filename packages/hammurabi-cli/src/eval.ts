@@ -1,5 +1,6 @@
 import { formatStoredApiKeyUnauthorizedMessage } from './api-key-recovery.js'
 import { type HammurabiConfig, normalizeEndpoint, readHammurabiConfig } from './config.js'
+import { fetchJson as fetchJsonStrict } from './http-json.js'
 
 interface Writable {
   write(chunk: string): boolean
@@ -104,20 +105,7 @@ async function fetchJson(
   url: string,
   init: RequestInit,
 ): Promise<{ ok: true; data: unknown } | { ok: false; response: Response }> {
-  const response = await fetchImpl(url, init)
-  if (!response.ok) {
-    return { ok: false, response }
-  }
-
-  if (response.status === 204) {
-    return { ok: true, data: null }
-  }
-
-  try {
-    return { ok: true, data: (await response.json()) as unknown }
-  } catch {
-    return { ok: true, data: null }
-  }
+  return fetchJsonStrict(fetchImpl, url, init)
 }
 
 async function readErrorDetail(response: Response): Promise<string | null> {
@@ -480,9 +468,13 @@ async function runBootstrap(
 
   const commanderId = readStringProperty(result.data, ['id', 'commanderId'])
   const sessionId = readStringProperty(result.data, ['sessionId', 'sessionName'])
+  if (!commanderId || !sessionId) {
+    stderr.write('Eval bootstrap response was malformed: expected commander and session ids.\n')
+    return 1
+  }
 
-  stdout.write(`Benchmark commander: ${commanderId ?? 'unknown'}\n`)
-  stdout.write(`Session: ${sessionId ?? 'unknown'}\n`)
+  stdout.write(`Benchmark commander: ${commanderId}\n`)
+  stdout.write(`Session: ${sessionId}\n`)
   return 0
 }
 
@@ -535,7 +527,11 @@ async function runRun(
     return 1
   }
 
-  const returnedSession = readStringProperty(result.data, ['sessionName', 'name']) ?? sessionName
+  const returnedSession = readStringProperty(result.data, ['sessionName', 'name'])
+  if (!returnedSession) {
+    stderr.write('Eval worker dispatch response was malformed: expected a worker session name.\n')
+    return 1
+  }
   stdout.write(`Eval worker dispatched: ${returnedSession}\n`)
   return 0
 }

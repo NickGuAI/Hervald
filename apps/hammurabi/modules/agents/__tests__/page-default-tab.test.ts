@@ -234,4 +234,24 @@ describe('AgentsPage default session tab', () => {
     expect(html).toContain('>Kill<')
     expect(html).toContain('>stale<')
   })
+
+  it('shows fetch errors instead of an empty default tab', () => {
+    mocks.useAgentSessions.mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      error: new Error('agents session API unavailable'),
+      refetch: vi.fn(),
+    })
+    mocks.useMachines.mockReturnValue({
+      data: [],
+      isLoading: false,
+    })
+
+    const html = renderAgentsPageHtml()
+
+    expect(html).toContain('Failed to load agent sessions')
+    expect(html).toContain('agents session API unavailable')
+    expect(html).toContain('Retry')
+    expect(html).not.toContain('No commander sessions')
+  })
 })

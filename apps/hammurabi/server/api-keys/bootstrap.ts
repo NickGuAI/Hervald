@@ -6,12 +6,14 @@ import { defaultApiKeyStorePath } from './store.js'
 
 export const DEFAULT_MASTER_KEY_OPT_IN_ENV = 'HAMMURABI_ALLOW_DEFAULT_MASTER_KEY'
 export const DEFAULT_BOOTSTRAP_KEY_FILENAME = 'bootstrap-key.txt'
+export const BOOTSTRAP_MASTER_KEY_EXPIRES_IN_HOURS = 24
 
 const BOOTSTRAP_MASTER_KEY_BYTES = 32
 
 interface BootstrapApiKeyStoreLike {
   hasAnyKeys(): Promise<boolean>
-  seedDefaultKey(rawKey: string, label?: string): Promise<string | null>
+  canSeedDefaultKey(now?: Date): Promise<boolean>
+  seedDefaultKey(rawKey: string, label?: string, now?: Date): Promise<string | null>
 }
 
 interface BootstrapDefaultMasterKeyOptions {
@@ -44,10 +46,10 @@ async function readBootstrapKeyFile(bootstrapKeyPath: string): Promise<string | 
 }
 
 /**
- * When the keystore is empty, only enable bootstrap master-key recovery if the
- * operator opted in via HAMMURABI_ALLOW_DEFAULT_MASTER_KEY=1. If a prior
- * bootstrap-key file exists, reuse it so the originally printed key keeps
- * working across later restarts; otherwise mint a new one and persist it.
+ * Only enable bootstrap master-key recovery if the operator opted in via
+ * HAMMURABI_ALLOW_DEFAULT_MASTER_KEY=1. Empty keystores can reuse a prior
+ * bootstrap-key file across restarts; expired bootstrap-only keystores mint a
+ * replacement so the expired plaintext secret stays expired.
  */
 export async function bootstrapDefaultMasterKey(
   store: BootstrapApiKeyStoreLike,
@@ -57,31 +59,39 @@ export async function bootstrapDefaultMasterKey(
   const keystorePath = options.keystorePath ?? defaultApiKeyStorePath()
   const bootstrapKeyPath = options.bootstrapKeyPath ?? defaultBootstrapKeyPath(env)
   const logWarn = options.logWarn ?? (() => {})
-
-  if (await store.hasAnyKeys()) {
-    return null
-  }
+  const now = new Date()
+  const hasKeys = await store.hasAnyKeys()
 
   if (env[DEFAULT_MASTER_KEY_OPT_IN_ENV]?.trim() !== '1') {
-    logWarn(`[api-keys] Keystore is empty: ${keystorePath}`)
-    logWarn(
-      `[api-keys] No bootstrap master key was seeded. Restart once with ${DEFAULT_MASTER_KEY_OPT_IN_ENV}=1 to generate a random recovery key.`,
-    )
-    logWarn(
-      '[api-keys] The recovery key will be logged once. After retrieval, run `hammurabi onboard` and rotate or revoke that bootstrap key immediately.',
-    )
+    if (!hasKeys) {
+      logWarn(`[api-keys] Keystore is empty: ${keystorePath}`)
+      logWarn(
+        `[api-keys] No bootstrap master key was seeded. Restart once with ${DEFAULT_MASTER_KEY_OPT_IN_ENV}=1 to generate a random recovery key.`,
+      )
+      logWarn(
+        '[api-keys] The recovery key will be logged once. After retrieval, complete browser onboarding and rotate or revoke that bootstrap key immediately.',
+      )
+    }
     return null
   }
 
-  const restoredFromFile = await readBootstrapKeyFile(bootstrapKeyPath)
+  if (!(await store.canSeedDefaultKey(now))) {
+    return null
+  }
+
+  const restoredFromFile = hasKeys ? null : await readBootstrapKeyFile(bootstrapKeyPath)
   const rawKey = restoredFromFile
     ?? (options.randomBytesImpl ?? randomBytes)(BOOTSTRAP_MASTER_KEY_BYTES).toString('hex')
-  const seeded = await store.seedDefaultKey(rawKey, 'Bootstrap Master Key')
+  const seeded = await store.seedDefaultKey(rawKey, 'Bootstrap Master Key', now)
   if (!seeded) {
     return null
   }
 
-  logWarn(`[api-keys] Empty keystore detected: ${keystorePath}`)
+  logWarn(
+    hasKeys
+      ? `[api-keys] Expired bootstrap-only keystore detected: ${keystorePath}`
+      : `[api-keys] Empty keystore detected: ${keystorePath}`,
+  )
   if (restoredFromFile) {
     try {
       await chmod(bootstrapKeyPath, 0o600)
@@ -107,7 +117,7 @@ export async function bootstrapDefaultMasterKey(
     }
   }
   logWarn(
-    '[api-keys] Sign in once, run `hammurabi onboard` if you want managed telemetry, then rotate or revoke the bootstrap key after recovery.',
+    `[api-keys] Sign in once, complete browser onboarding, then create a permanent API key and rotate or revoke the bootstrap key. It expires after ${BOOTSTRAP_MASTER_KEY_EXPIRES_IN_HOURS} hours.`,
   )
 
   return seeded

@@ -14,6 +14,7 @@ export interface QueuedMessage {
   text: string
   displayText?: string
   images?: QueuedMessageImage[]
+  clientSendId?: string
   priority: QueuedMessagePriority
   queuedAt: string
 }
@@ -77,6 +78,7 @@ export class SessionMessageQueue {
     text: string
     displayText?: string
     images?: QueuedMessageImage[]
+    clientSendId?: string
     priority?: QueuedMessagePriority
     id?: string
     queuedAt?: string
@@ -91,6 +93,7 @@ export class SessionMessageQueue {
       text: input.text,
       ...(input.displayText !== undefined ? { displayText: input.displayText.trim() } : {}),
       images: input.images && input.images.length > 0 ? [...input.images] : undefined,
+      ...(input.clientSendId ? { clientSendId: input.clientSendId } : {}),
       priority,
       queuedAt: input.queuedAt ?? new Date().toISOString(),
     }

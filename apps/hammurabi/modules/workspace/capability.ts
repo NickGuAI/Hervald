@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { realpath } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import path from 'node:path'
 import type { MachineConfig, CommanderSessionsInterface } from '../agents/types.js'
@@ -43,6 +44,7 @@ export interface WorkspaceResolverCapability {
 export interface AuthorizedHostEntry {
   host: string
   rootPathPrefix: string
+  label?: string
   machine?: WorkspaceMachineDescriptor
 }
 
@@ -61,15 +63,14 @@ function normalizeHost(value: string | null | undefined): string {
   return trimmed || LOCAL_MACHINE_ID
 }
 
-function normalizeRootPrefix(value: string | null | undefined): string {
+function normalizeConfiguredRootPrefix(value: string | null | undefined): string | null {
   const trimmed = typeof value === 'string' ? value.trim() : ''
-  return trimmed || '/'
+  return trimmed || null
 }
 
 function isPathWithinPrefix(candidatePath: string, prefix: string): boolean {
-  const normalizedPrefix = normalizeRootPrefix(prefix)
   const pathApi = path.posix.isAbsolute(candidatePath) ? path.posix : path
-  const relative = pathApi.relative(normalizedPrefix, candidatePath)
+  const relative = pathApi.relative(prefix, candidatePath)
   return relative === '' || (!relative.startsWith('..') && !pathApi.isAbsolute(relative))
 }
 
@@ -81,6 +82,41 @@ function createTargetId(): string {
   return `wt-${randomUUID()}`
 }
 
+async function normalizeAuthorizedRootPath(
+  rootPath: string | null | undefined,
+  isRemote: boolean,
+): Promise<string | null> {
+  const configuredRoot = normalizeConfiguredRootPrefix(rootPath)
+  if (!configuredRoot) {
+    return null
+  }
+  if (isRemote) {
+    if (!path.posix.isAbsolute(configuredRoot)) {
+      return null
+    }
+    return path.posix.normalize(configuredRoot)
+  }
+  if (!path.isAbsolute(configuredRoot)) {
+    return null
+  }
+  try {
+    return await realpath(configuredRoot)
+  } catch {
+    return null
+  }
+}
+
+function buildRedactedTargetLabel(host: string, authorized?: Pick<AuthorizedHostEntry, 'label'>): string {
+  const label = authorized?.label?.trim()
+  if (label) {
+    return label
+  }
+  const normalizedHost = normalizeHost(host)
+  return normalizedHost === LOCAL_MACHINE_ID
+    ? 'Local workspace'
+    : `${normalizedHost} workspace`
+}
+
 export class AuthorizedHostRegistry {
   constructor(
     private readonly machines: WorkspaceMachineDescriptorCapability,
@@ -88,34 +124,63 @@ export class AuthorizedHostRegistry {
     private readonly sessionsInterface?: CommanderSessionsInterface,
   ) {}
 
-  async allowed(conversationId?: string | null): Promise<AuthorizedHostEntry[]> {
+  async allowed(
+    conversationId?: string | null,
+    additionalRoots: Array<{ host: string; rootPath: string }> = [],
+  ): Promise<AuthorizedHostEntry[]> {
     const machines = await this.machines.readMachineRegistry()
-    const entries: AuthorizedHostEntry[] = machines.map((machine) => ({
-      host: machine.id,
-      rootPathPrefix: normalizeRootPrefix(machine.cwd),
-      ...(isRemoteMachine(machine) ? { machine: machineToDescriptor(machine) } : {}),
-    }))
+    const entries: AuthorizedHostEntry[] = []
+    for (const machine of machines) {
+      const rootPathPrefix = await normalizeAuthorizedRootPath(machine.cwd, isRemoteMachine(machine))
+      if (!rootPathPrefix) {
+        continue
+      }
+      entries.push({
+        host: machine.id,
+        label: machine.label,
+        rootPathPrefix,
+        ...(isRemoteMachine(machine) ? { machine: machineToDescriptor(machine) } : {}),
+      })
+    }
 
     const normalizedConversationId = typeof conversationId === 'string'
       ? conversationId.trim()
       : ''
     if (normalizedConversationId) {
       const conversation = await this.conversations.get(normalizedConversationId)
-      if (!conversation) {
-        return entries
+      if (conversation) {
+        const liveSession = this.sessionsInterface?.getSession(buildConversationSessionName(conversation))
+        if (liveSession?.cwd) {
+          const host = normalizeHost(liveSession.host)
+          const remoteMachine = machines.find(
+            (machine): machine is MachineConfig & { host: string } => machine.id === host && isRemoteMachine(machine),
+          )
+          const rootPathPrefix = await normalizeAuthorizedRootPath(liveSession.cwd, Boolean(remoteMachine))
+          if (rootPathPrefix) {
+            entries.push({
+              host,
+              label: machines.find((machine) => machine.id === host)?.label,
+              rootPathPrefix,
+              ...(remoteMachine ? { machine: machineToDescriptor(remoteMachine) } : {}),
+            })
+          }
+        }
       }
-      const liveSession = this.sessionsInterface?.getSession(buildConversationSessionName(conversation))
-      if (liveSession) {
-        const host = normalizeHost(liveSession.host)
-        const remoteMachine = machines.find(
-          (machine): machine is MachineConfig & { host: string } => machine.id === host && isRemoteMachine(machine),
-        )
-        entries.push({
-          host,
-          rootPathPrefix: normalizeRootPrefix(liveSession.cwd),
-          ...(remoteMachine ? { machine: machineToDescriptor(remoteMachine) } : {}),
-        })
+    }
+
+    for (const root of additionalRoots) {
+      const host = normalizeHost(root.host)
+      const machine = machines.find((entry) => entry.id === host)
+      const rootPathPrefix = await normalizeAuthorizedRootPath(root.rootPath, isRemoteMachine(machine))
+      if (!rootPathPrefix) {
+        continue
       }
+      entries.push({
+        host,
+        label: machine?.label,
+        rootPathPrefix,
+        ...(isRemoteMachine(machine) ? { machine: machineToDescriptor(machine) } : {}),
+      })
     }
 
     return entries
@@ -125,15 +190,25 @@ export class AuthorizedHostRegistry {
     conversationId: string | null | undefined,
     host: string,
     rootPath: string,
-  ): Promise<AuthorizedHostEntry> {
-    const allowed = await this.allowed(conversationId)
+    additionalRoots: Array<{ host: string; rootPath: string }> = [],
+  ): Promise<AuthorizedHostEntry & { rootPath: string }> {
+    const machines = await this.machines.readMachineRegistry()
+    const machine = machines.find((entry) => entry.id === normalizeHost(host))
+    const resolvedRootPath = await normalizeAuthorizedRootPath(rootPath, isRemoteMachine(machine))
+    if (!resolvedRootPath) {
+      throw new WorkspaceError(404, 'Workspace root does not exist')
+    }
+    const allowed = await this.allowed(conversationId, additionalRoots)
     const match = allowed.find((entry) => (
-      sameHost(entry.host, host) && isPathWithinPrefix(rootPath, entry.rootPathPrefix)
+      sameHost(entry.host, host) && isPathWithinPrefix(resolvedRootPath, entry.rootPathPrefix)
     ))
     if (!match) {
       throw new WorkspaceError(403, 'Workspace host is not authorized for this conversation')
     }
-    return match
+    return {
+      ...match,
+      rootPath: resolvedRootPath,
+    }
   }
 }
 
@@ -174,21 +249,29 @@ export class WorkspaceResolver implements WorkspaceResolverCapability {
 
     const existing = await this.targetStore.getByKey(sourceKey)
     if (existing && !input.hostHint && !input.pathHint) {
-      return existing
+      return this.withRedactedLabel(existing)
     }
 
     const fallback = await this.resolveFallbackTarget(input)
     const host = normalizeHost(input.hostHint ?? fallback.host)
     const rootPath = this.resolveOpenRootPath(input.pathHint, fallback.rootPath)
-    const authorized = await this.hostRegistry.authorize(authorizationConversationId || null, host, rootPath)
+    const additionalRoots = fallback.authorizesRoot
+      ? [{ host: fallback.host, rootPath: fallback.rootPath }]
+      : []
+    const authorized = await this.hostRegistry.authorize(
+      authorizationConversationId || null,
+      host,
+      rootPath,
+      additionalRoots,
+    )
     const target: WorkspaceTargetDescriptor = {
       targetId: existing?.targetId ?? createTargetId(),
       ...(sourceContext.conversationId ? { conversationId: sourceContext.conversationId } : {}),
       ...(sourceContext.sessionName ? { sessionName: sourceContext.sessionName } : {}),
       ...(sourceContext.commanderId ? { commanderId: sourceContext.commanderId } : {}),
-      label: `${host}:${rootPath}`,
+      label: buildRedactedTargetLabel(host, authorized),
       host,
-      rootPath,
+      rootPath: authorized.rootPath,
       readOnly: false,
       ...(authorized.machine ? { machine: authorized.machine } : {}),
     }
@@ -205,34 +288,51 @@ export class WorkspaceResolver implements WorkspaceResolverCapability {
     if (!target) {
       throw new WorkspaceError(404, 'Workspace target not found')
     }
+    const displayTarget = this.withRedactedLabel(target)
 
-    const runner = target.machine ? createWorkspaceSshCommandRunner({
-      id: target.machine.id,
-      label: target.machine.label,
-      host: target.machine.host,
-      user: target.machine.user,
-      port: target.machine.port,
+    const runner = displayTarget.machine ? createWorkspaceSshCommandRunner({
+      id: displayTarget.machine.id,
+      label: displayTarget.machine.label,
+      host: displayTarget.machine.host,
+      user: displayTarget.machine.user,
+      port: displayTarget.machine.port,
     }) : undefined
     const workspace = await resolveWorkspaceRoot({
-      rootPath: target.rootPath,
+      rootPath: displayTarget.rootPath,
       source: {
         kind: 'target',
-        id: target.targetId,
-        label: target.label,
-        host: target.host === LOCAL_MACHINE_ID ? undefined : target.host,
-        readOnly: target.readOnly,
+        id: displayTarget.targetId,
+        label: displayTarget.label,
+        host: displayTarget.host === LOCAL_MACHINE_ID ? undefined : displayTarget.host,
+        readOnly: displayTarget.readOnly,
       },
-      machine: target.machine,
+      machine: displayTarget.machine,
     }, runner)
 
     return {
-      target,
+      target: displayTarget,
       workspace,
       ...(runner ? { commandRunner: runner } : {}),
-      host: target.host,
+      host: displayTarget.host,
       rootPath: workspace.rootPath,
-      ...(target.machine ? { machine: target.machine } : {}),
+      ...(displayTarget.machine ? { machine: displayTarget.machine } : {}),
       readOnly: workspace.readOnly,
+    }
+  }
+
+  private withRedactedLabel(target: WorkspaceTargetDescriptor): WorkspaceTargetDescriptor {
+    const label = target.label.trim()
+    if (label && !label.includes(target.rootPath)) {
+      return {
+        ...target,
+        label,
+      }
+    }
+    return {
+      ...target,
+      label: buildRedactedTargetLabel(target.host, {
+        label: target.machine?.label,
+      }),
     }
   }
 
@@ -320,7 +420,7 @@ export class WorkspaceResolver implements WorkspaceResolverCapability {
     commanderId?: string | null
     hostHint?: string | null
     pathHint?: string | null
-  }): Promise<{ host: string; rootPath: string }> {
+  }): Promise<{ host: string; rootPath: string; authorizesRoot: boolean }> {
     const sessionName = typeof input.sessionName === 'string' ? input.sessionName.trim() : ''
     if (sessionName) {
       const liveSession = this.options.sessionsInterface?.getSession(sessionName)
@@ -330,6 +430,7 @@ export class WorkspaceResolver implements WorkspaceResolverCapability {
       return {
         host: normalizeHost(liveSession.host),
         rootPath: liveSession.cwd,
+        authorizesRoot: true,
       }
     }
 
@@ -342,6 +443,7 @@ export class WorkspaceResolver implements WorkspaceResolverCapability {
       return {
         host: normalizeHost(commander.remoteOrigin?.machineId),
         rootPath: commander.cwd,
+        authorizesRoot: true,
       }
     }
 
@@ -353,7 +455,8 @@ export class WorkspaceResolver implements WorkspaceResolverCapability {
       const machine = machines.find((entry) => entry.id === host)
       return {
         host,
-        rootPath: normalizeRootPrefix(machine?.cwd) || homedir(),
+        rootPath: normalizeConfiguredRootPrefix(machine?.cwd) ?? homedir(),
+        authorizesRoot: false,
       }
     }
 
@@ -373,6 +476,7 @@ export class WorkspaceResolver implements WorkspaceResolverCapability {
       return {
         host: normalizeHost(liveSession.host),
         rootPath: liveSession.cwd,
+        authorizesRoot: true,
       }
     }
 
@@ -381,12 +485,14 @@ export class WorkspaceResolver implements WorkspaceResolverCapability {
       return {
         host: normalizeHost(commander.remoteOrigin?.machineId),
         rootPath: commander.cwd,
+        authorizesRoot: true,
       }
     }
 
     return {
       host: LOCAL_MACHINE_ID,
       rootPath: homedir(),
+      authorizesRoot: true,
     }
   }
 

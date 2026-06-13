@@ -24,7 +24,7 @@ export function formatStoredApiKeyUnauthorizedMessage(input: {
 
   return [
     `Stored API key in ${configPath} was rejected by ${endpoint} (401 Unauthorized).`,
-    `The Hammurabi keystore is likely empty or rotated: ${keystorePath}.`,
-    `On the server host, restore that file or restart once with ${DEFAULT_MASTER_KEY_OPT_IN_ENV}=1 to print a new bootstrap key, then run \`hammurabi onboard\` again.`,
+    `The Hervald keystore is likely empty or rotated: ${keystorePath}.`,
+    `On the server host, restore that file or restart the Hervald installer once with ${DEFAULT_MASTER_KEY_OPT_IN_ENV}=1 so it can print a new bootstrap key and refresh the local CLI config.`,
   ].join(' ')
 }

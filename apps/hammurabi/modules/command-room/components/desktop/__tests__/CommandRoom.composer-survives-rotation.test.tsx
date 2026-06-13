@@ -45,6 +45,7 @@ vi.mock('@/hooks/use-agents', () => ({
   triggerPreKillDebrief: vi.fn(),
   useAgentSessions: mocks.useAgentSessions,
   useMachines: mocks.useMachines,
+  useDirectories: vi.fn(() => ({ data: undefined, error: null, isLoading: false })),
   verifyTailscaleHostname: vi.fn(),
 }))
 

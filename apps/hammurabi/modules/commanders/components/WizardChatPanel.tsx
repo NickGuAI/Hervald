@@ -7,10 +7,10 @@ import {
 import {
   fetchJson,
   fetchVoid,
-  getAccessToken,
   isAuthRecoveryRequiredError,
 } from '../../../src/lib/api'
 import { getWsBase } from '../../../src/lib/api-base'
+import { issueAgentSessionStreamTicket } from '../../../src/hooks/use-agent-session-stream'
 import Transcript from '../../agents/components/Transcript'
 import type { MsgItem } from '../../agents/messages/model'
 import { createReconnectBackoff, shouldReconnectWebSocketClose } from '../../agents/ws-reconnect'
@@ -126,10 +126,10 @@ function parseIncomingLines(data: unknown): WizardLine[] {
   return eventToLines(parsed)
 }
 
-function wizardWsUrl(sessionName: string, token: string | null): string {
+function wizardWsUrl(sessionName: string, ticket: string | null): string {
   const query = new URLSearchParams()
-  if (token) {
-    query.set('access_token', token)
+  if (ticket) {
+    query.set('ticket', ticket)
   }
 
   const wsBase = getWsBase()
@@ -353,9 +353,9 @@ export function WizardChatPanel({
     const connect = async () => {
       clearReconnectTimer()
       setConnectionStatus('connecting')
-      let token: string | null
+      let ticket: string | null
       try {
-        token = await getAccessToken()
+        ticket = await issueAgentSessionStreamTicket()
       } catch (error) {
         if (isAuthRecoveryRequiredError(error)) {
           if (!disposed) {
@@ -369,7 +369,7 @@ export function WizardChatPanel({
         return
       }
 
-      const nextSocket = new WebSocket(wizardWsUrl(sessionName, token))
+      const nextSocket = new WebSocket(wizardWsUrl(sessionName, ticket))
       nextSocket.binaryType = 'arraybuffer'
       socket = nextSocket
 

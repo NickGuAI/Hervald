@@ -4,7 +4,7 @@ import { createServer, type Server } from 'node:http'
 import { EventEmitter } from 'node:events'
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, resolve, join } from 'node:path'
 import { WebSocket, WebSocketServer } from 'ws'
 import type { ApiKeyStoreLike } from '../../../server/api-keys/store'
 
@@ -44,6 +44,8 @@ import {
   writeSessionMeta as writeSessionMetaToStore,
 } from '../transcript-store'
 import { CommanderSessionStore, type CommanderSession } from '../../commanders/store'
+import { ConversationStore } from '../../commanders/conversation-store'
+import { buildCommanderSessionSeed } from '../../commanders/memory/module'
 import { spawn as spawnFn } from 'node:child_process'
 
 // Typed reference to the mocked spawn function
@@ -307,11 +309,24 @@ async function startServer(options: Partial<AgentsRouterOptions> = {}): Promise<
   const defaultProviderAuth = options.providerAuthStore
     ? null
     : await createDefaultProviderAuthStore()
+  const commanderSessionStore = options.commanderSessionStore
+    ?? new CommanderSessionStore(options.commanderSessionStorePath ?? '/tmp/nonexistent-commander-sessions-test.json')
+  const commanderStoreDataDir = options.commanderSessionStorePath
+    ? dirname(resolve(options.commanderSessionStorePath))
+    : options.commanderDataDir
+  const commanderConversationStore = options.commanderConversationStore
+    ?? (commanderStoreDataDir ? new ConversationStore(commanderStoreDataDir) : undefined)
+  const commanderSessionSeedBuilder: AgentsRouterOptions['buildCommanderSessionSeed'] = options.buildCommanderSessionSeed
+    ?? (commanderStoreDataDir
+      ? ((params) => buildCommanderSessionSeed({ ...params, memoryBasePath: commanderStoreDataDir }))
+      : undefined)
 
   const agents = createAgentsRouter({
     apiKeyStore: createTestApiKeyStore(),
     autoResumeSessions: false,
-    commanderSessionStorePath: '/tmp/nonexistent-commander-sessions-test.json',
+    commanderSessionStore,
+    commanderConversationStore,
+    buildCommanderSessionSeed: commanderSessionSeedBuilder,
     internalToken: INTERNAL_TOKEN,
     getActionPolicyGate: options.getActionPolicyGate ?? (() => actionPolicyGate),
     providerAuthStore: defaultProviderAuth?.store,
@@ -378,8 +393,10 @@ function connectWs(
   apiKey = 'test-key',
 ): Promise<WebSocket> {
   const wsUrl = baseUrl.replace('http://', 'ws://') +
-    `/api/agents/sessions/${encodeURIComponent(sessionName)}/ws?api_key=${apiKey}`
-  const ws = new WebSocket(wsUrl)
+    `/api/agents/sessions/${encodeURIComponent(sessionName)}/ws`
+  const ws = new WebSocket(wsUrl, {
+    headers: { 'x-hammurabi-api-key': apiKey },
+  })
   return new Promise((resolve, reject) => {
     let settled = false
     const finish = (handler: () => void) => {
@@ -414,7 +431,7 @@ async function connectWsWithReplay(
   ws: WebSocket
   replay: {
     type: 'replay'
-    events: Array<Record<string, unknown>>
+    events?: Array<Record<string, unknown>>
     envelopes?: Array<Record<string, unknown>>
     messages?: Array<Record<string, unknown>>
     projection?: Record<string, unknown>
@@ -423,12 +440,14 @@ async function connectWsWithReplay(
   }
 }> {
   const wsUrl = baseUrl.replace('http://', 'ws://') +
-    `/api/agents/sessions/${encodeURIComponent(sessionName)}/ws?api_key=${apiKey}`
-  const ws = new WebSocket(wsUrl)
+    `/api/agents/sessions/${encodeURIComponent(sessionName)}/ws`
+  const ws = new WebSocket(wsUrl, {
+    headers: { 'x-hammurabi-api-key': apiKey },
+  })
 
   const replayPromise = new Promise<{
     type: 'replay'
-    events: Array<Record<string, unknown>>
+    events?: Array<Record<string, unknown>>
     envelopes?: Array<Record<string, unknown>>
     messages?: Array<Record<string, unknown>>
     projection?: Record<string, unknown>
@@ -445,7 +464,7 @@ async function connectWsWithReplay(
         more?: boolean
         usage?: { inputTokens: number; outputTokens: number; costUsd: number }
       }
-      if (parsed.type === 'replay' && Array.isArray(parsed.events)) {
+      if (parsed.type === 'replay' && parsed.projection) {
         resolve({
           type: 'replay',
           events: parsed.events,

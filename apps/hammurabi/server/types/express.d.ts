@@ -5,6 +5,7 @@ declare global {
     interface Request {
       user?: AuthUser
       authMode?: 'auth0' | 'api-key'
+      approvalBridgeSessionName?: string
     }
   }
 }

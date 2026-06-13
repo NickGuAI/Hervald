@@ -2,6 +2,8 @@ import { useMemo, useState } from 'react'
 import { CalendarClock, ChevronDown, Clock3, Play, Plus, Trash2 } from 'lucide-react'
 import { cn, formatCost, timeAgo } from '@/lib/utils'
 import { useMachines } from '@/hooks/use-agents'
+import { useProviderRegistry } from '@/hooks/use-providers'
+import type { AgentType, ProviderModelOption, ProviderRegistryEntry } from '@/types'
 import { ModalFormContainer } from '../../components/ModalFormContainer'
 import {
   useAutomationHistory,
@@ -38,6 +40,13 @@ const FILTER_OPTIONS: Array<{ value: AutomationTriggerFilter; label: string }> =
   { value: 'quest', label: 'Quest' },
   { value: 'manual', label: 'Manual' },
 ]
+
+interface AutomationProviderOption {
+  id: AgentType
+  label: string
+  availableModels: ProviderModelOption[]
+  defaults: ProviderRegistryEntry['defaults']
+}
 
 function toAutomationScope(scope: AutomationPanelScope): AutomationScope {
   if (scope.kind === 'global') {
@@ -142,6 +151,45 @@ function filterItems(items: AutomationListItem[], filter: AutomationTriggerFilte
   return items.filter((item) => item.trigger === filter)
 }
 
+function resolveDefaultModel(provider: AutomationProviderOption | null | undefined): string | null {
+  return provider?.defaults.model
+    ?? provider?.availableModels.find((model) => model.default)?.id
+    ?? null
+}
+
+function providerLabel(provider: AutomationProviderOption | null | undefined, providerId: string): string {
+  return provider?.label ?? providerId
+}
+
+function listAutomationProviders(
+  providers: readonly ProviderRegistryEntry[],
+  currentProviderId: AgentType,
+): AutomationProviderOption[] {
+  const options = providers
+    .filter((provider) => provider.capabilities.supportsAutomation)
+    .map((provider) => ({
+      id: provider.id,
+      label: provider.label,
+      availableModels: provider.availableModels,
+      defaults: provider.defaults,
+    }))
+
+  if (!options.some((provider) => provider.id === currentProviderId)) {
+    options.push({
+      id: currentProviderId,
+      label: currentProviderId,
+      availableModels: [],
+      defaults: {
+        transportType: 'stream',
+        permissionMode: 'default',
+        model: null,
+      },
+    })
+  }
+
+  return options
+}
+
 function emptyMessage(scope: AutomationPanelScope, filter: AutomationTriggerFilter): string {
   if (filter === 'quest') {
     return 'No quest-triggered automations yet.'
@@ -164,9 +212,16 @@ function AutomationCard({
 }) {
   const [expanded, setExpanded] = useState(false)
   const [newObservation, setNewObservation] = useState('')
+  const { data: providers = [] } = useProviderRegistry()
   const historyState = useAutomationHistory(expanded ? automation.id : null)
   const observations = automation.observations ?? []
   const category = classifyAutomation(automation)
+  const providerOptions = useMemo(
+    () => listAutomationProviders(providers, automation.agentType),
+    [automation.agentType, providers],
+  )
+  const currentProvider = providerOptions.find((provider) => provider.id === automation.agentType) ?? null
+  const modelOptions = currentProvider?.availableModels ?? []
   const actionsDisabled =
     (automationState.updateAutomationPending && automationState.updateAutomationId === automation.id)
     || (automationState.deleteAutomationPending && automationState.deleteAutomationId === automation.id)
@@ -188,6 +243,20 @@ function AutomationCard({
     const next = observations.filter((_, observationIndex) => observationIndex !== index)
     await automationState.updateAutomation(automation.id, {
       observations: next,
+    })
+  }
+
+  async function handleProviderChange(providerId: AgentType): Promise<void> {
+    const nextProvider = providerOptions.find((provider) => provider.id === providerId) ?? null
+    await automationState.updateAutomation(automation.id, {
+      agentType: providerId,
+      model: resolveDefaultModel(nextProvider),
+    })
+  }
+
+  async function handleModelChange(model: string): Promise<void> {
+    await automationState.updateAutomation(automation.id, {
+      model: model.trim() || null,
     })
   }
 
@@ -244,12 +313,49 @@ function AutomationCard({
             </p>
           </details>
 
-          <div className="flex flex-wrap items-center gap-2 text-xs text-sumi-diluted">
-            <span>{automation.agentType}</span>
-            <span>{automation.permissionMode}</span>
-            {automation.model ? <span>{automation.model}</span> : null}
-            {automation.workDir ? <span>{automation.workDir}</span> : null}
-            {automation.machine ? <span>{automation.machine}</span> : null}
+          <div>
+            <p className="section-title">Runtime</p>
+            <div className="mt-2 grid gap-2 sm:grid-cols-2">
+              <label className="block">
+                <span className="text-whisper uppercase tracking-wide text-sumi-diluted">Provider</span>
+                <select
+                  value={automation.agentType}
+                  disabled={actionsDisabled || providerOptions.length === 0}
+                  onChange={(event) => void handleProviderChange(event.target.value)}
+                  className="mt-1 w-full rounded-lg border border-ink-border bg-washi-white px-3 py-2 text-[16px] md:text-sm focus:outline-none focus:border-ink-border-hover disabled:opacity-60"
+                >
+                  {providerOptions.map((provider) => (
+                    <option key={provider.id} value={provider.id}>
+                      {providerLabel(provider, provider.id)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="block">
+                <span className="text-whisper uppercase tracking-wide text-sumi-diluted">Model</span>
+                <select
+                  value={automation.model ?? ''}
+                  disabled={actionsDisabled}
+                  onChange={(event) => void handleModelChange(event.target.value)}
+                  className="mt-1 w-full rounded-lg border border-ink-border bg-washi-white px-3 py-2 text-[16px] md:text-sm focus:outline-none focus:border-ink-border-hover disabled:opacity-60"
+                >
+                  <option value="">Adapter default</option>
+                  {modelOptions.map((model) => (
+                    <option key={model.id} value={model.id}>
+                      {model.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+            <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-sumi-diluted">
+              <span>{providerLabel(currentProvider, automation.agentType)}</span>
+              <span>{automation.model || resolveDefaultModel(currentProvider) || 'adapter default'}</span>
+              {automation.agentType === 'codex' ? <span>x-high reasoning</span> : null}
+              <span>{automation.permissionMode}</span>
+              {automation.workDir ? <span>{automation.workDir}</span> : null}
+              {automation.machine ? <span>{automation.machine}</span> : null}
+            </div>
           </div>
 
           <div>

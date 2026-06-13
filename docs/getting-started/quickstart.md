@@ -14,13 +14,16 @@ curl -fsSL https://hervald.gehirn.ai/install.sh | bash
 
 The installer prepares a hermetic Node/pnpm toolchain, clones the public
 Hervald repo, writes the local env file, installs dependencies, builds the app,
-starts the shell once, creates a bootstrap API key, and prints the local sign-in
-URL.
+starts the shell once, creates a 24-hour bootstrap API key, and prints the local
+sign-in URL.
 
 Verification:
 
 - The command exits successfully.
 - The output includes a local URL and bootstrap key or sign-in instructions.
+  Treat the bootstrap key as temporary recovery material: use it for first
+  sign-in, create a permanent API key in Settings, then rotate or revoke the
+  bootstrap key before its 24-hour expiry.
 - The Hervald process exposes `/api/health`.
 
 ## 2. Open Hervald
@@ -64,7 +67,7 @@ original provider tool, then refresh Hervald provider status.
 Common paths:
 
 ```bash
-codex auth status
+codex login status
 claude auth status
 gemini auth status
 opencode auth status
@@ -118,10 +121,10 @@ Verification:
 |---|---|---|
 | Installer cannot run | `git`, `curl`, `tar`, outbound HTTPS | Install the missing tool and rerun the installer. |
 | Browser cannot reach app | `/api/health`, process logs, port `20001` | Restart Hervald and confirm the printed URL. |
-| API key rejected | local browser storage, latest installer output | Clear the stale key and use the current bootstrap key. |
+| API key rejected | local browser storage, latest installer output | Clear the stale key and use a current bootstrap key, or create a permanent key from Settings before the bootstrap key expires. |
 | Provider unavailable | native provider auth status on that host | Run the provider login command on the provider host. |
 | Machine unavailable | ordinary SSH, Tailscale status, machine registry | Fix SSH/Tailscale first, then bootstrap the machine. |
-| Docs link missing | Docs index and `llms.txt` | Sync the public docs tree before publishing. |
+| Docs link missing | Docs index, `llms.txt`, `docs:check` | Sync the public docs tree and run the docs guard before publishing. |
 
 Next: read [Commanders](../concepts/commanders.md), [Command Room](../concepts/command-room.md),
 and [Workspace](../operate/workspace.md).

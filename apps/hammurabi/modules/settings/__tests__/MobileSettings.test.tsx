@@ -76,6 +76,12 @@ function renderMobileSettings(initialEntry = '/command-room/settings'): string {
   )
 }
 
+function extractClassNameForAriaLabel(html: string, ariaLabel: string): string {
+  const escapedLabel = ariaLabel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const match = new RegExp(`<[^>]+aria-label="${escapedLabel}"[^>]*class="([^"]*)"|<[^>]+class="([^"]*)"[^>]*aria-label="${escapedLabel}"`).exec(html)
+  return match?.[1] ?? match?.[2] ?? ''
+}
+
 describe('MobileSettings', () => {
   beforeEach(() => {
     mocks.useAuth.mockReset()
@@ -163,6 +169,18 @@ describe('MobileSettings', () => {
     expect(html).not.toContain('/api-keys#appearance')
     expect(html).not.toContain('/api-keys#about')
     expect(html).not.toContain('/policies#notifications')
+  })
+
+  it('keeps the settings detail back control at 44px with an accessible name', () => {
+    const html = renderMobileSettings('/command-room/settings/appearance')
+    const className = extractClassNameForAriaLabel(html, 'Back to settings')
+    const classes = className.split(/\s+/)
+
+    expect(html).toContain('aria-label="Back to settings"')
+    expect(classes).toContain('h-11')
+    expect(classes).toContain('w-11')
+    expect(classes).not.toContain('h-8')
+    expect(classes).not.toContain('w-8')
   })
 
   it('renders telemetry from the backend summary hook on the mobile telemetry panel', () => {

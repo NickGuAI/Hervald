@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { getAccessToken, isAuthRecoveryRequiredError } from '@/lib/api'
+import { isAuthRecoveryRequiredError } from '@/lib/api'
 import { getWsBase } from '@/lib/api-base'
+import { issueAgentSessionStreamTicket } from '@/hooks/use-agent-session-stream'
 import type { AskQuestion, StreamEvent } from '@/types'
 
 export interface PendingAsk {
@@ -209,9 +210,9 @@ export function useSessionWs({
     setPendingAsks([])
 
     const connect = async () => {
-      let token: string | null
+      let ticket: string | null
       try {
-        token = await getAccessToken()
+        ticket = await issueAgentSessionStreamTicket()
       } catch (error) {
         if (isAuthRecoveryRequiredError(error)) {
           if (!disposed) {
@@ -226,8 +227,8 @@ export function useSessionWs({
       }
 
       const params = new URLSearchParams()
-      if (token) {
-        params.set('access_token', token)
+      if (ticket) {
+        params.set('ticket', ticket)
       }
 
       const wsBase = getWsBase()

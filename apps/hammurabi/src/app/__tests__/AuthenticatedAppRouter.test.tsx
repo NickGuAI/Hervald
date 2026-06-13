@@ -24,6 +24,10 @@ vi.mock('@/surfaces/desktop/Shell', () => ({
   ),
 }))
 
+vi.mock('../use-shell-counts', () => ({
+  useShellCounts: () => ({ running: 0, stale: 0, exited: 0, pending: 0 }),
+}))
+
 import { AuthenticatedAppRouter } from '../AuthenticatedAppRouter'
 
 let root: Root | null = null

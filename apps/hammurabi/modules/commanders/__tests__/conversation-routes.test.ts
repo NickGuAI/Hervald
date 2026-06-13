@@ -21,7 +21,10 @@ import {
   configureDeepThinkingRoutingForTest,
   resetDeepThinkingRoutingStateForTest,
 } from '../routes/conversation-runtime'
-import { resetConversationRuntimeOverlays } from '../routes/conversation-runtime-state'
+import {
+  getConversationRuntimeOverlay,
+  resetConversationRuntimeOverlays,
+} from '../routes/conversation-runtime-state'
 import { CommanderChannelBindingStore, CommanderChannelBindingConflictError } from '../../channels/store'
 import {
   buildDefaultCommanderConversationId,
@@ -105,6 +108,7 @@ interface MockSessionsFixture {
     name: string
     text: string
     displayText?: string
+    clientSendId?: string
     images?: QueuedMessageImage[]
     options?: {
       queue?: boolean
@@ -388,11 +392,13 @@ function createMockSessionsInterface(
         : payload
       const images = normalized.images && normalized.images.length > 0 ? [...normalized.images] : undefined
       const displayText = normalized.displayText !== undefined ? normalized.displayText.trim() : undefined
+      const clientSendId = normalized.clientSendId !== undefined ? normalized.clientSendId.trim() : undefined
       sendCalls.push(options
         ? {
             name,
             text: normalized.text,
             ...(displayText !== undefined ? { displayText } : {}),
+            ...(clientSendId ? { clientSendId } : {}),
             images,
             options,
           }
@@ -400,6 +406,7 @@ function createMockSessionsInterface(
             name,
             text: normalized.text,
             ...(displayText !== undefined ? { displayText } : {}),
+            ...(clientSendId ? { clientSendId } : {}),
             images,
           })
       operationCalls.push({ kind: 'sendToSession', index: sendCalls.length - 1 })
@@ -408,6 +415,7 @@ function createMockSessionsInterface(
         active.events.push({
           type: 'user',
           ...(displayText !== undefined ? { displayText } : {}),
+          ...(clientSendId ? { clientSendId } : {}),
           message: {
             role: 'user',
             content: images
@@ -667,6 +675,10 @@ type ActiveConversationPayload = {
   status: string
   agentType?: string | null
   liveSession: Record<string, unknown> | null
+  displayState: {
+    runtimeState: string
+    websocketReady: boolean
+  }
 }
 
 async function waitForActiveConversation(
@@ -684,6 +696,10 @@ async function waitForActiveConversation(
       id: conversationId,
       status: 'active',
       liveSession: expect.any(Object),
+      displayState: expect.objectContaining({
+        runtimeState: 'active',
+        websocketReady: true,
+      }),
     }))
   })
   if (!payload) {
@@ -2315,6 +2331,67 @@ describe('conversation routes', () => {
     }
   })
 
+  it('clears bootstrap overlays on activation before the bootstrap completion settles', async () => {
+    const dir = await createTempDir('hammurabi-commanders-conversation-overlay-activation-')
+    const storePath = join(dir, 'sessions.json')
+    await seedCommander(storePath, COMMANDER_A)
+
+    const sessions = createMockSessionsInterface()
+    const sendToSession = sessions.iface.sendToSession.bind(sessions.iface)
+    let releaseSend: (() => void) | null = null
+    let sendStarted = false
+    sessions.iface.sendToSession = vi.fn(async (...args) => {
+      if (!sendStarted) {
+        sendStarted = true
+        await new Promise<void>((resolve) => {
+          releaseSend = resolve
+        })
+      }
+      return sendToSession(...args)
+    }) as CommanderSessionsInterface['sendToSession']
+
+    const server = await startServer({
+      sessionStorePath: storePath,
+      sessionsInterface: sessions.iface,
+    })
+
+    try {
+      expect((await createConversation(server.baseUrl, COMMANDER_A, {
+        id: CONVERSATION_A,
+        surface: 'api',
+      })).status).toBe(201)
+
+      const startPromise = startConversation(server.baseUrl, CONVERSATION_A, {
+        agentType: 'claude',
+      })
+      await vi.waitFor(() => expect(sendStarted).toBe(true))
+
+      const liveSessionName = `commander-${COMMANDER_A}-conversation-${CONVERSATION_A}`
+      expect(sessions.activeSessions.has(liveSessionName)).toBe(true)
+      expect(getConversationRuntimeOverlay(CONVERSATION_A)).toBeNull()
+
+      const startResponse = await startPromise
+      expect(startResponse.status).toBe(202)
+      releaseSend?.()
+
+      await waitForActiveConversation(server.baseUrl, CONVERSATION_A)
+
+      const messageResponse = await fetch(`${server.baseUrl}/api/conversations/${CONVERSATION_A}/message`, {
+        method: 'POST',
+        headers: {
+          ...FULL_AUTH_HEADERS,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({ message: 'queued after activation' }),
+      })
+      expect(messageResponse.status).toBe(200)
+    } finally {
+      releaseSend?.()
+      sessions.dispose()
+      await server.close()
+    }
+  })
+
   it('cancels a starting conversation deterministically when paused before bootstrap completes', async () => {
     const dir = await createTempDir('hammurabi-commanders-conversation-start-cancel-')
     const storePath = join(dir, 'sessions.json')
@@ -3120,6 +3197,7 @@ describe('conversation routes', () => {
       })
 
       const image = { mediaType: 'image/png', data: Buffer.from('image-bytes').toString('base64') }
+      const clientSendId = 'conversation-image-send-1705'
       const messageResponse = await fetch(`${server.baseUrl}/api/conversations/${CONVERSATION_A}/message`, {
         method: 'POST',
         headers: {
@@ -3129,20 +3207,27 @@ describe('conversation routes', () => {
         body: JSON.stringify({
           message: 'Review this image.',
           images: [image],
+          clientSendId,
         }),
       })
       expect(messageResponse.status).toBe(200)
+      expect(sessions.sendCalls.at(-1)).toEqual(expect.objectContaining({
+        text: 'Review this image.',
+        images: [image],
+        clientSendId,
+      }))
 
       const historyResponse = await fetch(`${server.baseUrl}/api/conversations/${CONVERSATION_A}/messages`, {
         headers: READ_ONLY_AUTH_HEADERS,
       })
       expect(historyResponse.status).toBe(200)
       const history = await historyResponse.json() as {
-        messages: Array<{ kind: string; text: string; images?: QueuedMessageImage[] }>
+        messages: Array<{ kind: string; text: string; clientSendId?: string; images?: QueuedMessageImage[] }>
       }
       const imageMessages = history.messages.filter((message) => (
         message.kind === 'user'
         && message.text === 'Review this image.'
+        && message.clientSendId === clientSendId
         && message.images?.[0]?.data === image.data
       ))
       expect(imageMessages).toHaveLength(1)
@@ -3172,7 +3257,8 @@ describe('conversation routes', () => {
       expect(createResponse.status).toBe(201)
 
       const ws = new WebSocket(
-        `${server.baseUrl.replace('http://', 'ws://')}/api/conversations/${CONVERSATION_A}/ws?api_key=full-scope-key`,
+        `${server.baseUrl.replace('http://', 'ws://')}/api/conversations/${CONVERSATION_A}/ws`,
+        { headers: { 'x-hammurabi-api-key': 'full-scope-key' } },
       )
       const status = await new Promise<number>((resolve, reject) => {
         const timeout = setTimeout(() => reject(new Error('Timed out')), 3_000)

@@ -649,7 +649,7 @@ describe('dispatch-worker', () => {
   })
 
   describe('remote approval bridge (issue/1224)', () => {
-    it('reverse-tunnels the approval daemon and propagates the internal token for remote Claude worker dispatch', async () => {
+    it('reverse-tunnels the approval daemon and propagates a scoped bridge token for remote Claude worker dispatch', async () => {
       const registry = await createTempMachinesRegistry({
         machines: [
           {
@@ -695,10 +695,14 @@ describe('dispatch-worker', () => {
         expect(sshArgs[rIdx + 1]).toBe('127.0.0.1:20001:127.0.0.1:20001')
 
         const sendEnvIdx = sshArgs.findIndex(
-          (arg) => typeof arg === 'string' && arg === 'SendEnv=HAMMURABI_INTERNAL_TOKEN',
+          (arg) => typeof arg === 'string' && arg === 'SendEnv=HAMMURABI_APPROVAL_BRIDGE_TOKEN',
         )
         expect(sendEnvIdx).toBeGreaterThan(-1)
+        expect(sshArgs).not.toContain('SendEnv=HAMMURABI_INTERNAL_TOKEN')
         expect(sshArgs.join(' ')).not.toContain(INTERNAL_TOKEN)
+        const spawnOptions = mockedSpawn.mock.calls[1]![2] as { env?: NodeJS.ProcessEnv }
+        expect(spawnOptions.env?.HAMMURABI_INTERNAL_TOKEN).toBeUndefined()
+        expect(spawnOptions.env?.HAMMURABI_APPROVAL_BRIDGE_TOKEN).toEqual(expect.any(String))
 
         const destinationIdx = sshArgs.indexOf('tester@remote.test')
         expect(destinationIdx).toBeGreaterThan(-1)
@@ -763,6 +767,11 @@ describe('dispatch-worker', () => {
         expect(sshArgs).not.toContain('-R')
         expect(
           sshArgs.find(
+            (arg) => typeof arg === 'string' && arg === 'SendEnv=HAMMURABI_APPROVAL_BRIDGE_TOKEN',
+          ),
+        ).toBeUndefined()
+        expect(
+          sshArgs.find(
             (arg) => typeof arg === 'string' && arg === 'SendEnv=HAMMURABI_INTERNAL_TOKEN',
           ),
         ).toBeUndefined()
@@ -809,6 +818,11 @@ describe('dispatch-worker', () => {
           expect(command).not.toBe('ssh')
           const argList = args as string[]
           expect(argList).not.toContain('-R')
+          expect(
+            argList.find(
+              (arg) => typeof arg === 'string' && arg === 'SendEnv=HAMMURABI_APPROVAL_BRIDGE_TOKEN',
+            ),
+          ).toBeUndefined()
           expect(
             argList.find(
               (arg) => typeof arg === 'string' && arg === 'SendEnv=HAMMURABI_INTERNAL_TOKEN',

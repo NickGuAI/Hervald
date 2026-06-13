@@ -52,6 +52,8 @@ export interface CenterColumnProps {
   commander: HervaldCommander
   isGlobalScope?: boolean
   hasSelectedConversation?: boolean
+  conversationLoadError?: string | null
+  onRetryConversations?: () => void
   activeChatSession?: ChatSession | null
   transcript?: MsgItem[]
   hasOlderMessages?: boolean
@@ -149,12 +151,39 @@ function EmptyPanel({ message }: { message: string }) {
   )
 }
 
+function ConversationErrorPanel({
+  message,
+  onRetry,
+}: {
+  message: string
+  onRetry?: () => void
+}) {
+  return (
+    <div className="flex h-full items-center justify-center px-8 py-12">
+      <div className="max-w-md rounded-lg border border-[color:var(--hv-accent-danger)] bg-[var(--hv-accent-danger-wash)] px-4 py-3 text-sm text-[color:var(--hv-accent-danger)]">
+        <p>{message}</p>
+        {onRetry ? (
+          <button
+            type="button"
+            className="mt-2 font-mono text-xs underline"
+            onClick={onRetry}
+          >
+            Retry
+          </button>
+        ) : null}
+      </div>
+    </div>
+  )
+}
+
 /* ---- main export ---- */
 
 export function CenterColumn({
   commander,
   isGlobalScope = false,
   hasSelectedConversation = false,
+  conversationLoadError = null,
+  onRetryConversations,
   activeChatSession = null,
   transcript = [],
   hasOlderMessages = false,
@@ -278,6 +307,15 @@ export function CenterColumn({
 
     if (isGlobalScope) {
       return <EmptyPanel message="Global scope does not support chat." />
+    }
+
+    if (conversationLoadError) {
+      return (
+        <ConversationErrorPanel
+          message={conversationLoadError}
+          onRetry={onRetryConversations}
+        />
+      )
     }
 
     if (needsConversation) {

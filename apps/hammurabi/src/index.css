@@ -1872,6 +1872,23 @@
     background: var(--hv-fg);
     color: var(--hv-fg-inverse);
   }
+  .hervald-session-composer .composer-image-error {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin: 0 0 8px;
+    padding: 6px 8px;
+    border: 1px solid var(--hv-accent-danger-wash);
+    border-radius: var(--hv-radius-carved-sm);
+    background: var(--hv-accent-danger-wash);
+    color: var(--hv-accent-danger);
+    font-family: var(--hv-font-mono);
+    font-size: 11px;
+    line-height: 1.4;
+  }
+  .hervald-session-composer .composer-image-error span {
+    min-width: 0;
+  }
   .hervald-session-composer .composer-toolbar {
     margin-bottom: 8px;
     padding: 0;
@@ -2079,7 +2096,23 @@
   }
   .hervald-session-composer .composer-field-stack {
     display: flex;
+    align-items: stretch;
     min-height: 40px;
+  }
+  .hervald-session-composer .composer-queueing-overlay {
+    display: flex;
+    width: 100%;
+    min-height: 40px;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    color: var(--hv-fg-muted);
+    font-family: var(--hv-font-mono);
+    font-size: 11px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    cursor: wait;
+    user-select: none;
   }
   .hervald-session-composer .composer-row--mobile {
     display: flex;
@@ -2228,6 +2261,31 @@
   .hervald-session-composer--mobile .mic-btn:hover:not(:disabled),
   .hervald-session-composer--mobile .composer-row--mobile .composer-ability-btn:hover:not(:disabled) {
     background: var(--hv-ink-wash-01);
+  }
+  .hervald-session-composer--mobile .composer-add-btn.composer-add-btn--active,
+  .hervald-session-composer--mobile .composer-add-btn[aria-pressed="true"],
+  .hervald-session-composer--mobile .mic-btn[aria-pressed="true"],
+  .hervald-session-composer--mobile .composer-row--mobile .composer-ability-btn.composer-ability-btn--active,
+  .hervald-session-composer--mobile .composer-row--mobile .composer-ability-btn[aria-pressed="true"] {
+    border-color: var(--hv-fg-muted);
+    background: var(--hv-bg-raised);
+    color: var(--hv-fg);
+  }
+  @media (hover: none) {
+    .hervald-session-composer--mobile .composer-add-btn:active:not(:disabled),
+    .hervald-session-composer--mobile .composer-queue-message-btn:active:not(:disabled),
+    .hervald-session-composer--mobile .mic-btn:active:not(:disabled),
+    .hervald-session-composer--mobile .composer-row--mobile .composer-ability-btn:active:not(:disabled) {
+      background: var(--hv-ink-wash-02);
+      color: var(--hv-fg);
+    }
+    .hervald-session-composer--mobile .composer-add-btn.composer-add-btn--active:active:not(:disabled),
+    .hervald-session-composer--mobile .composer-add-btn[aria-pressed="true"]:active:not(:disabled),
+    .hervald-session-composer--mobile .mic-btn[aria-pressed="true"]:active:not(:disabled),
+    .hervald-session-composer--mobile .composer-row--mobile .composer-ability-btn.composer-ability-btn--active:active:not(:disabled),
+    .hervald-session-composer--mobile .composer-row--mobile .composer-ability-btn[aria-pressed="true"]:active:not(:disabled) {
+      background: var(--hv-bg-raised);
+    }
   }
   .hervald-session-composer--mobile .composer-queue-message-btn {
     display: inline-flex;

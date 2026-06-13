@@ -34,7 +34,10 @@ import { useIsMobile } from '@/hooks/use-is-mobile'
 import { createHttpConversationDispatcher } from '@/hooks/send-dispatcher'
 import { useTheme } from '@/lib/theme-context'
 import { fetchJson } from '@/lib/api'
-import { findModuleGraphUiRouteMetadata } from '@/module-graph-bindings'
+import {
+  findModuleGraphUiRouteMetadata,
+  resolveModuleGraphWebSocketPath,
+} from '@/module-graph-bindings'
 import { useModuleGraphContext } from '@/module-graph-context'
 import {
   workerLifecycle,
@@ -541,6 +544,7 @@ export function CommandRoom() {
   const [selectedChatSessionId, setSelectedChatSessionId] = useState<string | null>(null)
   const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null)
   const [requestedNewChatCommanderId, setRequestedNewChatCommanderId] = useState<string | null>(null)
+  const [conversationLoadError, setConversationLoadError] = useState<unknown>(null)
   const [queueSnapshot, setQueueSnapshot] = useState<SessionQueueSnapshot>(EMPTY_QUEUE_SNAPSHOT)
   const [queueError, setQueueError] = useState<string | null>(null)
   const [isQueueMutating, setIsQueueMutating] = useState(false)
@@ -650,10 +654,19 @@ export function CommandRoom() {
   const {
     conversations,
     selectedConversation: selectedConversationRecord,
+    error: conversationsError,
+    refetch: refetchConversations,
   } = useConversations(
     conversationListCommanderScope,
     urlSelectionPending ? null : selectedConversationId,
   )
+  const conversationFetchError = conversationsError
+    ? formatError(conversationsError, 'Failed to load conversations')
+    : null
+  const conversationBootstrapError = conversationLoadError
+    ? formatError(conversationLoadError, 'Failed to load active conversation')
+    : null
+  const conversationErrorMessage = conversationBootstrapError ?? conversationFetchError
   const visibleConversations = useMemo(
     () => conversations.filter((conversation) => conversation.isDefaultConversation !== true),
     [conversations],
@@ -790,9 +803,17 @@ export function CommandRoom() {
   const selectedConversationWebSocketReady = conversationWebSocketReady(selectedConversation)
   const streamSessionName = activeStandaloneSession?.id
     ?? (!conversationSelectionSettling ? selectedConversationSession?.name : undefined)
-  const streamWebSocketPath = activeStandaloneSession || !selectedConversationWebSocketReady || !selectedConversation
-    ? undefined
-    : `/api/conversations/${encodeURIComponent(selectedConversation.id)}/ws`
+  const streamWebSocketPath = useMemo(() => {
+    if (activeStandaloneSession || !selectedConversationWebSocketReady || !selectedConversation) {
+      return undefined
+    }
+
+    return resolveModuleGraphWebSocketPath(
+      moduleGraph,
+      'conversation.session-stream',
+      { id: selectedConversation.id },
+    ) ?? undefined
+  }, [activeStandaloneSession, moduleGraph, selectedConversation, selectedConversationWebSocketReady])
   const composerSessionName = selectedConversation
     ? (selectedConversation.sendTarget?.sessionName ?? activeStandaloneSession?.id ?? streamSessionName ?? 'hervald-command-room')
     : (activeStandaloneSession?.id ?? streamSessionName ?? 'hervald-command-room')
@@ -940,6 +961,7 @@ export function CommandRoom() {
     // first; the lookup applies later only if this click is still current.
     setRequestedNewChatCommanderId(null)
     setSelectedChatSessionId(null)
+    setConversationLoadError(null)
     const requestId = commanderSelectionRequestRef.current + 1
     commanderSelectionRequestRef.current = requestId
     const manualSelectionVersion = manualConversationSelectionRef.current
@@ -991,6 +1013,7 @@ export function CommandRoom() {
       }
 
       const activeChatId = active?.id ?? null
+      setConversationLoadError(null)
       const currentParams = new URLSearchParams(window.location.search)
       currentParams.set(commandRoomLaunch.commanderParam, commanderId)
       currentParams.delete(globalCommanderRoute.panelParam)
@@ -1001,7 +1024,7 @@ export function CommandRoom() {
       }
       setSearchParams(currentParams, { replace: true })
       setSelectedConversationId(activeChatId)
-    }).catch(() => {
+    }).catch((error) => {
       if (
         commanderSelectionRequestRef.current !== requestId
         || manualConversationSelectionRef.current !== manualSelectionVersion
@@ -1009,10 +1032,7 @@ export function CommandRoom() {
       ) {
         return
       }
-      const currentParams = new URLSearchParams(window.location.search)
-      currentParams.delete(commandRoomLaunch.conversationParam)
-      setSearchParams(currentParams, { replace: true })
-      setSelectedConversationId(null)
+      setConversationLoadError(error)
     })
   }, [
     commandRoomLaunch.commanderParam,
@@ -1026,10 +1046,19 @@ export function CommandRoom() {
     setSearchParams,
   ])
 
+  const handleRetryConversationLoad = useCallback(() => {
+    setConversationLoadError(null)
+    void refetchConversations()
+    if (selectedCommanderId && !isGlobalCommanderId(selectedCommanderId)) {
+      void handleSelectCommanderId(selectedCommanderId)
+    }
+  }, [handleSelectCommanderId, refetchConversations, selectedCommanderId])
+
   const handleSelectConversationId = useCallback((
     conversationId: string,
     commanderId = selectedCommanderId,
   ) => {
+    setConversationLoadError(null)
     manualConversationSelectionRef.current += 1
     setRequestedNewChatCommanderId(null)
     setSelectedConversationId(conversationId)
@@ -1154,7 +1183,7 @@ export function CommandRoom() {
     const nextTarget = {
       targetId: openedTarget.targetId,
       label: openedTarget.label,
-      readOnly: openedTarget.isReadOnly,
+      readOnly: openedTarget.readOnly,
     }
     adoptWorkspaceTarget(nextTarget, origin, owner.key)
     return nextTarget
@@ -1451,7 +1480,7 @@ export function CommandRoom() {
         adoptWorkspaceTarget({
           targetId: target.targetId,
           label: target.label,
-          readOnly: target.isReadOnly,
+          readOnly: target.readOnly,
         }, 'auto', owner.key)
       } catch {
         if (!cancelled && workspaceOwnerKeyRef.current === owner.key) {
@@ -1568,13 +1597,15 @@ export function CommandRoom() {
           staleTime: ACTIVE_CONVERSATION_FETCH_STALE_MS,
         })
         activeChatId = active?.id ?? null
-      } catch {
-        activeChatId = null
+      } catch (error) {
+        setConversationLoadError(error)
+        return
       }
 
       if (!activeChatId) {
         return
       }
+      setConversationLoadError(null)
 
       // Bail if the user navigated again while we were fetching.
       const liveSearch = new URLSearchParams(window.location.search)
@@ -1688,7 +1719,13 @@ export function CommandRoom() {
       return
     }
 
-    setQueueSnapshot(await fetchQueueSnapshot())
+    try {
+      setQueueSnapshot(await fetchQueueSnapshot())
+      setQueueError(null)
+    } catch (error) {
+      setQueueError(formatQueueError(error, 'Failed to load message queue'))
+      throw error
+    }
   }, [canQueueDraft, fetchQueueSnapshot, selectedConversationRunning, streamSessionName])
 
   useEffect(() => {
@@ -1706,9 +1743,9 @@ export function CommandRoom() {
         if (!cancelled) {
           setQueueSnapshot(nextQueue)
         }
-      } catch {
+      } catch (error) {
         if (!cancelled) {
-          setQueueSnapshot(EMPTY_QUEUE_SNAPSHOT)
+          setQueueError(formatQueueError(error, 'Failed to load message queue'))
         }
       }
     })()
@@ -1767,11 +1804,13 @@ export function CommandRoom() {
   const submitConversationMessage = useCallback(async ({
     message,
     images,
+    clientSendId,
     workspaceContext,
     queue = false,
   }: {
     message: string
     images?: Array<{ mediaType: string; data: string }>
+    clientSendId?: string
     workspaceContext?: WorkspaceContextPayload
     queue?: boolean
   }): Promise<boolean> => {
@@ -1786,6 +1825,7 @@ export function CommandRoom() {
         conversationId: selectedConversation.id,
         message,
         images,
+        clientSendId,
         workspaceContext,
         queue,
       })
@@ -1893,6 +1933,7 @@ export function CommandRoom() {
     return sendDispatcher.send({
       text: trimmed,
       images: attachedImages,
+      clientSendId: payload.clientSendId,
       workspaceContext,
     }, pushOptimisticUserMessage)
   }, [
@@ -1943,10 +1984,15 @@ export function CommandRoom() {
       if (await submitConversationMessage({
         message: trimmed,
         images: queuedImages,
+        clientSendId: payload.clientSendId,
         workspaceContext,
         queue: true,
       })) {
-        await refreshQueueSnapshot()
+        try {
+          await refreshQueueSnapshot()
+        } catch {
+          // refreshQueueSnapshot already preserves the prior queue and records the user-visible error.
+        }
       }
       return
     }
@@ -1959,6 +2005,7 @@ export function CommandRoom() {
       () => queueSessionMessage(streamSessionName, {
         text: trimmed,
         images: queuedImages,
+        clientSendId: payload.clientSendId,
         workspaceContext,
       }),
       'Failed to queue message',
@@ -2506,13 +2553,15 @@ export function CommandRoom() {
           automationSessions={automationSessions}
           onKillSession={handleKillSession}
           onResumeSession={handleResumeSession}
-          sessionActionError={sessionActionError}
+          sessionActionError={sessionActionError ?? conversationErrorMessage}
         />
 
         <CenterColumn
           commander={centerCommander}
           isGlobalScope={isGlobalScope}
           hasSelectedConversation={Boolean(selectedConversation)}
+          conversationLoadError={conversationErrorMessage}
+          onRetryConversations={handleRetryConversationLoad}
           activeChatSession={activeChatSession}
           transcript={chatTranscript}
           hasOlderMessages={hasOlderConversationMessages}

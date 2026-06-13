@@ -12,7 +12,7 @@ import {
   mergeClaudeExtraBody,
 } from '../../../adapters/claude/helpers'
 
-const UNSET_CLAUDE_CHILD_ENV = 'unset CLAUDECODE ANTHROPIC_MODEL ANTHROPIC_DEFAULT_OPUS_MODEL ANTHROPIC_DEFAULT_SONNET_MODEL'
+const UNSET_CLAUDE_CHILD_ENV = 'unset CLAUDECODE HAMMURABI_INTERNAL_TOKEN ANTHROPIC_MODEL ANTHROPIC_DEFAULT_OPUS_MODEL ANTHROPIC_DEFAULT_SONNET_MODEL'
 
 function startApprovalServer(handler: (req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse) => void) {
   return new Promise<{ baseUrl: string; close(): Promise<void> }>((resolve, reject) => {
@@ -98,7 +98,11 @@ describe('agents/adapters/claude/helpers', () => {
   })
 
   it('shell-escapes the inline approval hook command so sh does not mangle template literals', async () => {
-    const approvalServer = await startApprovalServer((_req, res) => {
+    let bridgeHeader: string | undefined
+    let internalHeader: string | undefined
+    const approvalServer = await startApprovalServer((req, res) => {
+      bridgeHeader = req.headers['x-hammurabi-approval-bridge-token'] as string | undefined
+      internalHeader = req.headers['x-hammurabi-internal-token'] as string | undefined
       res.writeHead(200, { 'content-type': 'application/json' })
       res.end(JSON.stringify({ decision: 'allow' }))
     })
@@ -108,7 +112,9 @@ describe('agents/adapters/claude/helpers', () => {
         buildClaudeApprovalHookCommand(),
         {
           HAMMURABI_APPROVAL_BASE_URL: approvalServer.baseUrl,
+          HAMMURABI_APPROVAL_BRIDGE_TOKEN: 'bridge-token',
           HAMMURABI_APPROVAL_FAIL_OPEN: '',
+          HAMMURABI_INTERNAL_TOKEN: 'global-internal-token',
         },
         JSON.stringify({ tool_name: 'Bash', tool_input: { command: 'hammurabi quests list' } }),
       )
@@ -121,6 +127,8 @@ describe('agents/adapters/claude/helpers', () => {
           permissionDecision: 'allow',
         },
       })
+      expect(bridgeHeader).toBe('bridge-token')
+      expect(internalHeader).toBeUndefined()
     } finally {
       await approvalServer.close()
     }
@@ -309,15 +317,33 @@ describe('agents/adapters/claude/helpers: buildClaudeSpawnEnv', () => {
   it('scrubs inherited Claude runtime env that can poison child model selection', () => {
     const spawnEnv = buildClaudeSpawnEnv({
       CLAUDECODE: '1',
+      HAMMURABI_INTERNAL_TOKEN: 'global-internal-token',
       ANTHROPIC_MODEL: 'claude-opus-4-6-[1m]',
       ANTHROPIC_DEFAULT_OPUS_MODEL: 'claude-opus-4-6-[1m]',
       ANTHROPIC_DEFAULT_SONNET_MODEL: 'claude-sonnet-4-5-[1m]',
       PORT: '20002',
     })
     expect(spawnEnv.CLAUDECODE).toBeUndefined()
+    expect(spawnEnv.HAMMURABI_INTERNAL_TOKEN).toBeUndefined()
     expect(spawnEnv.ANTHROPIC_MODEL).toBeUndefined()
     expect(spawnEnv.ANTHROPIC_DEFAULT_OPUS_MODEL).toBeUndefined()
     expect(spawnEnv.ANTHROPIC_DEFAULT_SONNET_MODEL).toBeUndefined()
     expect(spawnEnv.HAMMURABI_PORT).toBe('20002')
+  })
+
+  it('injects only the scoped approval bridge token into Claude child env', () => {
+    const spawnEnv = buildClaudeSpawnEnv(
+      {
+        HAMMURABI_INTERNAL_TOKEN: 'global-internal-token',
+      },
+      'enabled',
+      128000,
+      {
+        approvalBridgeToken: 'session-bridge-token',
+      },
+    )
+
+    expect(spawnEnv.HAMMURABI_INTERNAL_TOKEN).toBeUndefined()
+    expect(spawnEnv.HAMMURABI_APPROVAL_BRIDGE_TOKEN).toBe('session-bridge-token')
   })
 })

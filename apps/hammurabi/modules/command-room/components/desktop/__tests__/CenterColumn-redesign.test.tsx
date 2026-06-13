@@ -3,6 +3,7 @@
 import { createElement, type ReactElement } from 'react'
 import { flushSync } from 'react-dom'
 import { createRoot, type Root } from 'react-dom/client'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { CenterColumn, type CenterColumnProps } from '../CenterColumn'
@@ -52,6 +53,8 @@ vi.mock('@modules/agents/page-shell/use-session-draft', () => ({
     focusTextarea: vi.fn(),
     textareaRef: { current: null },
     clearDraft: vi.fn(),
+    pendingImages: [],
+    setPendingImages: vi.fn(),
   }),
 }))
 
@@ -89,13 +92,24 @@ vi.mock('../ChatPane', () => ({
 
 let root: Root | null = null
 let container: HTMLDivElement | null = null
+let queryClient: QueryClient | null = null
 
 async function render(element: ReactElement) {
   container = document.createElement('div')
   document.body.appendChild(container)
   root = createRoot(container)
+  queryClient = new QueryClient({
+    defaultOptions: {
+      queries: { retry: false },
+      mutations: { retry: false },
+    },
+  })
   flushSync(() => {
-    root?.render(element)
+    root?.render(
+      <QueryClientProvider client={queryClient!}>
+        {element}
+      </QueryClientProvider>,
+    )
   })
 }
 
@@ -150,6 +164,8 @@ describe('CenterColumn redesign', () => {
         root?.unmount()
       })
     }
+    queryClient?.clear()
+    queryClient = null
     root = null
     container?.remove()
     container = null

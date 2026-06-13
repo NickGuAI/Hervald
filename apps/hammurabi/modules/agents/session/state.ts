@@ -1,10 +1,8 @@
 import { createReadStream } from 'node:fs'
 import { homedir } from 'node:os'
 import * as path from 'node:path'
-import { readFile } from 'node:fs/promises'
 import type { Response } from 'express'
-import { CommanderSessionStore, type CommanderSession } from '../../commanders/store.js'
-import { resolveCommanderNamesPath } from '../../commanders/paths.js'
+import type { CommanderSession } from '../../commanders/store.js'
 import {
   parseCanonicalProviderContext,
   sanitizeProviderContextForPersistence,
@@ -45,6 +43,10 @@ import { getProvider, parseProviderId } from '../providers/registry.js'
 import type {
   ActiveSkillInvocation,
   AgentSession,
+  AgentSessionConnectionState,
+  AgentSessionProcessState,
+  AgentSessionResumeState,
+  AgentSessionTurnState,
   AnySession,
   CompletedSession,
   CompletedSessionMetadata,
@@ -142,6 +144,9 @@ function parseQueuedMessage(value: unknown): QueuedMessage | null {
   const displayText = typeof message.displayText === 'string'
     ? message.displayText.trim()
     : undefined
+  const clientSendId = typeof message.clientSendId === 'string'
+    ? message.clientSendId.trim()
+    : undefined
   const priority = message.priority === 'high' || message.priority === 'low'
     ? message.priority
     : (message.priority === 'normal' ? 'normal' : null)
@@ -172,6 +177,7 @@ function parseQueuedMessage(value: unknown): QueuedMessage | null {
     text,
     ...(displayText !== undefined ? { displayText } : {}),
     images: images.length > 0 ? images : undefined,
+    ...(clientSendId ? { clientSendId } : {}),
     priority,
     queuedAt,
   }
@@ -387,49 +393,11 @@ export function parsePersistedSessionsState(value: unknown): PersistedSessionsSt
   return { sessions }
 }
 
-export async function getCommanderLabels(
-  commanderSessionStorePath?: string,
-): Promise<Record<string, string>> {
-  const dataDir = commanderSessionStorePath
-    ? path.dirname(path.resolve(commanderSessionStorePath))
-    : undefined
-
-  let labels: Record<string, string> = {}
-
-  try {
-    const namesPath = resolveCommanderNamesPath(dataDir)
-    const content = await readFile(namesPath, 'utf8')
-    labels = JSON.parse(content) as Record<string, string>
-  } catch {
-    labels = {}
-  }
-
-  try {
-    const commanderStore = commanderSessionStorePath !== undefined
-      ? new CommanderSessionStore(commanderSessionStorePath)
-      : new CommanderSessionStore()
-    const commanderSessions = await commanderStore.list()
-    for (const commanderSession of commanderSessions) {
-      const host = commanderSession.host.trim()
-      if (host.length > 0) {
-        labels[commanderSession.id] = host
-      }
-    }
-  } catch {
-    // Fall back to names.json when the commander store is unavailable.
-  }
-
-  return labels
-}
-
 export function getWorldAgentRole(session: AnySession): WorldAgentRole {
   return session.sessionType === 'commander' ? 'commander' : 'worker'
 }
 
 export function getCommanderWorldAgentId(commanderId: string): string {
-  if (commanderId.startsWith(COMMANDER_SESSION_NAME_PREFIX)) {
-    return commanderId
-  }
   return `${COMMANDER_SESSION_NAME_PREFIX}${commanderId}`
 }
 
@@ -1016,7 +984,45 @@ function countLiveSessionVisibleQueuedMessages(session: StreamSession): number {
   return queuedMessages.length + pendingDirectSends.length
 }
 
-export function liveSessionToApiPayload(session: StreamSession): AgentSession {
+function streamProcessState(session: StreamSession): AgentSessionProcessState {
+  const process = session.process as { exitCode?: number | null; signalCode?: string | null } | undefined
+  if (process && (process.exitCode !== null && process.exitCode !== undefined)) {
+    return 'exited'
+  }
+  if (process && (process.signalCode !== null && process.signalCode !== undefined)) {
+    return 'exited'
+  }
+  return 'running'
+}
+
+export function getLiveSessionTurnState(session: StreamSession): AgentSessionTurnState {
+  if (hasPendingUserInteraction(session)) {
+    return 'blocked'
+  }
+  if (!session.lastTurnCompleted && session.codexTurnStaleAt) {
+    return 'stale'
+  }
+  if (session.lastTurnCompleted && session.completedTurnAt) {
+    return 'completed'
+  }
+  if (!session.lastTurnCompleted) {
+    return 'running'
+  }
+  return 'idle'
+}
+
+export function getConnectionState(session: Pick<AnySession, 'clients'>): AgentSessionConnectionState {
+  return session.clients.size > 0 ? 'connected' : 'disconnected'
+}
+
+export function getResumeState(resumeAvailable: boolean | undefined): AgentSessionResumeState {
+  return resumeAvailable ? 'available' : 'unavailable'
+}
+
+export function liveSessionToApiPayload(
+  session: StreamSession,
+  options: { resumeAvailable?: boolean } = {},
+): AgentSession {
   const created = typeof session.createdAt === 'string' && session.createdAt.length > 0
     ? session.createdAt
     : new Date(0).toISOString()
@@ -1024,6 +1030,9 @@ export function liveSessionToApiPayload(session: StreamSession): AgentSession {
     ? session.lastEventAt
     : created
   const process = session.process as { pid?: number } | undefined
+  const processState = streamProcessState(session)
+  const turnState = getLiveSessionTurnState(session)
+  const resumeAvailable = options.resumeAvailable ?? canResumeLiveStreamSession(session)
 
   const payload: AgentSession = {
     name: session.name,
@@ -1031,13 +1040,18 @@ export function liveSessionToApiPayload(session: StreamSession): AgentSession {
     lastActivityAt,
     pid: typeof process?.pid === 'number' ? process.pid : 0,
     transportType: 'stream',
-    processAlive: true,
+    processState,
+    turnState,
+    connectionState: getConnectionState(session),
+    resumeState: getResumeState(resumeAvailable),
+    processAlive: processState === 'running',
     hadResult: Boolean(session.finalResultEvent),
-    status: getWorldAgentStatus({
+    status: processState === 'exited' ? 'exited' : getWorldAgentStatus({
       ...session,
       createdAt: created,
       lastEventAt: lastActivityAt,
     }, Date.now()),
+    resumeAvailable,
     queuedMessageCount: countLiveSessionVisibleQueuedMessages(session),
   }
 

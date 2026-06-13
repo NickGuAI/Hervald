@@ -7,7 +7,6 @@ import {
   ProviderAuthRequiredError,
   ProviderAuthStore,
   buildCodexAuthJson,
-  completeProviderOAuthFlow,
   isProviderAuthRequiredText,
   mergeProviderSpawnAuthIntoLaunch,
   prepareProviderSpawnAuth,
@@ -22,20 +21,12 @@ async function createStore(): Promise<{ store: ProviderAuthStore; filePath: stri
   return { store: new ProviderAuthStore(filePath), filePath }
 }
 
-function jsonResponse(payload: unknown, ok = true, status = 200): Response {
-  return {
-    ok,
-    status,
-    json: vi.fn().mockResolvedValue(payload),
-  } as unknown as Response
-}
-
 afterEach(() => {
   vi.restoreAllMocks()
 })
 
 describe('provider auth lifecycle', () => {
-  it('stores provider tokens with mode 0600 and refreshes before expiry', async () => {
+  it('stores legacy provider tokens with mode 0600', async () => {
     const { store, filePath } = await createStore()
     await store.putToken('codex', 'commander-1', {
       access: 'old-access',
@@ -47,147 +38,93 @@ describe('provider auth lifecycle', () => {
 
     const mode = (await stat(filePath)).mode & 0o777
     expect(mode).toBe(0o600)
-
-    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse({
-      access_token: 'new-access',
-      refresh_token: 'new-refresh',
-      id_token: 'id-token',
-      expires_in: 3600,
-      account_id: 'acct-new',
-      email: 'new@example.com',
-    }))
-
-    const providerAuth = await prepareProviderSpawnAuth({
-      provider: 'codex',
-      scopeId: 'commander-1',
-      store,
-      env: {},
-      fetchImpl,
-      nowMs,
-    })
-
-    expect(fetchImpl).toHaveBeenCalledTimes(1)
-    expect(providerAuth.snapshot).toMatchObject({
-      provider: 'codex',
-      scopeId: 'commander-1',
-      status: 'ready',
-      authMethod: 'oauth',
-      accountEmail: 'new@example.com',
-    })
-    const authPayload = JSON.parse(
-      Buffer.from(providerAuth.env?.[HAMMURABI_CODEX_AUTH_JSON_B64] ?? '', 'base64').toString('utf8'),
-    )
-    expect(authPayload).toMatchObject({
-      tokens: {
-        access_token: 'new-access',
-        refresh_token: 'new-refresh',
-        id_token: 'id-token',
-        account_id: 'acct-new',
-      },
+    await expect(store.getToken('codex', 'commander-1')).resolves.toMatchObject({
+      access: 'old-access',
+      refresh: 'refresh-token',
+      accountId: 'acct-old',
+      email: 'old@example.com',
     })
   })
 
-  it('marks managed OAuth providers auth_required when refresh fails', async () => {
+  it('does not refresh stale managed Codex tokens after native CLI auth becomes canonical', async () => {
     const { store } = await createStore()
+    const root = await mkdtemp(path.join(tmpdir(), 'hammurabi-provider-stale-token-'))
     await store.putToken('codex', 'commander-2', {
       access: 'expired-access',
       refresh: 'revoked-refresh',
       expiresAt: nowMs + 10_000,
     })
-    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse({ error: 'invalid_grant' }, false, 401))
+    const fetchImpl = vi.fn()
 
     await expect(prepareProviderSpawnAuth({
       provider: 'codex',
       scopeId: 'commander-2',
       store,
-      env: {},
+      env: { CODEX_HOME: path.join(root, 'missing-codex-home') },
       fetchImpl,
       nowMs,
     })).rejects.toBeInstanceOf(ProviderAuthRequiredError)
 
+    expect(fetchImpl).not.toHaveBeenCalled()
     expect(await store.listSnapshots()).toEqual([
       expect.objectContaining({
         provider: 'codex',
         scopeId: 'commander-2',
         status: 'auth_required',
-        reauthUrl: expect.stringContaining('/api/agents/provider-auth/codex/reauth'),
+        authMethod: 'login',
+        detail: expect.stringContaining('codex login'),
       }),
     ])
+    const [snapshot] = await store.listSnapshots()
+    expect(snapshot).not.toHaveProperty('reauthUrl')
   })
 
-  it('completes OAuth flows and returns provider scope metadata for unblocking', async () => {
+  it('migrates persisted Codex OAuth snapshots to native login snapshots', async () => {
+    const { store, filePath } = await createStore()
+    await writeFile(filePath, `${JSON.stringify({
+      version: 1,
+      providers: {},
+      snapshots: {
+        'codex:commander-old:local': {
+          provider: 'codex',
+          scopeId: 'commander-old',
+          host: 'local',
+          status: 'auth_required',
+          authMethod: 'oauth',
+          detail: 'No Hervald-managed provider token is stored.',
+          reauthUrl: '/api/agents/provider-auth/codex/reauth?scopeId=commander-old&host=local',
+          lastCheckedAt: '2026-06-02T12:00:00.000Z',
+        },
+      },
+    }, null, 2)}\n`)
+
+    const snapshots = await store.listSnapshots()
+
+    expect(snapshots).toEqual([
+      expect.objectContaining({
+        provider: 'codex',
+        scopeId: 'commander-old',
+        status: 'auth_required',
+        authMethod: 'login',
+        detail: expect.stringContaining('codex login status'),
+      }),
+    ])
+    expect(snapshots[0]).not.toHaveProperty('reauthUrl')
+  })
+
+  it('does not start Hervald OAuth for Codex native auth', async () => {
     const { store } = await createStore()
-    const flowNowMs = Date.now()
-    const flow = await startProviderOAuthFlow({
+
+    await expect(startProviderOAuthFlow({
       provider: 'codex',
       scopeId: 'commander-5',
       host: 'local',
       store,
-      env: {
-        HAMMURABI_CODEX_OAUTH_AUTHORIZE_URL: 'https://auth.example.test/authorize',
-      },
-      nowMs: flowNowMs,
-    })
-    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse({
-      access_token: 'oauth-access',
-      refresh_token: 'oauth-refresh',
-      expires_in: 3600,
-      account_id: 'acct-oauth',
-      email: 'oauth@example.com',
-    }))
-
-    const result = await completeProviderOAuthFlow({
-      state: flow.state,
-      code: 'oauth-code',
-      store,
-      env: {
-        HAMMURABI_CODEX_OAUTH_TOKEN_URL: 'https://auth.example.test/token',
-      },
-      fetchImpl,
-      nowMs: flowNowMs,
-    })
-
-    expect(fetchImpl).toHaveBeenCalledWith('https://auth.example.test/token', expect.objectContaining({
-      method: 'POST',
-    }))
-    expect(result).toMatchObject({
-      provider: 'codex',
-      scopeId: 'commander-5',
-      host: 'local',
-      token: {
-        access: 'oauth-access',
-        refresh: 'oauth-refresh',
-        accountId: 'acct-oauth',
-        email: 'oauth@example.com',
-      },
-      snapshot: {
-        status: 'ready',
-        authMethod: 'oauth',
-      },
-    })
-  })
-
-  it('uses a server-reachable OAuth callback URL when provided', async () => {
-    const { store } = await createStore()
-    const flow = await startProviderOAuthFlow({
-      provider: 'codex',
-      scopeId: 'commander-remote',
-      host: 'ec2',
-      store,
-      callbackUrl: 'https://hammurabi.example.test/api/agents/provider-auth/oauth/callback',
-      env: {
-        HAMMURABI_CODEX_OAUTH_AUTHORIZE_URL: 'https://auth.example.test/authorize',
-      },
       nowMs,
-    })
-
-    const authorizationUrl = new URL(flow.authorizationUrl)
-    expect(flow.callbackUrl).toBe('https://hammurabi.example.test/api/agents/provider-auth/oauth/callback')
-    expect(authorizationUrl.searchParams.get('redirect_uri'))
-      .toBe('https://hammurabi.example.test/api/agents/provider-auth/oauth/callback')
+    })).rejects.toThrow('codex login')
   })
 
-  it('throws auth_required before spawning OAuth providers without credentials', async () => {
+  it('records local Codex native login as auth_required when no auth.json is available', async () => {
     const { store } = await createStore()
     const root = await mkdtemp(path.join(tmpdir(), 'hammurabi-provider-missing-login-'))
 
@@ -199,17 +136,45 @@ describe('provider auth lifecycle', () => {
       nowMs,
     })).rejects.toBeInstanceOf(ProviderAuthRequiredError)
 
-    expect(await store.listSnapshots()).toEqual([
+    const snapshots = await store.listSnapshots()
+    expect(snapshots).toEqual([
       expect.objectContaining({
         provider: 'codex',
         scopeId: 'commander-missing',
         status: 'auth_required',
-        authMethod: 'missing',
+        authMethod: 'login',
+        detail: expect.stringContaining('codex login status'),
       }),
     ])
+    expect(snapshots[0]).not.toHaveProperty('reauthUrl')
   })
 
-  it('does not start Hammurabi OAuth for Claude Code native auth', async () => {
+  it('lets remote Codex native auth be owned by the target machine', async () => {
+    const { store } = await createStore()
+
+    await expect(prepareProviderSpawnAuth({
+      provider: 'codex',
+      scopeId: 'commander-remote',
+      store,
+      machine: { id: 'home-mac', label: 'Home Mac', host: 'home-mac' },
+      env: {},
+      nowMs,
+    })).resolves.toMatchObject({
+      snapshot: {
+        provider: 'codex',
+        scopeId: 'commander-remote',
+        host: 'home-mac',
+        status: 'unknown',
+        authMethod: 'login',
+        detail: expect.stringContaining('codex login'),
+      },
+    })
+
+    const snapshots = await store.listSnapshots()
+    expect(snapshots[0]).not.toHaveProperty('reauthUrl')
+  })
+
+  it('does not start Hervald OAuth for Claude Code native auth', async () => {
     const { store } = await createStore()
 
     await expect(startProviderOAuthFlow({

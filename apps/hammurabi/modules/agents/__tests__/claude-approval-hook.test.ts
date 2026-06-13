@@ -76,7 +76,11 @@ async function startApprovalServer(
 
 describe('claude-approval-hook', () => {
   it('emits structured PreToolUse allow output when Hammurabi auto-approves', async () => {
-    const approvalServer = await startApprovalServer((_req, res) => {
+    let bridgeHeader: string | undefined
+    let internalHeader: string | undefined
+    const approvalServer = await startApprovalServer((req, res) => {
+      bridgeHeader = req.headers['x-hammurabi-approval-bridge-token'] as string | undefined
+      internalHeader = req.headers['x-hammurabi-internal-token'] as string | undefined
       res.writeHead(200, { 'content-type': 'application/json' })
       res.end(JSON.stringify({ decision: 'allow' }))
     })
@@ -85,7 +89,9 @@ describe('claude-approval-hook', () => {
       const result = await runHook(
         {
           HAMMURABI_APPROVAL_BASE_URL: approvalServer.baseUrl,
+          HAMMURABI_APPROVAL_BRIDGE_TOKEN: 'bridge-token',
           HAMMURABI_APPROVAL_FAIL_OPEN: '',
+          HAMMURABI_INTERNAL_TOKEN: 'global-internal-token',
         },
         JSON.stringify({ tool_name: 'Bash', tool_input: { command: 'hammurabi quests list' } }),
       )
@@ -98,6 +104,8 @@ describe('claude-approval-hook', () => {
           permissionDecision: 'allow',
         },
       })
+      expect(bridgeHeader).toBe('bridge-token')
+      expect(internalHeader).toBeUndefined()
     } finally {
       await approvalServer.close()
     }

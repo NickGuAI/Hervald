@@ -67,6 +67,10 @@ interface MockChannelReplyDispatchers {
   calls: CommanderChannelReplyDispatchInput[]
 }
 
+interface MockSessionsOptions {
+  failSendTexts?: Set<string>
+}
+
 const tempDirs: string[] = []
 
 async function createTempDir(prefix: string): Promise<string> {
@@ -178,7 +182,7 @@ function createTestApiKeyStore(): ApiKeyStoreLike {
   }
 }
 
-function createMockSessionsInterface(): MockSessionsInterface {
+function createMockSessionsInterface(options: MockSessionsOptions = {}): MockSessionsInterface {
   const createCalls: Array<Parameters<CommanderSessionsInterface['createCommanderSession']>[0]> = []
   const sendCalls: Array<{ name: string; text: string }> = []
   const activeSessions = new Map<string, ActiveSessionState>()
@@ -220,8 +224,14 @@ function createMockSessionsInterface(): MockSessionsInterface {
         body: { error: 'dispatchWorkerForCommander not stubbed in this fixture' },
       }
     },
-    async sendToSession(name, text) {
+    async sendToSession(name, payload) {
+      const text = typeof payload === 'string'
+        ? payload
+        : payload.text
       sendCalls.push({ name, text })
+      if (options.failSendTexts?.delete(text)) {
+        return false
+      }
       return activeSessions.has(name)
     },
     deleteSession(name) {
@@ -734,6 +744,144 @@ describe('POST /api/commanders/channel-message', () => {
         displayName: '15551234567',
         sessionKey: 'whatsapp:default:direct:15551234567',
       })
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('deduplicates repeated provider rawSourceId across a router restart', async () => {
+    const dir = await createTempDir('hammurabi-channel-idempotency-restart-')
+    const storePath = join(dir, 'sessions.json')
+    await seedCommander(storePath, COMMANDER_A)
+
+    const firstSessions = createMockSessionsInterface()
+    const firstServer = await startServer({
+      sessionStorePath: storePath,
+      sessionsInterface: firstSessions.interface,
+    })
+
+    const inboundBody = {
+      commanderId: COMMANDER_A,
+      provider: 'whatsapp',
+      accountId: 'default',
+      chatType: 'direct',
+      peerId: '15551234567@s.whatsapp.net',
+      displayName: '+1 555 123 4567',
+      message: 'first delivery',
+      rawSourceId: 'wa-provider-message-1',
+    }
+
+    try {
+      const firstResponse = await postChannelMessage(firstServer.baseUrl, inboundBody)
+      expect(firstResponse.status).toBe(201)
+      const firstResponseBody = await firstResponse.json()
+      expect(firstResponseBody).toMatchObject({
+        accepted: true,
+        delivered: true,
+      })
+      expect(firstResponseBody).not.toHaveProperty('duplicate')
+      expect(firstSessions.createCalls).toHaveLength(1)
+      expect(firstSessions.sendCalls).toHaveLength(2)
+    } finally {
+      await firstServer.close()
+    }
+
+    const restartedSessions = createMockSessionsInterface()
+    const restartedServer = await startServer({
+      sessionStorePath: storePath,
+      sessionsInterface: restartedSessions.interface,
+    })
+
+    try {
+      const duplicateResponse = await postChannelMessage(restartedServer.baseUrl, {
+        ...inboundBody,
+        message: 'provider retry after restart',
+      })
+      expect(duplicateResponse.status).toBe(200)
+      expect(await duplicateResponse.json()).toMatchObject({
+        accepted: true,
+        delivered: false,
+        duplicate: true,
+        created: false,
+        commanderId: COMMANDER_A,
+      })
+      expect(restartedSessions.createCalls).toHaveLength(0)
+      expect(restartedSessions.sendCalls).toHaveLength(0)
+
+      const conversationsResponse = await fetch(
+        `${restartedServer.baseUrl}/api/commanders/${COMMANDER_A}/conversations`,
+        { headers: AUTH_HEADERS },
+      )
+      expect(conversationsResponse.status).toBe(200)
+      const conversations = await conversationsResponse.json() as Array<{
+        channelMeta?: { sessionKey?: string }
+      }>
+      expect(
+        conversations.filter((conversation) =>
+          conversation.channelMeta?.sessionKey === 'whatsapp:default:direct:15551234567@s.whatsapp.net',
+        ),
+      ).toHaveLength(1)
+    } finally {
+      await restartedServer.close()
+    }
+  })
+
+  it('does not claim provider rawSourceId idempotency until delivery succeeds', async () => {
+    const dir = await createTempDir('hammurabi-channel-idempotency-failed-delivery-')
+    const storePath = join(dir, 'sessions.json')
+    await seedCommander(storePath, COMMANDER_A)
+
+    const mock = createMockSessionsInterface({
+      failSendTexts: new Set(['retryable delivery']),
+    })
+    const server = await startServer({
+      sessionStorePath: storePath,
+      sessionsInterface: mock.interface,
+    })
+
+    const inboundBody = {
+      commanderId: COMMANDER_A,
+      provider: 'whatsapp',
+      accountId: 'default',
+      chatType: 'direct',
+      peerId: '15551234567@s.whatsapp.net',
+      displayName: '+1 555 123 4567',
+      message: 'retryable delivery',
+      rawSourceId: 'wa-provider-retryable-delivery-1',
+    }
+
+    try {
+      const failedResponse = await postChannelMessage(server.baseUrl, inboundBody)
+      expect(failedResponse.status).toBe(409)
+      expect(await failedResponse.json()).toMatchObject({
+        accepted: false,
+        delivered: false,
+      })
+
+      const retryResponse = await postChannelMessage(server.baseUrl, inboundBody)
+      expect(retryResponse.status).toBe(200)
+      const retryBody = await retryResponse.json()
+      expect(retryBody).toMatchObject({
+        accepted: true,
+        delivered: true,
+      })
+      expect(retryBody).not.toHaveProperty('duplicate')
+
+      const duplicateResponse = await postChannelMessage(server.baseUrl, {
+        ...inboundBody,
+        message: 'provider retry after successful delivery',
+      })
+      expect(duplicateResponse.status).toBe(200)
+      expect(await duplicateResponse.json()).toMatchObject({
+        accepted: true,
+        delivered: false,
+        duplicate: true,
+        created: false,
+        commanderId: COMMANDER_A,
+      })
+
+      expect(mock.sendCalls.filter((call) => call.text === 'retryable delivery')).toHaveLength(2)
+      expect(mock.sendCalls.some((call) => call.text === 'provider retry after successful delivery')).toBe(false)
     } finally {
       await server.close()
     }

@@ -1,27 +1,37 @@
-const commanderMemoryMutationLocks = new Map<string, Promise<void>>()
+import path from 'node:path'
 
-export async function withCommanderMemoryMutationLock<T>(
+const memoryMutationQueues = new Map<string, Promise<void>>()
+
+function withMutationLock<T>(
+  key: string,
+  operation: () => Promise<T>,
+): Promise<T> {
+  const previous = memoryMutationQueues.get(key) ?? Promise.resolve()
+  const next = previous.then(operation, operation)
+  const settled = next.then(
+    () => undefined,
+    () => undefined,
+  )
+
+  memoryMutationQueues.set(key, settled)
+
+  return next.finally(() => {
+    if (memoryMutationQueues.get(key) === settled) {
+      memoryMutationQueues.delete(key)
+    }
+  })
+}
+
+export function withCommanderMemoryMutationLock<T>(
   commanderId: string,
   operation: () => Promise<T>,
 ): Promise<T> {
-  const previous = commanderMemoryMutationLocks.get(commanderId) ?? Promise.resolve()
-  const settledPrevious = previous.catch(() => undefined)
+  return withMutationLock(`commander:${commanderId}`, operation)
+}
 
-  let releaseCurrent!: () => void
-  const current = new Promise<void>((resolve) => {
-    releaseCurrent = resolve
-  })
-  const tail = settledPrevious.then(() => current)
-  commanderMemoryMutationLocks.set(commanderId, tail)
-
-  await settledPrevious
-
-  try {
-    return await operation()
-  } finally {
-    releaseCurrent()
-    if (commanderMemoryMutationLocks.get(commanderId) === tail) {
-      commanderMemoryMutationLocks.delete(commanderId)
-    }
-  }
+export function withMemoryMutationLock<T>(
+  memoryRoot: string,
+  operation: () => Promise<T>,
+): Promise<T> {
+  return withMutationLock(`memory-root:${path.resolve(memoryRoot)}`, operation)
 }

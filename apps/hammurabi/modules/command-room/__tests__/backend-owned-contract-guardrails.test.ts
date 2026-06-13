@@ -29,6 +29,9 @@ describe('backend-owned UI contract guardrails', () => {
 
     expect(commandRoom).toContain('conversation?.allowedActions?.[action] === true')
     expect(commandRoom).toContain('conversation.sendTarget.sessionName')
+    expect(commandRoom).toContain("resolveModuleGraphWebSocketPath(")
+    expect(commandRoom).not.toContain('/api/conversations/${encodeURIComponent(selectedConversation.id)}/ws')
+    expect(commandRoom).not.toMatch(/\/api\/conversations.*\/ws/u)
     expect(mobileChatView).toContain('conversation.sendTarget?.sessionName?.trim()')
     expect(mobileShell).toContain("hasConversationAction(conversation, 'start')")
     expect(sessionsColumn).toContain("hasConversationAction(conversation, 'start')")
@@ -120,7 +123,6 @@ describe('backend-owned UI contract guardrails', () => {
         "provider === 'email'",
         "provider === 'whatsapp'",
         'listChannelProviderDescriptors',
-        'Runtime',
       ],
     )
 

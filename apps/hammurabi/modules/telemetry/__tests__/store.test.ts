@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { mkdtemp, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { TelemetryJsonlStore, type TelemetryStoreEntry } from '../store'
@@ -93,6 +93,14 @@ describe('TelemetryJsonlStore', () => {
 })
 
 describe('TelemetryJsonlStore.compact()', () => {
+  it('does not retain compacted rows in an unbounded line array', async () => {
+    const source = await readFile(new URL('../store.ts', import.meta.url), 'utf8')
+
+    expect(source).not.toMatch(/\blines\s*:\s*string\[\]/)
+    expect(source).not.toMatch(/\blines\.push\(/)
+    expect(source).not.toMatch(/\blines\.join\(/)
+  })
+
   it('removes entries older than retentionDays', async () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-03-04T00:00:00.000Z'))
@@ -311,6 +319,43 @@ describe('TelemetryJsonlStore.compact()', () => {
     expect(kept[0]?.payload).toMatchObject({ sessionId: 'oversized' })
     await expect(stat(`${filePath}.tmp`)).rejects.toMatchObject({ code: 'ENOENT' })
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('Skipping compact'))
+  })
+
+  it('preserves appends that are requested while compaction is running', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-03-04T00:00:00.000Z'))
+
+    const filePath = await createTempStoreFilePath()
+    const store = new TelemetryJsonlStore(filePath)
+    const oldRecordedAt = '2026-01-01T00:00:00.000Z'
+    const recentRecordedAt = '2026-03-03T00:00:00.000Z'
+    const appendedRecordedAt = '2026-03-03T00:01:00.000Z'
+
+    await store.append({
+      type: 'heartbeat',
+      recordedAt: oldRecordedAt,
+      payload: { sessionId: 'old', completed: false, timestamp: oldRecordedAt },
+    })
+    await store.append({
+      type: 'heartbeat',
+      recordedAt: recentRecordedAt,
+      payload: { sessionId: 'recent', completed: false, timestamp: recentRecordedAt },
+    })
+
+    const compactPromise = store.compact(14)
+    const appendPromise = store.append({
+      type: 'heartbeat',
+      recordedAt: appendedRecordedAt,
+      payload: { sessionId: 'appended-during-compact', completed: false, timestamp: appendedRecordedAt },
+    })
+
+    await Promise.all([compactPromise, appendPromise])
+
+    const kept = await store.load()
+    expect(kept.map((entry) => entry.payload.sessionId)).toEqual([
+      'recent',
+      'appended-during-compact',
+    ])
   })
 })
 

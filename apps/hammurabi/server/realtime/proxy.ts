@@ -2,7 +2,7 @@ import { Router } from 'express'
 import { WebSocketServer, WebSocket, type RawData } from 'ws'
 import type { IncomingMessage } from 'node:http'
 import type { Duplex } from 'node:stream'
-import type { AuthUser } from '@gehirn/auth-providers'
+import { bearerTokenFromHeader, type AuthUser } from '@gehirn/auth-providers'
 import type { TranscriptionProvider } from '@gehirn/transcription'
 import type { ApiKeyStoreLike } from '../api-keys/store.js'
 import {
@@ -11,6 +11,10 @@ import {
 } from '../api-keys/transcription-store.js'
 import { combinedAuth } from '../middleware/combined-auth.js'
 import { createAuth0Verifier } from '../middleware/auth0.js'
+import {
+  InMemoryTransportAuthTicketStore,
+  readTransportAuthTicketFromUrl,
+} from '../auth/transport-tickets.js'
 import {
   OpenAIRealtimeClient,
   isTransientCommitRaceError,
@@ -254,6 +258,7 @@ export function createRealtimeProxy(options: RealtimeProxyOptions = {}): Realtim
     clientId: options.auth0ClientId,
     verifyToken: options.verifyAuth0Token,
   })
+  const transcriptionTickets = new InMemoryTransportAuthTicketStore()
 
   router.get('/config', requireRealtimeAccess, async (_req, res) => {
     try {
@@ -266,6 +271,10 @@ export function createRealtimeProxy(options: RealtimeProxyOptions = {}): Realtim
     }
   })
 
+  router.post('/transcription-ticket', requireRealtimeAccess, (_req, res) => {
+    res.json(transcriptionTickets.issue('realtime.transcription'))
+  })
+
   const auth0Verifier = createAuth0Verifier({
     domain: options.auth0Domain,
     audience: options.auth0Audience,
@@ -275,10 +284,21 @@ export function createRealtimeProxy(options: RealtimeProxyOptions = {}): Realtim
 
   async function verifyWsAuth(req: IncomingMessage): Promise<boolean> {
     const url = new URL(req.url ?? '', `http://${req.headers.host ?? 'localhost'}`)
-    const accessToken = url.searchParams.get('access_token')
-    const apiKeyParam = url.searchParams.get('api_key')
+    if (
+      transcriptionTickets.consume(
+        readTransportAuthTicketFromUrl(url),
+        'realtime.transcription',
+      )
+    ) {
+      return true
+    }
+
+    const authorizationHeader = Array.isArray(req.headers.authorization)
+      ? req.headers.authorization[0]
+      : req.headers.authorization
+    const bearerToken = bearerTokenFromHeader(authorizationHeader)
     const apiKeyHeader = req.headers['x-hammurabi-api-key'] as string | undefined
-    const token = accessToken ?? apiKeyParam ?? apiKeyHeader
+    const token = bearerToken ?? apiKeyHeader
 
     if (!token) {
       return false
