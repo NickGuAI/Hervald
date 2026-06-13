@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import path from 'node:path'
 import { syncManagedAgentTelemetryFromSavedConfig } from './agent-telemetry.js'
+import { formatStatusLine, printHervaldBrand } from './terminal-style.js'
 
 export interface UpOptions {
   appDir: string
@@ -117,7 +118,7 @@ export function parseUpArgs(args: readonly string[]): ParsedArgs {
 function printUpUsage(write: (chunk: string) => void): void {
   write('Usage: hammurabi up [--dev] [--port <port>]\n')
   write('\n')
-  write('  Start the Hammurabi server locally.\n')
+  write('  Start the Hervald server locally.\n')
   write('\n')
   write('Options:\n')
   write('  --dev          Run in managed tmux session with hot reload\n')
@@ -270,7 +271,8 @@ function runManagedLaunch(plan: LaunchPlan): number {
 }
 
 function runForegroundLaunch(plan: LaunchPlan): Promise<number> {
-  process.stdout.write(`Starting Hammurabi (${plan.script}) on port ${plan.port}\n`)
+  printHervaldBrand('Hervald up')
+  process.stdout.write(`Starting Hervald (${plan.script}) on port ${plan.port}\n`)
   process.stdout.write(`  app: ${plan.appDir}\n`)
   process.stdout.write('  press Ctrl+C to stop\n\n')
 
@@ -318,7 +320,7 @@ export async function runUpCli(args: readonly string[]): Promise<number> {
     return 0
   }
   if (parsed.error) {
-    process.stderr.write(`hammurabi up: ${parsed.error}\n`)
+    process.stderr.write(`${formatStatusLine('fail', 'hammurabi up', parsed.error, 'Run hammurabi up --help for supported options.')}\n`)
     printUpUsage((chunk) => process.stderr.write(chunk))
     return 1
   }
@@ -326,13 +328,23 @@ export async function runUpCli(args: readonly string[]): Promise<number> {
   const appDir = resolveAppDir()
   if (!appDir) {
     process.stderr.write(
-      'hammurabi up: app directory not set. Run apps/hammurabi/install.sh or export HAMMURABI_APP_DIR.\n',
+      `${formatStatusLine(
+        'fail',
+        'App path',
+        'app directory not set',
+        'Run apps/hammurabi/install.sh once, or export HAMMURABI_APP_DIR.',
+      )}\n`,
     )
     return 1
   }
   if (!existsSync(path.join(appDir, 'package.json'))) {
     process.stderr.write(
-      `hammurabi up: app directory ${appDir} is not a Hammurabi install (missing package.json).\n`,
+      `${formatStatusLine(
+        'fail',
+        'App path',
+        `${appDir} is not a Hervald install`,
+        'Expected package.json in the configured app directory.',
+      )}\n`,
     )
     return 1
   }

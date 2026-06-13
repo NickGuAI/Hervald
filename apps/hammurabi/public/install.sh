@@ -17,6 +17,7 @@ YELLOW='\033[1;33m'
 RED='\033[0;31m'
 CYAN='\033[0;36m'
 BOLD='\033[1m'
+DIM='\033[2m'
 NC='\033[0m'
 
 PRODUCT_NAME="Hervald"
@@ -26,7 +27,91 @@ PNPM_VERSION="${HERVALD_PNPM_VERSION:-10.23.0}"
 step() { printf "${CYAN}==>${NC} %s\n" "$*"; }
 ok()   { printf "${GREEN}✓${NC} %s\n" "$*"; }
 warn() { printf "${YELLOW}!${NC} %s\n" "$*"; }
-fail() { printf "${RED}✗${NC} %s\n" "$*" >&2; exit 1; }
+fail() {
+  local fallback_log="${HOME:-/tmp}/.hammurabi/logs/first-boot.log"
+  print_repair_hint \
+    "Installer failed" \
+    "$*" \
+    "Fix the issue above, then rerun install.sh. If first boot started, inspect ${INSTALL_LOG_FILE:-$fallback_log}."
+  exit 1
+}
+
+brand_opener() {
+  printf "${CYAN}"
+  printf ' _   _ _____ ______     ___    _     ____  \n'
+  printf '| | | | ____|  _ \\ \\   / / \\  | |   |  _ \\ \n'
+  printf '| |_| |  _| | |_) \\ \\ / / _ \\ | |   | | | |\n'
+  printf '|  _  | |___|  _ < \\ V / ___ \\| |___| |_| |\n'
+  printf '|_| |_|_____|_| \\_\\ \\_/_/   \\_\\_____|____/ \n'
+  printf "${NC}"
+  printf "  ${BOLD}%s${NC} - operator-controlled agent fleet runtime\n" "$PRODUCT_NAME"
+  printf "  ${DIM}%s${NC}\n\n" "installer"
+}
+
+prompt_select_menu() {
+  local prompt="$1"
+  local default_value="$2"
+  shift 2
+  local reply option index normalized
+
+  if ! prompt_available; then
+    printf '%s' "$default_value"
+    return 0
+  fi
+
+  while true; do
+    printf "%s\n" "$prompt" > /dev/tty
+    index=1
+    for option in "$@"; do
+      printf "  %s. %s\n" "$index" "$option" > /dev/tty
+      index=$((index + 1))
+    done
+    reply="$(prompt_line "Select one number [$default_value]: " "$default_value" || true)"
+    normalized="$(printf '%s' "$reply" | tr -d '[:space:]')"
+    case "$normalized" in
+      '' ) printf '%s' "$default_value"; return 0 ;;
+      *[!0-9]* ) warn "Invalid selection: $reply" ;;
+      * )
+        if [ "$normalized" -ge 1 ] 2>/dev/null && [ "$normalized" -lt "$index" ] 2>/dev/null; then
+          printf '%s' "$normalized"
+          return 0
+        fi
+        warn "Invalid selection: $reply"
+        ;;
+    esac
+  done
+}
+
+choose_setup_path() {
+  local choice normalized
+  if [[ -n "${HERVALD_SETUP_PATH:-}" ]]; then
+    normalized="$(printf '%s' "$HERVALD_SETUP_PATH" | tr '[:upper:]' '[:lower:]')"
+    case "$normalized" in
+      quickstart|advanced) printf '%s' "$normalized"; return 0 ;;
+      *) warn "Unknown HERVALD_SETUP_PATH=$HERVALD_SETUP_PATH; using Quickstart." ;;
+    esac
+  fi
+
+  choice="$(prompt_select_menu \
+    "Choose setup path" \
+    "1" \
+    "Quickstart (recommended) - local install, first boot, CLI self-config" \
+    "Advanced - customize provider setup and launch behavior")"
+  case "$choice" in
+    2) printf 'advanced' ;;
+    *) printf 'quickstart' ;;
+  esac
+}
+
+print_repair_hint() {
+  local name="$1"
+  local message="$2"
+  local hint="$3"
+  printf "${YELLOW}!${NC} ${BOLD}%s${NC}: %s\n" "$name" "$message" >&2
+  if [[ -n "$hint" ]]; then
+    printf "  ${DIM}%s${NC}\n" "$hint" >&2
+  fi
+}
 
 prompt_available() {
   : 2>/dev/null <>/dev/tty
@@ -290,6 +375,7 @@ INSTALL_KEY_FILE="$BOOTSTRAP_KEY_FILE"
 INSTALL_LOG_FILE="$BOOTSTRAP_LOG_FILE"
 INSTALL_PATH_NOTE=""
 INSTALL_AUTOSTART_STATUS="not installed"
+INSTALL_CLI_CONFIG_STATUS="not configured"
 
 xml_escape() {
   local value="$1"
@@ -655,7 +741,7 @@ install_provider_cli() {
 
 configure_provider_auth() {
   local provider="$1"
-  local label secret key reply normalized_reply
+  local label secret key reply
   label="$(provider_label "$provider")"
 
   if provider_auth_configured "$provider"; then
@@ -683,10 +769,14 @@ configure_provider_auth() {
   fi
 
   while true; do
-    reply="$(prompt_line "Press y/authenticated after completing auth, key to paste a secret, or skip [$label]: " "y" || true)"
-    normalized_reply="$(printf '%s' "$reply" | tr '[:upper:]' '[:lower:]')"
-    case "$normalized_reply" in
-      y|yes|authenticated|done)
+    reply="$(prompt_select_menu \
+      "$label authentication" \
+      "1" \
+      "Already authenticated - re-check CLI or env auth" \
+      "Paste secret - save API key or setup token locally" \
+      "Skip - leave this provider unconfigured")"
+    case "$reply" in
+      1)
         if provider_auth_configured "$provider"; then
           ok "$label auth ready"
           PROVIDER_RESULTS+=("$label:ready")
@@ -694,7 +784,7 @@ configure_provider_auth() {
         fi
         warn "$label auth still not detected."
         ;;
-      key|api-key|token|secret)
+      2)
         secret="$(prompt_secret "Paste secret for $label: " || true)"
         if [[ -n "$secret" ]]; then
           key="$(provider_secret_key "$provider")"
@@ -705,13 +795,10 @@ configure_provider_auth() {
         fi
         warn "No secret entered for $label."
         ;;
-      skip|s|no|n)
+      3)
         warn "Skipped $label auth."
         PROVIDER_RESULTS+=("$label:unconfigured")
         return 1
-        ;;
-      *)
-        warn "Expected y, authenticated, key, or skip."
         ;;
     esac
   done
@@ -732,34 +819,78 @@ normalize_provider_selection() {
   printf '%s' "$normalized"
 }
 
+prompt_provider_selection() {
+  local reply normalized token
+  local -a selected tokens
+
+  if ! prompt_available; then
+    return 1
+  fi
+
+  while true; do
+    printf "Provider CLI setup\n" > /dev/tty
+    printf "  1. Claude Code\n" > /dev/tty
+    printf "  2. Codex\n" > /dev/tty
+    printf "  3. Gemini\n" > /dev/tty
+    printf "  4. OpenCode\n" > /dev/tty
+    printf "  0. Skip provider setup\n" > /dev/tty
+    reply="$(prompt_line "Select providers [1,2,3,4]: " "1,2,3,4" || true)"
+    normalized="$(printf '%s' "$reply" | tr -d '[:space:]')"
+    if [[ -z "$normalized" ]]; then
+      normalized="1,2,3,4"
+    fi
+    if [[ "$normalized" == "0" ]]; then
+      printf ''
+      return 0
+    fi
+
+    selected=()
+    IFS=',' read -r -a tokens <<< "$normalized"
+    for token in "${tokens[@]}"; do
+      case "$token" in
+        1) selected+=("claude") ;;
+        2) selected+=("codex") ;;
+        3) selected+=("gemini") ;;
+        4) selected+=("opencode") ;;
+        *) selected=(); break ;;
+      esac
+    done
+    if [[ "${#selected[@]}" -gt 0 ]]; then
+      printf '%s\n' "${selected[*]}"
+      return 0
+    fi
+    warn "Invalid provider selection: $reply"
+  done
+}
+
 configure_providers() {
-  local raw_selection selected provider reply
+  local setup_path="${1:-advanced}"
+  local raw_selection selected provider
 
   if [[ "${HERVALD_CONFIGURE_PROVIDERS:-1}" == "0" ]]; then
     warn "Skipping provider setup because HERVALD_CONFIGURE_PROVIDERS=0"
     return 0
   fi
 
+  raw_selection="${HERVALD_PROVIDERS:-}"
+  if [[ "$setup_path" != "advanced" && -z "$raw_selection" ]]; then
+    warn "Quickstart skips provider CLI customization."
+    printf "  ${DIM}%s${NC}\n" "Choose Advanced setup, or set HERVALD_PROVIDERS=claude,codex,gemini,opencode for non-interactive provider setup."
+    return 0
+  fi
+
   ensure_local_machine_registry
 
-  raw_selection="${HERVALD_PROVIDERS:-}"
   if [[ -z "$raw_selection" ]]; then
     if ! prompt_available; then
       warn "No interactive terminal is available; skipping provider setup. Re-run with HERVALD_PROVIDERS=claude,codex,gemini,opencode to configure non-interactively."
       return 0
     fi
-    reply="$(prompt_line "Configure provider CLIs now? [Y/n] " "y" || true)"
-    reply="$(printf '%s' "$reply" | tr '[:upper:]' '[:lower:]')"
-    case "$reply" in
-      n|no|skip)
-        warn "Skipping provider setup."
-        return 0
-        ;;
-    esac
-    raw_selection="$(prompt_line "Providers to configure [all | claude,codex,gemini,opencode]: " "all" || true)"
+    selected="$(prompt_provider_selection || true)"
+  else
+    selected="$(normalize_provider_selection "$raw_selection")"
   fi
 
-  selected="$(normalize_provider_selection "$raw_selection")"
   if [[ -z "${selected// }" ]]; then
     warn "No providers selected."
     return 0
@@ -893,9 +1024,15 @@ wait_for_first_boot() {
   local child_pid="$2"
   local deadline=$((SECONDS + HEALTHCHECK_TIMEOUT_SECONDS))
   local health_url="http://127.0.0.1:${port}/api/health"
+  local frames='-\|/'
+  local frame_index=0
+  local frame
 
   while [ "$SECONDS" -lt "$deadline" ]; do
     if curl -fsS "$health_url" >/dev/null 2>&1; then
+      if [ -t 1 ]; then
+        printf "\r${GREEN}✓${NC} First boot health check passed.                    \n"
+      fi
       return 0
     fi
 
@@ -903,10 +1040,33 @@ wait_for_first_boot() {
       break
     fi
 
+    if [ -t 1 ]; then
+      frame="${frames:$frame_index:1}"
+      printf "\r${CYAN}%s${NC} Waiting for first boot health at %s" "$frame" "$health_url"
+      frame_index=$(((frame_index + 1) % 4))
+    fi
     sleep 2
   done
 
+  if [ -t 1 ]; then
+    printf "\r${RED}✗${NC} First boot health check timed out.                \n"
+  fi
   return 1
+}
+
+read_bootstrap_key() {
+  if [ ! -f "$BOOTSTRAP_KEY_FILE" ]; then
+    return 1
+  fi
+
+  local bootstrap_key
+  bootstrap_key="$(tr -d '\r\n' < "$BOOTSTRAP_KEY_FILE")"
+  if [ -z "$bootstrap_key" ]; then
+    return 1
+  fi
+
+  INSTALL_BOOTSTRAP_KEY="$bootstrap_key"
+  return 0
 }
 
 start_first_boot() {
@@ -942,17 +1102,44 @@ start_first_boot() {
 
   ok "${PRODUCT_NAME} is running at ${login_url}"
 
-  if [ -f "$BOOTSTRAP_KEY_FILE" ]; then
-    local bootstrap_key
-    bootstrap_key="$(tr -d '\r\n' < "$BOOTSTRAP_KEY_FILE")"
-    if [ -n "$bootstrap_key" ]; then
+  for _ in {1..20}; do
+    if read_bootstrap_key; then
       printf '\n%s\n' "${GREEN}${PRODUCT_NAME} is ready.${NC}"
-      INSTALL_BOOTSTRAP_KEY="$bootstrap_key"
       return 0
     fi
-  fi
+    sleep 0.25
+  done
 
   warn "The server is healthy, but no bootstrap key file was found."
+}
+
+configure_cli_from_first_boot() {
+  local port="$1"
+  local endpoint="http://localhost:${port}"
+  local config_path="$HOME/.hammurabi.json"
+
+  step "Configuring local hammurabi CLI"
+
+  if [[ -z "$INSTALL_BOOTSTRAP_KEY" ]]; then
+    if [[ -f "$config_path" ]]; then
+      INSTALL_CLI_CONFIG_STATUS="already present: $config_path"
+      ok "$INSTALL_CLI_CONFIG_STATUS"
+      return 0
+    fi
+
+    fail "Cannot configure the local CLI because no bootstrap API key was generated. Inspect $INSTALL_LOG_FILE"
+  fi
+
+  "$SHIM_PATH" onboard \
+    --non-interactive \
+    --endpoint "$endpoint" \
+    --api-key "$INSTALL_BOOTSTRAP_KEY" \
+    --agents claude-code,codex,terminal-cri \
+    --skip-founder-operator \
+    --skip-tailscale
+
+  INSTALL_CLI_CONFIG_STATUS="configured: $config_path"
+  ok "$INSTALL_CLI_CONFIG_STATUS"
 }
 
 print_receipt_line() {
@@ -975,6 +1162,7 @@ print_install_receipt() {
     print_receipt_line "Bootstrap API key" "not found; inspect $INSTALL_LOG_FILE"
   fi
   print_receipt_line "CLI" "$SHIM_PATH"
+  print_receipt_line "CLI config" "$INSTALL_CLI_CONFIG_STATUS"
   print_receipt_line "Doctor" "hammurabi doctor"
   print_receipt_line "App directory" "$APP_DIR"
   print_receipt_line "Data directory" "$DATA_DIR"
@@ -989,9 +1177,28 @@ print_install_receipt() {
   print_provider_summary
 }
 
-printf "${CYAN}╔════════════════════════════════════════════════════════════╗${NC}\n"
-printf "${CYAN}║${NC} ${BOLD}${PRODUCT_NAME} installer${NC}                                        ${CYAN}║${NC}\n"
-printf "${CYAN}╚════════════════════════════════════════════════════════════╝${NC}\n"
+print_configuration_saved_summary() {
+  printf "\n${GREEN}✓${NC} ${BOLD}Configuration saved${NC}\n"
+  printf "  URL: %s\n" "${INSTALL_LOGIN_URL:-http://localhost:${PORT:-$DEFAULT_PORT}/welcome}"
+  printf "  CLI: %s\n" "$SHIM_PATH"
+  printf "  CLI config: %s\n" "$INSTALL_CLI_CONFIG_STATUS"
+  printf "  App path: %s\n" "$APP_PATH_FILE"
+  printf "\n${CYAN}Next commands${NC}\n"
+  printf "  hammurabi doctor\n"
+  printf "  hammurabi up\n"
+  printf "  Open Hervald, finish browser onboarding, then start the first commander conversation from Command Room.\n"
+}
+
+brand_opener
+INSTALL_SETUP_PATH="$(choose_setup_path)"
+case "$INSTALL_SETUP_PATH" in
+  advanced)
+    printf "${CYAN}==>${NC} Advanced setup selected\n"
+    ;;
+  *)
+    printf "${CYAN}==>${NC} Quickstart selected (recommended)\n"
+    ;;
+esac
 printf "  app:  %s\n" "$APP_DIR"
 printf "  repo: %s\n" "$REPO_ROOT"
 printf "  bin:  %s\n\n" "$SHIM_PATH"
@@ -1031,7 +1238,7 @@ ensure_local_path_setup
 ok "installed $SHIM_PATH"
 
 install_default_skills
-configure_providers
+configure_providers "$INSTALL_SETUP_PATH"
 
 case ":$PATH:" in
   *":$BIN_DIR:"*) ok "$BIN_DIR already on PATH" ;;
@@ -1044,25 +1251,25 @@ esac
 
 PORT="$(read_configured_port)"
 start_first_boot "$PORT"
+configure_cli_from_first_boot "$PORT"
 
 install_launch_agent_if_needed
 
+print_configuration_saved_summary
 print_install_receipt
 
 printf "\n${GREEN}Next:${NC}\n"
 if [[ "$(uname -s)" == "Darwin" && "${HAMMURABI_INSTALL_AUTOSTART:-1}" != "0" ]]; then
   printf "  1. Sign in with the bootstrap key shown above.\n"
-  printf "  2. Complete browser onboarding, then create a permanent API key in Settings and rotate or revoke the bootstrap key.\n"
+  printf "  2. Complete browser onboarding within 24 hours, then create a permanent API key in Settings and rotate or revoke the expiring bootstrap key.\n"
   printf "  3. Hervald now auto-starts at login via launchd.\n"
   printf "     Reload after config changes with:\n"
   printf "       ${CYAN}launchctl kickstart -k gui/%s/io.gehirn.hervald${NC}\n" "$(id -u)"
-  printf "  4. Run ${CYAN}hammurabi doctor${NC} after provider authentication.\n"
-  printf "  5. Optional: run ${CYAN}hammurabi onboard${NC} to seed CLI integrations.\n"
+  printf "  4. Run ${CYAN}hammurabi doctor${NC} after provider authentication if you want a readiness report.\n"
 else
   printf "  1. Sign in with the bootstrap key shown above.\n"
-  printf "  2. Complete browser onboarding, then create a permanent API key in Settings and rotate or revoke the bootstrap key.\n"
+  printf "  2. Complete browser onboarding within 24 hours, then create a permanent API key in Settings and rotate or revoke the expiring bootstrap key.\n"
   printf "  3. The server is already running in the background.\n"
   printf "     Restart later with ${CYAN}hammurabi up${NC} (or ${CYAN}hammurabi up --dev${NC} for hot reload).\n"
-  printf "  4. Run ${CYAN}hammurabi doctor${NC} after provider authentication.\n"
-  printf "  5. Optional: run ${CYAN}hammurabi onboard${NC} to seed CLI integrations.\n"
+  printf "  4. Run ${CYAN}hammurabi doctor${NC} after provider authentication if you want a readiness report.\n"
 fi

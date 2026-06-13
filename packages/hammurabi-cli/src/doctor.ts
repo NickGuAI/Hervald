@@ -12,6 +12,10 @@ import {
   BOOTSTRAP_KEY_FILE,
   resolveAppDir,
 } from './up.js'
+import {
+  formatStatusLine,
+  printHervaldBrand,
+} from './terminal-style.js'
 
 export type DoctorState = 'pass' | 'warn' | 'fail'
 
@@ -31,10 +35,6 @@ export interface DoctorOptions {
   fetchImpl?: typeof fetch
   env?: NodeJS.ProcessEnv
   configPath?: string
-}
-
-function glyph(state: DoctorState): string {
-  return state === 'pass' ? '✓' : state === 'warn' ? '!' : '✗'
 }
 
 function stateLabel(state: DoctorState): string {
@@ -63,8 +63,8 @@ async function fetchOnboardingStatus(
   config: HammurabiConfig,
   fetchImpl: typeof fetch,
 ): Promise<{ ok: boolean; summary: string }> {
+  const url = new URL('/api/onboarding/status', `${normalizeEndpoint(config.endpoint)}/`).toString()
   try {
-    const url = new URL('/api/onboarding/status', `${normalizeEndpoint(config.endpoint)}/`).toString()
     const response = await fetchImpl(url, {
       method: 'GET',
       headers: buildAuthHeaders(config),
@@ -72,7 +72,14 @@ async function fetchOnboardingStatus(
     if (!response.ok) {
       return { ok: false, summary: `server returned ${response.status}` }
     }
-    const payload = await response.json() as {
+    const raw = await response.text()
+    if (raw.trim().length === 0) {
+      return {
+        ok: false,
+        summary: `empty response from ${url}; run hammurabi up --dev after configuring App path`,
+      }
+    }
+    const payload = JSON.parse(raw) as {
       currentStepId?: unknown
       providers?: Array<{ label?: unknown; state?: unknown }>
       machines?: Array<{ id?: unknown; state?: unknown }>
@@ -90,7 +97,9 @@ async function fetchOnboardingStatus(
   } catch (error) {
     return {
       ok: false,
-      summary: error instanceof Error ? error.message : 'server unreachable',
+      summary: error instanceof Error
+        ? `${error.message}; run hammurabi up --dev after configuring App path`
+        : 'server unreachable; run hammurabi up --dev after configuring App path',
     }
   }
 }
@@ -115,7 +124,7 @@ export async function buildDoctorReport(options: DoctorOptions = {}): Promise<Do
   checks.push({
     label: 'App path',
     state: appDir && existsSync(path.join(appDir, 'package.json')) ? 'pass' : 'fail',
-    detail: appDir ?? appPathFileValue ?? `missing ${APP_PATH_FILE}`,
+    detail: appDir ?? appPathFileValue ?? `missing ${APP_PATH_FILE}; set HAMMURABI_APP_DIR or run apps/hammurabi/install.sh`,
   })
 
   checks.push({
@@ -133,7 +142,7 @@ export async function buildDoctorReport(options: DoctorOptions = {}): Promise<Do
   checks.push({
     label: 'Local machine env',
     state: existsSync(envFile) ? 'pass' : 'warn',
-    detail: envFile,
+    detail: existsSync(envFile) ? envFile : `${envFile}; run apps/hammurabi/install.sh or set HAMMURABI_LOCAL_MACHINE_ENV_FILE`,
   })
 
   if (config) {
@@ -152,23 +161,14 @@ export async function buildDoctorReport(options: DoctorOptions = {}): Promise<Do
   }
 }
 
-function printBoxLine(write: (chunk: string) => void, text = ''): void {
-  const width = 66
-  const trimmed = text.length > width ? `${text.slice(0, width - 1)}…` : text
-  write(`║ ${trimmed.padEnd(width)} ║\n`)
-}
-
 export function printDoctorReport(
   report: DoctorReport,
   write: (chunk: string) => void = (chunk) => process.stdout.write(chunk),
 ): void {
-  write('╔════════════════════════════════════════════════════════════════════╗\n')
-  printBoxLine(write, 'Hervald Doctor')
-  printBoxLine(write, 'terminal readiness for first-run onboarding')
-  write('╚════════════════════════════════════════════════════════════════════╝\n\n')
+  printHervaldBrand('Hervald Doctor', write)
 
   for (const check of report.checks) {
-    write(`${glyph(check.state)} ${check.label.padEnd(24)} ${stateLabel(check.state).padEnd(16)} ${check.detail}\n`)
+    write(`${formatStatusLine(check.state, check.label, stateLabel(check.state), check.detail)}\n`)
   }
 
   write('\n')

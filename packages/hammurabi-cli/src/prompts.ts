@@ -19,6 +19,12 @@ export interface MultiSelectOption<TValue extends string> {
   label: string
 }
 
+export interface SelectOption<TValue extends string> {
+  value: TValue
+  label: string
+  hint?: string
+}
+
 let nonTtyLinesPromise: Promise<string[]> | null = null
 let nonTtyLineIndex = 0
 
@@ -188,6 +194,53 @@ export async function promptConfirm(
     }
 
     output.write('Please answer yes or no.\n')
+  }
+}
+
+function parseSelect<TValue extends string>(
+  answer: string,
+  options: readonly SelectOption<TValue>[],
+): TValue | null {
+  if (!/^\d+$/u.test(answer.trim())) {
+    return null
+  }
+
+  const index = Number.parseInt(answer.trim(), 10) - 1
+  return options[index]?.value ?? null
+}
+
+export async function promptSelect<TValue extends string>(
+  label: string,
+  options: readonly SelectOption<TValue>[],
+  defaultValue?: TValue,
+): Promise<TValue> {
+  if (options.length === 0) {
+    throw new Error(`No options available for prompt "${label}".`)
+  }
+
+  const defaultIndex = defaultValue
+    ? options.findIndex((option) => option.value === defaultValue)
+    : -1
+  const defaultInput = defaultIndex >= 0 ? String(defaultIndex + 1) : undefined
+
+  while (true) {
+    output.write(`${label}\n`)
+    options.forEach((option, index) => {
+      const suffix = option.hint ? ` - ${option.hint}` : ''
+      output.write(`  ${index + 1}. ${option.label}${suffix}\n`)
+    })
+
+    const answer = await promptText('Select one number', {
+      defaultValue: defaultInput,
+      required: true,
+    })
+
+    const parsed = parseSelect(answer, options)
+    if (parsed) {
+      return parsed
+    }
+
+    output.write('Invalid selection. Example: 1\n')
   }
 }
 

@@ -6,7 +6,9 @@ import { spawn } from 'node:child_process'
 import {
   createHammurabiConfig,
   defaultConfigPath,
+  HAMMURABI_AGENTS,
   type HammurabiAgent,
+  isHammurabiAgent,
   writeHammurabiConfig,
 } from './config.js'
 import {
@@ -20,8 +22,14 @@ import {
   promptConfirm,
   promptMultiSelect,
   promptSecret,
+  promptSelect,
   promptText,
 } from './prompts.js'
+import {
+  formatStatusLine,
+  printHervaldBrand,
+  withTerminalSpinner,
+} from './terminal-style.js'
 import { validateTelemetryWriteKey } from './validate.js'
 
 const DEFAULT_ENDPOINT = 'https://hervald.gehirn.ai'
@@ -30,6 +38,17 @@ const DEFAULT_AGENTS: readonly HammurabiAgent[] = [
   'codex',
   'terminal-cri',
 ]
+
+interface ParsedOnboardArgs {
+  endpoint?: string
+  apiKey?: string
+  agents?: HammurabiAgent[]
+  nonInteractive: boolean
+  skipFounderOperator: boolean
+  skipTailscale: boolean
+  help: boolean
+  error?: string
+}
 
 interface AgentInstruction {
   id: HammurabiAgent
@@ -43,6 +62,15 @@ interface CommandRunResult {
   code: number
 }
 
+class CommandRunError extends Error {
+  constructor(
+    message: string,
+    readonly result: CommandRunResult,
+  ) {
+    super(message)
+  }
+}
+
 type CommandRunner = (
   command: string,
   args: string[],
@@ -53,6 +81,8 @@ type InteractiveCommandRunner = (
   command: string,
   args: string[],
 ) => Promise<number>
+
+type SetupPath = 'quickstart' | 'advanced'
 
 export interface OnboardCliDependencies {
   fetchImpl?: typeof fetch
@@ -113,7 +143,124 @@ const AGENT_INSTRUCTIONS: readonly AgentInstruction[] = [
 ]
 
 function printUsage(): void {
-  process.stdout.write('Usage: hammurabi onboard\n')
+  process.stdout.write(
+    'Usage: hammurabi onboard [--non-interactive --endpoint <url> --api-key <key> --agents <agent,...>] [--skip-founder-operator] [--skip-tailscale]\n',
+  )
+}
+
+function readOptionValue(
+  args: readonly string[],
+  index: number,
+  flag: string,
+): { value?: string; nextIndex: number; error?: string } {
+  const current = args[index]
+  const inlinePrefix = `${flag}=`
+  if (current.startsWith(inlinePrefix)) {
+    const value = current.slice(inlinePrefix.length).trim()
+    return value
+      ? { value, nextIndex: index }
+      : { nextIndex: index, error: `${flag} requires a value` }
+  }
+
+  if (current !== flag) {
+    return { nextIndex: index, error: `Expected ${flag}` }
+  }
+
+  const value = args[index + 1]?.trim()
+  if (!value || value.startsWith('--')) {
+    return { nextIndex: index, error: `${flag} requires a value` }
+  }
+
+  return { value, nextIndex: index + 1 }
+}
+
+function parseAgentSelection(value: string): HammurabiAgent[] | null {
+  const agents = value
+    .split(',')
+    .map((agent) => agent.trim())
+    .filter(Boolean)
+
+  if (agents.length === 0) {
+    return null
+  }
+
+  if (!agents.every(isHammurabiAgent)) {
+    return null
+  }
+
+  return [...new Set(agents)]
+}
+
+function parseOnboardArgs(args: readonly string[]): ParsedOnboardArgs {
+  const options: ParsedOnboardArgs = {
+    nonInteractive: false,
+    skipFounderOperator: false,
+    skipTailscale: false,
+    help: false,
+  }
+  const rawArgs = args[0] === 'onboard' ? args.slice(1) : args
+
+  for (let index = 0; index < rawArgs.length; index += 1) {
+    const arg = rawArgs[index]
+
+    if (arg === '-h' || arg === '--help') {
+      options.help = true
+      continue
+    }
+    if (arg === '--non-interactive') {
+      options.nonInteractive = true
+      continue
+    }
+    if (arg === '--skip-founder-operator') {
+      options.skipFounderOperator = true
+      continue
+    }
+    if (arg === '--skip-tailscale') {
+      options.skipTailscale = true
+      continue
+    }
+
+    if (arg === '--endpoint' || arg.startsWith('--endpoint=')) {
+      const result = readOptionValue(rawArgs, index, '--endpoint')
+      if (result.error) {
+        return { ...options, error: result.error }
+      }
+      options.endpoint = result.value
+      index = result.nextIndex
+      continue
+    }
+
+    if (arg === '--api-key' || arg.startsWith('--api-key=')) {
+      const result = readOptionValue(rawArgs, index, '--api-key')
+      if (result.error) {
+        return { ...options, error: result.error }
+      }
+      options.apiKey = result.value
+      index = result.nextIndex
+      continue
+    }
+
+    if (arg === '--agents' || arg.startsWith('--agents=')) {
+      const result = readOptionValue(rawArgs, index, '--agents')
+      if (result.error) {
+        return { ...options, error: result.error }
+      }
+      const agents = parseAgentSelection(result.value ?? '')
+      if (!agents) {
+        return {
+          ...options,
+          error: `--agents must be a comma-separated list of: ${HAMMURABI_AGENTS.join(', ')}`,
+        }
+      }
+      options.agents = agents
+      index = result.nextIndex
+      continue
+    }
+
+    return { ...options, error: `Unknown option: ${arg}` }
+  }
+
+  return options
 }
 
 function normalizeTailscaleHostname(value: string): string {
@@ -246,6 +393,42 @@ async function defaultRunInteractiveCommand(
   })
 }
 
+function printCommandFailure(result: CommandRunResult, fallbackMessage: string): void {
+  process.stderr.write(result.stderr.trim() || result.stdout.trim() || fallbackMessage)
+  if (!result.stderr.endsWith('\n') && !result.stdout.endsWith('\n')) {
+    process.stderr.write('\n')
+  }
+}
+
+async function runStatusCommandWithSpinner(
+  label: string,
+  task: () => Promise<CommandRunResult>,
+  messages: {
+    success: string
+    failure: string
+  },
+): Promise<CommandRunResult | null> {
+  try {
+    return await withTerminalSpinner(
+      label,
+      async () => {
+        const result = await task()
+        if (result.code !== 0) {
+          throw new CommandRunError(messages.failure, result)
+        }
+        return result
+      },
+      messages,
+    )
+  } catch (error) {
+    if (error instanceof CommandRunError) {
+      printCommandFailure(error.result, messages.failure)
+      return null
+    }
+    throw error
+  }
+}
+
 async function resolveGitUserName(runCommand: CommandRunner): Promise<string | undefined> {
   try {
     const result = await runCommand('git', ['config', 'user.name'], {
@@ -338,7 +521,14 @@ async function runTailscaleSetup(
     return null
   }
 
-  const installedCheck = await runCommand('which', ['tailscale'])
+  const installedCheck = await withTerminalSpinner(
+    'Checking Tailscale CLI',
+    () => runCommand('which', ['tailscale']),
+    {
+      success: 'Tailscale CLI check complete',
+      failure: 'Tailscale CLI check failed',
+    },
+  )
   const tailscaleInstalled = installedCheck.code === 0
 
   if (!tailscaleInstalled) {
@@ -357,16 +547,19 @@ async function runTailscaleSetup(
       return null
     }
 
-    const installResult = await runCommand(
-      installCommand.command,
-      installCommand.args,
-      { timeoutMs: 300_000 },
+    const installResult = await runStatusCommandWithSpinner(
+      'Installing Tailscale',
+      () => runCommand(
+        installCommand.command,
+        installCommand.args,
+        { timeoutMs: 300_000 },
+      ),
+      {
+        success: 'Tailscale installed',
+        failure: 'Tailscale install failed',
+      },
     )
-    if (installResult.code !== 0) {
-      process.stderr.write(installResult.stderr.trim() || installResult.stdout.trim() || 'Tailscale install failed.\n')
-      if (!installResult.stderr.endsWith('\n') && !installResult.stdout.endsWith('\n')) {
-        process.stderr.write('\n')
-      }
+    if (!installResult) {
       return null
     }
   } else {
@@ -378,7 +571,9 @@ async function runTailscaleSetup(
     defaultValue: true,
   })
   if (!shouldRunUp) {
-    process.stdout.write('Run `sudo tailscale up` when ready, then re-run `hammurabi onboard` to capture the hostname.\n')
+    process.stdout.write(
+      'Run `sudo tailscale up` when ready, then pair this machine from Hervald Machines.\n',
+    )
     return null
   }
 
@@ -388,14 +583,17 @@ async function runTailscaleSetup(
     return null
   }
 
-  const statusResult = await runCommand('tailscale', ['status', '--json'], {
-    timeoutMs: 15_000,
-  })
-  if (statusResult.code !== 0) {
-    process.stderr.write(statusResult.stderr.trim() || 'Failed to read tailscale status.\n')
-    if (!statusResult.stderr.endsWith('\n')) {
-      process.stderr.write('\n')
-    }
+  const statusResult = await runStatusCommandWithSpinner(
+    'Reading Tailscale status',
+    () => runCommand('tailscale', ['status', '--json'], {
+      timeoutMs: 15_000,
+    }),
+    {
+      success: 'Tailscale status ready',
+      failure: 'Failed to read Tailscale status',
+    },
+  )
+  if (!statusResult) {
     return null
   }
 
@@ -472,10 +670,92 @@ function printProviderRuntimeInstructions(providers: readonly ProviderRegistryEn
 }
 
 function printOnboardHeader(): void {
-  process.stdout.write('╔════════════════════════════════════════════════════════════════════╗\n')
-  process.stdout.write('║ Hervald Onboarding                                                ║\n')
-  process.stdout.write('║ configure telemetry, local operator, providers, and machines      ║\n')
-  process.stdout.write('╚════════════════════════════════════════════════════════════════════╝\n\n')
+  printHervaldBrand('Hervald onboard')
+}
+
+async function chooseSetupPath(options: ParsedOnboardArgs): Promise<SetupPath> {
+  if (options.nonInteractive) {
+    return 'quickstart'
+  }
+
+  return promptSelect<SetupPath>(
+    'Choose setup path',
+    [
+      {
+        value: 'quickstart',
+        label: 'Quickstart (recommended)',
+        hint: 'use Hervald defaults, then save the CLI config',
+      },
+      {
+        value: 'advanced',
+        label: 'Advanced',
+        hint: 'custom endpoint, agent selection, founder, and machine pairing',
+      },
+    ],
+    'quickstart',
+  )
+}
+
+async function resolveEndpoint(options: ParsedOnboardArgs, setupPath: SetupPath): Promise<string> {
+  if (options.endpoint) {
+    return options.endpoint
+  }
+  if (setupPath === 'quickstart') {
+    return DEFAULT_ENDPOINT
+  }
+  return promptText('Hervald endpoint', {
+    defaultValue: DEFAULT_ENDPOINT,
+    required: true,
+  })
+}
+
+async function resolveAgents(options: ParsedOnboardArgs, setupPath: SetupPath): Promise<HammurabiAgent[]> {
+  if (options.agents) {
+    return options.agents
+  }
+  if (setupPath === 'quickstart') {
+    return [...DEFAULT_AGENTS]
+  }
+  return promptMultiSelect<HammurabiAgent>(
+    'Select agents to connect:',
+    AGENT_INSTRUCTIONS.map((instruction) => ({
+      value: instruction.id,
+      label: instruction.label,
+    })),
+    DEFAULT_AGENTS,
+  )
+}
+
+function printConfigurationSavedSummary(input: {
+  endpoint: string
+  agents: readonly HammurabiAgent[]
+  runtimeConfig: { filePath: string; created: boolean }
+  founderOperator: { filePath: string; created: boolean } | null
+}): void {
+  process.stdout.write('\n')
+  process.stdout.write(formatStatusLine('pass', 'Configuration saved', defaultConfigPath()))
+  process.stdout.write('\n')
+  process.stdout.write(`  Endpoint: ${input.endpoint}\n`)
+  process.stdout.write(`  Agents: ${input.agents.join(', ')}\n`)
+  process.stdout.write(
+    input.runtimeConfig.created
+      ? `  Runtime config: ${input.runtimeConfig.filePath}\n`
+      : `  Runtime config: already present at ${input.runtimeConfig.filePath}\n`,
+  )
+  if (input.founderOperator) {
+    process.stdout.write(
+      input.founderOperator.created
+        ? `  Founder operator: ${input.founderOperator.filePath}\n`
+        : `  Founder operator: already present at ${input.founderOperator.filePath}\n`,
+    )
+  } else {
+    process.stdout.write('  Founder operator: browser onboarding owns founder setup\n')
+  }
+
+  process.stdout.write('\nNext commands\n')
+  process.stdout.write('  hammurabi doctor\n')
+  process.stdout.write('  hammurabi up\n')
+  process.stdout.write('  Open Hervald and start the first commander conversation from Command Room.\n')
 }
 
 export async function runCli(
@@ -488,41 +768,63 @@ export async function runCli(
       printUsage()
       return 1
     }
-
-    printOnboardHeader()
-    process.stdout.write('Hammurabi onboard\n')
-    process.stdout.write('Configure agents to send telemetry to your Hammurabi instance.\n\n')
-
-    const endpoint = await promptText('Hammurabi endpoint', {
-      defaultValue: DEFAULT_ENDPOINT,
-      required: true,
-    })
-    const apiKey = await promptSecret('API key', { required: true })
-
-    process.stdout.write('\nValidating API key via OTEL endpoint...\n')
-    const validation = await validateTelemetryWriteKey({
-      endpoint,
-      apiKey,
-    })
-
-    if (!validation.ok) {
-      process.stderr.write(`Validation failed: ${validation.message}\n`)
-      if (validation.validationUrl) {
-        process.stderr.write(`Validation URL: ${validation.validationUrl}\n`)
-      }
+    const options = parseOnboardArgs(args)
+    if (options.help) {
+      printUsage()
+      return 0
+    }
+    if (options.error) {
+      process.stderr.write(`${options.error}\n`)
+      printUsage()
+      return 1
+    }
+    if (
+      options.nonInteractive &&
+      (!options.endpoint || !options.apiKey || !options.agents)
+    ) {
+      process.stderr.write('--non-interactive requires --endpoint, --api-key, and --agents.\n')
+      printUsage()
       return 1
     }
 
-    process.stdout.write('Validation successful.\n\n')
+    printOnboardHeader()
+    process.stdout.write('Configure agents to send telemetry to your Hervald instance.\n\n')
 
-    const agents = await promptMultiSelect<HammurabiAgent>(
-      'Select agents to connect:',
-      AGENT_INSTRUCTIONS.map((instruction) => ({
-        value: instruction.id,
-        label: instruction.label,
-      })),
-      DEFAULT_AGENTS,
+    const setupPath = await chooseSetupPath(options)
+    if (!options.nonInteractive) {
+      process.stdout.write(`Selected setup path: ${setupPath === 'quickstart' ? 'Quickstart' : 'Advanced'}\n\n`)
+    }
+
+    const endpoint = await resolveEndpoint(options, setupPath)
+    const apiKey = options.apiKey ?? (await promptSecret('API key', { required: true }))
+
+    const validation = await withTerminalSpinner(
+      'Validating OTEL write key',
+      () => validateTelemetryWriteKey({
+        endpoint,
+        apiKey,
+      }),
+      {
+        success: 'API key can write telemetry',
+        failure: 'API key validation failed',
+      },
     )
+
+    if (!validation.ok) {
+      process.stderr.write(
+        `${formatStatusLine(
+          'fail',
+          'OTEL validation',
+          validation.message,
+          validation.validationUrl
+            ? `Retry after confirming ${validation.validationUrl} accepts x-hammurabi-api-key.`
+            : 'Confirm the endpoint and API key, then rerun hammurabi onboard.',
+        )}\n`,
+      )
+      return 1
+    }
+
+    const agents = await resolveAgents(options, setupPath)
     const config = createHammurabiConfig({
       endpoint,
       apiKey,
@@ -531,7 +833,9 @@ export async function runCli(
 
     await writeHammurabiConfig(config)
     const runtimeConfig = await ensureCommanderRuntimeConfig()
-    const founderOperator = await ensureFounderOperator(dependencies)
+    const founderOperator = options.skipFounderOperator
+      ? null
+      : await ensureFounderOperator(dependencies)
 
     const autoConfigured = new Set<HammurabiAgent>()
     const telemetrySetup = await applyManagedAgentTelemetryConfig(config)
@@ -539,32 +843,38 @@ export async function runCli(
       autoConfigured.add(agent)
     }
 
-    process.stdout.write(`\nSaved config: ${defaultConfigPath()}\n`)
-    process.stdout.write(
-      runtimeConfig.created
-        ? `Saved runtime config: ${runtimeConfig.filePath}\n`
-        : `Runtime config already present: ${runtimeConfig.filePath}\n`,
-    )
-    process.stdout.write(
-      founderOperator.created
-        ? `Saved founder operator: ${founderOperator.filePath}\n`
-        : `Founder operator already present: ${founderOperator.filePath}\n`,
-    )
+    printConfigurationSavedSummary({
+      endpoint: config.endpoint,
+      agents: config.agents,
+      runtimeConfig,
+      founderOperator,
+    })
+    if (!founderOperator) {
+      process.stdout.write('\nSkipped local founder operator setup; browser onboarding owns founder profile setup.\n')
+    }
     printSelectedAgentInstructions(config.endpoint, config.apiKey, config.agents, autoConfigured)
     try {
-      const { providers } = await loadProviderRegistry(config, {
-        fetchImpl: dependencies.fetchImpl ?? fetch,
-      })
+      const { providers } = await withTerminalSpinner(
+        'Checking provider registry',
+        () => loadProviderRegistry(config, {
+          fetchImpl: dependencies.fetchImpl ?? fetch,
+        }),
+        {
+          success: 'Provider registry reachable',
+          failure: 'Provider registry unavailable',
+        },
+      )
       printProviderRuntimeInstructions(providers)
     } catch {
       process.stdout.write('\nProvider runtime setup:\n')
       process.stdout.write('- Provider registry unavailable right now. Open Hervald docs after the server is reachable for provider-specific auth steps.\n')
     }
-    await runTailscaleSetup(dependencies)
-    process.stdout.write('\n╔════════════════════════════════════════════════════════════════════╗\n')
-    process.stdout.write('║ Onboarding complete                                               ║\n')
-    process.stdout.write('╚════════════════════════════════════════════════════════════════════╝\n')
-    process.stdout.write('Next: run `hammurabi doctor`, then open the browser onboarding guide.\n')
+    if (options.skipTailscale) {
+      process.stdout.write('\nSkipped Tailscale pairing.\n')
+    } else {
+      await runTailscaleSetup(dependencies)
+    }
+    process.stdout.write(`\n${formatStatusLine('pass', 'Onboarding complete', 'run hammurabi doctor, then open the browser onboarding guide')}\n`)
 
     return 0
   } finally {

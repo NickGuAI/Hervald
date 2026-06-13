@@ -7,6 +7,7 @@ const {
   promptTextMock,
   promptSecretMock,
   promptConfirmMock,
+  promptSelectMock,
   promptMultiSelectMock,
   closePromptResourcesMock,
   validateTelemetryWriteKeyMock,
@@ -15,6 +16,7 @@ const {
   promptTextMock: vi.fn(),
   promptSecretMock: vi.fn(),
   promptConfirmMock: vi.fn(),
+  promptSelectMock: vi.fn(),
   promptMultiSelectMock: vi.fn(),
   closePromptResourcesMock: vi.fn(),
   validateTelemetryWriteKeyMock: vi.fn(),
@@ -25,6 +27,7 @@ vi.mock('../prompts.js', () => ({
   promptText: promptTextMock,
   promptSecret: promptSecretMock,
   promptConfirm: promptConfirmMock,
+  promptSelect: promptSelectMock,
   promptMultiSelect: promptMultiSelectMock,
   closePromptResources: closePromptResourcesMock,
 }))
@@ -54,12 +57,14 @@ beforeEach(() => {
   promptTextMock.mockReset()
   promptSecretMock.mockReset()
   promptConfirmMock.mockReset()
+  promptSelectMock.mockReset()
   promptMultiSelectMock.mockReset()
   closePromptResourcesMock.mockReset()
   validateTelemetryWriteKeyMock.mockReset()
   applyManagedAgentTelemetryConfigMock.mockReset()
 
   promptConfirmMock.mockResolvedValue(false)
+  promptSelectMock.mockResolvedValue('advanced')
 
   stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
   stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
@@ -186,6 +191,112 @@ describe('runOnboardCli', () => {
       endpoint: 'https://hervald.gehirn.ai',
       apiKey: 'hmrb_test_key',
     })
+    expect(promptSelectMock).toHaveBeenCalledWith(
+      'Choose setup path',
+      expect.arrayContaining([
+        expect.objectContaining({ value: 'quickstart', label: 'Quickstart (recommended)' }),
+        expect.objectContaining({ value: 'advanced', label: 'Advanced' }),
+      ]),
+      'quickstart',
+    )
+  })
+
+  it('uses recommended quickstart defaults before saving config', async () => {
+    const homeDir = await mkdtemp(path.join(tmpdir(), 'hammurabi-onboard-home-'))
+    const dataDir = path.join(homeDir, '.hammurabi')
+    createdDirectories.push(homeDir)
+    previousHome = process.env.HOME
+    process.env.HOME = homeDir
+    previousHammurabiDataDir = process.env.HAMMURABI_DATA_DIR
+    process.env.HAMMURABI_DATA_DIR = dataDir
+    await seedOperatorFile(path.join(dataDir, 'operators.json'))
+
+    promptSelectMock.mockResolvedValue('quickstart')
+    promptSecretMock.mockResolvedValue('hmrb_test_key')
+    validateTelemetryWriteKeyMock.mockResolvedValue({
+      ok: true,
+      validationUrl: 'https://hervald.gehirn.ai/v1/logs',
+    })
+    applyManagedAgentTelemetryConfigMock.mockResolvedValue({
+      configured: [],
+      failed: [],
+    })
+
+    const exitCode = await runOnboardCli(['onboard'], {
+      fetchImpl: createOfflineProviderRegistryFetch(),
+    })
+
+    expect(exitCode).toBe(0)
+    expect(promptTextMock).not.toHaveBeenCalledWith('Hervald endpoint', expect.anything())
+    expect(promptMultiSelectMock).not.toHaveBeenCalled()
+    const config = JSON.parse(await readFile(path.join(homeDir, '.hammurabi.json'), 'utf8')) as Record<string, unknown>
+    expect(config).toMatchObject({
+      endpoint: 'https://hervald.gehirn.ai',
+      agents: ['claude-code', 'codex', 'terminal-cri'],
+    })
+    expect(stdoutSpy?.mock.calls.map(([chunk]) => String(chunk)).join('')).toContain('Configuration saved')
+  })
+
+  it('supports non-interactive installer setup without prompting for a second command', async () => {
+    const homeDir = await mkdtemp(path.join(tmpdir(), 'hammurabi-onboard-home-'))
+    const dataDir = path.join(homeDir, '.hammurabi')
+    createdDirectories.push(homeDir)
+    previousHome = process.env.HOME
+    process.env.HOME = homeDir
+    previousHammurabiDataDir = process.env.HAMMURABI_DATA_DIR
+    process.env.HAMMURABI_DATA_DIR = dataDir
+
+    validateTelemetryWriteKeyMock.mockResolvedValue({
+      ok: true,
+      validationUrl: 'http://localhost:20001/v1/logs',
+    })
+    applyManagedAgentTelemetryConfigMock.mockResolvedValue({
+      configured: ['claude-code', 'codex'],
+      failed: [],
+    })
+
+    const exitCode = await runOnboardCli([
+      'onboard',
+      '--non-interactive',
+      '--endpoint',
+      'http://localhost:20001',
+      '--api-key',
+      'bootstrap-test-key',
+      '--agents',
+      'claude-code,codex,terminal-cri',
+      '--skip-founder-operator',
+      '--skip-tailscale',
+    ], {
+      fetchImpl: createOfflineProviderRegistryFetch(),
+    })
+
+    expect(exitCode).toBe(0)
+    expect(promptTextMock).not.toHaveBeenCalled()
+    expect(promptSecretMock).not.toHaveBeenCalled()
+    expect(promptSelectMock).not.toHaveBeenCalled()
+    expect(promptMultiSelectMock).not.toHaveBeenCalled()
+    expect(promptConfirmMock).not.toHaveBeenCalled()
+
+    const cliConfigPath = path.join(homeDir, '.hammurabi.json')
+    const runtimeConfigPath = path.join(homeDir, '.hammurabi', 'config.yaml')
+    const config = JSON.parse(await readFile(cliConfigPath, 'utf8')) as Record<string, unknown>
+
+    expect(config).toMatchObject({
+      endpoint: 'http://localhost:20001',
+      apiKey: 'bootstrap-test-key',
+      agents: ['claude-code', 'codex', 'terminal-cri'],
+    })
+    await expect(readFile(runtimeConfigPath, 'utf8')).resolves.toContain('maxTurns: 300')
+    await expect(readFile(path.join(dataDir, 'operators.json'), 'utf8')).rejects.toMatchObject({
+      code: 'ENOENT',
+    })
+    expect(validateTelemetryWriteKeyMock).toHaveBeenCalledWith({
+      endpoint: 'http://localhost:20001',
+      apiKey: 'bootstrap-test-key',
+    })
+    expect(stdoutSpy?.mock.calls.map(([chunk]) => String(chunk)).join('')).toContain(
+      'Skipped local founder operator setup; browser onboarding owns founder profile setup.',
+    )
   })
 
   it('prints daemon pairing guidance when provider runtime metadata is available', async () => {
@@ -239,6 +350,8 @@ describe('runOnboardCli', () => {
 
     expect(exitCode).toBe(0)
     const out = stdoutSpy?.mock.calls.map(([chunk]) => String(chunk)).join('') ?? ''
+    expect(out).toContain('Checking provider registry')
+    expect(out).toContain('Provider registry reachable')
     expect(out).toContain('Provider runtime setup:')
     expect(out).toContain('hammurabi machine daemon-pair --machine <id>')
     expect(out).toContain('hammurabi machine daemon-status --machine <id>')
@@ -292,7 +405,10 @@ describe('runOnboardCli', () => {
     expect(exitCode).toBe(0)
     expect(runCommand).toHaveBeenNthCalledWith(1, 'which', ['tailscale'])
     expect(runInteractiveCommand).toHaveBeenCalledWith('sudo', ['tailscale', 'up'])
-    expect(stdoutSpy?.mock.calls.map(([chunk]) => String(chunk)).join('')).toContain(
+    const out = stdoutSpy?.mock.calls.map(([chunk]) => String(chunk)).join('')
+    expect(out).toContain('Checking Tailscale CLI')
+    expect(out).toContain('Reading Tailscale status')
+    expect(out).toContain(
       'hammurabi machine add --id <id> --label <label> --tailscale-hostname home-mac.tail2bb6ea.ts.net',
     )
   })
